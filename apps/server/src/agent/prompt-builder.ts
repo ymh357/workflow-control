@@ -116,6 +116,38 @@ Rules:
   return appendParts.join("\n\n");
 }
 
+/**
+ * Extract the static (cross-stage invariant) portion of the system prompt.
+ * Used for prompt cache optimization — this prefix is identical across
+ * all stages in the same pipeline and can be cached.
+ */
+export function buildStaticPromptPrefix(privateConfig: any, engine: string): string {
+  const parts: string[] = [];
+
+  // Global constraints (same for all stages)
+  const effectiveConstraints = privateConfig?.prompts.globalConstraints || DEFAULT_GLOBAL_CONSTRAINTS;
+  parts.push(effectiveConstraints);
+
+  // All fragments included (intentional superset) — cache optimization requires
+  // byte-identical prefix across stages; per-stage filtering would bust the cache.
+  if (privateConfig?.prompts.fragments) {
+    for (const content of Object.values(privateConfig.prompts.fragments as Record<string, string>)) {
+      if (content && !parts.includes(content)) parts.push(content);
+    }
+  }
+
+  // Project instructions
+  if (engine === "gemini") {
+    const md = privateConfig?.prompts.globalGeminiMd;
+    if (md) parts.push(`# Project Instructions\n${md}`);
+  } else {
+    const md = privateConfig?.prompts.globalClaudeMd;
+    if (md) parts.push(`# Project Instructions\n${md}`);
+  }
+
+  return parts.join("\n\n");
+}
+
 // --- Schema-driven prompt generation ---
 
 function formatFieldType(field: OutputFieldSchema): string {

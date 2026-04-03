@@ -29,7 +29,7 @@ vi.mock("../lib/config-loader.js", () => ({
   },
 }));
 
-import { buildTier1Context } from "./context-builder.js";
+import { buildTier1Context, estimateTokens } from "./context-builder.js";
 import type { WorkflowContext } from "../machine/types.js";
 
 function makeContext(overrides?: Record<string, any>): WorkflowContext {
@@ -161,7 +161,7 @@ describe("buildTier1Context - selective reads (runtime.reads)", () => {
     expect(result).toContain("plain string value");
   });
 
-  it("truncates large reads values into per-field summaries when token budget is exceeded", () => {
+  it("truncates large reads values into preview when token budget is exceeded", () => {
     const hugeObj: Record<string, string> = {};
     for (let i = 0; i < 100; i++) hugeObj[`field_${i}`] = "x".repeat(200);
     const ctx = makeContext({
@@ -169,9 +169,8 @@ describe("buildTier1Context - selective reads (runtime.reads)", () => {
     });
     const runtime = { reads: { "Huge": "huge", "Small": "small" } } as any;
     const result = buildTier1Context(ctx, runtime, 500);
-    // Huge should be summarized — each field truncated to 80 chars
-    expect(result).toContain("(summarized)");
-    expect(result).toContain("field_0: " + "x".repeat(80) + "...");
+    expect(result).toContain("preview");
+    expect(result).toContain('get_store_value("huge")');
     // Small should still be rendered fully
     expect(result).toContain("### Small");
     expect(result).toContain("ok: yes");
@@ -308,6 +307,32 @@ describe("buildTier1Context - legacy fallback (no runtime.reads)", () => {
   });
 });
 
+describe("estimateTokens (CJK-aware)", () => {
+  it("estimates Latin text at ~4 chars per token", () => {
+    expect(estimateTokens("hello")).toBe(2);
+  });
+
+  it("estimates CJK text at ~2 chars per token", () => {
+    expect(estimateTokens("你好世界")).toBe(2);
+  });
+
+  it("handles mixed CJK and Latin text", () => {
+    expect(estimateTokens("hello你好")).toBe(3);
+  });
+});
+
+describe("buildTier1Context - large value preview", () => {
+  it("shows preview with Tier 2 reference for very large store values", () => {
+    const hugeObj: Record<string, string> = {};
+    for (let i = 0; i < 200; i++) hugeObj[`field_${i}`] = "x".repeat(100);
+    const ctx = makeContext({ store: { huge: hugeObj } });
+    const runtime = { reads: { "Huge Data": "huge" } } as any;
+    const result = buildTier1Context(ctx, runtime, 500);
+    expect(result).toContain("preview");
+    expect(result).toContain('get_store_value("huge")');
+  });
+});
+
 describe("buildTier1Context - parallel group stages", () => {
   it("renders store data from parallel group child stage outputs", () => {
     const ctx = makeContext({
@@ -353,5 +378,34 @@ describe("buildTier1Context - parallel group stages", () => {
     expect(result).toContain("## Code Review");
     expect(result).toContain("issues: lint error; missing type");
     expect(result).toContain("passed: false");
+  });
+});
+
+describe("buildTier1Context - compact summary preference", () => {
+  it("uses compact summary for large store values when __summary exists", () => {
+    const ctx = makeContext({
+      store: {
+        analysis: { plan: "x".repeat(5000), details: "y".repeat(5000) },
+        "analysis.__summary": "[object] plan, details (10200 chars)",
+      },
+    });
+    const runtime = { reads: { "Analysis": "analysis" } } as any;
+    const result = buildTier1Context(ctx, runtime);
+    expect(result).toContain("compact summary");
+    expect(result).toContain("get_store_value");
+    expect(result).not.toContain("x".repeat(100));
+  });
+
+  it("renders full value when __summary exists but value is small", () => {
+    const ctx = makeContext({
+      store: {
+        analysis: { plan: "short plan" },
+        "analysis.__summary": "[object] plan (20 chars)",
+      },
+    });
+    const runtime = { reads: { "Analysis": "analysis" } } as any;
+    const result = buildTier1Context(ctx, runtime);
+    expect(result).toContain("short plan");
+    expect(result).not.toContain("compact summary");
   });
 });

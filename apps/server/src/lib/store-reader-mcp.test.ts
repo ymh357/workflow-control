@@ -48,7 +48,42 @@ describe("store-reader-mcp", () => {
     expect(result.content[0].text).toContain("planning");
   });
 
-  it("truncates values larger than 50KB", async () => {
+  it("truncates values larger than 50KB with structural summary", async () => {
+    const largeObj: Record<string, string> = {};
+    for (let i = 0; i < 500; i++) largeObj[`key_${i}`] = "x".repeat(200);
+    const handler = getHandler({ big: largeObj });
+    const result = await handler({ path: "big" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("Object with 500 keys");
+    expect(result.content[0].text).toContain("truncated");
+    expect(result.content[0].text).toContain("dot notation");
+    expect(result.content[0].text.length).toBeLessThan(60 * 1024);
+  });
+
+  it("truncates large arrays with count summary", async () => {
+    const largeArray = Array.from({ length: 5000 }, (_, i) => ({ id: i, name: `item-${i}` }));
+    const handler = getHandler({ items: largeArray });
+    const result = await handler({ path: "items" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("Array with 5000 items");
+    expect(result.content[0].text).toContain("truncated");
+  });
+
+  it("truncates large strings at line boundary", async () => {
+    const lines = Array.from({ length: 5000 }, (_, i) => `line ${i}: ${"x".repeat(20)}`).join("\n");
+    const handler = getHandler({ text: lines });
+    const result = await handler({ path: "text" });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain("truncated");
+    // Should not contain partial lines (cut at newline boundary)
+    const preview = result.content[0].text;
+    const lastLine = preview.split("\n").filter((l: string) => l.startsWith("line ")).pop();
+    if (lastLine) {
+      expect(lastLine).toMatch(/^line \d+: x+$/);
+    }
+  });
+
+  it("truncates plain large strings without newlines", async () => {
     const largeString = "x".repeat(60 * 1024);
     const handler = getHandler({ big: largeString });
     const result = await handler({ path: "big" });

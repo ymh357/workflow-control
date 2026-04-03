@@ -8,6 +8,7 @@ export interface WorkflowContext {
   status: string;
   retryCount: number;
   qaRetryCount: number;
+  taskToken?: string;
   lastStage?: string;
   error?: string;
   errorCode?: "interrupted" | "timeout" | "agent_error";
@@ -19,6 +20,7 @@ export interface WorkflowContext {
   stageTokenUsages?: Record<string, StageTokenUsage>;
   stageSessionIds: Record<string, string>;
   stageCwds?: Record<string, string>;
+  stageCheckpoints?: Record<string, unknown>;
   parallelDone?: Record<string, string[]>;
   rejectIntoGroup?: { group: string; stage: string };
   resumeInfo?: { sessionId: string; feedback?: string; sync?: boolean };

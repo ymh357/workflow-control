@@ -1,8 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getAllSlots, hasSlot, getSlotNonce, resolveSlot } from "./registry.js";
 import { buildTier1Context } from "../agent/context-builder.js";
-import { buildSystemAppendPrompt } from "../agent/prompt-builder.js";
+import { buildSystemAppendPrompt, buildStaticPromptPrefix } from "../agent/prompt-builder.js";
 import { extractJSON } from "../lib/json-extractor.js";
 import { sseManager } from "../sse/manager.js";
 import { getNestedValue, listAvailablePipelines, flattenStages } from "../lib/config-loader.js";
@@ -22,6 +23,25 @@ import {
   launch,
 } from "../actions/task-actions.js";
 import type { ActionResult } from "../actions/task-actions.js";
+
+// Task-scoped authentication tokens — generated on trigger_task, required for all operations
+const taskTokens = new Map<string, string>();
+
+function validateTaskToken(taskId: string, token?: string): string | null {
+  let expected = taskTokens.get(taskId);
+  // Fallback: read from persisted WorkflowContext after server restart
+  if (!expected) {
+    const ctx = getTaskContext(taskId);
+    if (ctx?.taskToken) {
+      expected = ctx.taskToken;
+      taskTokens.set(taskId, expected); // Re-cache
+    }
+  }
+  if (!expected) return null; // No token anywhere (legacy task), allow
+  if (!token) return "taskToken is required for this task";
+  if (token !== expected) return "Invalid taskToken";
+  return null;
+}
 
 function textResult(text: string, isError?: boolean) {
   return {
@@ -61,6 +81,8 @@ async function buildStageContext(taskId: string, stageName: string): Promise<Rec
     cwd: context.worktreePath,
   });
 
+  const staticPrefix = buildStaticPromptPrefix(context.config, stageEngine);
+
   const storeReads: Record<string, unknown> = {};
   if (runtime.reads) {
     for (const [label, storePath] of Object.entries(runtime.reads)) {
@@ -68,13 +90,17 @@ async function buildStageContext(taskId: string, stageName: string): Promise<Rec
     }
   }
 
+  const mcpList = stageConfig.mcps ?? [];
+
   return {
     taskId,
     stageName,
     tier1Context,
     systemPrompt,
+    staticPromptPrefix: staticPrefix,
     outputSchema: stageConfig.outputs ?? null,
     storeReads,
+    mcps: mcpList,
     worktreePath: context.worktreePath ?? "",
     branch: context.branch ?? "",
     writes: runtime.writes ?? [],
@@ -83,9 +109,8 @@ async function buildStageContext(taskId: string, stageName: string): Promise<Rec
 }
 
 // Pre-validate output against runtime.writes (same logic as state-builders.ts onDone guard).
-// Validation uses "at least one field present" semantics:
-// This matches the guard in state-builders.ts — partial output is acceptable
-// because agents may legitimately produce a subset of declared fields.
+// All declared write fields must be present — matches the guard in state-builders.ts
+// which retries when any field is missing (!runtime.writes.every(field => parsed[field] !== undefined)).
 function validateStageOutput(resultText: string, writes: string[]): { valid: boolean; missing?: string[]; reason?: string } {
   if (writes.length === 0) return { valid: true };
   if (!resultText) return { valid: false, reason: "resultText is empty" };
@@ -97,10 +122,10 @@ function validateStageOutput(resultText: string, writes: string[]): { valid: boo
     return { valid: false, reason: "Could not parse JSON from resultText" };
   }
 
-  // "At least one field present" semantics — matches the guard in state-builders.ts
+  // All declared write fields must be present — matches the guard in state-builders.ts
   const missing = writes.filter((field) => parsed[field] === undefined);
-  if (missing.length === writes.length) {
-    return { valid: false, missing, reason: `None of the required fields found: ${writes.join(", ")}` };
+  if (missing.length > 0) {
+    return { valid: false, missing, reason: `Missing required output fields: ${missing.join(", ")}` };
   }
 
   return { valid: true };
@@ -121,6 +146,16 @@ export function createEdgeMcpServer(): McpServer {
       const slots = getAllSlots();
       const enriched = slots.map((slot) => {
         const context = getTaskContext(slot.taskId);
+        // Check if this stage is part of a parallel group
+        let parallelGroup: string | undefined;
+        if (context?.config?.pipeline?.stages) {
+          for (const entry of context.config.pipeline.stages as any[]) {
+            if (entry?.parallel?.stages?.some((s: any) => s.name === slot.stageName)) {
+              parallelGroup = entry.parallel.name;
+              break;
+            }
+          }
+        }
         return {
           taskId: slot.taskId,
           stageName: slot.stageName,
@@ -128,6 +163,7 @@ export function createEdgeMcpServer(): McpServer {
           taskText: context?.taskText ?? "",
           createdAt: new Date(slot.createdAt).toISOString(),
           waitingSeconds: Math.round((Date.now() - slot.createdAt) / 1000),
+          ...(parallelGroup ? { parallelGroup } : {}),
         };
       });
       return textResult(JSON.stringify(enriched, null, 2));
@@ -141,8 +177,11 @@ export function createEdgeMcpServer(): McpServer {
     {
       taskId: z.string().describe("The task ID"),
       stageName: z.string().describe("The stage name to get context for"),
+      taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
     },
-    async ({ taskId, stageName }) => {
+    async ({ taskId, stageName, taskToken }) => {
+      const authErr = validateTaskToken(taskId, taskToken);
+      if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
       if (!hasSlot(taskId, stageName)) {
         return textResult(JSON.stringify({ error: `No pending edge slot for ${taskId}::${stageName}` }), true);
       }
@@ -168,8 +207,11 @@ export function createEdgeMcpServer(): McpServer {
       sessionId: z.string().optional().describe("Optional session ID for resume capability"),
       costUsd: z.number().optional().describe("Optional cost in USD"),
       durationMs: z.number().optional().describe("Optional duration in milliseconds"),
+      taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
     },
-    async ({ taskId, stageName, resultText, nonce, sessionId, costUsd, durationMs }) => {
+    async ({ taskId, stageName, resultText, nonce, sessionId, costUsd, durationMs, taskToken }) => {
+      const authErr = validateTaskToken(taskId, taskToken);
+      if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
       // Pre-validate: check output fields BEFORE resolving the slot
       const context = getTaskContext(taskId);
       if (context) {
@@ -213,8 +255,11 @@ export function createEdgeMcpServer(): McpServer {
       stageName: z.string().describe("The stage name"),
       type: z.enum(["text", "tool_use", "thinking"]).describe("The type of progress update"),
       data: z.record(z.string(), z.unknown()).describe("Progress data: { text } for text/thinking, { toolName, input } for tool_use"),
+      taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
     },
-    async ({ taskId, stageName, type, data }) => {
+    async ({ taskId, stageName, type, data, taskToken }) => {
+      const authErr = validateTaskToken(taskId, taskToken);
+      if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
       if (!hasSlot(taskId, stageName)) {
         return textResult(JSON.stringify({ error: `No pending edge slot for ${taskId}::${stageName}` }), true);
       }
@@ -246,8 +291,11 @@ export function createEdgeMcpServer(): McpServer {
     {
       taskId: z.string().describe("The task ID"),
       path: z.string().describe("Dot-notation path into the store (e.g., 'analysis.plan')"),
+      taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
     },
-    async ({ taskId, path }) => {
+    async ({ taskId, path, taskToken }) => {
+      const authErr = validateTaskToken(taskId, taskToken);
+      if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
       const context = getTaskContext(taskId);
       if (!context) {
         return textResult(JSON.stringify({ error: `Task ${taskId} not found` }), true);
@@ -296,6 +344,11 @@ export function createEdgeMcpServer(): McpServer {
       const created = createTask({ taskText, repoName, pipelineName: pipeline, edge });
       if (!created.ok) return actionToTextResult(created);
       const taskId = created.data.taskId;
+      const taskToken = randomUUID();
+      taskTokens.set(taskId, taskToken);
+      // Persist token to WorkflowContext for restart recovery
+      const ctxForToken = getTaskContext(taskId);
+      if (ctxForToken) ctxForToken.taskToken = taskToken;
 
       const launched = launch(taskId);
       if (!launched.ok) return actionToTextResult(launched);
@@ -313,6 +366,7 @@ export function createEdgeMcpServer(): McpServer {
 
       return textResult(JSON.stringify({
         taskId,
+        taskToken,
         pipeline,
         edgeStages,
       }, null, 2));
@@ -325,8 +379,11 @@ export function createEdgeMcpServer(): McpServer {
     "Get the current status of a workflow task",
     {
       taskId: z.string().describe("The task ID"),
+      taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
     },
-    async ({ taskId }) => {
+    async ({ taskId, taskToken }) => {
+      const authErr = validateTaskToken(taskId, taskToken);
+      if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
       const context = getTaskContext(taskId);
       if (!context) {
         return textResult(JSON.stringify({ error: `Task ${taskId} not found` }), true);
@@ -350,9 +407,12 @@ export function createEdgeMcpServer(): McpServer {
     "Retry a blocked/cancelled/running task from its last stage. Returns immediately — the runner handles stage transitions.",
     {
       taskId: z.string().describe("The task ID"),
+      taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
       sync: z.boolean().optional().describe("Use sync retry mode (resumes same session) when available"),
     },
-    async ({ taskId, sync }) => {
+    async ({ taskId, taskToken, sync }) => {
+      const authErr = validateTaskToken(taskId, taskToken);
+      if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
       const result = retryTask(taskId, { sync });
       if (!result.ok) return actionToTextResult(result);
 
@@ -374,12 +434,15 @@ export function createEdgeMcpServer(): McpServer {
     "Confirm or reject a human confirmation gate. Returns immediately after submission.",
     {
       taskId: z.string().describe("The task ID"),
+      taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
       decision: z.enum(["approve", "reject", "feedback"]).describe("User's decision"),
       reason: z.string().optional().describe("Reason for rejection (when decision is 'reject')"),
       feedback: z.string().optional().describe("User feedback to send back to the previous agent stage (when decision is 'feedback')"),
       repoName: z.string().optional().describe("Repository name override (when decision is 'approve')"),
     },
-    async ({ taskId, decision, reason, feedback, repoName }) => {
+    async ({ taskId, taskToken, decision, reason, feedback, repoName }) => {
+      const authErr = validateTaskToken(taskId, taskToken);
+      if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
       const contextBefore = getTaskContext(taskId);
       if (!contextBefore) {
         return textResult(JSON.stringify({ error: `Task ${taskId} not found` }), true);
@@ -409,6 +472,7 @@ export function createEdgeMcpServer(): McpServer {
     },
     async ({ taskId }) => {
       const result = await cancelTask_(taskId);
+      taskTokens.delete(taskId);
       return actionToTextResult(result);
     },
   );
@@ -433,8 +497,11 @@ export function createEdgeMcpServer(): McpServer {
     "Resume a cancelled or blocked task from its last stage. Returns immediately — the runner handles stage transitions.",
     {
       taskId: z.string().describe("The task ID"),
+      taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
     },
-    async ({ taskId }) => {
+    async ({ taskId, taskToken }) => {
+      const authErr = validateTaskToken(taskId, taskToken);
+      if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
       const result = resumeTask(taskId);
       if (!result.ok) return actionToTextResult(result);
 

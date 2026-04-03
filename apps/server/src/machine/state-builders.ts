@@ -231,7 +231,21 @@ export function buildAgentState(
                   for (const field of runtime.writes) {
                     if (parsed[field] !== undefined) updates[field] = parsed[field];
                   }
-                  if (Object.keys(updates).length) store = { ...store, ...updates };
+                  if (Object.keys(updates).length) {
+                    store = { ...store, ...updates };
+                    // Generate compact summary for large store values
+                    for (const [field, value] of Object.entries(updates)) {
+                      // Cheap heuristic: only compute summary for potentially large objects
+                      if (typeof value !== "object" || value === null) continue;
+                      const keys = Object.keys(value);
+                      if (keys.length < 5) continue;
+                      const serialized = JSON.stringify(value);
+                      if (serialized.length > 8000) {
+                        const summaryFields = keys.slice(0, 10).join(", ");
+                        store[`${field}.__summary`] = `[${typeof value}] ${summaryFields} (${serialized.length} chars)`;
+                      }
+                    }
+                  }
                 } catch (err) {
                   taskLogger(context.taskId).error({ err, stage: stateName }, "Failed to parse agent output for writes");
                 }

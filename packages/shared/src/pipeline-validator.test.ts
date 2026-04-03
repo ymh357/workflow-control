@@ -150,12 +150,12 @@ describe("MCP reference existence", () => {
     expect(issues.filter(i => i.field === "mcps")).toHaveLength(0);
   });
 
-  it("referencing an unregistered MCP returns error with field=mcps and MCP name in message", () => {
+  it("referencing an unregistered MCP returns warning with field=mcps and MCP name in message", () => {
     const stage = { ...agent("analyze"), mcps: ["nonexistent"] };
     const issues = validatePipelineLogic([stage], undefined, new Set(["notion"]));
     const errs = issues.filter(i => i.field === "mcps");
     expect(errs).toHaveLength(1);
-    expect(errs[0].severity).toBe("error");
+    expect(errs[0].severity).toBe("warning");
     expect(errs[0].message).toContain("nonexistent");
   });
 

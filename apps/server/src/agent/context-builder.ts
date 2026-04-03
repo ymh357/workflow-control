@@ -4,12 +4,17 @@ import { type AgentRuntimeConfig, getNestedValue, flattenStages } from "../lib/c
 // Compact Tier 1 context injected into systemPrompt for each stage.
 // Full Tier 2 context lives in .workflow/ files that the agent reads on demand.
 
-// Rough token estimate: ~4 chars per token on average
-function estimateTokens(s: string): number {
-  return Math.ceil(s.length / 4);
+// CJK-aware token estimate: CJK ~2 chars/token, Latin ~4 chars/token
+export function estimateTokens(s: string): number {
+  let cjk = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s.charCodeAt(i) > 0x2E80) cjk++;
+  }
+  return Math.ceil(cjk / 2 + (s.length - cjk) / 4);
 }
 
-const DEFAULT_TIER1_MAX_TOKENS = 4000;
+const DEFAULT_TIER1_MAX_TOKENS = 8000;
+const MAX_INLINE_CHARS = 8000;
 
 export function buildTier1Context(
   context: WorkflowContext,
@@ -61,16 +66,24 @@ export function buildTier1Context(
           }
         }
         const fullBlock = `\n### ${label}\n${fieldParts.join("\n")}`;
-        if (!addPart(fullBlock)) {
-          // Budget exceeded — produce per-field summaries (max 20 fields, 80 chars each)
-          const entries = Object.entries(val);
-          const summaryParts: string[] = [];
-          for (const [k, v] of entries.slice(0, 20)) {
-            const s = typeof v === "string" ? v : JSON.stringify(v);
-            summaryParts.push(`${k}: ${s.slice(0, 80)}${s.length > 80 ? "..." : ""}`);
+
+        // Prefer compact summary for large values when available (avoids expensive stringify)
+        const summaryKey = `${storePath.split(".")[0]}.__summary`;
+        if (store[summaryKey] !== undefined && fullBlock.length > MAX_INLINE_CHARS) {
+          addPart(`\n### ${label} (compact summary)\n${store[summaryKey]}\n> Full content: use get_store_value("${storePath}") for complete data`);
+        } else if (!addPart(fullBlock)) {
+          if (fullBlock.length > MAX_INLINE_CHARS) {
+            parts.push(`\n### ${label} (preview, ${fieldParts.length} fields)\n${fieldParts.slice(0, 5).join("\n")}\n...\n> Full content: use get_store_value("${storePath}") for all ${fieldParts.length} fields`);
+          } else {
+            const entries = Object.entries(val);
+            const summaryParts: string[] = [];
+            for (const [k, v] of entries.slice(0, 20)) {
+              const s = typeof v === "string" ? v : JSON.stringify(v);
+              summaryParts.push(`${k}: ${s.slice(0, 80)}${s.length > 80 ? "..." : ""}`);
+            }
+            if (entries.length > 20) summaryParts.push(`... and ${entries.length - 20} more fields`);
+            parts.push(`\n### ${label} (summarized)\n${summaryParts.join("\n")}`);
           }
-          if (entries.length > 20) summaryParts.push(`... and ${entries.length - 20} more fields`);
-          parts.push(`\n### ${label} (summarized)\n${summaryParts.join("\n")}`);
         }
       } else {
         addPart(`\n### ${label}\n${String(val)}`);
@@ -78,7 +91,7 @@ export function buildTier1Context(
     }
 
     // List un-injected store keys as indices (Tier 2 references)
-    const otherKeys = Object.keys(store).filter(k => !renderedKeys.has(k));
+    const otherKeys = Object.keys(store).filter(k => !renderedKeys.has(k) && !k.includes(".__summary"));
     if (otherKeys.length > 0) {
       parts.push("\n## Other Available Context (use get_store_value tool to read these)");
       parts.push(otherKeys.map(k => `- ${k}`).join("\n"));

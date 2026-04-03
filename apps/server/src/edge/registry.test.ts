@@ -51,11 +51,11 @@ describe("registry", () => {
       return promise;
     });
 
-    it("should generate a nonce in the expected format", () => {
+    it("should generate a UUID nonce", () => {
       const promise = createSlot("t1", "stage-b");
       const nonce = getSlotNonce("t1", "stage-b");
       expect(nonce).toBeDefined();
-      expect(nonce).toMatch(/^\d+-\d+$/);
+      expect(nonce).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
       resolveSlot("t1", "stage-b", { resultText: "", costUsd: 0, durationMs: 0 });
       return promise;
     });

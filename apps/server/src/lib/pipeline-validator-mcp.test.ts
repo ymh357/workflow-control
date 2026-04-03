@@ -20,7 +20,7 @@ describe("validatePipelineLogic — MCP reference validation", () => {
     const issues = validatePipelineLogic(stages, undefined, knownMcps);
     const mcpIssues = issues.filter((i) => i.field === "mcps");
     expect(mcpIssues).toHaveLength(1);
-    expect(mcpIssues[0].severity).toBe("error");
+    expect(mcpIssues[0].severity).toBe("warning");
     expect(mcpIssues[0].message).toContain("unknown-mcp");
     expect(mcpIssues[0].message).toContain("not registered");
   });

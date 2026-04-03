@@ -72,6 +72,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 vi.mock("./prompt-builder.js", () => ({
   buildSystemAppendPrompt: vi.fn(async () => "append-prompt"),
   buildEffectivePrompt: vi.fn(() => "effective-prompt"),
+  buildStaticPromptPrefix: vi.fn(() => "static-prefix"),
 }));
 
 vi.mock("./query-options-builder.js", () => ({
@@ -94,6 +95,7 @@ vi.mock("./output-schema.js", () => ({
 vi.mock("./executor-hooks.js", () => ({
   createAskUserQuestionInterceptor: vi.fn(() => vi.fn()),
   createSpecAuditHook: vi.fn(() => vi.fn()),
+  createPathRestrictionHook: vi.fn(() => vi.fn().mockResolvedValue({ decision: "approve" })),
 }));
 
 vi.mock("../machine/actor-registry.js", () => ({

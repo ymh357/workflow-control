@@ -28,6 +28,7 @@ export function buildQueryOptions(params: {
   taskId: string;
   stageName: string;
   appendPrompt: string;
+  staticPromptPrefix?: string;
   stageConfig: {
     model?: string;
     thinking: { type: string };
@@ -65,6 +66,7 @@ export function buildQueryOptions(params: {
 
   const options: Record<string, unknown> = {
     systemPrompt: { type: "preset", preset: "claude_code", append: appendPrompt },
+    ...(params.staticPromptPrefix ? { staticPromptPrefix: params.staticPromptPrefix } : {}),
     pathToClaudeCodeExecutable: claudePath,
     settingSources: [],
     thinking: stageConfig.thinking,

@@ -675,3 +675,50 @@ describe("buildParallelGroupState basic structure", () => {
     expect(result.parallelDone?.otherGroup).toEqual(["x"]);
   });
 });
+
+describe("buildAgentState compact summary generation", () => {
+  it("generates __summary for large store values on normal completion", () => {
+    const stage = makeAgentStage({
+      runtime: { engine: "llm" as const, system_prompt: "x", writes: ["bigResult"] } as any,
+    });
+    const state = buildAgentState("done", "prev", stage);
+    const handlers = getOnDoneHandlers(state);
+    const last = handlers[handlers.length - 1];
+    const assignFn = findAssignFn(last as any);
+
+    const largeValue: Record<string, string> = {};
+    for (let i = 0; i < 10; i++) largeValue[`field_${i}`] = "x".repeat(1000);
+    const ctx = makeCtx({ store: {} });
+    const event = {
+      type: "done",
+      output: { resultText: JSON.stringify({ bigResult: largeValue }), costUsd: 0 },
+    };
+    const result = (assignFn as Function)({ event, context: ctx });
+
+    expect(result.store.bigResult).toEqual(largeValue);
+    expect(result.store["bigResult.__summary"]).toBeDefined();
+    expect(result.store["bigResult.__summary"]).toContain("[object]");
+    expect(result.store["bigResult.__summary"]).toContain("field_0");
+  });
+
+  it("does not generate __summary for small store values", () => {
+    const stage = makeAgentStage({
+      runtime: { engine: "llm" as const, system_prompt: "x", writes: ["smallResult"] } as any,
+    });
+    const state = buildAgentState("done", "prev", stage);
+    const handlers = getOnDoneHandlers(state);
+    const last = handlers[handlers.length - 1];
+    const assignFn = findAssignFn(last as any);
+
+    const smallValue = { plan: "short plan" };
+    const ctx = makeCtx({ store: {} });
+    const event = {
+      type: "done",
+      output: { resultText: JSON.stringify({ smallResult: smallValue }), costUsd: 0 },
+    };
+    const result = (assignFn as Function)({ event, context: ctx });
+
+    expect(result.store.smallResult).toEqual(smallValue);
+    expect(result.store["smallResult.__summary"]).toBeUndefined();
+  });
+});

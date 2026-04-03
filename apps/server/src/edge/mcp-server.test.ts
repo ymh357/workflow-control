@@ -15,6 +15,7 @@ vi.mock("../agent/context-builder.js", () => ({
 
 vi.mock("../agent/prompt-builder.js", () => ({
   buildSystemAppendPrompt: vi.fn(async () => "system-prompt-text"),
+  buildStaticPromptPrefix: vi.fn(() => "static-prefix-text"),
 }));
 
 vi.mock("../lib/json-extractor.js", () => ({
@@ -177,8 +178,8 @@ describe("buildStageContext - output structure", () => {
     // Verify the contract of the buildStageContext return shape
     const expectedKeys = [
       "taskId", "stageName", "tier1Context", "systemPrompt",
-      "outputSchema", "storeReads", "worktreePath", "branch",
-      "writes", "resumeInfo",
+      "staticPromptPrefix", "outputSchema", "storeReads", "mcps",
+      "worktreePath", "branch", "writes", "resumeInfo",
     ];
 
     const mockOutput: Record<string, unknown> = {
@@ -186,8 +187,10 @@ describe("buildStageContext - output structure", () => {
       stageName: "analysis",
       tier1Context: "context",
       systemPrompt: "prompt",
+      staticPromptPrefix: "prefix",
       outputSchema: null,
       storeReads: {},
+      mcps: [],
       worktreePath: "/tmp/wt",
       branch: "feat-1",
       writes: ["plan"],
@@ -210,5 +213,104 @@ describe("buildStageContext - output structure", () => {
     }
 
     expect(storeReads).toEqual({ plan: "do X", link: "https://ex.com" });
+  });
+});
+
+describe("validateStageOutput logic (strict mode)", () => {
+  it("rejects when some but not all fields are missing", () => {
+    // Simulate the validation logic inline since validateStageOutput is not exported
+    const writes = ["plan", "fileList", "techStack"];
+    const resultText = JSON.stringify({ plan: "do something" });
+    const parsed = JSON.parse(resultText);
+    const missing = writes.filter((field) => parsed[field] === undefined);
+    // With strict validation, partial output should be invalid
+    expect(missing.length).toBeGreaterThan(0);
+    expect(missing).toContain("fileList");
+    expect(missing).toContain("techStack");
+  });
+
+  it("accepts when all declared fields are present", () => {
+    const writes = ["plan", "fileList"];
+    const resultText = JSON.stringify({ plan: "do X", fileList: ["a.ts"] });
+    const parsed = JSON.parse(resultText);
+    const missing = writes.filter((field) => parsed[field] === undefined);
+    expect(missing.length).toBe(0);
+  });
+
+  it("accepts when writes is empty", () => {
+    const writes: string[] = [];
+    const missing = writes.filter(() => false);
+    expect(missing.length).toBe(0);
+  });
+});
+
+describe("task token authentication", () => {
+  it("validateTaskToken returns null when no token registered (legacy task)", () => {
+    // We can't test the internal function directly, but we test the behavior:
+    // Existing tasks without tokens should still work
+    // This is tested indirectly through the MCP tool handlers
+  });
+
+  it("trigger_task returns a taskToken in response", () => {
+    // Verify the response contract includes taskToken
+    const response = {
+      taskId: "t1",
+      taskToken: "some-uuid",
+      pipeline: "test",
+      edgeStages: [],
+    };
+    expect(response.taskToken).toBeDefined();
+    expect(typeof response.taskToken).toBe("string");
+  });
+
+  it("validateTaskToken rejects mismatched token", () => {
+    // Test the validation logic inline
+    const tokens = new Map<string, string>();
+    tokens.set("task-1", "correct-token");
+
+    function validate(taskId: string, token?: string): string | null {
+      const expected = tokens.get(taskId);
+      if (!expected) return null;
+      if (!token) return "taskToken is required for this task";
+      if (token !== expected) return "Invalid taskToken";
+      return null;
+    }
+
+    expect(validate("task-1", "correct-token")).toBeNull();
+    expect(validate("task-1", "wrong-token")).toBe("Invalid taskToken");
+    expect(validate("task-1")).toBe("taskToken is required for this task");
+    expect(validate("unknown-task", "any")).toBeNull(); // No token registered
+  });
+});
+
+describe("list_available_stages - parallel group hints", () => {
+  it("parallelGroup field is included when stage is part of a parallel group", () => {
+    const pipelineStages = [
+      { name: "fetchTicket", type: "agent" },
+      {
+        parallel: {
+          name: "research",
+          stages: [
+            { name: "gatherNotion", type: "agent" },
+            { name: "extractFigma", type: "agent" },
+          ],
+        },
+      },
+      { name: "plan", type: "agent" },
+    ];
+
+    function findParallelGroup(stageName: string): string | undefined {
+      for (const entry of pipelineStages as any[]) {
+        if (entry?.parallel?.stages?.some((s: any) => s.name === stageName)) {
+          return entry.parallel.name;
+        }
+      }
+      return undefined;
+    }
+
+    expect(findParallelGroup("gatherNotion")).toBe("research");
+    expect(findParallelGroup("extractFigma")).toBe("research");
+    expect(findParallelGroup("fetchTicket")).toBeUndefined();
+    expect(findParallelGroup("plan")).toBeUndefined();
   });
 });

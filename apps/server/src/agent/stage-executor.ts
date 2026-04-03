@@ -11,11 +11,11 @@ import { loadMcpRegistry, buildMcpFromRegistry } from "../lib/config/mcp.js";
 import { buildTier1Context } from "./context-builder.js";
 import { queryGemini } from "./gemini-executor.js";
 import { type AgentResult, type AgentQuery } from "./query-tracker.js";
-import { buildSystemAppendPrompt, buildEffectivePrompt } from "./prompt-builder.js";
+import { buildSystemAppendPrompt, buildEffectivePrompt, buildStaticPromptPrefix } from "./prompt-builder.js";
 import { buildQueryOptions } from "./query-options-builder.js";
 import { processAgentStream } from "./stream-processor.js";
 import { outputSchemaToJsonSchema } from "./output-schema.js";
-import { createAskUserQuestionInterceptor, createSpecAuditHook } from "./executor-hooks.js";
+import { createAskUserQuestionInterceptor, createSpecAuditHook, createPathRestrictionHook } from "./executor-hooks.js";
 
 function createSSEMessage(taskId: string, type: SSEMessage["type"], data: unknown): SSEMessage {
   return { type, taskId, timestamp: new Date().toISOString(), data };
@@ -92,6 +92,16 @@ export async function executeStage(
 
   const effectiveTier1 = buildTier1Context(context, runtime);
 
+  // Check for previous checkpoint from interrupted execution
+  const checkpoint = context.stageCheckpoints?.[stageName];
+  const MAX_CHECKPOINT_CHARS = 4000;
+  const checkpointRaw = checkpoint
+    ? (typeof checkpoint === "string" ? checkpoint : JSON.stringify(checkpoint, null, 2))
+    : "";
+  const checkpointContext = checkpointRaw
+    ? `\n\n## Previous Progress (from interrupted execution)\nYou were previously working on this stage but were interrupted. Here is your partial progress:\n${checkpointRaw.length > MAX_CHECKPOINT_CHARS ? checkpointRaw.slice(0, MAX_CHECKPOINT_CHARS) + "\n... [truncated]" : checkpointRaw}\n\nContinue from where you left off. Do not redo completed work.`
+    : "";
+
   const mcpServices = stageConfig.mcpServices as string[];
   if (mcpServices.length > 0) {
     sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_progress", {
@@ -106,10 +116,11 @@ export async function executeStage(
     taskId, stageName, enabledSteps, runtime, privateConfig,
     stageConfig: { ...stageConfig, mcpServices }, cwd,
   });
+  const staticPromptPrefix = buildStaticPromptPrefix(privateConfig, stageConfig.engine);
 
   const canResume = !!resumeSessionId;
   const effectivePrompt = buildEffectivePrompt({
-    isResume, resumeSync, resumePrompt, tier1Context: effectiveTier1, prompt, canResume,
+    isResume, resumeSync, resumePrompt, tier1Context: effectiveTier1 + checkpointContext, prompt, canResume,
   });
 
   let agentQuery: AgentQuery;
@@ -149,6 +160,15 @@ export async function executeStage(
       hooks.PreToolUse = [{ hooks: [createSpecAuditHook(taskId, specFiles)] }];
     }
 
+    // Path restriction hooks (safety paths + pipeline sandbox config)
+    const sandboxFs = (privateConfig?.sandbox ?? settings.sandbox)?.filesystem;
+    const pathHook = createPathRestrictionHook(
+      sandboxFs?.allow_write,
+      sandboxFs?.deny_write,
+    );
+    if (!hooks.PreToolUse) hooks.PreToolUse = [];
+    hooks.PreToolUse.push({ hooks: [pathHook] });
+
     const pipelineStage = privateConfig?.pipeline?.stages
       ? flattenStages(privateConfig.pipeline.stages).find((s) => s.name === stageName)
       : undefined;
@@ -160,7 +180,7 @@ export async function executeStage(
     const sandboxConfig = privateConfig?.sandbox ?? settings.sandbox;
 
     const options = buildQueryOptions({
-      taskId, stageName, appendPrompt, stageConfig, sandboxConfig,
+      taskId, stageName, appendPrompt, staticPromptPrefix, stageConfig, sandboxConfig,
       hooks, localMcp, claudePath, cwd, resumeSessionId, interactive,
       canUseTool: interactive ? createAskUserQuestionInterceptor(taskId) : undefined,
       outputFormat,

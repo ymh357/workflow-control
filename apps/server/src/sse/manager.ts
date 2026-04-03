@@ -24,8 +24,23 @@ class SSEManager {
   private cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
   // taskId -> programmatic listeners (for edge events SSE)
   private listeners = new Map<string, Set<SSEListener>>();
+  // Periodic cleanup of closed connections (prevents leak when pushMessage not called)
+  private cleanupInterval: ReturnType<typeof setInterval>;
   // Prepared statement cache
   private insertStmt: StatementSync | undefined;
+
+  constructor() {
+    this.cleanupInterval = setInterval(() => {
+      for (const [taskId, conns] of this.connections) {
+        const active = conns.filter(c => !c.closed);
+        if (active.length === 0) {
+          this.connections.delete(taskId);
+        } else {
+          this.connections.set(taskId, active);
+        }
+      }
+    }, 60_000);
+  }
 
   private getInsertStmt() {
     if (!this.insertStmt) {

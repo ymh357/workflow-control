@@ -43,3 +43,77 @@ export function createSpecAuditHook(taskId: string, specFiles: string[]) {
     return { decision: "approve" as const };
   };
 }
+
+const ALWAYS_DENY_PATTERNS = [
+  "/.git/",
+  "/node_modules/",
+  "/.claude/",
+];
+
+// Match real .env secret files: .env, .env.local, .env.production, .env.development.local
+// Allow: .envrc, .environment, .env.example, .env.template, .env.sample
+const ENV_SAFE_SUFFIXES = [".example", ".template", ".sample", ".defaults"];
+
+function isSensitiveEnvFile(filePath: string): boolean {
+  const basename = filePath.split("/").pop() ?? "";
+  if (basename === ".env") return true;
+  if (!basename.startsWith(".env.")) return false;
+  return !ENV_SAFE_SUFFIXES.some(s => basename.endsWith(s));
+}
+
+export function createPathRestrictionHook(allowPaths?: string[], denyPaths?: string[]) {
+  return async (input: HookInput): Promise<HookJSONOutput> => {
+    const toolName = (input as Record<string, unknown>).tool_name as string;
+    const toolInput = (input as Record<string, unknown>).tool_input as Record<string, unknown>;
+
+    if (toolName !== "Write" && toolName !== "Edit") {
+      return { decision: "approve" as const };
+    }
+
+    const filePath = String(toolInput?.file_path ?? "");
+    if (!filePath) return { decision: "approve" as const };
+
+    // Always deny sensitive paths (like Claude Code's safety paths)
+    for (const pattern of ALWAYS_DENY_PATTERNS) {
+      if (filePath.includes(pattern)) {
+        return {
+          decision: "block" as const,
+          reason: `Write to "${filePath}" blocked — matches protected pattern "${pattern}". This restriction cannot be bypassed.`,
+        };
+      }
+    }
+
+    // Check .env files with precise matching
+    if (isSensitiveEnvFile(filePath)) {
+      return {
+        decision: "block" as const,
+        reason: `Write to "${filePath}" blocked — environment files are protected. This restriction cannot be bypassed.`,
+      };
+    }
+
+    // Check explicit deny paths from pipeline config
+    if (denyPaths?.length) {
+      for (const dp of denyPaths) {
+        if (filePath.includes(dp)) {
+          return {
+            decision: "block" as const,
+            reason: `Write to "${filePath}" blocked — path matches deny rule "${dp}".`,
+          };
+        }
+      }
+    }
+
+    // Check allow paths — if specified, only paths matching are allowed
+    if (allowPaths?.length) {
+      const allowed = allowPaths.some(ap => filePath.includes(ap));
+      if (!allowed) {
+        return {
+          decision: "block" as const,
+          reason: `Write to "${filePath}" blocked — path not in allowed list: ${allowPaths.join(", ")}.`,
+        };
+      }
+    }
+
+    return { decision: "approve" as const };
+  };
+}

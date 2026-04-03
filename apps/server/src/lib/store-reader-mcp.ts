@@ -68,9 +68,24 @@ export function createStoreReaderMcp(store: Record<string, unknown>) {
           }
 
           if (serialized.length > MAX_VALUE_BYTES) {
-            serialized =
-              serialized.slice(0, MAX_VALUE_BYTES) +
-              `\n\n... [truncated — value is ${serialized.length} bytes, showing first ${MAX_VALUE_BYTES}]`;
+            // Truncate at line boundary to avoid breaking JSON structure
+            const truncated = serialized.slice(0, MAX_VALUE_BYTES);
+            const lastNl = truncated.lastIndexOf("\n");
+            const cutPoint = lastNl > MAX_VALUE_BYTES * 0.5 ? lastNl : MAX_VALUE_BYTES;
+
+            // For objects/arrays, prepend a structural summary
+            let summary = "";
+            if (typeof value === "object" && value !== null) {
+              if (Array.isArray(value)) {
+                summary = `Array with ${value.length} items.\n`;
+              } else {
+                const keys = Object.keys(value);
+                summary = `Object with ${keys.length} keys: [${keys.slice(0, 30).join(", ")}${keys.length > 30 ? ", ..." : ""}]\nUse dot notation (e.g., "${path}.${keys[0]}") to read specific fields.\n`;
+              }
+            }
+
+            serialized = summary + "--- Preview (first " + cutPoint + " bytes) ---\n" + serialized.slice(0, cutPoint) +
+              `\n\n... [truncated — full value is ${serialized.length} bytes]`;
           }
 
           return {

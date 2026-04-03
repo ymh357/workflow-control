@@ -15,7 +15,7 @@ vi.mock("../lib/question-manager.js", () => ({
   },
 }));
 
-import { createAskUserQuestionInterceptor, createSpecAuditHook } from "./executor-hooks.js";
+import { createAskUserQuestionInterceptor, createSpecAuditHook, createPathRestrictionHook } from "./executor-hooks.js";
 import { questionManager } from "../lib/question-manager.js";
 
 const mockAsk = vi.mocked(questionManager.ask);
@@ -147,5 +147,106 @@ describe("createSpecAuditHook", () => {
     const hook = createSpecAuditHook("task-1", ["spec.md"]);
     const result = await hook({ tool_name: "Write", tool_input: {} } as any);
     expect((result as any).decision).toBe("approve");
+  });
+});
+
+describe("createPathRestrictionHook", () => {
+  it("approves non-Write/Edit tools", async () => {
+    const hook = createPathRestrictionHook();
+    const result = await hook({ tool_name: "Read", tool_input: { file_path: "/foo" } } as any);
+    expect((result as any).decision).toBe("approve");
+  });
+
+  it("blocks writes to .git/ paths", async () => {
+    const hook = createPathRestrictionHook();
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/.git/config" } } as any);
+    expect((result as any).decision).toBe("block");
+    expect((result as any).reason).toContain(".git/");
+  });
+
+  it("blocks writes to .env files", async () => {
+    const hook = createPathRestrictionHook();
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/.env" } } as any);
+    expect((result as any).decision).toBe("block");
+  });
+
+  it("blocks writes to node_modules/", async () => {
+    const hook = createPathRestrictionHook();
+    const result = await hook({ tool_name: "Edit", tool_input: { file_path: "/project/node_modules/pkg/index.js" } } as any);
+    expect((result as any).decision).toBe("block");
+  });
+
+  it("blocks writes matching explicit denyPaths", async () => {
+    const hook = createPathRestrictionHook(undefined, ["/secrets/", "/credentials/"]);
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/secrets/key.pem" } } as any);
+    expect((result as any).decision).toBe("block");
+    expect((result as any).reason).toContain("/secrets/");
+  });
+
+  it("blocks writes outside allowPaths when specified", async () => {
+    const hook = createPathRestrictionHook(["src/", "tests/"]);
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/config/app.yaml" } } as any);
+    expect((result as any).decision).toBe("block");
+    expect((result as any).reason).toContain("not in allowed list");
+  });
+
+  it("allows writes inside allowPaths", async () => {
+    const hook = createPathRestrictionHook(["src/", "tests/"]);
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/src/main.ts" } } as any);
+    expect((result as any).decision).toBe("approve");
+  });
+
+  it("always blocks .git/ even when in allowPaths", async () => {
+    const hook = createPathRestrictionHook(["/"]);
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/.git/config" } } as any);
+    expect((result as any).decision).toBe("block");
+  });
+
+  it("approves when no restrictions configured and path is normal", async () => {
+    const hook = createPathRestrictionHook();
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/src/app.ts" } } as any);
+    expect((result as any).decision).toBe("approve");
+  });
+
+  it("approves when file_path is empty", async () => {
+    const hook = createPathRestrictionHook(["src/"]);
+    const result = await hook({ tool_name: "Write", tool_input: {} } as any);
+    expect((result as any).decision).toBe("approve");
+  });
+
+  it("allows writes to .envrc (direnv config)", async () => {
+    const hook = createPathRestrictionHook();
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/.envrc" } } as any);
+    expect((result as any).decision).toBe("approve");
+  });
+
+  it("blocks writes to .env.local", async () => {
+    const hook = createPathRestrictionHook();
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/.env.local" } } as any);
+    expect((result as any).decision).toBe("block");
+  });
+
+  it("allows writes to .env.example", async () => {
+    const hook = createPathRestrictionHook();
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/.env.example" } } as any);
+    expect((result as any).decision).toBe("approve");
+  });
+
+  it("allows writes to .env.template", async () => {
+    const hook = createPathRestrictionHook();
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/.env.template" } } as any);
+    expect((result as any).decision).toBe("approve");
+  });
+
+  it("blocks writes to .env.production", async () => {
+    const hook = createPathRestrictionHook();
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/.env.production" } } as any);
+    expect((result as any).decision).toBe("block");
+  });
+
+  it("blocks writes to .env.development.local", async () => {
+    const hook = createPathRestrictionHook();
+    const result = await hook({ tool_name: "Write", tool_input: { file_path: "/project/.env.development.local" } } as any);
+    expect((result as any).decision).toBe("block");
   });
 });

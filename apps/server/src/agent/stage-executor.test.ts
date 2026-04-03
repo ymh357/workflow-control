@@ -73,6 +73,7 @@ vi.mock("./prompt-builder.js", () => ({
     if (isResume && resumePrompt) return `RESUME: ${resumePrompt}`;
     return "effective-prompt";
   }),
+  buildStaticPromptPrefix: vi.fn(() => ""),
 }));
 
 vi.mock("./query-options-builder.js", () => ({
@@ -95,6 +96,7 @@ vi.mock("./output-schema.js", () => ({
 vi.mock("./executor-hooks.js", () => ({
   createAskUserQuestionInterceptor: vi.fn(() => vi.fn()),
   createSpecAuditHook: vi.fn(() => vi.fn()),
+  createPathRestrictionHook: vi.fn(() => vi.fn()),
 }));
 
 vi.mock("../machine/actor-registry.js", () => ({
@@ -316,5 +318,52 @@ describe("executeStage - gemini cwd propagation", () => {
 
     // effectiveCwd from gemini query (/tmp/gemini-cwd) should override cwd
     expect(result.cwd).toBe("/tmp/gemini-cwd");
+  });
+});
+
+describe("executeStage - checkpoint injection", () => {
+  it("injects checkpoint context when stageCheckpoints has data for the stage", async () => {
+    const ctx = makeContext({
+      stageCheckpoints: {
+        build: { partialResult: "started implementing feature X" },
+      },
+    });
+    await executeStage("task-1", "build", "do stuff", "stage-prompt", {
+      injectedContext: ctx,
+    });
+
+    expect(buildEffectivePrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tier1Context: expect.stringContaining("Previous Progress"),
+      }),
+    );
+  });
+
+  it("does not inject checkpoint when stageCheckpoints is empty", async () => {
+    const ctx = makeContext({
+      stageCheckpoints: {},
+    });
+    await executeStage("task-1", "build", "do stuff", "stage-prompt", {
+      injectedContext: ctx,
+    });
+
+    expect(buildEffectivePrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tier1Context: expect.not.stringContaining("Previous Progress"),
+      }),
+    );
+  });
+
+  it("does not inject checkpoint when stageCheckpoints is undefined", async () => {
+    const ctx = makeContext();
+    await executeStage("task-1", "build", "do stuff", "stage-prompt", {
+      injectedContext: ctx,
+    });
+
+    expect(buildEffectivePrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tier1Context: "tier1-context",
+      }),
+    );
   });
 });

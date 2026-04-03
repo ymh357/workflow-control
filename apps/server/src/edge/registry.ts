@@ -1,8 +1,8 @@
+import { randomUUID } from "node:crypto";
 import type { AgentResult } from "../agent/query-tracker.js";
 import { taskLogger } from "../lib/logger.js";
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-let nonceCounter = 0;
 
 export interface EdgeSlotInfo {
   taskId: string;
@@ -71,7 +71,7 @@ export function createSlot(taskId: string, stageName: string, timeoutMs = DEFAUL
     slots.delete(key);
   }
 
-  const nonce = `${Date.now()}-${++nonceCounter}`;
+  const nonce = randomUUID();
 
   return new Promise<AgentResult>((resolve, reject) => {
     const timeoutTimer = setTimeout(() => {

@@ -682,6 +682,31 @@ describe("SSEManager", () => {
     });
   });
 
+  describe("periodic cleanup interval", () => {
+    it("cleans up closed connections even without pushMessage", async () => {
+      vi.useFakeTimers();
+
+      const taskId = "periodic-cleanup";
+      const stream = sseManager.createStream(taskId);
+      const reader = stream.getReader();
+
+      await reader.cancel();
+
+      // Before interval fires, closed connections may still be in the map
+      // After 60 seconds, periodic cleanup runs
+      vi.advanceTimersByTime(60_000);
+
+      // Should be able to create 10 streams (all old ones cleaned up)
+      for (let i = 0; i < 10; i++) {
+        sseManager.createStream(taskId);
+      }
+      expect(() => sseManager.createStream(taskId)).toThrow(/Too many connections/);
+
+      sseManager.closeStream(taskId);
+      vi.useRealTimers();
+    });
+  });
+
   describe("removeClosedConnections", () => {
     it("filters active vs closed connections correctly", async () => {
       const taskId = "remove-closed";
