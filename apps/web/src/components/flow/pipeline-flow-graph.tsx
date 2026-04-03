@@ -1,12 +1,17 @@
 "use client";
 
-import { useMemo, useCallback } from "react";
+import { useMemo, useCallback, useImperativeHandle, forwardRef } from "react";
 import { ReactFlow, Background, MiniMap, MarkerType } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import type { PipelineStageEntry } from "@/lib/pipeline-types";
 import type { StageCostInfo, StageNodeData } from "./types";
 import { buildPipelineGraph } from "./graph-builder";
 import { nodeTypes, edgeTypes } from "./node-types";
+import { exportPipelineSvg } from "./svg-exporter";
+
+export interface PipelineFlowGraphHandle {
+  exportSvg: () => string;
+}
 
 export interface PipelineFlowGraphProps {
   entries: PipelineStageEntry[];
@@ -27,7 +32,7 @@ const defaultEdgeOptions = {
   markerEnd: { type: MarkerType.ArrowClosed, width: 14, height: 14, color: "#52525b" },
 };
 
-const PipelineFlowGraph = ({
+const PipelineFlowGraph = forwardRef<PipelineFlowGraphHandle, PipelineFlowGraphProps>(({
   entries,
   mode,
   selectedStageName,
@@ -37,7 +42,7 @@ const PipelineFlowGraph = ({
   onStageClick,
   compact = false,
   className,
-}: PipelineFlowGraphProps) => {
+}, ref) => {
   const { nodes, edges } = useMemo(
     () =>
       buildPipelineGraph({
@@ -50,6 +55,10 @@ const PipelineFlowGraph = ({
       }),
     [entries, mode, currentStatus, stageCosts, selectedStageName, compact],
   );
+
+  useImperativeHandle(ref, () => ({
+    exportSvg: () => exportPipelineSvg(nodes, edges),
+  }), [nodes, edges]);
 
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: { id: string; data: Record<string, unknown> }) => {
@@ -106,6 +115,8 @@ const PipelineFlowGraph = ({
       </ReactFlow>
     </div>
   );
-};
+});
+
+PipelineFlowGraph.displayName = "PipelineFlowGraph";
 
 export default PipelineFlowGraph;

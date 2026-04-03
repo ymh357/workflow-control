@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, useEffect, useCallback } from "react";
+import React, { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useTranslations } from "next-intl";
 import StageCard, { ParallelGroupCard, isParallelGroup, flattenStageEntries } from "./stage-card";
 import type { StageEntry, ParallelGroup } from "./stage-card";
@@ -8,6 +8,7 @@ import StageDetail from "./stage-detail";
 import GlobalEditor from "./global-editor";
 import ValidationBar from "./validation-bar";
 import PipelineVisualizer from "./pipeline-visualizer";
+import type { PipelineFlowGraphHandle } from "./pipeline-visualizer";
 import CodeEditor from "@/components/code-editor";
 import type { FragmentMeta, StageOutputSchema, PipelineStageEntry } from "@/lib/pipeline-types";
 import type { Stage } from "./stage-card";
@@ -250,6 +251,7 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
   const [showTemplateMenu, setShowTemplateMenu] = useState(false);
   const [showPipelineSettings, setShowPipelineSettings] = useState(false);
   const [showVisualizer, setShowVisualizer] = useState(false);
+  const visualizerRef = useRef<PipelineFlowGraphHandle>(null);
   const [discardConfirm, setDiscardConfirm] = useState(false);
   const [scripts, setScripts] = useState<ScriptMetadata[]>([]);
   const [availablePipelines, setAvailablePipelines] = useState<Array<{ id: string; name: string; description?: string; stageCount?: number }>>([]);
@@ -1030,10 +1032,30 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
         <div className="fixed inset-0 z-50 bg-zinc-950 flex flex-col">
           <div className="flex items-center justify-between px-5 py-3 border-b border-zinc-800 shrink-0">
             <h3 className="text-sm font-bold text-zinc-100">{t("pipelineFlow")}</h3>
-            <button onClick={() => setShowVisualizer(false)} className="h-7 w-7 flex items-center justify-center rounded-full bg-zinc-800 text-zinc-400 hover:text-white text-sm">&times;</button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  const svg = visualizerRef.current?.exportSvg();
+                  if (!svg) return;
+                  const blob = new Blob([svg], { type: "image/svg+xml" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = `${(draft.pipeline as { name?: string }).name ?? "pipeline"}.svg`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                className="h-7 px-2.5 flex items-center gap-1.5 rounded bg-zinc-800 text-zinc-400 hover:text-white text-xs border border-zinc-700 hover:border-zinc-600"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
+                SVG
+              </button>
+              <button onClick={() => setShowVisualizer(false)} className="h-7 w-7 flex items-center justify-center rounded-full bg-zinc-800 text-zinc-400 hover:text-white text-sm">&times;</button>
+            </div>
           </div>
           <div className="flex-1 min-h-0">
             <PipelineVisualizer
+              ref={visualizerRef}
               pipeline={draft.pipeline as unknown as { name: string; stages: PipelineStageEntry[] }}
               selectedStageName={selectedStage?.name}
               onNodeClick={(stageName, entryIndex) => {
