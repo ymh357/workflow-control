@@ -7,6 +7,7 @@ import { buildSystemAppendPrompt, buildStaticPromptPrefix } from "../agent/promp
 import { extractJSON } from "../lib/json-extractor.js";
 import { sseManager } from "../sse/manager.js";
 import { getNestedValue, listAvailablePipelines, flattenStages } from "../lib/config-loader.js";
+import { TERMINAL_STATES } from "../machine/types.js";
 import type { WorkflowContext } from "../machine/types.js";
 import type { AgentRuntimeConfig, PipelineStageConfig } from "../lib/config-loader.js";
 import type { SSEMessage } from "../types/index.js";
@@ -242,7 +243,36 @@ export function createEdgeMcpServer(): McpServer {
 
       taskLogger(taskId).info({ stageName }, "Edge agent submitted stage result via MCP");
 
-      return textResult(JSON.stringify({ ok: true, completed: stageName }, null, 2));
+      // Build enriched response with pipeline progress and next-action directive.
+      // This is the primary mechanism to keep the MCP client looping — tool results
+      // are more strongly followed than system prompts from thousands of tokens ago.
+      const postCtx = getTaskContext(taskId);
+      const allStages = postCtx?.config?.pipeline?.stages ? flattenStages(postCtx.config.pipeline.stages) : [];
+      const completedStages = Object.keys(postCtx?.stageTokenUsages ?? {}).length;
+      const progress = `${completedStages}/${allStages.length}`;
+      const isTerminal = postCtx ? TERMINAL_STATES.has(postCtx.status) : false;
+
+      let nextAction: string;
+      let instruction: string;
+      if (isTerminal && postCtx?.status === "completed") {
+        nextAction = "PIPELINE_COMPLETE";
+        instruction = "All stages completed. Call get_task_status to get final results and report to the user.";
+      } else if (isTerminal) {
+        nextAction = "PIPELINE_TERMINATED";
+        instruction = `Pipeline reached terminal state: ${postCtx?.status}. Call get_task_status for details.`;
+      } else {
+        nextAction = "CONTINUE_PIPELINE";
+        instruction = "Stage submitted. Call list_available_stages RIGHT NOW to pick up the next stage. The pipeline is NOT finished — do NOT stop.";
+      }
+
+      return textResult(JSON.stringify({
+        ok: true,
+        completed: stageName,
+        nextAction,
+        instruction,
+        pipelineProgress: progress,
+        taskStatus: postCtx?.status ?? "unknown",
+      }, null, 2));
     },
   );
 
@@ -459,7 +489,18 @@ export function createEdgeMcpServer(): McpServer {
 
       taskLogger(taskId).info({ decision, gateStageName, reason, feedback }, "Gate decision submitted via edge MCP");
 
-      return textResult(JSON.stringify({ ok: true, decision, gate: gateStageName }, null, 2));
+      const gateNextAction = decision === "approve" ? "CONTINUE_PIPELINE" : "WAIT_FOR_RETRY";
+      const gateInstruction = decision === "approve"
+        ? "Gate approved. Call list_available_stages RIGHT NOW to pick up the next stage. Do NOT stop."
+        : "Gate rejected — the pipeline is re-running a previous stage. Call get_task_status in a few seconds to check progress, then call list_available_stages when a new stage is ready. Do NOT stop.";
+
+      return textResult(JSON.stringify({
+        ok: true,
+        decision,
+        gate: gateStageName,
+        nextAction: gateNextAction,
+        instruction: gateInstruction,
+      }, null, 2));
     },
   );
 

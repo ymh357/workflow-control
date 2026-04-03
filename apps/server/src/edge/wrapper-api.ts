@@ -1,7 +1,9 @@
 import { Hono } from "hono";
 import { getTaskSlots, addSlotListener, addTaskTerminationListener } from "./registry.js";
 import { getTaskContext } from "../actions/task-actions.js";
+import { getAllWorkflows } from "../machine/actor-registry.js";
 import { flattenStages } from "../lib/config-loader.js";
+import { TERMINAL_STATES } from "../machine/types.js";
 import { questionManager } from "../lib/question-manager.js";
 import { sseManager } from "../sse/manager.js";
 import type { SSEMessage } from "../types/index.js";
@@ -21,8 +23,7 @@ export function buildWrapperRoute(): Hono {
     }
 
     // Check terminal states
-    const terminalStates = ["completed", "blocked", "cancelled"];
-    if (terminalStates.includes(ctx.status)) {
+    if (TERMINAL_STATES.has(ctx.status)) {
       return c.json({ done: true, status: ctx.status });
     }
 
@@ -92,6 +93,29 @@ export function buildWrapperRoute(): Hono {
       interrupted,
       reason: interrupted ? (ctx.error ?? ctx.status) : undefined,
     });
+  });
+
+  // GET /api/edge/_active-pipeline
+  // Returns the first non-terminal task, or { isTerminal: true } if none.
+  // Used by the stop hook to detect if any pipeline is still running.
+  // Prefixed with _ to avoid collision with /:taskId param routes.
+  route.get("/_active-pipeline", (c) => {
+    for (const [taskId, actor] of getAllWorkflows()) {
+      const snapshot = actor.getSnapshot();
+      const ctx = snapshot.context;
+      if (!TERMINAL_STATES.has(ctx.status)) {
+        const stages = ctx.config?.pipeline?.stages ? flattenStages(ctx.config.pipeline.stages) : [];
+        const completedStages = Object.keys(ctx.stageTokenUsages ?? {}).length;
+        return c.json({
+          isTerminal: false,
+          taskId,
+          status: ctx.status,
+          progress: `${completedStages}/${stages.length}`,
+          pipelineName: ctx.config?.pipelineName ?? "unknown",
+        });
+      }
+    }
+    return c.json({ isTerminal: true });
   });
 
   // POST /api/edge/:taskId/stream-event

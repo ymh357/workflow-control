@@ -55,3 +55,6 @@ export type WorkflowEvent =
   | { type: "SYNC_RETRY"; sessionId: string }
   | { type: "CANCEL" }
   | { type: "RESUME" };
+
+/** Terminal workflow states — no further stage transitions will occur. */
+export const TERMINAL_STATES = new Set(["completed", "error", "cancelled", "blocked"]);

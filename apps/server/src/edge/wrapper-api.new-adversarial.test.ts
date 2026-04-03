@@ -4,12 +4,17 @@ import { Hono } from "hono";
 // --- Mocks (same pattern as existing test files) ---
 
 vi.mock("../lib/logger.js", () => ({
+  logger: { child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }) },
   taskLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),
     error: vi.fn(),
     debug: vi.fn(),
   }),
+}));
+
+vi.mock("../machine/actor-registry.js", () => ({
+  getAllWorkflows: vi.fn(() => new Map()),
 }));
 
 const mockGetTaskContext = vi.fn();

@@ -199,6 +199,41 @@ function injectClaudeMd(worktreePath: string, globalFileName?: string): void {
   log.info("CLAUDE.md merged with global standards");
 }
 
+function injectStopHook(worktreePath: string): void {
+  const hookScript = join(CONFIG_DIR, "stop-hook-workflow.sh");
+  if (!existsSync(hookScript)) {
+    log.info("stop-hook-workflow.sh not found, skipping stop hook injection");
+    return;
+  }
+
+  const settingsPath = join(worktreePath, ".claude", "settings.json");
+  let settings: Record<string, unknown> = {};
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, "utf-8")); } catch { /* start fresh */ }
+  }
+
+  const hooks = (settings.hooks ?? {}) as Record<string, unknown[]>;
+  const existingStop = (hooks.Stop ?? []) as Array<{ hooks?: Array<{ command?: string }> }>;
+  if (existingStop.some(rule => rule.hooks?.some(h => h.command?.includes("stop-hook-workflow")))) {
+    log.info("Stop hook already present, skipping");
+    return;
+  }
+
+  if (!hooks.Stop) hooks.Stop = [];
+  (hooks.Stop as unknown[]).push({
+    hooks: [{
+      type: "command",
+      command: `bash ${hookScript}`,
+      timeout: 5,
+    }],
+  });
+  settings.hooks = hooks;
+
+  mkdirSync(join(worktreePath, ".claude"), { recursive: true });
+  writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+  log.info("Stop hook injected into worktree .claude/settings.json");
+}
+
 function injectCodexMd(worktreePath: string, globalFileName?: string): void {
   if (!globalFileName) return;
 
@@ -288,6 +323,12 @@ export function injectWorktreeConfig(worktreePath: string, pipeline?: PipelineCo
     injectCodexMd(worktreePath, config.codex_md?.global);
   } catch (err) {
     log.error({ err }, "CODEX.md injection failed");
+  }
+
+  try {
+    injectStopHook(worktreePath);
+  } catch (err) {
+    log.error({ err }, "Stop hook injection failed");
   }
 
   try {

@@ -251,6 +251,43 @@ async function main() {
   }
 
   // ============================================================
+  // Install workflow stop hook (project-level .claude/settings.json)
+  // ============================================================
+
+  const projectClaudeDir = join(process.cwd(), ".claude");
+  const projectSettingsPath = join(projectClaudeDir, "settings.json");
+  try {
+    mkdirSync(projectClaudeDir, { recursive: true });
+    let projectSettings: Record<string, unknown> = {};
+    if (existsSync(projectSettingsPath)) {
+      try { projectSettings = JSON.parse(readFileSync(projectSettingsPath, "utf-8")); } catch { /* start fresh */ }
+    }
+    const hooks = (projectSettings.hooks ?? {}) as Record<string, unknown[]>;
+    const stopHookCmd = "bash apps/server/config/stop-hook-workflow.sh";
+    const existingStop = (hooks.Stop ?? []) as Array<{ hooks?: Array<{ command?: string }> }>;
+    const alreadyInstalled = existingStop.some(rule =>
+      rule.hooks?.some(h => h.command?.includes("stop-hook-workflow")),
+    );
+    if (!alreadyInstalled) {
+      if (!hooks.Stop) hooks.Stop = [];
+      (hooks.Stop as unknown[]).push({
+        hooks: [{
+          type: "command",
+          command: stopHookCmd,
+          timeout: 5,
+        }],
+      });
+      projectSettings.hooks = hooks;
+      writeFileSync(projectSettingsPath, JSON.stringify(projectSettings, null, 2) + "\n", "utf-8");
+      console.log("\n  [Stop Hook] Installed workflow continuation hook to " + projectSettingsPath);
+    } else {
+      console.log("\n  [Stop Hook] Already installed.");
+    }
+  } catch {
+    console.log("\n  [Stop Hook] Could not install. Add manually to .claude/settings.json");
+  }
+
+  // ============================================================
   // Run preflight checks
   // ============================================================
 

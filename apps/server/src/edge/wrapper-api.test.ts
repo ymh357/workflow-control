@@ -3,6 +3,7 @@ import { Hono } from "hono";
 
 // --- Mocks ---
 
+const mockChildLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 vi.mock("../lib/logger.js", () => ({
   taskLogger: () => ({
     info: vi.fn(),
@@ -10,6 +11,7 @@ vi.mock("../lib/logger.js", () => ({
     error: vi.fn(),
     debug: vi.fn(),
   }),
+  logger: { child: () => mockChildLogger },
 }));
 
 const mockGetTaskContext = vi.fn();
@@ -37,6 +39,11 @@ vi.mock("./registry.js", () => ({
   getTaskSlots: vi.fn(() => []),
   addSlotListener: vi.fn(() => () => {}),
   addTaskTerminationListener: vi.fn(() => () => {}),
+}));
+
+const mockGetAllWorkflows = vi.fn(() => new Map());
+vi.mock("../machine/actor-registry.js", () => ({
+  getAllWorkflows: () => mockGetAllWorkflows(),
 }));
 
 import { buildWrapperRoute } from "./wrapper-api.js";
