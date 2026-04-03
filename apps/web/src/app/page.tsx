@@ -10,7 +10,7 @@ interface PipelineManifest {
   id: string;
   name: string;
   description?: string;
-  engine: "claude" | "gemini" | "mixed";
+  engine: "claude" | "gemini" | "codex" | "mixed";
   official?: boolean;
 }
 

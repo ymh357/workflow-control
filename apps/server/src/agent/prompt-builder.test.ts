@@ -386,6 +386,29 @@ describe("buildSystemAppendPrompt", () => {
     expect(result).not.toContain("# Project Instructions");
   });
 
+  it("includes codex project instructions when engine is codex", async () => {
+    const result = await buildSystemAppendPrompt({
+      taskId: "t1",
+      stageName: "test",
+      runtime: { engine: "llm" as const, system_prompt: "test" },
+      privateConfig: {
+        prompts: {
+          system: { test: "do stuff" },
+          fragments: {},
+          globalConstraints: "",
+          globalClaudeMd: "claude instructions",
+          globalGeminiMd: "gemini instructions",
+          globalCodexMd: "codex instructions",
+        },
+        pipeline: { stages: [] },
+      },
+      stageConfig: { engine: "codex", mcpServices: [] },
+    } as any);
+    expect(result).toContain("codex instructions");
+    expect(result).not.toContain("claude instructions");
+    expect(result).not.toContain("gemini instructions");
+  });
+
   it("injects globalClaudeMd from privateConfig", async () => {
     const params = {
       ...baseParams,
@@ -491,6 +514,22 @@ describe("buildStaticPromptPrefix", () => {
     const result = buildStaticPromptPrefix(config, "gemini");
     expect(result).toContain("Gemini specific");
     expect(result).not.toContain("Claude specific");
+  });
+
+  it("includes CODEX.md for codex engine", () => {
+    const config = {
+      prompts: {
+        globalConstraints: "",
+        fragments: {},
+        globalClaudeMd: "Claude specific",
+        globalGeminiMd: "Gemini specific",
+        globalCodexMd: "Codex specific",
+      },
+    };
+    const result = buildStaticPromptPrefix(config, "codex");
+    expect(result).toContain("Codex specific");
+    expect(result).not.toContain("Claude specific");
+    expect(result).not.toContain("Gemini specific");
   });
 
   it("returns empty constraints when config is undefined", () => {

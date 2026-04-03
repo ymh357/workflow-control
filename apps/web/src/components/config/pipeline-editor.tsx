@@ -523,6 +523,7 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
           <span className={`text-[11px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border shrink-0 ${
             engine === "claude" ? "text-blue-400 bg-blue-900/20 border-blue-800/50"
               : engine === "gemini" ? "text-purple-400 bg-purple-900/20 border-purple-800/50"
+              : engine === "codex" ? "text-green-400 bg-green-900/20 border-green-800/50"
               : "text-emerald-400 bg-emerald-900/20 border-emerald-800/50"
           }`}>
             {engine}
@@ -585,7 +586,7 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
                 <div className="space-y-1">
                   <label className="text-[11px] font-medium text-zinc-600 block">{t("engine")}</label>
                   <div className="flex gap-1.5">
-                    {(["claude", "gemini", "mixed"] as const).map((eng) => (
+                    {(["claude", "gemini", "codex", "mixed"] as const).map((eng) => (
                       <button
                         key={eng}
                         type="button"
@@ -601,7 +602,9 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
                               ? "bg-blue-900/30 text-blue-400 border border-blue-800/50"
                               : eng === "gemini"
                                 ? "bg-purple-900/30 text-purple-400 border border-purple-800/50"
-                                : "bg-emerald-900/30 text-emerald-400 border border-emerald-800/50"
+                                : eng === "codex"
+                                  ? "bg-green-900/30 text-green-400 border border-green-800/50"
+                                  : "bg-emerald-900/30 text-emerald-400 border border-emerald-800/50"
                             : "text-zinc-600 border border-zinc-800 hover:text-zinc-400"
                         }`}
                       >

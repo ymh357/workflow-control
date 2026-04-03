@@ -709,7 +709,7 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
               )}
               {status === "blocked" && (
                 <div className="text-orange-400">
-                  {tc("resume")}: <span className="select-all">{`${resumeCwd ? `cd ${resumeCwd} && ` : ""}${currentStageEngine === "gemini" ? "gemini" : "claude"} --resume ${task.sessionId}`}</span>
+                  {tc("resume")}: <span className="select-all">{`${resumeCwd ? `cd ${resumeCwd} && ` : ""}${currentStageEngine === "codex" ? `codex exec resume ${task.sessionId}` : `${currentStageEngine === "gemini" ? "gemini" : "claude"} --resume ${task.sessionId}`}`}</span>
                 </div>
               )}
             </div>
@@ -758,9 +758,9 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
                   <summary className="text-zinc-500 cursor-pointer hover:text-zinc-400">{t("debugCli")}</summary>
                   <div className="mt-2 space-y-1">
                     <div className="flex items-center gap-2 rounded border border-orange-800/50 bg-zinc-900 px-3 py-1.5 font-mono text-xs text-orange-300">
-                      <span className="select-all flex-1">{`${resumeCwd ? `cd ${resumeCwd} && ` : ""}${currentStageEngine === "gemini" ? "gemini" : "claude"} --resume ${task.sessionId}`}</span>
+                      <span className="select-all flex-1">{`${resumeCwd ? `cd ${resumeCwd} && ` : ""}${currentStageEngine === "codex" ? `codex exec resume ${task.sessionId}` : `${currentStageEngine === "gemini" ? "gemini" : "claude"} --resume ${task.sessionId}`}`}</span>
                       <button
-                        onClick={() => navigator.clipboard.writeText(`${resumeCwd ? `cd ${resumeCwd} && ` : ""}${currentStageEngine === "gemini" ? "gemini" : "claude"} --resume ${task.sessionId}`)}
+                        onClick={() => navigator.clipboard.writeText(`${resumeCwd ? `cd ${resumeCwd} && ` : ""}${currentStageEngine === "codex" ? `codex exec resume ${task.sessionId}` : `${currentStageEngine === "gemini" ? "gemini" : "claude"} --resume ${task.sessionId}`}`)}
                         className="shrink-0 rounded bg-orange-800/50 px-2 py-0.5 text-[10px] text-orange-200 hover:bg-orange-700/50"
                       >
                         {tc("copy")}

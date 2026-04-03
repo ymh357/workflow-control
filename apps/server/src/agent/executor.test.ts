@@ -77,6 +77,8 @@ function makeContext(overrides?: Partial<WorkflowContext>): WorkflowContext {
         globalConstraints: "",
         globalClaudeMd: "",
         globalGeminiMd: "",
+        globalCodexMd: "",
+        globalCodexMd: "",
       },
       skills: [],
       mcps: [],

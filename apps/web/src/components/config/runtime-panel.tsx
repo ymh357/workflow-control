@@ -6,8 +6,8 @@ import SandboxPanel from "./sandbox-panel";
 import type { SandboxConfig } from "./sandbox-panel";
 
 interface RuntimePanelProps {
-  engine?: "claude" | "gemini";
-  onEngineChange: (engine: "claude" | "gemini") => void;
+  engine?: "claude" | "gemini" | "codex";
+  onEngineChange: (engine: "claude" | "gemini" | "codex") => void;
   agent?: {
     claude_model?: string;
     gemini_model?: string;
@@ -30,6 +30,8 @@ const RuntimePanel = ({
   const t = useTranslations("Config");
   const currentModel = engine === "claude"
     ? (agent?.claude_model || "claude-sonnet-4-20250514")
+    : engine === "codex"
+    ? "codex"
     : (agent?.gemini_model || "auto");
 
   return (
@@ -45,7 +47,7 @@ const RuntimePanel = ({
           <span className="text-[11px] text-zinc-600 font-mono mt-0.5 block">{t("currentModel")} {currentModel}</span>
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-3 gap-4">
           <button
             onClick={() => onEngineChange("claude")}
             disabled={readOnly}
@@ -76,6 +78,22 @@ const RuntimePanel = ({
               {engine === "gemini" && <span className="h-2 w-2 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.5)]" />}
             </div>
             <p className="text-[11px] text-zinc-500 leading-relaxed">{t("geminiCliDesc")}</p>
+          </button>
+
+          <button
+            onClick={() => onEngineChange("codex")}
+            disabled={readOnly}
+            className={`flex flex-col gap-2 p-4 rounded-xl border transition-all text-left ${
+              engine === "codex"
+                ? "bg-green-950/20 border-green-500/50 ring-1 ring-green-500/20"
+                : "bg-zinc-950/50 border-zinc-800 hover:border-zinc-700 opacity-60"
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <span className={`text-xs font-bold ${engine === "codex" ? "text-green-400" : "text-zinc-400"}`}>Codex</span>
+              {engine === "codex" && <span className="h-2 w-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)]" />}
+            </div>
+            <p className="text-[11px] text-zinc-500 leading-relaxed">OpenAI Codex CLI agent</p>
           </button>
         </div>
       </div>

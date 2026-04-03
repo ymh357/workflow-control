@@ -34,11 +34,12 @@ export interface WorkflowContext {
       globalConstraints: string;
       globalClaudeMd: string;
       globalGeminiMd: string;
+      globalCodexMd: string;
     };
     skills: string[];
     mcps: string[];
     sandbox?: SandboxConfig;
-    agent?: { default_engine?: string; claude_model?: string; gemini_model?: string };
+    agent?: { default_engine?: string; claude_model?: string; gemini_model?: string; codex_model?: string };
   };
 }
 

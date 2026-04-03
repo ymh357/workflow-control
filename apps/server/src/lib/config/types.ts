@@ -123,7 +123,7 @@ export interface StageOutputSchema {
 export interface PipelineStageConfig {
   name: string;
   type: "agent" | "script" | "human_confirm" | "condition" | "pipeline" | "foreach";
-  engine?: "claude" | "gemini";
+  engine?: "claude" | "gemini" | "codex";
   model?: string;
   thinking?: { type: string };
   effort?: "low" | "medium" | "high" | "max";
@@ -180,7 +180,7 @@ export function flattenStages(entries: PipelineStageEntry[]): PipelineStageConfi
 export interface PipelineConfig {
   name: string;
   description?: string;
-  engine?: "claude" | "gemini" | "mixed";
+  engine?: "claude" | "gemini" | "codex" | "mixed";
   use_cases?: string[];
   default_execution_mode?: "auto" | "edge";
   official?: boolean;
@@ -189,6 +189,7 @@ export interface PipelineConfig {
   skills?: string[];
   claude_md?: { global?: string };
   gemini_md?: { global?: string };
+  codex_md?: { global?: string };
   display?: { title_path?: string; completion_summary_path?: string };
   integrations?: { notion_page_id_path?: string };
 }
@@ -197,7 +198,7 @@ export interface PipelineManifest {
   id: string;
   name: string;
   description?: string;
-  engine: "claude" | "gemini" | "mixed";
+  engine: "claude" | "gemini" | "codex" | "mixed";
   official?: boolean;
   stageCount?: number;
   totalBudget?: number;
@@ -246,12 +247,14 @@ export interface SystemSettings extends Record<string, any> {
     data_dir?: string;
     claude_executable?: string;
     gemini_executable?: string;
+    codex_executable?: string;
   };
   agent?: {
     default_model?: string; // Legacy
     claude_model?: string;
     gemini_model?: string;
-    default_engine?: "claude" | "gemini";
+    codex_model?: string;
+    default_engine?: "claude" | "gemini" | "codex";
     max_budget_usd?: number;
   };
   sandbox?: SandboxConfig;

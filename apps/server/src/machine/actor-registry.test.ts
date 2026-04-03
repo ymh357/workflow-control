@@ -73,6 +73,8 @@ vi.mock("./workflow-lifecycle.js", () => ({
       globalConstraints: "",
       globalClaudeMd: "",
       globalGeminiMd: "",
+        globalCodexMd: "",
+        globalCodexMd: "",
     },
     skills: [],
     mcps: [],

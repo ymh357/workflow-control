@@ -53,6 +53,15 @@ vi.mock("./gemini-executor.js", () => ({
   })),
 }));
 
+vi.mock("./codex-executor.js", () => ({
+  queryCodex: vi.fn(() => ({
+    effectiveCwd: "/tmp/codex-cwd",
+    [Symbol.asyncIterator]: async function* () { yield { type: "result" }; },
+    interrupt: vi.fn(),
+    close: vi.fn(),
+  })),
+}));
+
 vi.mock("../lib/store-reader-mcp.js", () => ({
   createStoreReaderMcp: vi.fn(() => ({ type: "sdk", name: "__store__" })),
 }));
@@ -105,6 +114,7 @@ vi.mock("../machine/actor-registry.js", () => ({
 
 import { executeStage, type StageOpts } from "./stage-executor.js";
 import { queryGemini } from "./gemini-executor.js";
+import { queryCodex } from "./codex-executor.js";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { buildEffectivePrompt } from "./prompt-builder.js";
 import { processAgentStream } from "./stream-processor.js";
@@ -129,6 +139,8 @@ function makeContext(overrides?: Partial<WorkflowContext>): WorkflowContext {
         globalConstraints: "",
         globalClaudeMd: "",
         globalGeminiMd: "",
+        globalCodexMd: "",
+        globalCodexMd: "",
       },
       skills: [],
       mcps: [],
@@ -365,5 +377,25 @@ describe("executeStage - checkpoint injection", () => {
         tier1Context: "tier1-context",
       }),
     );
+  });
+});
+
+describe("executeStage - codex engine routing", () => {
+  it("routes to queryCodex when stage engine is codex", async () => {
+    const ctx = makeContext({
+      config: {
+        ...makeContext().config!,
+        pipeline: {
+          stages: [{ name: "build", engine: "codex" }],
+        } as any,
+      },
+    });
+    await executeStage("task-1", "build", "do stuff", "stage-prompt", {
+      injectedContext: ctx,
+    });
+
+    expect(queryCodex).toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+    expect(queryGemini).not.toHaveBeenCalled();
   });
 });

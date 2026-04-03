@@ -956,7 +956,7 @@ const StageDetail = ({
                 <div className="grid grid-cols-2 gap-3">
                   <Field label={t("stageEngine")}>
                     <div className="flex gap-1">
-                      {(["claude", "gemini", "inherit"] as const).map((eng) => (
+                      {(["claude", "gemini", "codex", "inherit"] as const).map((eng) => (
                         <button
                           key={eng}
                           type="button"
@@ -968,7 +968,9 @@ const StageDetail = ({
                                 ? "bg-blue-900/30 text-blue-400 border border-blue-800/50"
                                 : eng === "gemini"
                                   ? "bg-purple-900/30 text-purple-400 border border-purple-800/50"
-                                  : "bg-zinc-800 text-zinc-300 border border-zinc-700"
+                                  : eng === "codex"
+                                    ? "bg-green-900/30 text-green-400 border border-green-800/50"
+                                    : "bg-zinc-800 text-zinc-300 border border-zinc-700"
                               : "text-zinc-600 border border-zinc-800 hover:text-zinc-400"
                           }`}
                         >

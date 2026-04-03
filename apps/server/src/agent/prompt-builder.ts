@@ -108,6 +108,9 @@ Rules:
   if (stageConfig.engine === "gemini") {
     const projectGeminiMd = privateConfig?.prompts.globalGeminiMd;
     if (projectGeminiMd) appendParts.push(`# Project Instructions\n${projectGeminiMd}`);
+  } else if (stageConfig.engine === "codex") {
+    const projectCodexMd = privateConfig?.prompts.globalCodexMd;
+    if (projectCodexMd) appendParts.push(`# Project Instructions\n${projectCodexMd}`);
   } else {
     const projectClaudeMd = privateConfig?.prompts.globalClaudeMd;
     if (projectClaudeMd) appendParts.push(`# Project Instructions\n${projectClaudeMd}`);
@@ -139,6 +142,9 @@ export function buildStaticPromptPrefix(privateConfig: any, engine: string): str
   // Project instructions
   if (engine === "gemini") {
     const md = privateConfig?.prompts.globalGeminiMd;
+    if (md) parts.push(`# Project Instructions\n${md}`);
+  } else if (engine === "codex") {
+    const md = privateConfig?.prompts.globalCodexMd;
     if (md) parts.push(`# Project Instructions\n${md}`);
   } else {
     const md = privateConfig?.prompts.globalClaudeMd;

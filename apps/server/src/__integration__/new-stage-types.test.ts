@@ -95,7 +95,9 @@ function makeConfig(pipeline: PipelineConfig): WorkflowContext["config"] {
   return {
     pipelineName: pipeline.name,
     pipeline,
-    prompts: { system: {}, fragments: {}, globalConstraints: "", globalClaudeMd: "", globalGeminiMd: "" },
+    prompts: { system: {}, fragments: {}, globalConstraints: "", globalClaudeMd: "", globalGeminiMd: "",
+        globalCodexMd: "",
+        globalCodexMd: "" },
     skills: [],
     mcps: [],
   };

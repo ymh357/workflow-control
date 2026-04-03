@@ -188,12 +188,12 @@ export function listAvailablePipelines(): PipelineManifest[] {
   return manifests;
 }
 
-function inferPipelineEngine(pipeline: PipelineConfig): "claude" | "gemini" | "mixed" {
+function inferPipelineEngine(pipeline: PipelineConfig): "claude" | "gemini" | "codex" | "mixed" {
   const engines = new Set<string>();
   for (const stage of flattenStages(pipeline.stages)) {
     if (stage.engine) engines.add(stage.engine);
   }
   if (engines.size === 0) return "claude";
-  if (engines.size === 1) return engines.values().next().value as "claude" | "gemini";
+  if (engines.size === 1) return engines.values().next().value as "claude" | "gemini" | "codex";
   return "mixed";
 }

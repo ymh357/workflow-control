@@ -117,6 +117,15 @@ describe("validatePipelineConfig", () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it("accepts codex as a valid pipeline engine", () => {
+    const result = PipelineConfigSchema.safeParse({
+      name: "Test",
+      engine: "codex",
+      stages: [{ name: "s1", type: "agent" }],
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 // ---------- PipelineStageConfigSchema ----------
@@ -181,6 +190,15 @@ describe("PipelineStageConfigSchema", () => {
       notion_label: "Review",
       execution_mode: "edge",
       on_complete: { notify: "slack" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts codex as a valid stage engine", () => {
+    const result = PipelineStageConfigSchema.safeParse({
+      name: "test",
+      type: "agent",
+      engine: "codex",
     });
     expect(result.success).toBe(true);
   });

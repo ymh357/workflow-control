@@ -60,7 +60,7 @@ interface PipelineManifest {
   id: string;
   name: string;
   description?: string;
-  engine: "claude" | "gemini" | "mixed";
+  engine: "claude" | "gemini" | "codex" | "mixed";
   official?: boolean;
   stageCount?: number;
   totalBudget?: number;
@@ -96,7 +96,7 @@ const ConfigPage = () => {
   // AI Generate state
   const [showAiGenerateModal, setShowAiGenerateModal] = useState(false);
   const [aiDescription, setAiDescription] = useState("");
-  const [aiEngine, setAiEngine] = useState<"auto" | "claude" | "gemini">("auto");
+  const [aiEngine, setAiEngine] = useState<"auto" | "claude" | "gemini" | "codex">("auto");
   const [aiPhase, setAiPhase] = useState<"idle" | "generating" | "saving">("idle");
   const [aiResult, setAiResult] = useState<{
     pipelineId: string;
@@ -691,6 +691,7 @@ const ConfigPage = () => {
                         <span className={`text-[11px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border ${
                           p.engine === "claude" ? "text-blue-400 bg-blue-900/20 border-blue-800/50" :
                           p.engine === "gemini" ? "text-purple-400 bg-purple-900/20 border-purple-800/50" :
+                          p.engine === "codex" ? "text-green-400 bg-green-900/20 border-green-800/50" :
                           "text-zinc-400 bg-zinc-800 border-zinc-700"
                         }`}>{p.engine}</span>
                         {p.stageCount != null && (
@@ -908,12 +909,13 @@ const ConfigPage = () => {
                         <label className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest block mb-1">{t("engine")}</label>
                         <select
                           value={aiEngine}
-                          onChange={(e) => setAiEngine(e.target.value as "auto" | "claude" | "gemini")}
+                          onChange={(e) => setAiEngine(e.target.value as "auto" | "claude" | "gemini" | "codex")}
                           className="w-full rounded border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-200 focus:border-emerald-500 focus:outline-none"
                         >
                           <option value="auto">Auto</option>
                           <option value="claude">Claude</option>
                           <option value="gemini">Gemini</option>
+                          <option value="codex">Codex</option>
                         </select>
                       </div>
                     </div>

@@ -166,7 +166,9 @@ describe("machine adversarial tests", () => {
     const initialConfig = {
       pipelineName: "test",
       pipeline: { name: "test", stages: [] },
-      prompts: { system: {}, fragments: {}, globalConstraints: "", globalClaudeMd: "", globalGeminiMd: "" },
+      prompts: { system: {}, fragments: {}, globalConstraints: "", globalClaudeMd: "", globalGeminiMd: "",
+        globalCodexMd: "",
+        globalCodexMd: "" },
       skills: [],
       mcps: [],
     };

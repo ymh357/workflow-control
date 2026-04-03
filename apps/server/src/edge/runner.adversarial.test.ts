@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 // Replicate pure logic from runner.ts for isolated testing (same approach as runner.test.ts)
 
 const DEFAULT_SERVER_URL = "http://localhost:3001";
-type Engine = "claude" | "gemini";
+type Engine = "claude" | "gemini" | "codex";
 
 interface RunnerArgs {
   taskId?: string;
@@ -83,10 +83,13 @@ const KNOWN_CLAUDE_MODELS = [
 const KNOWN_GEMINI_MODELS = [
   "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash",
 ];
+const KNOWN_CODEX_MODELS = [
+  "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3", "o4-mini",
+];
 
 function resolveModelSync(configured: string | undefined, engine: Engine): string | undefined {
   if (!configured) return undefined;
-  const known = engine === "gemini" ? KNOWN_GEMINI_MODELS : KNOWN_CLAUDE_MODELS;
+  const known = engine === "gemini" ? KNOWN_GEMINI_MODELS : engine === "codex" ? KNOWN_CODEX_MODELS : KNOWN_CLAUDE_MODELS;
   if (known.includes(configured)) return configured;
   return configured;
 }

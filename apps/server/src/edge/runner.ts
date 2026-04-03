@@ -24,7 +24,7 @@ const HOOKS_TEMPLATE_PATH = path.resolve(__edgeDir, "../../config/edge-hooks.jso
 const GEMINI_HOOKS_TEMPLATE_PATH = path.resolve(__edgeDir, "../../config/edge-hooks-gemini.json");
 const STAGE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
-type Engine = "claude" | "gemini";
+type Engine = "claude" | "gemini" | "codex";
 
 // --- CLI Argument Parsing ---
 
@@ -430,6 +430,9 @@ const KNOWN_CLAUDE_MODELS = [
 const KNOWN_GEMINI_MODELS = [
   "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash",
 ];
+const KNOWN_CODEX_MODELS = [
+  "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3", "o4-mini",
+];
 
 async function resolveModel(
   configured: string | undefined,
@@ -437,7 +440,7 @@ async function resolveModel(
 ): Promise<string | undefined> {
   if (!configured) return undefined;
 
-  const known = engine === "gemini" ? KNOWN_GEMINI_MODELS : KNOWN_CLAUDE_MODELS;
+  const known = engine === "gemini" ? KNOWN_GEMINI_MODELS : engine === "codex" ? KNOWN_CODEX_MODELS : KNOWN_CLAUDE_MODELS;
   if (known.includes(configured)) return configured;
 
   // Unknown model — prompt user
@@ -486,10 +489,23 @@ async function runStage(
       "When done, call submit_stage_result with your JSON output.",
     ].join(" ");
 
-    const cmd = engine === "gemini" ? "gemini" : findBinary("claude");
+    const cmd = engine === "gemini" ? "gemini" : engine === "codex" ? findBinary("codex") : findBinary("claude");
     const args: string[] = [];
 
-    if (engine === "gemini") {
+    if (engine === "codex") {
+      // No --json: edge runner uses PTY interactive mode, not JSONL parsing
+      args.push("exec");
+      if (model) args.push("--model", model);
+      const permMode = stageOptions?.permission_mode ?? "bypassPermissions";
+      if (permMode === "bypassPermissions") {
+        args.push("--dangerously-bypass-approvals-and-sandbox");
+      } else if (permMode === "plan") {
+        args.push("--sandbox", "read-only");
+      } else {
+        args.push("--full-auto");
+      }
+      args.push(prompt);
+    } else if (engine === "gemini") {
       writeGeminiProjectSettings(serverUrl, process.cwd());
       args.push("--yolo");
       if (model) args.push("--model", model);
@@ -544,6 +560,11 @@ async function runStage(
       if (stageOptions?.effort) warnings.push(`effort: ${stageOptions.effort} (not supported by Gemini CLI)`);
       if (stageOptions?.disallowed_tools?.length) warnings.push(`disallowed_tools (not supported by Gemini CLI, use Policy Engine)`);
       if (stageOptions?.agents && Object.keys(stageOptions.agents).length > 0) warnings.push(`agents (not supported by Gemini CLI)`);
+    }
+    if (engine === "codex") {
+      if (stageOptions?.effort) warnings.push(`effort: ${stageOptions.effort} (not supported by Codex CLI)`);
+      if (stageOptions?.disallowed_tools?.length) warnings.push(`disallowed_tools (not supported by Codex CLI)`);
+      if (stageOptions?.agents && Object.keys(stageOptions.agents).length > 0) warnings.push(`agents (not supported by Codex CLI)`);
     }
     if (warnings.length > 0) {
       console.log(`  Ignored pipeline options (edge mode):`);

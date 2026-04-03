@@ -106,6 +106,11 @@ describe("buildMcpServers", () => {
     expect(result.notion.args).toEqual(["claude-pkg"]);
   });
 
+  it("accepts codex as engine parameter without error", () => {
+    mockLoadMcpRegistry.mockReturnValue(null);
+    expect(() => buildMcpServers([], "codex")).not.toThrow();
+  });
+
   it("builds configs for multiple services from registry", () => {
     mockLoadMcpRegistry.mockReturnValue({
       notion: { command: "npx", args: ["notion-pkg"] },

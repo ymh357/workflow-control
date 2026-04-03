@@ -70,6 +70,8 @@ const mockSnapshotGlobalConfig = vi.fn().mockReturnValue({
     globalConstraints: "",
     globalClaudeMd: "",
     globalGeminiMd: "",
+        globalCodexMd: "",
+        globalCodexMd: "",
   },
   skills: [],
   mcps: [],

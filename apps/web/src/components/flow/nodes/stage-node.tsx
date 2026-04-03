@@ -80,7 +80,7 @@ const StageNode = ({ data }: NodeProps<StageNodeType>) => {
       </div>
       {!compact && data.engine && (
         <div className={`text-[9px] mt-0.5 font-medium uppercase ${
-          data.engine === "claude" ? "text-blue-400" : data.engine === "gemini" ? "text-purple-400" : "text-emerald-400"
+          data.engine === "claude" ? "text-blue-400" : data.engine === "gemini" ? "text-purple-400" : data.engine === "codex" ? "text-green-400" : "text-emerald-400"
         }`}>
           {data.engine}
         </div>

@@ -153,7 +153,7 @@ export const StageOutputSchemaSchema = z.record(
 export const PipelineStageConfigSchema = z.object({
   name: z.string(),
   type: z.enum(["agent", "script", "human_confirm", "condition", "pipeline", "foreach"]),
-  engine: z.enum(["claude", "gemini", "mixed"]).optional(),
+  engine: z.enum(["claude", "gemini", "codex", "mixed"]).optional(),
   model: z.string().optional(),
   thinking: z.object({ type: z.string() }).optional(),
   effort: z.enum(["low", "medium", "high", "max"]).optional(),
@@ -195,7 +195,7 @@ export const PipelineStageEntrySchema = z.union([
 export const PipelineConfigSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
-  engine: z.enum(["claude", "gemini", "mixed"]).optional(),
+  engine: z.enum(["claude", "gemini", "codex", "mixed"]).optional(),
   use_cases: z.array(z.string()).optional(),
   default_execution_mode: z.enum(["auto", "edge"]).optional(),
   official: z.boolean().optional(),
@@ -204,6 +204,7 @@ export const PipelineConfigSchema = z.object({
   skills: z.array(z.string()).optional(),
   claude_md: z.object({ global: z.string().optional() }).optional(),
   gemini_md: z.object({ global: z.string().optional() }).optional(),
+  codex_md: z.object({ global: z.string().optional() }).optional(),
   display: z
     .object({
       title_path: z.string().optional(),
@@ -223,7 +224,7 @@ export const PipelineManifestSchema = z.object({
   id: z.string(),
   name: z.string(),
   description: z.string().optional(),
-  engine: z.enum(["claude", "gemini", "mixed"]),
+  engine: z.enum(["claude", "gemini", "codex", "mixed"]),
   official: z.boolean().optional(),
   stageCount: z.number().optional(),
   totalBudget: z.number().optional(),
@@ -290,6 +291,7 @@ export const SystemSettingsSchema = z
         data_dir: z.string().optional(),
         claude_executable: z.string().optional(),
         gemini_executable: z.string().optional(),
+        codex_executable: z.string().optional(),
       })
       .optional(),
     agent: z
@@ -297,7 +299,8 @@ export const SystemSettingsSchema = z
         default_model: z.string().optional(),
         claude_model: z.string().optional(),
         gemini_model: z.string().optional(),
-        default_engine: z.enum(["claude", "gemini"]).optional(),
+        codex_model: z.string().optional(),
+        default_engine: z.enum(["claude", "gemini", "codex"]).optional(),
         max_budget_usd: z.number().optional(),
       })
       .optional(),

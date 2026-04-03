@@ -44,6 +44,7 @@ export function snapshotGlobalConfig(pipelineName = "pipeline-generator"): NonNu
   // Pipeline-controlled project instructions only — no fallback to global config files
   const globalClaudeMd = pipeline.claude_md?.global ?? "";
   const globalGeminiMd = pipeline.gemini_md?.global ?? "";
+  const globalCodexMd = pipeline.codex_md?.global ?? "";
 
   const settings = loadSystemSettings();
 
@@ -57,6 +58,7 @@ export function snapshotGlobalConfig(pipelineName = "pipeline-generator"): NonNu
       globalConstraints,
       globalClaudeMd,
       globalGeminiMd,
+      globalCodexMd,
     },
     skills: pipeline.skills ?? [],
     mcps: [...pipelineMcps],

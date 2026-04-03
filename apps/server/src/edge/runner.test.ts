@@ -8,7 +8,7 @@ import { parseArgs } from "node:util";
 
 const DEFAULT_SERVER_URL = "http://localhost:3001";
 
-type Engine = "claude" | "gemini";
+type Engine = "claude" | "gemini" | "codex";
 
 interface RunnerArgs {
   taskId?: string;
@@ -75,10 +75,13 @@ const KNOWN_CLAUDE_MODELS = [
 const KNOWN_GEMINI_MODELS = [
   "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash",
 ];
+const KNOWN_CODEX_MODELS = [
+  "gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3", "o4-mini",
+];
 
 function resolveModelSync(configured: string | undefined, engine: Engine): string | undefined {
   if (!configured) return undefined;
-  const known = engine === "gemini" ? KNOWN_GEMINI_MODELS : KNOWN_CLAUDE_MODELS;
+  const known = engine === "gemini" ? KNOWN_GEMINI_MODELS : engine === "codex" ? KNOWN_CODEX_MODELS : KNOWN_CLAUDE_MODELS;
   if (known.includes(configured)) return configured;
   // In non-interactive mode, return as-is
   return configured;
@@ -149,6 +152,11 @@ describe("parseCliArgs", () => {
   it("strips leading -- separators injected by pnpm", () => {
     const args = parseCliArgs(["--", "--", "task-42"]);
     expect(args.taskId).toBe("task-42");
+  });
+
+  it("parses --engine codex", () => {
+    const args = parseCliArgs(["task-1", "--engine", "codex"]);
+    expect(args.engine).toBe("codex");
   });
 
   it("defaults engine to claude when not specified", () => {
@@ -246,6 +254,16 @@ describe("resolveModel", () => {
 
   it("returns unknown model as-is in non-interactive mode", () => {
     expect(resolveModelSync("custom-model-v99", "claude")).toBe("custom-model-v99");
+  });
+
+  it("recognizes known codex models", () => {
+    expect(KNOWN_CODEX_MODELS).toContain("gpt-4o");
+    expect(KNOWN_CODEX_MODELS).toContain("o3");
+  });
+
+  it("returns known codex model as-is", () => {
+    expect(resolveModelSync("gpt-4o", "codex")).toBe("gpt-4o");
+    expect(resolveModelSync("o3", "codex")).toBe("o3");
   });
 });
 

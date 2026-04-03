@@ -77,12 +77,14 @@ export function loadSystemSettings(): SystemSettings {
       data_dir: process.env.DATA_DIR || "/tmp/workflow-control-data",
       claude_executable: process.env.CLAUDE_PATH || "claude",
       gemini_executable: process.env.GEMINI_PATH || "gemini",
+      codex_executable: process.env.CODEX_PATH || "codex",
     },
     agent: {
       default_model: process.env.DEFAULT_MODEL || "claude-sonnet-4-6",
       claude_model: process.env.CLAUDE_MODEL || "claude-sonnet-4-6",
       gemini_model: process.env.GEMINI_MODEL || "auto",
-      default_engine: (process.env.DEFAULT_ENGINE as "claude" | "gemini") || "claude",
+      codex_model: process.env.CODEX_MODEL || "",
+      default_engine: (process.env.DEFAULT_ENGINE as "claude" | "gemini" | "codex") || "claude",
       max_budget_usd: Number(process.env.MAX_BUDGET_USD) || 10.0,
     },
   };

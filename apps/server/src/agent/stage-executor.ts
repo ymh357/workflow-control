@@ -10,12 +10,18 @@ import type { WorkflowContext } from "../machine/types.js";
 import { loadMcpRegistry, buildMcpFromRegistry } from "../lib/config/mcp.js";
 import { buildTier1Context } from "./context-builder.js";
 import { queryGemini } from "./gemini-executor.js";
+import { queryCodex } from "./codex-executor.js";
 import { type AgentResult, type AgentQuery } from "./query-tracker.js";
 import { buildSystemAppendPrompt, buildEffectivePrompt, buildStaticPromptPrefix } from "./prompt-builder.js";
 import { buildQueryOptions } from "./query-options-builder.js";
 import { processAgentStream } from "./stream-processor.js";
 import { outputSchemaToJsonSchema } from "./output-schema.js";
 import { createAskUserQuestionInterceptor, createSpecAuditHook, createPathRestrictionHook } from "./executor-hooks.js";
+
+function resolveModelForEngine(engine: string, privateAgent?: Record<string, any>, settingsAgent?: Record<string, any>): string | undefined {
+  const key = `${engine}_model`;
+  return (privateAgent as any)?.[key] ?? (settingsAgent as any)?.[key] ?? settingsAgent?.default_model;
+}
 
 function createSSEMessage(taskId: string, type: SSEMessage["type"], data: unknown): SSEMessage {
   return { type, taskId, timestamp: new Date().toISOString(), data };
@@ -63,7 +69,7 @@ export async function executeStage(
 
   const stageConfig = {
     engine,
-    model: privateStage?.model || (engine === "gemini" ? (privateConfig?.agent?.gemini_model ?? settings.agent?.gemini_model) : (privateConfig?.agent?.claude_model ?? settings.agent?.claude_model)) || settings.agent?.default_model,
+    model: privateStage?.model || resolveModelForEngine(engine, privateConfig?.agent, settings.agent),
     thinking: privateStage?.thinking
       ? { type: privateStage.thinking.type }
       : { type: "disabled" },
@@ -154,6 +160,30 @@ export async function executeStage(
     if (geminiQuery.effectiveCwd) {
       sseManager.pushMessage(taskId, createSSEMessage(taskId, "stage_cwd", { stage: stageName, cwd: geminiQuery.effectiveCwd }));
     }
+  } else if (stageConfig.engine === "codex") {
+    const sandboxMap: Record<string, "read-only" | "workspace-write" | "danger-full-access"> = {
+      bypassPermissions: "danger-full-access",
+      plan: "read-only",
+      acceptEdits: "workspace-write",
+      default: "workspace-write",
+      dontAsk: "workspace-write",
+    };
+    const codexSandbox = sandboxMap[stageConfig.permissionMode] ?? "workspace-write";
+
+    const codexPath = settings.paths?.codex_executable || "codex";
+    const fullPrompt = `${appendPrompt}\n\n---\n\n${effectivePrompt}`;
+    const codexQuery = queryCodex({
+      prompt: fullPrompt,
+      options: {
+        codexPath,
+        model: stageConfig.model,
+        sandbox: codexSandbox,
+        cwd,
+        env: { ...process.env, CI: "true" } as Record<string, string>,
+        mcpServers: localMcp,
+      },
+    });
+    agentQuery = codexQuery;
   } else {
     const hooks: Record<string, Array<{ hooks: Array<(input: HookInput, toolUseId: string | undefined, options: { signal: AbortSignal }) => Promise<HookJSONOutput>> }>> = {};
     if (specFiles?.length) {

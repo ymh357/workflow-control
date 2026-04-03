@@ -56,6 +56,15 @@ vi.mock("./gemini-executor.js", () => ({
   })),
 }));
 
+vi.mock("./codex-executor.js", () => ({
+  queryCodex: vi.fn(() => ({
+    effectiveCwd: "/tmp/codex-cwd",
+    [Symbol.asyncIterator]: async function* () { yield { type: "result" }; },
+    interrupt: vi.fn(),
+    close: vi.fn(),
+  })),
+}));
+
 vi.mock("../lib/store-reader-mcp.js", () => ({
   createStoreReaderMcp: vi.fn(() => ({ type: "sdk", name: "__store__" })),
 }));
@@ -130,6 +139,8 @@ function makeContext(overrides?: Partial<WorkflowContext>): WorkflowContext {
         globalConstraints: "",
         globalClaudeMd: "",
         globalGeminiMd: "",
+        globalCodexMd: "",
+        globalCodexMd: "",
       },
       skills: [],
       mcps: [],

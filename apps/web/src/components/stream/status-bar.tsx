@@ -36,6 +36,8 @@ const StatusBar = ({ isRunning, currentStage, elapsed, toolCallCount, engine, ph
           <span className={`text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded border ${
             engine === "gemini"
               ? "text-purple-400 bg-purple-900/20 border-purple-800/50"
+              : engine === "codex"
+              ? "text-green-400 bg-green-900/20 border-green-800/50"
               : "text-blue-400 bg-blue-900/20 border-blue-800/50"
           }`}>{engine}</span>
           {elapsed > 0 && (
@@ -77,6 +79,8 @@ const StatusBar = ({ isRunning, currentStage, elapsed, toolCallCount, engine, ph
         <span className={`text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded border ${
           engine === "gemini"
             ? "text-purple-400 bg-purple-900/20 border-purple-800/50"
+            : engine === "codex"
+            ? "text-green-400 bg-green-900/20 border-green-800/50"
             : "text-blue-400 bg-blue-900/20 border-blue-800/50"
         }`}>
           {engine}

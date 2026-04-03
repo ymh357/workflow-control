@@ -292,4 +292,18 @@ describe("listAvailablePipelines", () => {
     expect(result).toHaveLength(1);
     expect(result[0].engine).toBe("mixed");
   });
+
+  it("infers engine as codex when all stages use codex", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReaddirSync.mockReturnValue([
+      { name: "codex-pipe", isDirectory: () => true } as any,
+    ] as any);
+    mockReadFileSync.mockReturnValue(
+      'name: "AllCodex"\nstages:\n  - name: s1\n    type: agent\n    engine: codex\n  - name: s2\n    type: agent\n    engine: codex\n',
+    );
+
+    const result = listAvailablePipelines();
+    expect(result).toHaveLength(1);
+    expect(result[0].engine).toBe("codex");
+  });
 });

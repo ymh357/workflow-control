@@ -16,7 +16,7 @@ import { flattenStages } from "../lib/config/types.js";
 
 export interface GenerateRequest {
   description: string;
-  engine?: "claude" | "gemini";
+  engine?: "claude" | "gemini" | "codex";
 }
 
 export interface GeneratedScript {
@@ -182,7 +182,7 @@ export async function generatePipeline(req: GenerateRequest): Promise<GenerateRe
   return { yaml: pipelineYaml, parsed: pipelineObj, scripts, promptFiles, warnings, capabilityDiscovery };
 }
 
-async function generateSkeleton(description: string, engine: "claude" | "gemini", discovery?: DiscoveryResult): Promise<{
+async function generateSkeleton(description: string, engine: "claude" | "gemini" | "codex", discovery?: DiscoveryResult): Promise<{
   pipelineYaml: string;
   pipelineObj: PipelineConfig;
   agentStages: any[];
@@ -258,7 +258,7 @@ async function generateStagePrompt(
   stage: any,
   pipelineObj: any,
   userDescription: string,
-  engine: "claude" | "gemini"
+  engine: "claude" | "gemini" | "codex"
 ): Promise<GeneratedPromptFile> {
   const stageOverview = flattenStages(pipelineObj.stages ?? [])
     .map((s: any) => `- ${s.name} (${s.type})${s.runtime?.writes ? `: writes [${s.runtime.writes.join(", ")}]` : ""}`)
@@ -323,7 +323,7 @@ async function generateScriptCode(
   skeleton: { scriptId: string; manifest: any },
   pipelineObj: any,
   userDescription: string,
-  engine: "claude" | "gemini",
+  engine: "claude" | "gemini" | "codex",
   builtinIds: string[]
 ): Promise<GeneratedScript> {
   // Find the pipeline stage that references this script
@@ -434,12 +434,16 @@ function extractJson(raw: string): string {
   return raw.trim();
 }
 
-async function callLLM(prompt: string, engine: "claude" | "gemini"): Promise<string> {
+async function callLLM(prompt: string, engine: "claude" | "gemini" | "codex"): Promise<string> {
   const settings = loadSystemSettings();
 
   if (engine === "claude") {
     const executable = settings.paths?.claude_executable ?? "claude";
     return spawnAndCollect(executable, ["-p", prompt, "--output-format", "text"]);
+  } else if (engine === "codex") {
+    const executable = settings.paths?.codex_executable ?? "codex";
+    // Codex exec reads prompt from stdin when "-" is passed as positional arg
+    return spawnWithStdin(executable, ["exec", "--full-auto", "-o", "/dev/stdout"], prompt);
   } else {
     const executable = settings.paths?.gemini_executable ?? "gemini";
     const model = settings.agent?.gemini_model ?? "gemini-2.5-flash";
@@ -537,7 +541,7 @@ function normalizeExamplePipeline(yaml: string, asJson = false): string {
   }
 }
 
-function buildSkeletonPrompt(description: string, engine: "claude" | "gemini", retryError: string | null, discovery?: DiscoveryResult): string {
+function buildSkeletonPrompt(description: string, engine: "claude" | "gemini" | "codex", retryError: string | null, discovery?: DiscoveryResult): string {
   const capabilitySection = formatCapabilityPrompt(buildCapabilitySummary());
 
   // Read example pipelines as JSON objects, normalizing system_prompt to __GENERATED__

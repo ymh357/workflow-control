@@ -15,7 +15,7 @@ type McpServiceName = string;
 
 export function buildMcpServers(
   services: McpServiceName[],
-  engine?: "claude" | "gemini",
+  engine?: "claude" | "gemini" | "codex",
 ): Record<string, McpStdioConfig> {
   const registry = loadMcpRegistry();
   const result: Record<string, McpStdioConfig> = {};
