@@ -44,17 +44,32 @@ packages/
 ## Quick Start
 
 ```bash
-git clone <repo-url> && cd workflow-control
+# 1. Clone and install
+git clone https://github.com/ymh357/workflow-control.git
+cd workflow-control
 pnpm install
-pnpm --filter server registry:build      # Build registry index
-pnpm --filter server registry:bootstrap  # Install default config packages
-pnpm setup        # Interactive: configures MCP servers, .env.local, runs preflight
+
+# 2. Configure
+cp apps/server/config/system-settings.yaml.example apps/server/config/system-settings.yaml
+cp apps/server/.env.local.example apps/server/.env.local
+# Edit .env.local — at minimum set REPOS_BASE_PATH to your projects directory
+
+# 3. Install registry packages (pipelines, skills, hooks, fragments)
+pnpm --filter server registry:build      # Build local registry index
+pnpm --filter server registry:bootstrap  # Install default config packages from remote registry
+
+# 4. Run interactive setup (validates config, checks CLI tools on PATH)
+pnpm setup
+
+# 5. Start
 pnpm dev          # Server (:3001) + Dashboard (:3000)
 ```
 
 Open `http://localhost:3000`. The **Config** page has a health panel to verify all services are reachable.
 
-> `system-settings.yaml` supports `${ENV_VAR}` interpolation. Keep secrets in `.env.local`, not in the YAML file. Use `system-settings.yaml.example` as a template.
+> **Minimal setup**: Only `claude` or `gemini` on PATH is required to run pipelines. Slack, Notion, Figma, and GitHub integrations are all optional — leave them blank in the config and the system works without them.
+
+> `system-settings.yaml` supports `${ENV_VAR}` interpolation. Keep secrets in `.env.local`, not in the YAML file.
 
 ## Key Concepts
 
@@ -178,28 +193,22 @@ See [`apps/server/README.md`](apps/server/README.md) for API endpoint reference 
 
 ## Configuration
 
-### Environment Variables
+Two config files control the system (both gitignored):
 
-Copy the example files and fill in your values:
-
-```bash
-cp apps/server/.env.local.example apps/server/.env.local
-cp apps/server/config/system-settings.yaml.example apps/server/config/system-settings.yaml
-```
+- **`.env.local`** — local paths and secrets (per-developer)
+- **`system-settings.yaml`** — system behavior, integrations, agent defaults
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | If using Claude | Claude API key |
-| `SLACK_BOT_TOKEN` | No | Slack bot token for notifications |
+| `REPOS_BASE_PATH` | Yes | Base directory where your git repos live |
+| `CLAUDE_PATH` / `GEMINI_PATH` | No | Override CLI executable paths (auto-detected if on PATH) |
+| `SLACK_BOT_TOKEN` | No | Slack bot token for task notifications |
 | `SLACK_APP_TOKEN` | No | Slack app token for Socket Mode (interactive buttons) |
-| `SLACK_SIGNING_SECRET` | No | Slack signing secret |
 | `SLACK_NOTIFY_CHANNEL_ID` | No | Slack channel/user for notifications |
 | `GITHUB_ORG` | No | GitHub org for PR creation |
 | `FIGMA_ACCESS_TOKEN` | No | Figma API access (for design pipelines) |
 
-### System Settings
-
-`system-settings.yaml` controls paths, MCP servers, and integrations. Supports `${ENV_VAR}` interpolation for secrets.
+`system-settings.yaml` supports `${ENV_VAR}` interpolation — keep secrets in `.env.local`, reference them in YAML via `${VAR_NAME}`.
 
 ## Contributing
 
