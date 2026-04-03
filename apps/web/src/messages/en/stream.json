@@ -1,0 +1,21 @@
+{
+  "all": "All",
+  "agentFilter": "Agent",
+  "tools": "Tools",
+  "system": "System",
+  "allStages": "All stages",
+  "waitingForMessages": "Waiting for messages...",
+  "noMessagesMatch": "No messages match this filter.",
+  "initializingMcp": "Initializing MCP...",
+  "workingOn": "Working on {stage}",
+  "toolCalls": "tool calls",
+  "mcpStarting": "Starting MCP services. This may take a minute.",
+  "mcpSlow": "Taking longer than expected. MCP initialization may be slow or stuck.",
+  "waitingForOutput": "Waiting for agent output. This may take a few minutes.",
+  "you": "You",
+  "mermaidError": "Mermaid Render Error:",
+  "diagramError": "Diagram Error",
+  "diagramErrorHint": "Check for special characters in stage names.",
+  "initializingDiagram": "Initializing Diagram...",
+  "unknown": "unknown"
+}

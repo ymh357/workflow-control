@@ -1,0 +1,63 @@
+{
+  "nav": {
+    "tasks": "Tasks",
+    "config": "Config",
+    "store": "Store",
+    "help": "Help"
+  },
+  "appTitle": "Workflow Control",
+  "back": "Back",
+  "cancel": "Cancel",
+  "delete": "Delete",
+  "confirm": "Confirm",
+  "save": "Save",
+  "create": "Create",
+  "loading": "Loading...",
+  "retry": "Retry",
+  "resume": "Resume",
+  "copy": "Copy",
+  "send": "Send",
+  "close": "Close",
+  "ok": "OK",
+  "yes": "Yes",
+  "no": "No",
+  "search": "Search...",
+  "noResults": "No results.",
+  "error": {
+    "somethingWentWrong": "Something went wrong",
+    "unexpectedError": "An unexpected error occurred.",
+    "tryAgain": "Try again"
+  },
+  "status": {
+    "completed": "completed",
+    "error": "error",
+    "blocked": "blocked",
+    "idle": "idle",
+    "cancelled": "cancelled",
+    "running": "running",
+    "connecting": "connecting",
+    "unknown": "unknown"
+  },
+  "language": {
+    "en": "EN",
+    "zh": "中"
+  },
+  "helpNav": {
+    "overview": "Overview",
+    "overviewSub": "What & Why",
+    "tasks": "Tasks",
+    "tasksSub": "Create & Monitor",
+    "pipelines": "Pipelines",
+    "pipelinesSub": "Configure",
+    "prompts": "Prompts",
+    "promptsSub": "Intelligence",
+    "edge": "Edge Runner",
+    "edgeSub": "Terminal",
+    "architecture": "Architecture",
+    "architectureSub": "Internals",
+    "integrations": "Integrations",
+    "integrationsSub": "Engines & Tools",
+    "store": "Store",
+    "storeSub": "Package Manager"
+  }
+}

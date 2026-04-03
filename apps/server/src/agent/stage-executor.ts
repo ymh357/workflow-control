@@ -1,0 +1,243 @@
+import { query } from "@anthropic-ai/claude-agent-sdk";
+import type { HookInput, HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
+import { buildMcpServers } from "../lib/mcp-config.js";
+import { createStoreReaderMcp } from "../lib/store-reader-mcp.js";
+import type { SSEMessage } from "../types/index.js";
+import { sseManager } from "../sse/manager.js";
+import { taskLogger } from "../lib/logger.js";
+import { loadSystemSettings, type AgentRuntimeConfig, type SubAgentDefinition, flattenStages } from "../lib/config-loader.js";
+import type { WorkflowContext } from "../machine/types.js";
+import { loadMcpRegistry, buildMcpFromRegistry } from "../lib/config/mcp.js";
+import { buildTier1Context } from "./context-builder.js";
+import { queryGemini } from "./gemini-executor.js";
+import { type AgentResult, type AgentQuery } from "./query-tracker.js";
+import { buildSystemAppendPrompt, buildEffectivePrompt } from "./prompt-builder.js";
+import { buildQueryOptions } from "./query-options-builder.js";
+import { processAgentStream } from "./stream-processor.js";
+import { outputSchemaToJsonSchema } from "./output-schema.js";
+import { createAskUserQuestionInterceptor, createSpecAuditHook } from "./executor-hooks.js";
+
+function createSSEMessage(taskId: string, type: SSEMessage["type"], data: unknown): SSEMessage {
+  return { type, taskId, timestamp: new Date().toISOString(), data };
+}
+
+export interface StageOpts {
+  cwd?: string;
+  interactive?: boolean;
+  specFiles?: string[];
+  enabledSteps?: string[];
+  resumeSessionId?: string;
+  resumePrompt?: string;
+  resumeSync?: boolean;
+  runtime?: AgentRuntimeConfig;
+  injectedContext?: WorkflowContext;
+  _resumeDepth?: number;
+}
+
+export async function executeStage(
+  taskId: string, stageName: string, prompt: string, stagePrompt: string,
+  stageOpts?: StageOpts,
+): Promise<AgentResult> {
+  const { cwd, interactive, specFiles, enabledSteps, resumeSessionId, resumePrompt, resumeSync, runtime, injectedContext, _resumeDepth = 0 } = stageOpts ?? {};
+  const settings = loadSystemSettings();
+  const claudePath = settings.paths?.claude_executable || "claude";
+  const geminiPath = settings.paths?.gemini_executable || "gemini";
+  const isResume = !!resumeSessionId;
+
+  let context: WorkflowContext | undefined = injectedContext;
+  if (!context) {
+    const { getWorkflow } = await import("../machine/actor-registry.js");
+    const actor = getWorkflow(taskId);
+    context = (actor?.getSnapshot() as { context?: WorkflowContext } | undefined)?.context;
+  }
+  if (!context) {
+    throw new Error(`No workflow context available for task ${taskId}`);
+  }
+  const privateConfig = context.config;
+
+  const privateStage = privateConfig?.pipeline?.stages
+    ? flattenStages(privateConfig.pipeline.stages).find((s) => s.name === stageName)
+    : undefined;
+
+  const engine = privateStage?.engine ?? privateConfig?.pipeline?.engine ?? privateConfig?.agent?.default_engine ?? settings.agent?.default_engine ?? "claude";
+
+  const stageConfig = {
+    engine,
+    model: privateStage?.model || (engine === "gemini" ? (privateConfig?.agent?.gemini_model ?? settings.agent?.gemini_model) : (privateConfig?.agent?.claude_model ?? settings.agent?.claude_model)) || settings.agent?.default_model,
+    thinking: privateStage?.thinking
+      ? { type: privateStage.thinking.type }
+      : { type: "disabled" },
+    effort: privateStage?.effort,
+    permissionMode: privateStage?.permission_mode ?? "bypassPermissions",
+    debug: privateStage?.debug ?? false,
+    maxTurns: privateStage?.max_turns ?? 30,
+    maxBudgetUsd: privateStage?.max_budget_usd ?? 2,
+    mcpServices: mergeDynamicMcps(
+      (privateStage?.mcps ?? []) as string[],
+      stageName,
+      context,
+    ),
+  };
+
+  // Auto-inject PulseMCP for analyzing stage so it can discover external capabilities
+  if (stageName === "analyzing" && !stageConfig.mcpServices.includes("pulsemcp")) {
+    stageConfig.mcpServices = [...stageConfig.mcpServices, "pulsemcp"];
+  }
+
+  const sandboxEnabled = !!(privateConfig?.sandbox ?? settings.sandbox)?.enabled;
+  taskLogger(taskId, stageName).info({ engine: stageConfig.engine, model: stageConfig.model ?? "default", interactive: !!interactive, resume: isResume, sandbox: sandboxEnabled, hasPrivateConfig: !!privateConfig }, "stage START");
+  if (!isResume) {
+    sseManager.pushMessage(taskId, createSSEMessage(taskId, "stage_change", { stage: stageName }));
+  }
+
+  const effectiveTier1 = buildTier1Context(context, runtime);
+
+  const mcpServices = stageConfig.mcpServices as string[];
+  if (mcpServices.length > 0) {
+    sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_progress", {
+      phase: "mcp_init", services: mcpServices
+    }));
+  }
+  const localMcp: Record<string, unknown> = buildMcpServers(mcpServices, stageConfig.engine as "claude" | "gemini");
+  if (context.store && Object.keys(context.store).length > 0) {
+    localMcp["__store__"] = createStoreReaderMcp(context.store);
+  }
+  const appendPrompt = await buildSystemAppendPrompt({
+    taskId, stageName, enabledSteps, runtime, privateConfig,
+    stageConfig: { ...stageConfig, mcpServices }, cwd,
+  });
+
+  const canResume = !!resumeSessionId;
+  const effectivePrompt = buildEffectivePrompt({
+    isResume, resumeSync, resumePrompt, tier1Context: effectiveTier1, prompt, canResume,
+  });
+
+  let agentQuery: AgentQuery;
+
+  if (stageConfig.engine === "gemini") {
+    const approvalMap: Record<string, "yolo" | "plan" | "auto_edit" | "default"> = {
+      bypassPermissions: "yolo",
+      plan: "plan",
+      acceptEdits: "auto_edit",
+      default: "default",
+      dontAsk: "default",
+    };
+    const geminiApprovalMode = approvalMap[stageConfig.permissionMode] ?? "yolo";
+
+    const fullPrompt = `${appendPrompt}\n\n---\n\n${effectivePrompt}`;
+    const geminiResume = resumeSessionId ?? undefined;
+    const geminiQuery = queryGemini({
+      prompt: fullPrompt,
+      options: {
+        geminiPath,
+        model: stageConfig.model,
+        approvalMode: geminiApprovalMode,
+        cwd,
+        resume: geminiResume,
+        env: { ...process.env, CI: "true" } as Record<string, string>,
+        mcpServers: localMcp,
+      }
+    });
+    agentQuery = geminiQuery;
+    // Emit effective cwd so frontend can build correct resume command
+    if (geminiQuery.effectiveCwd) {
+      sseManager.pushMessage(taskId, createSSEMessage(taskId, "stage_cwd", { stage: stageName, cwd: geminiQuery.effectiveCwd }));
+    }
+  } else {
+    const hooks: Record<string, Array<{ hooks: Array<(input: HookInput, toolUseId: string | undefined, options: { signal: AbortSignal }) => Promise<HookJSONOutput>> }>> = {};
+    if (specFiles?.length) {
+      hooks.PreToolUse = [{ hooks: [createSpecAuditHook(taskId, specFiles)] }];
+    }
+
+    const pipelineStage = privateConfig?.pipeline?.stages
+      ? flattenStages(privateConfig.pipeline.stages).find((s) => s.name === stageName)
+      : undefined;
+    const outputFormat = pipelineStage?.outputs
+      ? { type: "json_schema" as const, schema: outputSchemaToJsonSchema(pipelineStage.outputs) }
+      : undefined;
+
+    const agentDefs = runtime?.agents as Record<string, SubAgentDefinition> | undefined;
+    const sandboxConfig = privateConfig?.sandbox ?? settings.sandbox;
+
+    const options = buildQueryOptions({
+      taskId, stageName, appendPrompt, stageConfig, sandboxConfig,
+      hooks, localMcp, claudePath, cwd, resumeSessionId, interactive,
+      canUseTool: interactive ? createAskUserQuestionInterceptor(taskId) : undefined,
+      outputFormat,
+      agents: agentDefs,
+      runtime,
+    });
+
+    agentQuery = query({ prompt: effectivePrompt, options: options as Parameters<typeof query>[0]["options"] }) as AgentQuery;
+  }
+
+  // Track effective cwd for resume commands (gemini uses temp dirs)
+  const effectiveCwd = stageConfig.engine === "gemini" && "effectiveCwd" in agentQuery
+    ? (agentQuery as any).effectiveCwd as string | undefined
+    : cwd;
+
+  const result = await processAgentStream({
+    taskId,
+    stageName,
+    agentQuery,
+    resumeDepth: _resumeDepth,
+    onResume: ({ sessionId, resumePrompt: rp }) =>
+      executeStage(taskId, stageName, prompt, stagePrompt, {
+        ...stageOpts, resumeSessionId: sessionId, resumePrompt: rp, _resumeDepth: _resumeDepth + 1,
+      }),
+  });
+
+  return { ...result, cwd: effectiveCwd || cwd };
+}
+
+function mergeDynamicMcps(
+  staticMcps: string[],
+  stageName: string,
+  context: WorkflowContext,
+): string[] {
+  // analyzing is the producer — it should not consume dynamic MCPs
+  if (stageName === "analyzing") return staticMcps;
+
+  try {
+    // Search all store values for recommendedMcps (not just "analysis" key)
+    const store = context.store as Record<string, any> | undefined;
+    let recommended: unknown;
+    if (store) {
+      for (const val of Object.values(store)) {
+        if (val && typeof val === "object" && Array.isArray(val.recommendedMcps)) {
+          recommended = val.recommendedMcps;
+          break;
+        }
+      }
+    }
+    if (!Array.isArray(recommended)) return staticMcps;
+
+    const registry = loadMcpRegistry();
+    if (!registry) return staticMcps;
+
+    const seen = new Set(staticMcps);
+    const validDynamic: string[] = [];
+    for (const name of recommended) {
+      if (
+        typeof name === "string" &&
+        name.length > 0 &&
+        !seen.has(name) &&
+        registry[name] != null &&
+        buildMcpFromRegistry(name, registry[name]) !== null
+      ) {
+        seen.add(name);
+        validDynamic.push(name);
+      }
+    }
+
+    if (validDynamic.length > 0) {
+      taskLogger(context.taskId, stageName).info(
+        { dynamic: validDynamic },
+        "Injecting dynamic MCPs from analysis",
+      );
+    }
+    return [...staticMcps, ...validDynamic];
+  } catch {
+    return staticMcps;
+  }
+}

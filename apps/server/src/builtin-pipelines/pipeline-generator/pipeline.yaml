@@ -1,0 +1,241 @@
+name: Pipeline Generator
+description: Generate high-quality pipelines from natural language descriptions. Analyzes requirements, designs architecture, generates YAML skeleton and system prompts in parallel, validates, and persists to disk.
+engine: claude
+official: true
+use_cases:
+  - Create new workflow pipelines from descriptions
+  - Generate pipeline configurations for recurring tasks
+  - Bootstrap pipeline prototypes for iteration
+
+display:
+  title_path: pipelineDesign.pipelineName
+  completion_summary_path: persistResult.pipelineId
+
+stages:
+  - name: analyzing
+    type: agent
+    interactive: true
+    thinking:
+      type: enabled
+    mcps:
+      - pulsemcp
+    runtime:
+      engine: llm
+      system_prompt: analysis
+      writes:
+        - pipelineDesign
+    outputs:
+      pipelineDesign:
+        type: object
+        label: Pipeline Design
+        fields:
+          - key: pipelineName
+            type: string
+            description: Human-readable pipeline name
+          - key: pipelineId
+            type: string
+            description: Directory-safe pipeline ID (kebab-case)
+          - key: description
+            type: string
+            description: Pipeline description
+          - key: engine
+            type: string
+            description: Default engine (claude/gemini/mixed)
+          - key: stageDesign
+            type: markdown
+            description: Detailed stage-by-stage design with data flow
+          - key: dataFlowSummary
+            type: markdown
+            description: Store key flow diagram
+          - key: useCases
+            type: string[]
+            description: Target use cases
+          - key: estimatedStageCount
+            type: number
+            description: Total stage count
+          - key: usesParallelGroups
+            type: boolean
+            description: Whether parallel groups are used
+          - key: recommendedMcps
+            type: string[]
+            description: MCP server names discovered via PulseMCP that should be used in the pipeline
+          - key: recommendedSkills
+            type: string[]
+            description: Skill names discovered externally that should be used in the pipeline
+          - key: targetRepoName
+            type: string
+            description: Repository name extracted from task description (empty if not specified)
+          - key: assumptions
+            type: string[]
+            description: Assumptions made when user input was ambiguous (shown to user at confirmation gate)
+          - key: stageContracts
+            type: object[]
+            description: >
+              Structured naming contracts for each stage (including parallel group children).
+              Each entry: { name: string, type: string, systemPrompt?: string, writes?: string[] }.
+              This is the authoritative naming source consumed by both downstream generators.
+          - key: summary
+            type: markdown
+            description: Design summary for user review
+    effort: high
+    max_turns: 50
+    max_budget_usd: 4
+
+  - name: awaitingConfirm
+    type: human_confirm
+    runtime:
+      engine: human_gate
+      on_reject_to: analyzing
+
+  - parallel:
+      name: generating
+      stages:
+        - name: genSkeleton
+          type: agent
+          thinking:
+            type: enabled
+          runtime:
+            engine: llm
+            system_prompt: gen-skeleton
+            writes:
+              - pipelineYaml
+            reads:
+              design: pipelineDesign
+              contracts: pipelineDesign.stageContracts
+          outputs:
+            pipelineYaml:
+              type: object
+              label: Pipeline Configuration
+              fields:
+                - key: pipeline
+                  type: object
+                  description: Complete pipeline configuration object (PipelineConfig)
+                - key: warnings
+                  type: string[]
+                  description: Any warnings about the generated pipeline
+          effort: high
+          max_turns: 60
+          max_budget_usd: 5
+
+        - name: genPrompts
+          type: agent
+          runtime:
+            engine: llm
+            system_prompt: gen-prompts
+            writes:
+              - promptFiles
+            reads:
+              design: pipelineDesign
+              contracts: pipelineDesign.stageContracts
+            agents:
+              prompt-writer:
+                description: Generates a single system prompt for one pipeline stage
+                prompt: >
+                  You write system prompts for workflow-control pipeline stages. Given a stage
+                  specification (name, type, reads, writes, outputs, purpose), produce a
+                  high-quality system prompt in markdown.
+
+
+                  Required structure: role definition (1-2 sentences), Available Context
+                  section listing reads data, step-by-step Workflow with action verbs,
+                  and Error Handling section with concrete fallbacks.
+
+
+                  Critical rules:
+
+                  - 30-80 lines per prompt. Under 30 is too vague, over 80 dilutes attention.
+
+                  - Do NOT include a JSON output schema section — the system auto-injects
+                  the exact output format at runtime. Instead, ensure your workflow steps
+                  naturally produce all the fields listed in the stage's outputs.
+
+                  - Match the permission mode: if permission_mode is "plan", never instruct
+                  to read files or run commands (agent has NO tools, only reads-injected
+                  context). If disallowed_tools includes Edit/Write/Bash, only instruct
+                  read-only exploration. Otherwise full tool access is available.
+
+                  - Use specific roles ("security auditor scanning OWASP vulnerabilities")
+                  not generic ones ("AI assistant").
+                tools:
+                  - Read
+                  - Write
+                model: sonnet
+                maxTurns: 20
+          outputs:
+            promptFiles:
+              type: object
+              label: Generated Prompts
+              fields:
+                - key: outputDir
+                  type: string
+                  description: Absolute path to temp directory containing generated prompt .md files
+                - key: generatedFiles
+                  type: string[]
+                  description: List of prompt file names written (kebab-case, no .md extension)
+                - key: hasGlobalConstraints
+                  type: boolean
+                  description: Whether global-constraints.md was generated
+          effort: high
+          max_turns: 80
+          max_budget_usd: 8
+
+  - name: refinePrompts
+    type: agent
+    effort: high
+    max_budget_usd: 4
+    max_turns: 50
+    runtime:
+      engine: llm
+      system_prompt: refine-prompts
+      reads:
+        promptFiles: promptFiles
+        pipelineYaml: pipelineYaml.pipeline
+        pipelineDesign: pipelineDesign
+      writes:
+        - refinedPromptFiles
+    outputs:
+      refinedPromptFiles:
+        type: object
+        label: Refined Prompts
+        fields:
+          - key: outputDir
+            type: string
+            description: Absolute path to the temp directory containing enhanced prompt files
+          - key: refinedFiles
+            type: string[]
+            description: List of prompt file names that were enhanced (kebab-case, no .md)
+          - key: summary
+            type: string
+            description: Summary of refinements applied
+
+  - name: persisting
+    type: script
+    runtime:
+      engine: script
+      script_id: persist_pipeline
+      writes:
+        - persistResult
+      retry:
+        max_retries: 1
+        back_to: generating
+      reads:
+        pipeline: pipelineYaml.pipeline
+        subPipelines: pipelineYaml.sub_pipelines
+        prompts: refinedPromptFiles
+        rawPromptDir: promptFiles.outputDir
+        pipelineId: pipelineDesign.pipelineId
+        pipelineName: pipelineDesign.pipelineName
+    outputs:
+      persistResult:
+        type: object
+        label: Saved Pipeline
+        fields:
+          - key: pipelineId
+            type: string
+            description: Pipeline directory name
+          - key: savedFiles
+            type: string[]
+            description: Files written to disk
+          - key: validationPassed
+            type: boolean
+            description: Whether the YAML passed schema validation

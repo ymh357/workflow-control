@@ -1,0 +1,380 @@
+import type { TaskStatus } from "../types/index.js";
+import type { PipelineConfig, PipelineStageEntry, PipelineStageConfig } from "../lib/config-loader.js";
+import { isParallelGroup } from "../lib/config-loader.js";
+import { taskLogger } from "../lib/logger.js";
+import type { StateNode } from "./state-builders.js";
+import { buildParallelGroupState } from "./state-builders.js";
+import { getStageBuilder } from "./stage-registry.js";
+
+// --- Helpers ---
+
+function getEntryName(entry: PipelineStageEntry): string {
+  return isParallelGroup(entry) ? entry.parallel.name : entry.name;
+}
+
+function collectAllNames(entries: PipelineStageEntry[]): string[] {
+  const names: string[] = [];
+  for (const e of entries) {
+    if (isParallelGroup(e)) {
+      names.push(e.parallel.name);
+      for (const s of e.parallel.stages) names.push(s.name);
+    } else {
+      names.push(e.name);
+    }
+  }
+  return names;
+}
+
+const PASS_THROUGH_TYPES = new Set(["condition", "pipeline", "foreach"]);
+
+function findPrevAgentTarget(entries: PipelineStageEntry[], currentIndex: number): string | null {
+  for (let j = currentIndex - 1; j >= 0; j--) {
+    const entry = entries[j];
+    if (isParallelGroup(entry)) {
+      return entry.parallel.name;
+    }
+    const stageType = (entry as PipelineStageConfig).type;
+    if (stageType === "agent" || stageType === "script") {
+      return (entry as PipelineStageConfig).name;
+    }
+    // condition/pipeline/foreach are pass-through — skip them when looking for prevAgent
+  }
+  return null;
+}
+
+// --- Pipeline state generation ---
+
+export function buildPipelineStates(pipeline: PipelineConfig): Record<string, StateNode> {
+  const states: Record<string, StateNode> = {};
+  const errors: string[] = [];
+  const validTargets = new Set(collectAllNames(pipeline.stages));
+  validTargets.add("completed");
+  validTargets.add("error");
+  validTargets.add("blocked");
+
+  // Build child→group mapping for reject routing into parallel groups
+  const childToGroup = new Map<string, string>();
+  for (const e of pipeline.stages) {
+    if (isParallelGroup(e)) {
+      for (const s of e.parallel.stages) {
+        childToGroup.set(s.name, e.parallel.name);
+      }
+    }
+  }
+
+  // Pre-compute condition branch convergence points.
+  // For each condition stage, all branch targets that are downstream stages in the
+  // linear sequence should converge to a single "join" point — the first stage after
+  // all branch targets. This prevents branches from falling through to sibling branches.
+  //
+  // Only targets that appear in the contiguous block immediately after the condition
+  // participate in convergence. Back-jumps (targets before the condition) and jumps
+  // to built-in states (completed/error/blocked) are excluded.
+  // If a target already has an override from a prior condition, we do not overwrite it.
+  //
+  // Explicit convergence: if the condition runtime has a `converge_to` field, ALL
+  // downstream branch targets are overridden to that stage. This is useful when
+  // one branch is an "optional prefix" and should flow into the default branch
+  // target after completion (e.g., competitorBenchmark → outputPlanning).
+  const conditionNextOverrides = new Map<string, string>();
+  for (let i = 0; i < pipeline.stages.length; i++) {
+    const entry = pipeline.stages[i];
+    if (isParallelGroup(entry)) continue;
+    const stage = entry as PipelineStageConfig;
+    if (stage.type !== "condition") continue;
+
+    const condRuntime = stage.runtime as Record<string, any> | undefined;
+    const branches = condRuntime?.branches as Array<{ to: string }> | undefined;
+    if (!branches) continue;
+
+    const builtInStates = new Set(["completed", "error", "blocked"]);
+    const explicitConvergeTo = condRuntime?.converge_to as string | undefined;
+
+    // Collect branch targets that are downstream stages (after the condition, not built-in)
+    const allBranchTargets = new Set(branches.map((b) => b.to).filter((t) => t && !builtInStates.has(t)));
+    if (allBranchTargets.size === 0) continue;
+
+    // Only consider targets that appear in the contiguous sequence after the condition
+    const downstreamTargets = new Set<string>();
+    for (let j = i + 1; j < pipeline.stages.length; j++) {
+      const name = getEntryName(pipeline.stages[j]);
+      if (allBranchTargets.has(name)) {
+        downstreamTargets.add(name);
+      } else {
+        break; // stop at first non-target — contiguous block ended
+      }
+    }
+    if (downstreamTargets.size === 0) continue;
+
+    // Determine the convergence target
+    let joinTarget: string;
+    if (explicitConvergeTo) {
+      // Explicit convergence: pipeline author specified where branches should join
+      joinTarget = explicitConvergeTo;
+    } else {
+      // Auto convergence: first stage after the contiguous block of branch targets
+      joinTarget = "completed";
+      for (let j = i + 1; j < pipeline.stages.length; j++) {
+        const name = getEntryName(pipeline.stages[j]);
+        if (!downstreamTargets.has(name)) {
+          joinTarget = name;
+          break;
+        }
+      }
+    }
+
+    // Override nextTarget for each downstream branch target stage (skip if already overridden).
+    // When using explicit converge_to, the converge_to target itself is excluded from
+    // overrides — it should keep its natural linear next.
+    for (const target of downstreamTargets) {
+      if (explicitConvergeTo && target === explicitConvergeTo) continue;
+      if (!conditionNextOverrides.has(target)) {
+        conditionNextOverrides.set(target, joinTarget);
+      }
+    }
+  }
+
+  for (let i = 0; i < pipeline.stages.length; i++) {
+    const entry = pipeline.stages[i];
+    const linearNext = i < pipeline.stages.length - 1
+      ? getEntryName(pipeline.stages[i + 1])
+      : "completed";
+    const nextStateName = conditionNextOverrides.get(getEntryName(entry)) ?? linearNext;
+    const prevAgentState = findPrevAgentTarget(pipeline.stages, i) ?? "error";
+
+    if (isParallelGroup(entry)) {
+      // Validate: no nested parallel, at least 2 stages, no human_confirm inside
+      for (const s of entry.parallel.stages) {
+        if (s.type === "human_confirm") {
+          errors.push(`Parallel group "${entry.parallel.name}": human_confirm stages are not allowed inside parallel groups`);
+        }
+      }
+
+      // Inherit pipeline-level default_execution_mode for child stages
+      for (const s of entry.parallel.stages) {
+        if (!s.execution_mode && pipeline.default_execution_mode && s.type === "agent") {
+          s.execution_mode = pipeline.default_execution_mode;
+        }
+      }
+
+      // Validate: no overlapping writes keys within group
+      const groupWrites = new Map<string, string>();
+      for (const s of entry.parallel.stages) {
+        const writes = (s.runtime as Record<string, any> | undefined)?.writes as string[] | undefined;
+        for (const w of writes ?? []) {
+          if (groupWrites.has(w)) {
+            errors.push(`Parallel group "${entry.parallel.name}": write key "${w}" overlaps between "${groupWrites.get(w)}" and "${s.name}"`);
+          }
+          groupWrites.set(w, s.name);
+        }
+      }
+
+      // Validate child stage references and builders
+      const childNames = new Set(entry.parallel.stages.map(s => s.name));
+      for (const s of entry.parallel.stages) {
+        const runtime = s.runtime as Record<string, any> | undefined;
+        if (runtime?.retry?.back_to) {
+          if (!validTargets.has(runtime.retry.back_to)) {
+            errors.push(`Stage "${s.name}" in parallel group "${entry.parallel.name}": retry.back_to references non-existent state "${runtime.retry.back_to}"`);
+          } else if (!childNames.has(runtime.retry.back_to)) {
+            // XState parallel regions cannot transition to states outside the group —
+            // all regions must complete before the group can exit.
+            errors.push(`Stage "${s.name}" in parallel group "${entry.parallel.name}": retry.back_to "${runtime.retry.back_to}" is outside the parallel group. Only sibling stages within the same group are valid back_to targets.`);
+          }
+        }
+        if (s.execution_mode && s.execution_mode !== "auto" && s.type !== "agent") {
+          errors.push(`Stage "${s.name}" in parallel group "${entry.parallel.name}" has execution_mode "${s.execution_mode}" but is type "${s.type}". Only agent stages support edge execution.`);
+        }
+        // Validate builder exists for each child stage
+        const childBuilder = getStageBuilder(s);
+        if (!childBuilder) {
+          errors.push(`Stage "${s.name}" in parallel group "${entry.parallel.name}": no builder found for type "${s.type}" (engine: ${runtime?.engine ?? "none"})`);
+        }
+      }
+
+      states[entry.parallel.name] = buildParallelGroupState(
+        entry.parallel, nextStateName, prevAgentState
+      );
+      taskLogger("pipeline").info({ group: entry.parallel.name, children: entry.parallel.stages.map(s => s.name), next: nextStateName }, "Parallel group built");
+    } else {
+      const stage = { ...entry as PipelineStageConfig };
+
+      // Inherit pipeline-level default_execution_mode if stage doesn't specify one
+      if (!stage.execution_mode && pipeline.default_execution_mode && stage.type === "agent") {
+        stage.execution_mode = pipeline.default_execution_mode;
+      }
+      const stateName = stage.name;
+
+      // Find previous agent/script stage for feedback loops
+      let prevAgentStateForGate: string | null = null;
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = pipeline.stages[j];
+        if (isParallelGroup(prev)) {
+          prevAgentStateForGate = prev.parallel.name;
+          break;
+        }
+        const prevType = (prev as PipelineStageConfig).type;
+        if (prevType === "agent" || prevType === "script") {
+          prevAgentStateForGate = (prev as PipelineStageConfig).name;
+          break;
+        }
+        // condition/pipeline/foreach are pass-through — skip them
+      }
+      // Validate: human_confirm gate needs a previous agent/script stage for feedback routing
+      if (stage.type === "human_confirm" && !prevAgentStateForGate) {
+        errors.push(`Stage "${stage.name}": human_confirm gate cannot be the first stage — no previous agent/script stage for feedback routing`);
+      }
+
+      // Validate condition branches
+      if (stage.type === "condition") {
+        const condRuntime = stage.runtime as Record<string, any> | undefined;
+        const branches = condRuntime?.branches as Array<{ when?: string; default?: true; to: string }> | undefined;
+        if (branches) {
+          const defaultBranches = branches.filter((b) => b.default);
+          if (defaultBranches.length !== 1) {
+            errors.push(`Stage "${stage.name}": condition must have exactly 1 default branch (found ${defaultBranches.length})`);
+          }
+          const nonDefaultBranches = branches.filter((b) => !b.default);
+          if (nonDefaultBranches.length === 0) {
+            errors.push(`Stage "${stage.name}": condition must have at least 1 non-default branch`);
+          }
+          for (const branch of branches) {
+            if (branch.to && !validTargets.has(branch.to)) {
+              errors.push(`Stage "${stage.name}": condition branch.to "${branch.to}" references non-existent state`);
+            }
+          }
+          if (condRuntime?.converge_to && !validTargets.has(condRuntime.converge_to)) {
+            errors.push(`Stage "${stage.name}": converge_to "${condRuntime.converge_to}" references non-existent state`);
+          }
+        }
+      }
+
+      // Validate pipeline_name existence is deferred to runtime (config loader may not know all pipelines)
+      // But we validate that pipeline/foreach stages have the required fields
+      if (stage.type === "pipeline") {
+        const pipelineRuntime = stage.runtime as Record<string, any> | undefined;
+        if (!pipelineRuntime?.pipeline_name) {
+          errors.push(`Stage "${stage.name}": pipeline stage must have runtime.pipeline_name`);
+        }
+      }
+
+      if (stage.type === "foreach") {
+        const foreachRuntime = stage.runtime as Record<string, any> | undefined;
+        if (!foreachRuntime?.pipeline_name) {
+          errors.push(`Stage "${stage.name}": foreach stage must have runtime.pipeline_name`);
+        }
+        if (!foreachRuntime?.items) {
+          errors.push(`Stage "${stage.name}": foreach stage must have runtime.items`);
+        }
+        if (!foreachRuntime?.item_var) {
+          errors.push(`Stage "${stage.name}": foreach stage must have runtime.item_var`);
+        }
+      }
+
+      // Warn: gate after parallel group without on_reject_to means all children re-run on reject
+      if (stage.type === "human_confirm" && prevAgentStateForGate) {
+        const prevEntry = i > 0 ? pipeline.stages[i - 1] : undefined;
+        const gateRuntime = stage.runtime as Record<string, any> | undefined;
+        if (prevEntry && isParallelGroup(prevEntry) && !gateRuntime?.on_reject_to) {
+          taskLogger("pipeline").warn(
+            { gate: stage.name, group: (prevEntry as any).parallel.name },
+            "Gate after parallel group has no on_reject_to — reject/feedback will re-run ALL children. Set on_reject_to to a child stage for selective re-run.",
+          );
+        }
+      }
+
+      if (!prevAgentStateForGate) prevAgentStateForGate = "error";
+
+      // Collect validation errors
+      const runtime = stage.runtime as Record<string, any> | undefined;
+      if (runtime?.on_approve_to && !validTargets.has(runtime.on_approve_to)) {
+        errors.push(`Stage "${stage.name}": on_approve_to references non-existent state "${runtime.on_approve_to}"`);
+      }
+      if (runtime?.on_reject_to && !validTargets.has(runtime.on_reject_to)) {
+        errors.push(`Stage "${stage.name}": on_reject_to references non-existent state "${runtime.on_reject_to}"`);
+      }
+      if (runtime?.retry?.back_to && !validTargets.has(runtime.retry.back_to)) {
+        errors.push(`Stage "${stage.name}": retry.back_to references non-existent state "${runtime.retry.back_to}"`);
+      }
+
+      // Validate: execution_mode "edge" is only allowed on agent stages
+      if (stage.execution_mode && stage.execution_mode !== "auto" && stage.type !== "agent") {
+        errors.push(`Stage "${stage.name}" has execution_mode "${stage.execution_mode}" but is type "${stage.type}". Only agent stages support edge execution.`);
+      }
+
+      const builder = getStageBuilder(stage);
+      if (builder) {
+        states[stateName] = builder(nextStateName, prevAgentStateForGate, stage, { childToGroup });
+        taskLogger("pipeline").info({ stage: stage.name, type: stage.type, next: nextStateName }, "State built");
+      } else {
+        errors.push(`Stage "${stage.name}": no builder found for type "${stage.type}" (engine: ${runtime?.engine ?? "none"})`);
+      }
+    }
+  }
+
+  // Detect back_to cycles (A->B->A) — only for flat stages
+  const backToEdges = new Map<string, string>();
+  for (const entry of pipeline.stages) {
+    if (isParallelGroup(entry)) {
+      for (const s of entry.parallel.stages) {
+        const rt = s.runtime as Record<string, any> | undefined;
+        if (rt?.retry?.back_to) backToEdges.set(s.name, rt.retry.back_to);
+      }
+    } else {
+      const rt = (entry as PipelineStageConfig).runtime as Record<string, any> | undefined;
+      if (rt?.retry?.back_to) backToEdges.set((entry as PipelineStageConfig).name, rt.retry.back_to);
+    }
+  }
+  for (const [src, dst] of backToEdges) {
+    let cursor = dst;
+    const visited = new Set([src]);
+    while (cursor && backToEdges.has(cursor)) {
+      if (visited.has(cursor)) {
+        errors.push(`Cycle detected in back_to routing: ${[...visited, cursor].join(" -> ")}`);
+        break;
+      }
+      visited.add(cursor);
+      cursor = backToEdges.get(cursor)!;
+    }
+  }
+
+  if (errors.length) {
+    throw new Error(`Pipeline validation failed:\n${errors.join("\n")}`);
+  }
+
+  return states;
+}
+
+// --- Lifecycle helpers ---
+
+export function derivePipelineLists(pipeline: PipelineConfig): { retryable: TaskStatus[]; resumable: TaskStatus[] } {
+  const retryable: TaskStatus[] = [];
+  const resumable: TaskStatus[] = [];
+
+  for (const entry of pipeline.stages) {
+    if (isParallelGroup(entry)) {
+      retryable.push(entry.parallel.name);
+      resumable.push(entry.parallel.name);
+      for (const s of entry.parallel.stages) {
+        if (s.type === "agent" || s.type === "script") {
+          retryable.push(s.name);
+          resumable.push(s.name);
+        }
+      }
+    } else {
+      const stage = entry as PipelineStageConfig;
+      if (stage.type === "agent" || stage.type === "script") {
+        retryable.push(stage.name);
+        resumable.push(stage.name);
+      } else if (stage.type === "human_confirm") {
+        resumable.push(stage.name);
+      } else if (stage.type === "pipeline" || stage.type === "foreach") {
+        retryable.push(stage.name);
+        resumable.push(stage.name);
+      }
+      // condition stages are not retryable/resumable (they are instant transitions)
+    }
+  }
+
+  return { retryable, resumable };
+}

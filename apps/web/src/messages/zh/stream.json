@@ -1,0 +1,21 @@
+{
+  "all": "全部",
+  "agentFilter": "Agent",
+  "tools": "工具",
+  "system": "系统",
+  "allStages": "所有阶段",
+  "waitingForMessages": "等待消息...",
+  "noMessagesMatch": "没有匹配此筛选条件的消息。",
+  "initializingMcp": "正在初始化 MCP...",
+  "workingOn": "正在处理 {stage}",
+  "toolCalls": "次工具调用",
+  "mcpStarting": "正在启动 MCP 服务。可能需要一分钟。",
+  "mcpSlow": "耗时超出预期。MCP 初始化可能较慢或卡住。",
+  "waitingForOutput": "等待 Agent 输出。可能需要几分钟。",
+  "you": "你",
+  "mermaidError": "Mermaid 渲染错误：",
+  "diagramError": "图表错误",
+  "diagramErrorHint": "检查阶段名称中是否有特殊字符。",
+  "initializingDiagram": "正在初始化图表...",
+  "unknown": "未知"
+}

@@ -1,0 +1,15 @@
+defaultCli: claude
+
+defaultCwd: ~/workflow-control
+
+# Maximum file download size in bytes (50MB)
+maxFileSize: 52428800
+
+# Session TTL in hours
+sessionTtlHours: 24
+
+# Slack message update debounce in ms
+updateDebounceMs: 1000
+
+# Max characters per Slack message before splitting
+maxMessageLength: 3900

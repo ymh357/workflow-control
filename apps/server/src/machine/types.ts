@@ -1,0 +1,54 @@
+import type { PipelineConfig, FragmentMeta, SandboxConfig } from "../lib/config-loader.js";
+import type { TokenUsage, StageTokenUsage } from "@workflow-control/shared";
+
+export interface WorkflowContext {
+  taskId: string;
+  taskText?: string;
+  explicitRepoName?: string;
+  status: string;
+  retryCount: number;
+  qaRetryCount: number;
+  lastStage?: string;
+  error?: string;
+  errorCode?: "interrupted" | "timeout" | "agent_error";
+  branch?: string;
+  worktreePath?: string;
+  store: Record<string, any>;
+  totalCostUsd?: number;
+  totalTokenUsage?: TokenUsage;
+  stageTokenUsages?: Record<string, StageTokenUsage>;
+  stageSessionIds: Record<string, string>;
+  stageCwds?: Record<string, string>;
+  parallelDone?: Record<string, string[]>;
+  rejectIntoGroup?: { group: string; stage: string };
+  resumeInfo?: { sessionId: string; feedback?: string; sync?: boolean };
+  config?: {
+    pipelineName: string;
+    pipeline: PipelineConfig;
+    prompts: {
+      system: Record<string, string>;
+      fragments: Record<string, string>;
+      fragmentMeta?: Record<string, FragmentMeta>;
+      globalConstraints: string;
+      globalClaudeMd: string;
+      globalGeminiMd: string;
+    };
+    skills: string[];
+    mcps: string[];
+    sandbox?: SandboxConfig;
+    agent?: { default_engine?: string; claude_model?: string; gemini_model?: string };
+  };
+}
+
+export type WorkflowEvent =
+  | { type: "START_ANALYSIS"; taskId: string; taskText?: string; repoName?: string; config?: WorkflowContext["config"]; initialStore?: Record<string, any>; worktreePath?: string; branch?: string }
+  | { type: "LAUNCH" }
+  | { type: "INTERRUPT"; reason?: string }
+  | { type: "UPDATE_CONFIG"; config: WorkflowContext["config"] }
+  | { type: "CONFIRM"; repoName?: string }
+  | { type: "REJECT"; reason?: string; targetStage?: string }
+  | { type: "REJECT_WITH_FEEDBACK"; feedback: string; targetStage?: string }
+  | { type: "RETRY" }
+  | { type: "SYNC_RETRY"; sessionId: string }
+  | { type: "CANCEL" }
+  | { type: "RESUME" };

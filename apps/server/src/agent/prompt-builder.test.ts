@@ -1,0 +1,438 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+vi.mock("../lib/logger.js", () => ({
+  taskLogger: () => ({
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  }),
+}));
+
+vi.mock("../lib/capability-registry.js", () => ({
+  buildCapabilitySummary: vi.fn(() => ({ mcps: [], scripts: [], skills: [] })),
+  formatCapabilityPrompt: vi.fn(() => "## Available Capabilities\n\nNo capabilities registered."),
+}));
+
+vi.mock("../lib/config-loader.js", () => ({
+  getFragmentRegistry: vi.fn(() => ({
+    resolve: vi.fn(() => []),
+    getAllKeywordsWithDescriptions: vi.fn(() => []),
+  })),
+  resolveFragmentsFromSnapshot: vi.fn(() => []),
+  isParallelGroup: (entry: any) => entry && typeof entry === "object" && "parallel" in entry,
+  flattenStages: (entries: any[]) => {
+    const result: any[] = [];
+    for (const e of entries) {
+      if (e && typeof e === "object" && "parallel" in e) {
+        result.push(...e.parallel.stages);
+      } else {
+        result.push(e);
+      }
+    }
+    return result;
+  },
+}));
+
+import { generateSchemaPrompt, buildEffectivePrompt } from "./prompt-builder.js";
+import type { StageOutputSchema } from "../lib/config-loader.js";
+
+describe("generateSchemaPrompt", () => {
+  it("generates prompt for a single string field", () => {
+    const outputs: StageOutputSchema = {
+      result: {
+        type: "object",
+        fields: [{ key: "summary", type: "string", description: "A brief summary" }],
+      },
+    };
+    const prompt = generateSchemaPrompt(outputs);
+    expect(prompt).toContain("## Required Output Format");
+    expect(prompt).toContain('"result"');
+    expect(prompt).toContain('"summary": string');
+    expect(prompt).toContain("// A brief summary");
+    expect(prompt).toContain("Return ONLY this JSON object");
+  });
+
+  it("generates prompt for multiple fields", () => {
+    const outputs: StageOutputSchema = {
+      analysis: {
+        type: "object",
+        fields: [
+          { key: "summary", type: "string", description: "Summary" },
+          { key: "score", type: "number", description: "Score" },
+          { key: "tags", type: "string[]", description: "Tags" },
+        ],
+      },
+    };
+    const prompt = generateSchemaPrompt(outputs);
+    expect(prompt).toContain('"summary": string');
+    expect(prompt).toContain('"score": number');
+    expect(prompt).toContain('"tags": string[]');
+  });
+
+  it("generates prompt for nested object fields", () => {
+    const outputs: StageOutputSchema = {
+      data: {
+        type: "object",
+        fields: [
+          {
+            key: "config",
+            type: "object",
+            description: "Config",
+            fields: [
+              { key: "name", type: "string", description: "Name" },
+            ],
+          },
+        ],
+      },
+    };
+    const prompt = generateSchemaPrompt(outputs);
+    expect(prompt).toContain('"config": {');
+    expect(prompt).toContain('"name": string');
+  });
+
+  it("handles store key with no fields", () => {
+    const outputs: StageOutputSchema = {
+      empty: { type: "object", fields: [] },
+    };
+    const prompt = generateSchemaPrompt(outputs);
+    expect(prompt).toContain('"empty": {}');
+  });
+
+  it("adds decisions instruction when decisions field is present", () => {
+    const outputs: StageOutputSchema = {
+      result: {
+        type: "object",
+        fields: [
+          { key: "decisions", type: "string", description: "Key decisions" },
+        ],
+      },
+    };
+    const prompt = generateSchemaPrompt(outputs);
+    expect(prompt).toContain("decisions");
+    expect(prompt).toContain("briefly record the most important choices");
+  });
+
+  it("does not add decisions instruction when no decisions field", () => {
+    const outputs: StageOutputSchema = {
+      result: {
+        type: "object",
+        fields: [
+          { key: "summary", type: "string", description: "Summary" },
+        ],
+      },
+    };
+    const prompt = generateSchemaPrompt(outputs);
+    expect(prompt).not.toContain("briefly record the most important choices");
+  });
+});
+
+describe("buildEffectivePrompt", () => {
+  const baseParams = {
+    isResume: false,
+    tier1Context: "tier1 context here",
+    prompt: "original prompt",
+  };
+
+  it("returns resumeSync prompt when isResume + resumeSync", () => {
+    const result = buildEffectivePrompt({
+      ...baseParams,
+      isResume: true,
+      resumeSync: true,
+    });
+    expect(result).toContain("user has completed manual work");
+    expect(result).toContain("inspect the CURRENT state");
+    expect(result).not.toContain("tier1 context here");
+  });
+
+  it("returns feedback prompt when isResume + resumePrompt (canResume=true)", () => {
+    const result = buildEffectivePrompt({
+      ...baseParams,
+      isResume: true,
+      resumePrompt: "fix the colors",
+      canResume: true,
+    });
+    expect(result).toContain("user has reviewed your previous output");
+    expect(result).toContain('"fix the colors"');
+    expect(result).toContain("Incorporate this feedback");
+    // Should NOT include tier1Context when canResume
+    expect(result).not.toContain("tier1 context here");
+  });
+
+  it("includes tier1Context in feedback when canResume=false", () => {
+    const result = buildEffectivePrompt({
+      ...baseParams,
+      isResume: true,
+      resumePrompt: "fix the colors",
+      canResume: false,
+    });
+    expect(result).toContain("tier1 context here");
+    expect(result).toContain("---");
+    expect(result).toContain('"fix the colors"');
+  });
+
+  it("defaults canResume to true", () => {
+    const result = buildEffectivePrompt({
+      ...baseParams,
+      isResume: true,
+      resumePrompt: "try again",
+    });
+    // canResume defaults to true, so no tier1Context
+    expect(result).not.toContain("tier1 context here");
+    expect(result).toContain('"try again"');
+  });
+
+  it("returns tier1Context in normal (non-resume) case", () => {
+    const result = buildEffectivePrompt(baseParams);
+    expect(result).toBe("tier1 context here");
+  });
+
+  it("falls back to prompt when tier1Context is empty", () => {
+    const result = buildEffectivePrompt({
+      ...baseParams,
+      tier1Context: "",
+    });
+    expect(result).toBe("original prompt");
+  });
+});
+
+// ---------- buildSystemAppendPrompt ----------
+
+import { buildSystemAppendPrompt } from "./prompt-builder.js";
+import {
+  getFragmentRegistry,
+  resolveFragmentsFromSnapshot,
+} from "../lib/config-loader.js";
+
+const mockGetFragmentRegistry = vi.mocked(getFragmentRegistry);
+const mockResolveFragmentsFromSnapshot = vi.mocked(resolveFragmentsFromSnapshot);
+
+describe("buildSystemAppendPrompt", () => {
+  const baseParams = {
+    taskId: "task-1",
+    stageName: "coding",
+    stageConfig: { engine: "claude", mcpServices: [] },
+    privateConfig: {
+      prompts: {
+        globalConstraints: "## Test Constraints",
+        fragments: { "frag1": "Fragment 1 content" },
+        fragmentMeta: {
+          frag1: { id: "frag1", keywords: ["lint"], stages: ["coding"], always: false },
+        },
+        system: { coding: "You are a coding assistant." },
+      },
+      pipeline: { stages: [] },
+    },
+    cwd: "/project",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetFragmentRegistry.mockReturnValue({
+      resolve: vi.fn(() => []),
+      getAllKeywordsWithDescriptions: vi.fn(() => []),
+    } as any);
+    mockResolveFragmentsFromSnapshot.mockReturnValue([]);
+  });
+
+  it("includes global constraints from privateConfig", async () => {
+    const result = await buildSystemAppendPrompt(baseParams as any);
+    expect(result).toContain("## Test Constraints");
+  });
+
+  it("uses DEFAULT_GLOBAL_CONSTRAINTS when privateConfig constraints are empty", async () => {
+    const params = {
+      ...baseParams,
+      privateConfig: {
+        ...baseParams.privateConfig,
+        prompts: { ...baseParams.privateConfig.prompts, globalConstraints: "" },
+      },
+    };
+    const result = await buildSystemAppendPrompt(params as any);
+    // Falsy globalConstraints -> falls back to DEFAULT_GLOBAL_CONSTRAINTS
+    expect(result).toContain("Global Constraints");
+  });
+
+  it("resolves fragments from snapshot when fragmentMeta is present", async () => {
+    mockResolveFragmentsFromSnapshot.mockReturnValue([
+      { id: "frag1", content: "Resolved fragment content" },
+    ]);
+    const result = await buildSystemAppendPrompt({
+      ...baseParams,
+      enabledSteps: ["lint"],
+    } as any);
+    expect(mockResolveFragmentsFromSnapshot).toHaveBeenCalledWith(
+      "coding",
+      ["lint"],
+      baseParams.privateConfig.prompts.fragments,
+      baseParams.privateConfig.prompts.fragmentMeta,
+    );
+    expect(result).toContain("Resolved fragment content");
+  });
+
+  it("uses fragment registry when no fragmentMeta in privateConfig", async () => {
+    const mockResolve = vi.fn(() => [{ id: "reg-frag", content: "Registry fragment" }]);
+    mockGetFragmentRegistry.mockReturnValue({
+      resolve: mockResolve,
+      getAllKeywordsWithDescriptions: vi.fn(() => []),
+    } as any);
+
+    const params = {
+      ...baseParams,
+      privateConfig: null,
+    };
+    const result = await buildSystemAppendPrompt(params as any);
+    expect(mockResolve).toHaveBeenCalledWith("coding", undefined);
+    expect(result).toContain("Registry fragment");
+  });
+
+  it("falls back to flat fragment entries when privateConfig has no fragmentMeta", async () => {
+    const params = {
+      ...baseParams,
+      privateConfig: {
+        ...baseParams.privateConfig,
+        prompts: {
+          ...baseParams.privateConfig.prompts,
+          fragmentMeta: undefined,
+          fragments: { "inline": "Inline fragment text" },
+        },
+      },
+    };
+    const result = await buildSystemAppendPrompt(params as any);
+    expect(result).toContain("Inline fragment text");
+  });
+
+  it("includes stage-specific system prompt", async () => {
+    const result = await buildSystemAppendPrompt(baseParams as any);
+    expect(result).toContain("You are a coding assistant.");
+  });
+
+  it("uses fallback system prompt when stage not in system map", async () => {
+    const params = {
+      ...baseParams,
+      stageName: "unknown-stage",
+    };
+    const result = await buildSystemAppendPrompt(params as any);
+    expect(result).toContain("Execute the current task stage based on project context.");
+  });
+
+  it("injects keyword descriptions for analyzing stage", async () => {
+    const params = {
+      ...baseParams,
+      stageName: "analyzing",
+      privateConfig: {
+        ...baseParams.privateConfig,
+        prompts: {
+          ...baseParams.privateConfig.prompts,
+          fragmentMeta: {
+            frag1: { id: "frag1", keywords: ["lint", "test"], stages: "*", always: false },
+          },
+          system: { analyzing: "Analyze the task." },
+        },
+      },
+    };
+    const result = await buildSystemAppendPrompt(params as any);
+    expect(result).toContain("### Available enabledSteps keywords");
+    expect(result).toContain('"lint", "test"');
+    expect(result).toContain("activates frag1");
+  });
+
+  it("uses fragment registry for keyword descriptions when no fragmentMeta", async () => {
+    mockGetFragmentRegistry.mockReturnValue({
+      resolve: vi.fn(() => []),
+      getAllKeywordsWithDescriptions: vi.fn(() => [
+        { keyword: "lint", fragmentId: "lint-frag" },
+      ]),
+    } as any);
+
+    const params = {
+      ...baseParams,
+      stageName: "analyzing",
+      privateConfig: null,
+    };
+    const result = await buildSystemAppendPrompt(params as any);
+    expect(result).toContain('"lint"');
+    expect(result).toContain("activates lint-frag");
+  });
+
+  it("does not inject project CLAUDE.md when globalClaudeMd is empty", async () => {
+    const params = {
+      ...baseParams,
+      privateConfig: {
+        ...baseParams.privateConfig,
+        prompts: {
+          ...baseParams.privateConfig.prompts,
+          globalClaudeMd: "",
+        },
+      },
+    };
+    const result = await buildSystemAppendPrompt(params as any);
+    expect(result).not.toContain("# Project Instructions");
+  });
+
+  it("does not inject project GEMINI.md when globalGeminiMd is empty", async () => {
+    const params = {
+      ...baseParams,
+      stageConfig: { engine: "gemini", mcpServices: [] },
+      privateConfig: {
+        ...baseParams.privateConfig,
+        prompts: {
+          ...baseParams.privateConfig.prompts,
+          globalGeminiMd: "",
+        },
+      },
+    };
+    const result = await buildSystemAppendPrompt(params as any);
+    expect(result).not.toContain("# Project Instructions");
+  });
+
+  it("injects globalClaudeMd from privateConfig", async () => {
+    const params = {
+      ...baseParams,
+      privateConfig: {
+        ...baseParams.privateConfig,
+        prompts: {
+          ...baseParams.privateConfig.prompts,
+          globalClaudeMd: "Private claude md",
+        },
+      },
+    };
+    const result = await buildSystemAppendPrompt(params as any);
+    expect(result).toContain("Private claude md");
+  });
+
+  it("generates schema output section when stage has outputs", async () => {
+    const params = {
+      ...baseParams,
+      privateConfig: {
+        ...baseParams.privateConfig,
+        pipeline: {
+          stages: [
+            {
+              name: "coding",
+              outputs: {
+                result: {
+                  type: "object",
+                  fields: [{ key: "summary", type: "string", description: "Summary" }],
+                },
+              },
+            },
+          ],
+        },
+      },
+    };
+    const result = await buildSystemAppendPrompt(params as any);
+    expect(result).toContain("## Required Output Format");
+    expect(result).toContain('"summary": string');
+  });
+
+  it("does not duplicate fragment content", async () => {
+    mockResolveFragmentsFromSnapshot.mockReturnValue([
+      { id: "a", content: "Same content" },
+      { id: "b", content: "Same content" },
+    ]);
+    const result = await buildSystemAppendPrompt(baseParams as any);
+    const occurrences = result.split("Same content").length - 1;
+    expect(occurrences).toBe(1);
+  });
+});

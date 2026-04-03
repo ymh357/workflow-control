@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__workflow-control__submit_stage_result",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"continue\": false, \"stopReason\": \"Stage submitted\"}'"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__workflow-control__confirm_gate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"continue\": false, \"stopReason\": \"Gate submitted\"}'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'TASK_ID=\"${OG_TASK_ID:-}\"; [ -z \"$TASK_ID\" ] && exit 0; R=$(curl -s --max-time 3 \"${OG_SERVER_URL:-http://localhost:3001}/api/edge/$TASK_ID/check-interrupt\" 2>/dev/null); echo \"$R\" | grep -q \"\\\"interrupted\\\":true\" && echo \"{\\\"continue\\\": false, \\\"stopReason\\\": \\\"Task interrupted\\\"}\"'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

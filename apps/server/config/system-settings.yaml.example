@@ -1,0 +1,37 @@
+# System Settings — copy to system-settings.yaml and fill in real values
+# Supports ${ENV_VAR} interpolation (reads from process.env at runtime)
+
+slack:
+  bot_token: ${SLACK_BOT_TOKEN}
+  notify_channel_id: ${SLACK_NOTIFY_CHANNEL_ID}
+  signing_secret: ${SLACK_SIGNING_SECRET}
+  app_token: ${SLACK_APP_TOKEN}
+paths:
+  repos_base: ${HOME}
+  worktrees_base: ${HOME}/worktrees
+  data_dir: /tmp/workflow-control-data
+  claude_executable: claude
+  gemini_executable: gemini
+agent:
+  default_model: claude-sonnet-4-6
+  claude_model: claude-sonnet-4-6
+  gemini_model: auto
+  default_engine: claude
+  max_budget_usd: 10
+notion:
+  sprint_board_id: ""
+  ds_id: ""
+github:
+  org: ""
+figma:
+  access_token: ""
+sandbox:
+  enabled: false
+  auto_allow_bash: true
+  allow_unsandboxed_commands: true
+  network:
+    allowed_domains: []
+  filesystem:
+    allow_write: []
+    deny_write: []
+    deny_read: []

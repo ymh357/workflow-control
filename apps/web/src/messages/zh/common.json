@@ -1,0 +1,63 @@
+{
+  "nav": {
+    "tasks": "任务",
+    "config": "配置",
+    "store": "商店",
+    "help": "帮助"
+  },
+  "appTitle": "Workflow Control",
+  "back": "返回",
+  "cancel": "取消",
+  "delete": "删除",
+  "confirm": "确认",
+  "save": "保存",
+  "create": "创建",
+  "loading": "加载中...",
+  "retry": "重试",
+  "resume": "恢复",
+  "copy": "复制",
+  "send": "发送",
+  "close": "关闭",
+  "ok": "好的",
+  "yes": "是",
+  "no": "否",
+  "search": "搜索...",
+  "noResults": "无结果。",
+  "error": {
+    "somethingWentWrong": "出现错误",
+    "unexpectedError": "发生了意外错误。",
+    "tryAgain": "重试"
+  },
+  "status": {
+    "completed": "已完成",
+    "error": "错误",
+    "blocked": "已阻塞",
+    "idle": "空闲",
+    "cancelled": "已取消",
+    "running": "运行中",
+    "connecting": "连接中",
+    "unknown": "未知"
+  },
+  "language": {
+    "en": "EN",
+    "zh": "中"
+  },
+  "helpNav": {
+    "overview": "概览",
+    "overviewSub": "功能介绍",
+    "tasks": "任务",
+    "tasksSub": "创建与监控",
+    "pipelines": "流水线",
+    "pipelinesSub": "配置管理",
+    "prompts": "提示词",
+    "promptsSub": "智能引擎",
+    "edge": "Edge Runner",
+    "edgeSub": "终端模式",
+    "architecture": "架构",
+    "architectureSub": "内部原理",
+    "integrations": "集成",
+    "integrationsSub": "引擎与工具",
+    "store": "商店",
+    "storeSub": "包管理"
+  }
+}

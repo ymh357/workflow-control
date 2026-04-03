@@ -1,0 +1,63 @@
+node_modules/
+dist/
+.next/
+.env
+.env.local
+*.tsbuildinfo
+.DS_Store
+coverage/
+
+# Registry generated artifacts (rebuild with `pnpm --filter server registry:build`)
+registry/packages/
+registry/index.json
+
+# System settings (contains secrets — use system-settings.yaml.example as template)
+apps/server/config/system-settings.yaml
+
+# Root-level config/ (local workflow configuration, not committed)
+/config/
+
+# config/ managed by registry (use `pnpm registry bootstrap` after clone)
+apps/server/config/pipelines/
+apps/server/config/skills/
+apps/server/config/hooks/
+apps/server/config/prompts/
+apps/server/config/gates/
+apps/server/config/scripts/
+apps/server/.wfctl-registry.lock
+apps/server/.publish-tmp/
+
+# Agent-generated stray prompt files (refinePrompts may write to wrong paths)
+apps/server/prompts/
+apps/server/src/pipelines/
+apps/server/src/prompts/
+apps/server/src/system-prompts/
+
+# Claude Code runtime artifacts (worktrees, reports) — settings and agents are tracked
+.claude/worktrees/
+.claude/full-review-report.md
+
+# Playwright generated output
+apps/web/e2e/test-results/
+apps/web/playwright-report/
+
+# Playwright MCP screenshots
+.playwright-mcp/
+
+# Local MCP config backup
+.mcp.json.bak
+
+# Scratch images / screenshots
+/*.png
+
+# Root-level test output
+/test-results/
+
+# Team env (shared secrets — use .env.team.example as template)
+.env.team
+
+# User-specific config (these are registry-managed; only global.md and stage/ are tracked)
+apps/server/config/claude-md/*.md
+!apps/server/config/claude-md/global.md
+apps/server/config/system-prompts/
+apps/server/config/claude-commands/
