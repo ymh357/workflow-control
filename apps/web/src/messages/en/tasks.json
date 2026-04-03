@@ -41,6 +41,8 @@
   "completed": "Completed",
   "deliverable": "Deliverable",
   "totalCostLabel": "Total cost: ${cost}",
+  "mcpKeysNeeded": "API KEYS NEEDED",
+  "mcpKeysHint": "Configure in Settings → MCP Registry or .env.local",
   "interruptPlaceholder": "Send instruction (interrupts current work)...",
   "sendRestart": "Send & Restart",
   "interruptDesc": "The agent will stop its current work and restart this stage with your instruction.",

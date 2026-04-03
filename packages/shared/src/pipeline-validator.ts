@@ -210,14 +210,14 @@ function validateStage(
     }
   }
 
-  // Check MCP references exist in registry
+  // Check MCP references exist in registry (warning, not error — pipelines may reference MCPs not yet installed)
   if (knownMcps) {
     const stageMcps = (stage as Record<string, unknown>).mcps as string[] | undefined;
     if (stageMcps) {
       for (const mcp of stageMcps) {
         if (!knownMcps.has(mcp)) {
           issues.push({
-            severity: "error",
+            severity: "warning",
             stageIndex: entryIndex,
             field: "mcps",
             message: `Stage "${stage.name}" references MCP "${mcp}" which is not registered`,

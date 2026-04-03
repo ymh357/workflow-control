@@ -239,3 +239,6 @@ stages:
           - key: validationPassed
             type: boolean
             description: Whether the YAML passed schema validation
+          - key: mcpSetupNeeded
+            type: object[]
+            description: MCPs that were auto-registered but need API keys configured (each has name and envVars fields)

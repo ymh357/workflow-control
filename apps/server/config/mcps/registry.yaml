@@ -1,47 +1,49 @@
-# MCP Service Registry — single source of truth for all MCP server configs.
-# This file is also managed by `wfctl install/uninstall` for MCP packages.
-#
-# Each entry declares how to start an MCP server via stdio.
-# Stages reference MCPs by name (e.g. `mcps: [notion, context7]` in pipeline.yaml).
-#
-# env values support:
-#   - "${ENV_VAR}" interpolation (reads from process.env)
-#   - { json: { key: "value with ${ENV_VAR}" } } for JSON-stringified env values
-#
-# If any referenced ${ENV_VAR} is missing, the MCP is skipped (not available).
-# Use `gemini:` override to provide an alternative config for the Gemini engine.
-
 notion:
-  description: "Read/write Notion pages, databases, and comments"
-  command: "npx"
-  args: ["-y", "@notionhq/notion-mcp-server"]
+  description: Read/write Notion pages, databases, and comments
+  command: npx
+  args:
+    - -y
+    - "@notionhq/notion-mcp-server"
   env:
     OPENAPI_MCP_HEADERS:
       json:
-        Authorization: "Bearer ${NOTION_TOKEN}"
-        Notion-Version: "2022-06-28"
-  # gemini:
-  #   command: "npx"
-  #   args: ["-y", "@notionhq/notion-mcp-server"]
-  #   env:
-  #     OPENAPI_MCP_HEADERS:
-  #       json:
-  #         Authorization: "Bearer ${NOTION_TOKEN}"
-  #         Notion-Version: "2022-06-28"
-
+        Authorization: Bearer ${NOTION_TOKEN}
+        Notion-Version: 2022-06-28
 figma:
-  description: "Read Figma designs, extract design tokens, and get screenshots"
-  command: "npx"
-  args: ["-y", "figma-developer-mcp", "--stdio"]
+  description: Read Figma designs, extract design tokens, and get screenshots
+  command: npx
+  args:
+    - -y
+    - figma-developer-mcp
+    - --stdio
   env:
-    FIGMA_API_KEY: "${FIGMA_ACCESS_TOKEN}"
-
+    FIGMA_API_KEY: ${FIGMA_ACCESS_TOKEN}
 context7:
-  description: "Retrieve up-to-date documentation and code examples for any library"
-  command: "npx"
-  args: ["-y", "@upstash/context7-mcp@latest"]
-
+  description: Retrieve up-to-date documentation and code examples for any library
+  command: npx
+  args:
+    - -y
+    - "@upstash/context7-mcp@latest"
 pulsemcp:
-  description: "Search and discover MCP servers from the PulseMCP directory (9000+ servers)"
-  command: "npx"
-  args: ["-y", "pulsemcp-server"]
+  description: Search and discover MCP servers from the PulseMCP directory (9000+ servers)
+  command: npx
+  args:
+    - -y
+    - pulsemcp-server
+linear:
+  description: "Linear project management — issues, projects, teams, and comments"
+  command: npx
+  args:
+    - -y
+    - mcp-remote
+    - "https://mcp.linear.app/mcp"
+
+gitlab:
+  description: "GitLab API — repositories, merge requests, issues, pipelines, and CI/CD"
+  command: npx
+  args:
+    - -y
+    - "@modelcontextprotocol/server-gitlab"
+  env:
+    GITLAB_PERSONAL_ACCESS_TOKEN: "${GITLAB_PERSONAL_ACCESS_TOKEN}"
+    GITLAB_API_URL: "${GITLAB_API_URL}"

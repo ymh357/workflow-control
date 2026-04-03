@@ -5,6 +5,9 @@ import { CONFIG_DIR } from "../lib/config-loader.js";
 import { validatePipelineConfig } from "../lib/config/schema.js";
 import { validatePipelineLogic, getValidationErrors, validatePromptAlignment } from "@workflow-control/shared";
 import { taskLogger } from "../lib/logger.js";
+import { loadMcpRegistry } from "../lib/config/mcp.js";
+import { RegistryService } from "../services/registry-service.js";
+import { sseManager } from "../sse/manager.js";
 import type { AutomationScript } from "./types.js";
 
 export const persistPipelineScript: AutomationScript = {
@@ -243,13 +246,163 @@ If validation fails, an error is thrown and nothing is written.
 
     log.info({ pipelineId: safeId, pipelineName, fileCount: savedFiles.length }, "Pipeline persisted successfully");
 
+    // Auto-register missing MCPs referenced by the pipeline
+    const mcpSetupNeeded = await autoRegisterMissingMcps(parsedObj, pipelineName ?? safeId, log);
+
+    // Notify dashboard if any MCPs need API key configuration
+    if (mcpSetupNeeded.length > 0) {
+      const lines = mcpSetupNeeded.map((m) => `  ${m.name}: set ${m.envVars.join(", ")}`);
+      sseManager.pushMessage(taskId, {
+        type: "agent_text",
+        taskId,
+        timestamp: new Date().toISOString(),
+        data: {
+          text: `\n⚠ Auto-registered MCPs that need API keys:\n${lines.join("\n")}\nConfigure them in Settings → MCP Registry or .env.local\n`,
+        },
+      });
+    }
+
     return {
       persistResult: {
         pipelineId: safeId,
         pipelineName: pipelineName ?? safeId,
         savedFiles,
         validationPassed: true,
+        ...(mcpSetupNeeded.length > 0 ? { mcpSetupNeeded } : {}),
       },
     };
   },
 };
+
+// Well-known MCP servers — maps short name to official package/config.
+// Only these are auto-registered. Unknown MCPs are left for manual setup.
+const WELL_KNOWN_MCPS: Record<string, {
+  description: string;
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}> = {
+  gitlab: {
+    description: "GitLab API — repositories, merge requests, issues, pipelines, and CI/CD",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-gitlab"],
+    env: { GITLAB_PERSONAL_ACCESS_TOKEN: "${GITLAB_PERSONAL_ACCESS_TOKEN}", GITLAB_API_URL: "${GITLAB_API_URL}" },
+  },
+  github: {
+    description: "GitHub API — repositories, pull requests, issues, and actions",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-github"],
+    env: { GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}" },
+  },
+  linear: {
+    description: "Linear project management — issues, projects, teams, and comments",
+    command: "npx",
+    args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+  },
+  slack: {
+    description: "Slack messaging — channels, messages, users, and reactions",
+    command: "npx",
+    args: ["-y", "@anthropic-ai/mcp-server-slack"],
+    env: { SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}" },
+  },
+  "google-maps": {
+    description: "Google Maps API — geocoding, directions, places, and distance matrix",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-google-maps"],
+    env: { GOOGLE_MAPS_API_KEY: "${GOOGLE_MAPS_API_KEY}" },
+  },
+  puppeteer: {
+    description: "Browser automation via Puppeteer — navigate, screenshot, and interact with web pages",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-puppeteer"],
+  },
+  filesystem: {
+    description: "Local filesystem access — read, write, and search files",
+    command: "npx",
+    args: ["-y", "@modelcontextprotocol/server-filesystem"],
+  },
+};
+
+/**
+ * Scan pipeline stages for MCP references not in registry.yaml,
+ * and auto-register well-known MCPs. Unknown MCPs are reported as
+ * needing manual setup — we do NOT blindly install third-party packages
+ * from search results.
+ */
+async function autoRegisterMissingMcps(
+  parsedObj: Record<string, unknown>,
+  pipelineName: string,
+  log: ReturnType<typeof taskLogger>,
+): Promise<Array<{ name: string; envVars: string[] }>> {
+  const stages = parsedObj.stages as Array<Record<string, unknown>> | undefined;
+  if (!stages) return [];
+
+  // Collect all MCP names referenced in the pipeline
+  const referencedMcps = new Set<string>();
+  for (const entry of stages) {
+    const mcps = entry.mcps as string[] | undefined;
+    if (mcps) for (const m of mcps) referencedMcps.add(m);
+    const parallel = entry.parallel as { stages?: Array<Record<string, unknown>> } | undefined;
+    if (parallel?.stages) {
+      for (const child of parallel.stages) {
+        const childMcps = child.mcps as string[] | undefined;
+        if (childMcps) for (const m of childMcps) referencedMcps.add(m);
+      }
+    }
+  }
+
+  if (referencedMcps.size === 0) return [];
+
+  const registry = loadMcpRegistry() ?? {};
+  const missing = [...referencedMcps].filter((name) => !registry[name]);
+  if (missing.length === 0) return [];
+
+  log.info({ missing }, "Pipeline references unregistered MCPs — checking well-known list");
+
+  const mcpSetupNeeded: Array<{ name: string; envVars: string[] }> = [];
+  const registryService = new RegistryService();
+  const manualSetup: string[] = [];
+
+  for (const name of missing) {
+    const known = WELL_KNOWN_MCPS[name];
+    if (!known) {
+      manualSetup.push(name);
+      continue;
+    }
+
+    try {
+      const installResult = registryService.installDiscoveredMcp(name, {
+        description: known.description,
+        command: known.command,
+        args: known.args,
+        ...(known.env ? { env: known.env } : {}),
+      });
+
+      if (installResult.installed) {
+        log.info({ mcp: name }, "Auto-registered well-known MCP");
+        if (installResult.mcpSetupNeeded) {
+          mcpSetupNeeded.push(installResult.mcpSetupNeeded);
+        }
+        // If the well-known entry has env vars, always report them as needing setup
+        if (known.env && !installResult.mcpSetupNeeded) {
+          const envVars = Object.keys(known.env).filter((k) => known.env![k].includes("${"));
+          if (envVars.length > 0) {
+            mcpSetupNeeded.push({ name, envVars });
+          }
+        }
+      }
+    } catch (err) {
+      log.warn({ err, mcp: name }, "Failed to register well-known MCP");
+      manualSetup.push(name);
+    }
+  }
+
+  if (manualSetup.length > 0) {
+    log.warn({ mcps: manualSetup }, "Unknown MCPs need manual setup — not in well-known list");
+    for (const name of manualSetup) {
+      mcpSetupNeeded.push({ name, envVars: ["(manual setup required — search npmjs.com or modelcontextprotocol.io)"] });
+    }
+  }
+
+  return mcpSetupNeeded;
+}

@@ -332,7 +332,7 @@ export class RegistryService {
 
   installDiscoveredMcp(
     name: string,
-    entry: { description?: string; command: string; args?: string[] },
+    entry: { description?: string; command: string; args?: string[]; env?: Record<string, string | { json: Record<string, string> }> },
   ): { installed: boolean; mcpSetupNeeded?: McpSetupNeeded } {
     let lock = readLock();
     const manifest: PackageManifest = {

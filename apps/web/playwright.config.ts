@@ -11,7 +11,7 @@ export default defineConfig({
   timeout: 30_000,
 
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL: "http://localhost:3004",
     trace: "on-first-retry",
   },
 
@@ -24,7 +24,7 @@ export default defineConfig({
     },
     {
       command: "pnpm dev",
-      port: 3000,
+      port: 3004,
       reuseExistingServer: true,
     },
   ],

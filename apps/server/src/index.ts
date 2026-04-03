@@ -101,7 +101,7 @@ app.onError((err, c) => {
 });
 
 app.use("*", honoLogger());
-app.use("*", cors({ origin: "http://localhost:3000" }));
+app.use("*", cors({ origin: ["http://localhost:3004", "http://localhost:3000"] }));
 app.use("*", bodyLimit({ maxSize: 2 * 1024 * 1024 })); // 2MB
 
 const UUID_REGEX = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";

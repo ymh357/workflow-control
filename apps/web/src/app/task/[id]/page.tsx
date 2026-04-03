@@ -883,6 +883,24 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
                 </p>
               )}
               {totalCostUsd > 0 && <p className="mt-1 text-sm text-zinc-400">{t("totalCostLabel", { cost: totalCostUsd.toFixed(2) })}</p>}
+              {(() => {
+                const pr = (task?.store as Record<string, unknown>)?.persistResult as { mcpSetupNeeded?: Array<{ name: string; envVars: string[] }> } | undefined;
+                if (!pr?.mcpSetupNeeded?.length) return null;
+                return (
+                  <div className="mt-4 pt-3 border-t border-green-700/30">
+                    <p className="text-[10px] font-bold text-amber-500 uppercase tracking-widest mb-2">{t("mcpKeysNeeded")}</p>
+                    <div className="space-y-1">
+                      {pr.mcpSetupNeeded.map((m) => (
+                        <div key={m.name} className="text-xs text-amber-400">
+                          <span className="font-mono">{m.name}</span>
+                          <span className="text-zinc-500 ml-1">— set {m.envVars.join(", ")}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-zinc-500 mt-2">{t("mcpKeysHint")}</p>
+                  </div>
+                );
+              })()}
             </div>
           )}
         </>

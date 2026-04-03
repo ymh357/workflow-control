@@ -41,6 +41,8 @@
   "completed": "已完成",
   "deliverable": "交付物",
   "totalCostLabel": "总花费：${cost}",
+  "mcpKeysNeeded": "需要配置 API KEY",
+  "mcpKeysHint": "在 Settings → MCP Registry 或 .env.local 中配置",
   "interruptPlaceholder": "发送指令（中断当前工作）...",
   "sendRestart": "发送并重启",
   "interruptDesc": "Agent 将停止当前工作，并使用你的指令重新启动此阶段。",
