@@ -97,6 +97,20 @@ export function readProjectGeminiMd(cwd?: string): string {
   return "";
 }
 
+export function readProjectCodexMd(cwd?: string): string {
+  if (!cwd) return "";
+  const paths = [
+    join(cwd, ".codex", "CODEX.md"),
+    join(cwd, "CODEX.md"),
+  ];
+  for (const p of paths) {
+    try {
+      if (existsSync(p)) return readFileSync(p, "utf-8");
+    } catch { /* ignore */ }
+  }
+  return "";
+}
+
 // --- Backward-compatible prompt fragment loader ---
 
 export function loadPromptFragment(fragmentName: string): string | null {
@@ -131,6 +145,11 @@ export function getClaudeMdPath(relativePath: string): string | null {
 
 export function getGeminiMdPath(relativePath: string): string | null {
   const filePath = join(CONFIG_DIR, "gemini-md", relativePath);
+  return existsSync(filePath) ? filePath : null;
+}
+
+export function getCodexMdPath(relativePath: string): string | null {
+  const filePath = join(CONFIG_DIR, "codex-md", relativePath);
   return existsSync(filePath) ? filePath : null;
 }
 

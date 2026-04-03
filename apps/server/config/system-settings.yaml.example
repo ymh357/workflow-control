@@ -12,10 +12,12 @@ paths:
   data_dir: /tmp/workflow-control-data
   claude_executable: claude
   gemini_executable: gemini
+  codex_executable: codex
 agent:
   default_model: claude-sonnet-4-6
   claude_model: claude-sonnet-4-6
   gemini_model: auto
+  codex_model: ""
   default_engine: claude
   max_budget_usd: 10
 notion:

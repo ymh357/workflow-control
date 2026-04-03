@@ -147,6 +147,29 @@ async function main() {
   }
 
   // ============================================================
+  // Agent engine check (at least one of Claude / Gemini / Codex)
+  // ============================================================
+
+  console.log("");
+  const engines: { name: string; bin: string; found: string | null }[] = [];
+  for (const [name, bin] of [["Claude", "claude"], ["Gemini", "gemini"], ["Codex", "codex"]] as const) {
+    try {
+      const found = execFileSync("which", [bin], { encoding: "utf-8", timeout: 5_000 }).trim();
+      engines.push({ name, bin, found });
+      console.log(`  [${name} CLI] ${found}`);
+    } catch {
+      engines.push({ name, bin, found: null });
+      console.log(`  [${name} CLI] Not found.`);
+    }
+  }
+  if (!engines.some(e => e.found)) {
+    console.log("\n  WARNING: No agent engine found. At least one of Claude, Gemini, or Codex CLI is required.");
+    console.log("    Claude: https://docs.anthropic.com/en/docs/claude-code");
+    console.log("    Gemini: https://github.com/google-gemini/gemini-cli");
+    console.log("    Codex:  https://github.com/openai/codex");
+  }
+
+  // ============================================================
   // gh CLI check
   // ============================================================
 
@@ -172,13 +195,16 @@ async function main() {
   if (!existsSync(envLocalPath)) {
     console.log("\n  [.env.local] Not found. Creating from template...");
     try {
-      const claudePath = execFileSync("which", ["claude"], { encoding: "utf-8", timeout: 5_000 }).trim();
       const home = process.env.HOME ?? "";
       const lines = [
-        `CLAUDE_PATH=${claudePath}`,
         `REPOS_BASE_PATH=${home}/`,
         `WORKTREES_BASE_PATH=${home}/wfc-worktrees/`,
       ];
+
+      // Add detected engine paths
+      for (const e of engines) {
+        if (e.found) lines.push(`${e.bin.toUpperCase()}_PATH=${e.found}`);
+      }
 
       if (notionToken) {
         lines.push(`SETTING_NOTION_TOKEN=${notionToken}`);

@@ -696,6 +696,18 @@ async function runStage(
     // Transcript sync
     const syncInterval = startTranscriptSync(taskId, serverUrl, process.cwd());
 
+    // Codex has no hooks — poll server for interrupt signals instead
+    const interruptInterval = engine === "codex" ? setInterval(async () => {
+      try {
+        const res = await fetch(`${serverUrl}/api/edge/${taskId}/check-interrupt`, { signal: AbortSignal.timeout(3000) });
+        const body = await res.json() as { interrupted?: boolean };
+        if (body.interrupted) {
+          console.log("\nTask interrupted — killing Codex process.");
+          ptyProcess.kill();
+        }
+      } catch { /* non-critical */ }
+    }, 5000) : null;
+
     let isResolved = false;
     const resolveOnce = (result: "completed" | "aborted") => {
       if (isResolved) return;
@@ -703,6 +715,7 @@ async function runStage(
       clearTimeout(stageTimeout);
       clearTimeout(finalKillTimer);
       clearInterval(syncInterval);
+      if (interruptInterval) clearInterval(interruptInterval);
       process.stdin.removeListener("data", stdinListener);
       if (engine === "gemini") restoreGeminiProjectSettings(process.cwd());
       resolve(result);
@@ -712,8 +725,9 @@ async function runStage(
 
     ptyProcess.onExit(({ exitCode }) => {
       console.log(`\nStage "${stageName}" exited (code: ${exitCode})`);
-      // Gemini exits with code 0 after hook stops it; Claude outputs "hook stopped continuation" first
-      const completed = stageCompleted || (engine === "gemini" && exitCode === 0);
+      // Gemini exits with code 0 after hook stops it; Claude outputs "hook stopped continuation" first.
+      // Codex exec runs to completion and exits — no hooks, so exitCode 0 means success.
+      const completed = stageCompleted || ((engine === "gemini" || engine === "codex") && exitCode === 0);
       resolveOnce(completed ? "completed" : "aborted");
     });
   });

@@ -250,6 +250,13 @@ export const McpRegistryEntrySchema = z.object({
       env: z.record(z.string(), McpEnvValueSchema).optional(),
     })
     .optional(),
+  codex: z
+    .object({
+      command: z.string(),
+      args: z.array(z.string()).optional(),
+      env: z.record(z.string(), McpEnvValueSchema).optional(),
+    })
+    .optional(),
 });
 
 // --- Sandbox Config ---

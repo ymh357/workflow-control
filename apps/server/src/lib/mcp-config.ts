@@ -28,6 +28,8 @@ export function buildMcpServers(
       // Use engine-specific override if available
       if (engine === "gemini" && entry.gemini) {
         config = buildMcpFromRegistry(svc, entry.gemini);
+      } else if (engine === "codex" && entry.codex) {
+        config = buildMcpFromRegistry(svc, entry.codex);
       }
       if (!config) {
         config = buildMcpFromRegistry(svc, entry);

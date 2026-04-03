@@ -218,6 +218,11 @@ export interface McpRegistryEntry {
     args?: string[];
     env?: Record<string, McpEnvValue>;
   };
+  codex?: {
+    command: string;
+    args?: string[];
+    env?: Record<string, McpEnvValue>;
+  };
 }
 
 export interface SandboxConfig {

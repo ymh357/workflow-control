@@ -9,6 +9,7 @@ import {
   getSkillPath,
   getClaudeMdPath,
   getGeminiMdPath,
+  getCodexMdPath,
   CONFIG_DIR,
   type PipelineConfig,
 } from "./config-loader.js";
@@ -198,6 +199,37 @@ function injectClaudeMd(worktreePath: string, globalFileName?: string): void {
   log.info("CLAUDE.md merged with global standards");
 }
 
+function injectCodexMd(worktreePath: string, globalFileName?: string): void {
+  if (!globalFileName) return;
+
+  const globalPath = getCodexMdPath(globalFileName);
+  if (!globalPath) {
+    log.warn({ file: globalFileName }, "Global CODEX.md not found, skipping");
+    return;
+  }
+
+  const globalContent = readFileSync(globalPath, "utf-8").trim();
+  const codexMdPath = join(worktreePath, "CODEX.md");
+  const separator = "\n\n---\n\n";
+
+  let existing = "";
+  if (existsSync(codexMdPath)) {
+    existing = readFileSync(codexMdPath, "utf-8").trim();
+  }
+
+  if (existing.includes(globalContent)) {
+    log.info("Global CODEX.md content already present, skipping");
+    return;
+  }
+
+  const merged = existing
+    ? `${existing}${separator}${globalContent}`
+    : globalContent;
+
+  writeFileSync(codexMdPath, merged + "\n", "utf-8");
+  log.info("CODEX.md merged with global standards");
+}
+
 // --- Knowledge files injection (Layer 1) ---
 
 function injectKnowledge(worktreePath: string): void {
@@ -250,6 +282,12 @@ export function injectWorktreeConfig(worktreePath: string, pipeline?: PipelineCo
     injectGeminiMd(worktreePath, config.gemini_md?.global);
   } catch (err) {
     log.error({ err }, "GEMINI.md injection failed");
+  }
+
+  try {
+    injectCodexMd(worktreePath, config.codex_md?.global);
+  } catch (err) {
+    log.error({ err }, "CODEX.md injection failed");
   }
 
   try {

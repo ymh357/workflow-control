@@ -108,7 +108,7 @@ Tasks snapshot their full pipeline config at creation. Global config changes nev
 Agent prompts are assembled from 6 layers (broadest → narrowest scope):
 
 1. **Global constraints** — behavioral rules across all stages
-2. **Project rules** — CLAUDE.md / GEMINI.md repository conventions
+2. **Project rules** — CLAUDE.md / GEMINI.md / CODEX.md repository conventions
 3. **Stage system prompt** — stage-specific instructions
 4. **Knowledge fragments** — reusable domain knowledge, matched by keywords and stage
 5. **Output schema** — auto-generated JSON format instructions
@@ -201,7 +201,7 @@ Two config files control the system (both gitignored):
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `REPOS_BASE_PATH` | Yes | Base directory where your git repos live |
-| `CLAUDE_PATH` / `GEMINI_PATH` | No | Override CLI executable paths (auto-detected if on PATH) |
+| `CLAUDE_PATH` / `GEMINI_PATH` / `CODEX_PATH` | No | Override CLI executable paths (auto-detected if on PATH) |
 | `SLACK_BOT_TOKEN` | No | Slack bot token for task notifications |
 | `SLACK_APP_TOKEN` | No | Slack app token for Socket Mode (interactive buttons) |
 | `SLACK_NOTIFY_CHANNEL_ID` | No | Slack channel/user for notifications |
