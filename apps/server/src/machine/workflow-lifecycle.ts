@@ -1,7 +1,7 @@
 // Configuration snapshotting for workflow creation.
 // Extracted from actor-registry.ts to reduce file size.
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowContext } from "./types.js";
 import {
@@ -9,6 +9,7 @@ import {
   loadPipelineSystemPrompt, loadPipelineConstraints,
   flattenStages,
   type FragmentMeta,
+  getFragmentRegistry,
 } from "../lib/config-loader.js";
 
 export function snapshotGlobalConfig(pipelineName = "pipeline-generator"): NonNullable<WorkflowContext["config"]> {
@@ -36,15 +37,26 @@ export function snapshotGlobalConfig(pipelineName = "pipeline-generator"): NonNu
     }
   }
 
-  // Fragments: pipeline-scoped only — do not load from global registry
-  // Pipelines define their own knowledge via system prompts and claude_md/gemini_md
   const fragments: Record<string, string> = {};
   const fragmentMeta: Record<string, FragmentMeta> = {};
+  for (const [id, entry] of getFragmentRegistry().getAllEntries()) {
+    fragments[id] = entry.content;
+    fragmentMeta[id] = entry.meta;
+  }
 
-  // Pipeline-controlled project instructions only — no fallback to global config files
-  const globalClaudeMd = pipeline.claude_md?.global ?? "";
-  const globalGeminiMd = pipeline.gemini_md?.global ?? "";
-  const globalCodexMd = pipeline.codex_md?.global ?? "";
+  const readOptionalMarkdown = (...segments: string[]): string => {
+    const filePath = join(CONFIG_DIR, ...segments);
+    if (!existsSync(filePath)) return "";
+    try {
+      return readFileSync(filePath, "utf-8");
+    } catch {
+      return "";
+    }
+  };
+
+  const globalClaudeMd = pipeline.claude_md?.global ?? readOptionalMarkdown("claude-md", "global.md");
+  const globalGeminiMd = pipeline.gemini_md?.global ?? readOptionalMarkdown("gemini-md", "global.md");
+  const globalCodexMd = pipeline.codex_md?.global ?? readOptionalMarkdown("codex-md", "global.md");
 
   const settings = loadSystemSettings();
 

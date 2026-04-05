@@ -123,22 +123,16 @@ describe("retry routes", () => {
       expect(body.code).toBe("INTERNAL_ERROR");
     });
 
-    it("handles empty/missing body gracefully", async () => {
-      mockRetryTask.mockReturnValue({
-        ok: true,
-        data: { lastStage: "coding", statusAfter: "coding" },
-      });
-
+    it("returns 400 when request body is missing", async () => {
       const res = await app.request(
         "/tasks/11111111-1111-1111-1111-111111111111/retry",
         { method: "POST" },
       );
 
-      expect(res.status).toBe(200);
-      expect(mockRetryTask).toHaveBeenCalledWith(
-        "11111111-1111-1111-1111-111111111111",
-        { sync: undefined },
-      );
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.code).toBe("VALIDATION_FAILED");
+      expect(mockRetryTask).not.toHaveBeenCalled();
     });
   });
 });

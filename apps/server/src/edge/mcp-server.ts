@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getAllSlots, hasSlot, getSlotNonce, resolveSlot } from "./registry.js";
+import { getAllSlots, hasSlot, getSlotNonce, resolveSlot, setPendingRecovery } from "./registry.js";
 import { buildTier1Context } from "../agent/context-builder.js";
 import { buildSystemAppendPrompt, buildStaticPromptPrefix } from "../agent/prompt-builder.js";
 import { extractJSON } from "../lib/json-extractor.js";
@@ -230,15 +230,38 @@ export function createEdgeMcpServer(): McpServer {
         }
       }
 
-      const resolved = resolveSlot(taskId, stageName, {
+      const agentResult = {
         resultText,
         sessionId,
         costUsd: costUsd ?? 0,
         durationMs: durationMs ?? 0,
-      }, nonce);
+      };
+      const resolved = resolveSlot(taskId, stageName, agentResult, nonce);
 
       if (!resolved) {
         return textResult(JSON.stringify({ error: `No pending edge slot for ${taskId}::${stageName}. It may have timed out or already been resolved.` }), true);
+      }
+
+      // Handle persisted slot recovery (server restarted since slot was created).
+      // The task is in "blocked" state — store the result for auto-resolution,
+      // then trigger a RETRY so the stage re-runs and createSlot picks up the pending result.
+      if (resolved === "persisted") {
+        setPendingRecovery(taskId, stageName, agentResult);
+        taskLogger(taskId).info({ stageName }, "Edge agent submitted result for persisted slot — triggering recovery retry");
+        try {
+          const { sendEvent } = await import("../machine/actor-registry.js");
+          sendEvent(taskId, { type: "RETRY" });
+        } catch (err) {
+          taskLogger(taskId).error({ err, stageName }, "Failed to trigger recovery retry for persisted slot");
+          return textResult(JSON.stringify({ error: "Slot was persisted but failed to trigger recovery retry" }), true);
+        }
+        return textResult(JSON.stringify({
+          ok: true,
+          recovered: true,
+          completed: stageName,
+          nextAction: "CONTINUE_PIPELINE",
+          instruction: "Result accepted via server-restart recovery. The stage is being re-executed with cached result. Call list_available_stages to continue.",
+        }, null, 2));
       }
 
       taskLogger(taskId).info({ stageName }, "Edge agent submitted stage result via MCP");
@@ -341,13 +364,20 @@ export function createEdgeMcpServer(): McpServer {
     "Check if the task has been cancelled or interrupted",
     {
       taskId: z.string().describe("The task ID"),
+      taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
     },
-    async ({ taskId }) => {
+    async ({ taskId, taskToken }) => {
+      const authErr = validateTaskToken(taskId, taskToken);
+      if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
       const context = getTaskContext(taskId);
       if (!context) {
         return textResult(JSON.stringify({ interrupted: true, reason: "Task not found" }));
       }
       const interrupted = context.status === "cancelled" || context.status === "blocked";
+      // Clean up token for terminal tasks to prevent memory leak
+      if (TERMINAL_STATES.has(context.status as any)) {
+        taskTokens.delete(taskId);
+      }
       return textResult(JSON.stringify({
         interrupted,
         reason: interrupted ? context.error ?? context.status : undefined,
@@ -417,6 +447,10 @@ export function createEdgeMcpServer(): McpServer {
       const context = getTaskContext(taskId);
       if (!context) {
         return textResult(JSON.stringify({ error: `Task ${taskId} not found` }), true);
+      }
+      // Clean up token for terminal tasks to prevent memory leak
+      if (TERMINAL_STATES.has(context.status as any)) {
+        taskTokens.delete(taskId);
       }
       return textResult(JSON.stringify({
         taskId: context.taskId,
@@ -510,8 +544,11 @@ export function createEdgeMcpServer(): McpServer {
     "Cancel a running or blocked task. Stops agent execution and transitions to cancelled state.",
     {
       taskId: z.string().describe("The task ID"),
+      taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
     },
-    async ({ taskId }) => {
+    async ({ taskId, taskToken }) => {
+      const authErr = validateTaskToken(taskId, taskToken);
+      if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
       const result = await cancelTask_(taskId);
       taskTokens.delete(taskId);
       return actionToTextResult(result);
@@ -524,9 +561,12 @@ export function createEdgeMcpServer(): McpServer {
     "Force-interrupt a running task. Transitions to blocked state and aborts the active agent. Use retry_task to resume after fixing issues.",
     {
       taskId: z.string().describe("The task ID"),
+      taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
       message: z.string().optional().describe("Reason for interruption"),
     },
-    async ({ taskId, message }) => {
+    async ({ taskId, taskToken, message }) => {
+      const authErr = validateTaskToken(taskId, taskToken);
+      if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
       const result = await interruptTask(taskId, message);
       return actionToTextResult(result);
     },

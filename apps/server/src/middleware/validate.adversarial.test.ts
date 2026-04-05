@@ -56,7 +56,7 @@ describe("validateBody — adversarial", () => {
     const res = await app.request("/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config: deep }),
+      body: JSON.stringify({ config: { pipeline: deep } }),
     });
 
     expect(res.status).toBe(200);

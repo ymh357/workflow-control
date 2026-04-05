@@ -13,6 +13,6 @@ confirmRoute.post("/tasks/:taskId/confirm", validateBody(confirmSchema), async (
 
 confirmRoute.post("/tasks/:taskId/reject", validateBody(rejectSchema), async (c) => {
   const taskId = c.req.param("taskId");
-  const body = getValidatedBody(c) as { reason?: string; feedback?: string };
+  const body = getValidatedBody(c) as { reason?: string; feedback?: string; targetStage?: string };
   return actionToResponse(c, rejectGate(taskId, body));
 });

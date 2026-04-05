@@ -167,7 +167,6 @@ describe("machine adversarial tests", () => {
       pipelineName: "test",
       pipeline: { name: "test", stages: [] },
       prompts: { system: {}, fragments: {}, globalConstraints: "", globalClaudeMd: "", globalGeminiMd: "",
-        globalCodexMd: "",
         globalCodexMd: "" },
       skills: [],
       mcps: [],

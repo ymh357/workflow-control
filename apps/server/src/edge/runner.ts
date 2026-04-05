@@ -15,6 +15,10 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import { parseArgs } from "node:util";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { buildChildEnv } from "../lib/child-env.js";
+
+const tmpSuffix = randomUUID().slice(0, 12);
 
 // --- Configuration ---
 
@@ -76,9 +80,10 @@ function findBinary(name: string): string {
 function notifyDesktop(title: string, message: string): void {
   try {
     if (process.platform === "darwin") {
+      const esc = (s: string) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
       execFileSync("osascript", [
         "-e",
-        `display notification "${message}" with title "${title}"`,
+        `display notification "${esc(message)}" with title "${esc(title)}"`,
       ]);
     }
   } catch { /* non-critical */ }
@@ -120,6 +125,7 @@ interface NextStageResponse {
   waiting?: boolean;
   isGate?: boolean;
   stageName?: string;
+  cwd?: string;
   stageOptions?: StageOptions;
   error?: string;
   pendingQuestion?: PendingQuestionInfo;
@@ -147,6 +153,9 @@ function connectEdgeEvents(serverUrl: string, taskId: string, handler: EdgeEvent
   let closed = false;
 
   const connect = async () => {
+    let backoff = 2000;
+    const MAX_BACKOFF = 30_000;
+
     while (!closed) {
       abortController = new AbortController();
       try {
@@ -155,9 +164,15 @@ function connectEdgeEvents(serverUrl: string, taskId: string, handler: EdgeEvent
           headers: { Accept: "text/event-stream" },
         });
         if (!res.ok || !res.body) {
-          if (!closed) await sleep(2000);
+          if (!closed) {
+            await sleep(backoff);
+            backoff = Math.min(backoff * 1.5, MAX_BACKOFF);
+          }
           continue;
         }
+
+        // Successful connection - reset backoff
+        backoff = 2000;
 
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -188,8 +203,9 @@ function connectEdgeEvents(serverUrl: string, taskId: string, handler: EdgeEvent
         }
       } catch (err) {
         if (closed) return;
-        // Reconnect after network error
-        await sleep(2000);
+        // Reconnect after network error with exponential backoff
+        await sleep(backoff);
+        backoff = Math.min(backoff * 1.5, MAX_BACKOFF);
       }
     }
   };
@@ -262,15 +278,15 @@ async function triggerNewTask(
 // --- Dynamic Config Generation ---
 
 function writeMcpConfig(serverUrl: string): string {
-  const tmpPath = `/tmp/.wfctl-edge-mcp-${process.pid}.json`;
+  const tmpPath = `/tmp/.wfctl-edge-mcp-${tmpSuffix}.json`;
   fs.writeFileSync(tmpPath, JSON.stringify({
     mcpServers: { "workflow-control": { type: "http", url: `${serverUrl}/mcp` } },
-  }));
+  }), { mode: 0o600 });
   return tmpPath;
 }
 
 function writeHooksSettings(serverUrl: string): string {
-  const tmpPath = `/tmp/.wfctl-edge-hooks-${process.pid}.json`;
+  const tmpPath = `/tmp/.wfctl-edge-hooks-${tmpSuffix}.json`;
   const template = JSON.parse(fs.readFileSync(HOOKS_TEMPLATE_PATH, "utf-8"));
 
   // Patch PreToolUse check-interrupt with actual server URL
@@ -284,15 +300,19 @@ function writeHooksSettings(serverUrl: string): string {
     }
   }
 
-  fs.writeFileSync(tmpPath, JSON.stringify({ hooks: template.hooks }));
+  fs.writeFileSync(tmpPath, JSON.stringify({ hooks: template.hooks }), { mode: 0o600 });
   return tmpPath;
 }
 
 // --- Gemini Project Settings ---
 
+// NOTE: Module-level singletons — safe because edge runner is a single-task-at-a-time CLI process.
+// If concurrent execution is ever needed, scope these per-invocation.
 let geminiSettingsBackup: { path: string; content: string } | null = null;
+let geminiSettingsCwd = process.cwd();
 
 function writeGeminiProjectSettings(serverUrl: string, cwd: string): void {
+  geminiSettingsCwd = cwd;
   const geminiDir = path.join(cwd, ".gemini");
   const settingsPath = path.join(geminiDir, "settings.json");
 
@@ -321,7 +341,7 @@ function writeGeminiProjectSettings(serverUrl: string, cwd: string): void {
   settings.hooks = template.hooks;
 
   fs.mkdirSync(geminiDir, { recursive: true });
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 });
 }
 
 function restoreGeminiProjectSettings(cwd: string): void {
@@ -335,9 +355,9 @@ function restoreGeminiProjectSettings(cwd: string): void {
 }
 
 function cleanup(): void {
-  try { fs.unlinkSync(`/tmp/.wfctl-edge-mcp-${process.pid}.json`); } catch { /* ok */ }
-  try { fs.unlinkSync(`/tmp/.wfctl-edge-hooks-${process.pid}.json`); } catch { /* ok */ }
-  restoreGeminiProjectSettings(process.cwd());
+  try { fs.unlinkSync(`/tmp/.wfctl-edge-mcp-${tmpSuffix}.json`); } catch { /* ok */ }
+  try { fs.unlinkSync(`/tmp/.wfctl-edge-hooks-${tmpSuffix}.json`); } catch { /* ok */ }
+  restoreGeminiProjectSettings(geminiSettingsCwd);
 }
 
 // --- Transcript Sync ---
@@ -382,11 +402,13 @@ function startTranscriptSync(taskId: string, serverUrl: string, cwd: string): No
       const stat = fs.statSync(transcriptPath);
       if (stat.size <= lastOffset) return;
 
+      const MAX_TRANSCRIPT_CHUNK = 1024 * 1024; // 1MB per tick
+      const readSize = Math.min(stat.size - lastOffset, MAX_TRANSCRIPT_CHUNK);
       const fd = fs.openSync(transcriptPath, "r");
-      const buf = Buffer.alloc(stat.size - lastOffset);
+      const buf = Buffer.alloc(readSize);
       fs.readSync(fd, buf, 0, buf.length, lastOffset);
       fs.closeSync(fd);
-      lastOffset = stat.size;
+      lastOffset += readSize;
 
       const newData = buf.toString("utf-8");
       const lines = newData.split("\n").filter(Boolean);
@@ -472,6 +494,7 @@ async function runStage(
   taskId: string,
   stageName: string,
   serverUrl: string,
+  cwd: string,
   defaultEngine: Engine,
   mcpConfigPath: string,
   hooksSettingsPath: string,
@@ -506,7 +529,7 @@ async function runStage(
       }
       args.push(prompt);
     } else if (engine === "gemini") {
-      writeGeminiProjectSettings(serverUrl, process.cwd());
+      writeGeminiProjectSettings(serverUrl, cwd);
       args.push("--yolo");
       if (model) args.push("--model", model);
       if (stageOptions?.debug) args.push("--debug");
@@ -576,12 +599,14 @@ async function runStage(
       name: "xterm-256color",
       cols: process.stdout.columns ?? 120,
       rows: process.stdout.rows ?? 40,
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
+      cwd,
+      env: buildChildEnv({
         OG_TASK_ID: taskId,
         OG_SERVER_URL: serverUrl,
-      },
+        ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+        GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      }),
     });
 
     let stageCompleted = false;
@@ -694,7 +719,7 @@ async function runStage(
     }, STAGE_TIMEOUT_MS);
 
     // Transcript sync
-    const syncInterval = startTranscriptSync(taskId, serverUrl, process.cwd());
+    const syncInterval = startTranscriptSync(taskId, serverUrl, cwd);
 
     // Codex has no hooks — poll server for interrupt signals instead
     const interruptInterval = engine === "codex" ? setInterval(async () => {
@@ -717,7 +742,7 @@ async function runStage(
       clearInterval(syncInterval);
       if (interruptInterval) clearInterval(interruptInterval);
       process.stdin.removeListener("data", stdinListener);
-      if (engine === "gemini") restoreGeminiProjectSettings(process.cwd());
+      if (engine === "gemini") restoreGeminiProjectSettings(cwd);
       resolve(result);
     };
 
@@ -1014,7 +1039,7 @@ async function runPipeline(
           await handleGate(taskId, next.stageName, serverUrl);
         } else {
           const result = await runStage(
-            taskId, next.stageName, serverUrl, engine,
+            taskId, next.stageName, serverUrl, next.cwd ?? process.cwd(), engine,
             mcpConfigPath, hooksSettingsPath,
             onCancel, next.stageOptions,
           );

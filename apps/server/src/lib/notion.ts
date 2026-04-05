@@ -35,11 +35,10 @@ export async function updateNotionPageStatus(taskId: string, notionPageId: strin
     await withRetry(async () => {
       const response = await fetch(url, { method: "PATCH", headers, body });
       if (!response.ok) {
-        const errorData = await response.json();
-        taskLogger(taskId).error({ status: response.status, error: errorData }, `Failed to update Notion page status for ${notionPageId}`);
-      } else {
-        taskLogger(taskId).info({ notionPageId, newStatus: status }, "Notion page status updated successfully.");
+        const text = await response.text().catch(() => "");
+        throw new Error(`Notion API ${response.status}: ${text.slice(0, 200)}`);
       }
+      taskLogger(taskId).info({ notionPageId, newStatus: status }, "Notion page status updated successfully.");
     });
   } catch (error) {
     taskLogger(taskId).error({ error }, `Error updating Notion page status for ${notionPageId} after retries`);

@@ -252,9 +252,20 @@ describe("sandboxSchema", () => {
 });
 
 describe("taskConfigUpdateSchema", () => {
-  it("accepts config record", () => {
-    const result = taskConfigUpdateSchema.safeParse({ config: { key: "value" } });
+  it("accepts supported task config payload", () => {
+    const result = taskConfigUpdateSchema.safeParse({
+      config: {
+        pipeline: { stages: [] },
+        prompts: { globalConstraints: "", system: {} },
+        agent: { default_engine: "claude" },
+      },
+    });
     expect(result.success).toBe(true);
+  });
+
+  it("rejects unsupported config roots", () => {
+    const result = taskConfigUpdateSchema.safeParse({ config: { key: "value" } });
+    expect(result.success).toBe(false);
   });
 
   it("rejects missing config", () => {

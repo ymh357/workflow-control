@@ -38,6 +38,8 @@
   "autoRetrying": "Auto-retrying {status} (attempt {count})",
   "autoRetryDesc": "The agent failed and is retrying automatically. You can cancel or force-retry from here.",
   "taskCancelled": "Task Cancelled",
+  "configSaved": "Configuration saved",
+  "configSaveFailed": "Failed to save configuration",
   "completed": "Completed",
   "deliverable": "Deliverable",
   "totalCostLabel": "Total cost: ${cost}",
@@ -50,5 +52,6 @@
   "networkError": "Network error",
   "loadingTaskData": "Loading task data...",
   "deleteConfirmDesc": "Are you sure you want to delete {id}? It will be moved to trash.",
-  "noPipelines": "No pipelines found."
+  "noPipelines": "No pipelines found.",
+  "restoreIssues": "Restore issues"
 }

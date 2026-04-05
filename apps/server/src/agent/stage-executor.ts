@@ -18,6 +18,7 @@ import { processAgentStream } from "./stream-processor.js";
 import { outputSchemaToJsonSchema } from "./output-schema.js";
 import { createAskUserQuestionInterceptor, createSpecAuditHook, createPathRestrictionHook } from "./executor-hooks.js";
 
+
 function resolveModelForEngine(engine: string, privateAgent?: Record<string, any>, settingsAgent?: Record<string, any>): string | undefined {
   const key = `${engine}_model`;
   return (privateAgent as any)?.[key] ?? (settingsAgent as any)?.[key] ?? settingsAgent?.default_model;
@@ -151,7 +152,7 @@ export async function executeStage(
         approvalMode: geminiApprovalMode,
         cwd,
         resume: geminiResume,
-        env: { ...process.env, CI: "true" } as Record<string, string>,
+        env: { CI: "true" },
         mcpServers: localMcp,
       }
     });
@@ -179,7 +180,7 @@ export async function executeStage(
         model: stageConfig.model,
         sandbox: codexSandbox,
         cwd,
-        env: { ...process.env, CI: "true" } as Record<string, string>,
+        env: { CI: "true" },
         mcpServers: localMcp,
       },
     });

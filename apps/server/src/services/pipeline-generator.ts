@@ -453,6 +453,8 @@ async function callLLM(prompt: string, engine: "claude" | "gemini" | "codex"): P
   }
 }
 
+const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10MB
+
 function spawnAndCollect(cmd: string, args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -460,8 +462,8 @@ function spawnAndCollect(cmd: string, args: string[]): Promise<string> {
     let stderr = "";
     const timeout = setTimeout(() => { proc.kill(); reject(new Error(`Command timed out: ${cmd}`)); }, 300_000);
 
-    proc.stdout.on("data", (d) => { stdout += d.toString(); });
-    proc.stderr.on("data", (d) => { stderr += d.toString(); });
+    proc.stdout.on("data", (d) => { if (stdout.length < MAX_OUTPUT_BYTES) stdout += d.toString(); });
+    proc.stderr.on("data", (d) => { if (stderr.length < MAX_OUTPUT_BYTES) stderr += d.toString(); });
     proc.on("close", (code) => {
       clearTimeout(timeout);
       if (code !== 0) reject(new Error(`${cmd} exited with code ${code}: ${stderr.slice(0, 500)}`));
@@ -480,8 +482,8 @@ function spawnWithStdin(cmd: string, args: string[], input: string): Promise<str
     let stderr = "";
     const timeout = setTimeout(() => { proc.kill(); reject(new Error(`Command timed out: ${cmd}`)); }, 300_000);
 
-    proc.stdout.on("data", (d) => { stdout += d.toString(); });
-    proc.stderr.on("data", (d) => { stderr += d.toString(); });
+    proc.stdout.on("data", (d) => { if (stdout.length < MAX_OUTPUT_BYTES) stdout += d.toString(); });
+    proc.stderr.on("data", (d) => { if (stderr.length < MAX_OUTPUT_BYTES) stderr += d.toString(); });
     const cleanup = () => { try { rmSync(cwd, { recursive: true, force: true }); } catch {} };
     proc.on("close", (code) => {
       clearTimeout(timeout);

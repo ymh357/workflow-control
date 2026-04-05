@@ -183,7 +183,6 @@ function makeConfig(pipeline: PipelineConfig): WorkflowContext["config"] {
       globalClaudeMd: "",
       globalGeminiMd: "",
         globalCodexMd: "",
-        globalCodexMd: "",
     },
     skills: [],
     mcps: [],

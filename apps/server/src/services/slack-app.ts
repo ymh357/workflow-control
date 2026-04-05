@@ -64,7 +64,12 @@ export async function initSlackApp(): Promise<void> {
 
   app.view("gate_feedback_modal", async (args: any) => {
     await args.ack();
-    const meta = JSON.parse(args.view.private_metadata);
+    let meta;
+    try {
+      meta = JSON.parse(args.view.private_metadata);
+    } catch {
+      return; // malformed payload, ignore
+    }
     const feedback = args.view.state.values.feedback_block.feedback_input.value ?? "";
     const result = rejectGate(meta.taskId, { feedback });
     const text = result.ok ? `Rejected with feedback: "${feedback.slice(0, 100)}"` : `Reject failed: ${result.message}`;
@@ -76,7 +81,12 @@ export async function initSlackApp(): Promise<void> {
   // --- Question actions ---
   app.action("answer_question", async (args: any) => {
     await args.ack();
-    const parsed = JSON.parse(args.action.value ?? "{}");
+    let parsed;
+    try {
+      parsed = JSON.parse(args.action.value ?? "{}");
+    } catch {
+      return; // malformed payload, ignore
+    }
     await args.client.views.open({
       trigger_id: args.body.trigger_id,
       view: {
@@ -103,7 +113,12 @@ export async function initSlackApp(): Promise<void> {
 
   app.view("answer_question_modal", async (args: any) => {
     await args.ack();
-    const meta = JSON.parse(args.view.private_metadata);
+    let meta;
+    try {
+      meta = JSON.parse(args.view.private_metadata);
+    } catch {
+      return; // malformed payload, ignore
+    }
     const answer = args.view.state.values.answer_block.answer_input.value ?? "";
     questionManager.answer(meta.questionId, answer, meta.taskId);
     if (meta.channel && meta.messageTs) {
@@ -114,7 +129,12 @@ export async function initSlackApp(): Promise<void> {
   // answer_option_* — option button clicks
   app.action(/^answer_option_/, async (args: any) => {
     await args.ack();
-    const parsed = JSON.parse(args.action.value ?? "{}");
+    let parsed;
+    try {
+      parsed = JSON.parse(args.action.value ?? "{}");
+    } catch {
+      return; // malformed payload, ignore
+    }
     const option = parsed.option ?? "";
     questionManager.answer(parsed.questionId, option, parsed.taskId);
     await updateMessage(args.client, args.body, `Selected option: "${option}"`);
@@ -146,7 +166,12 @@ export async function initSlackApp(): Promise<void> {
 
   app.view("send_message_modal", async (args: any) => {
     await args.ack();
-    const meta = JSON.parse(args.view.private_metadata);
+    let meta;
+    try {
+      meta = JSON.parse(args.view.private_metadata);
+    } catch {
+      return; // malformed payload, ignore
+    }
     const message = args.view.state.values.message_block.message_input.value ?? "";
     const result = await sendMessage(meta.taskId, message);
     const text = result.ok ? `Message sent: "${message.slice(0, 100)}"` : `Send failed: ${result.message}`;

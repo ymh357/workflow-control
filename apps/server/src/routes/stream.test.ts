@@ -11,6 +11,7 @@ const mockTaskListBroadcaster = vi.hoisted(() => ({
 }));
 
 const mockGetWorkflow = vi.hoisted(() => vi.fn());
+const mockRestoreWorkflow = vi.hoisted(() => vi.fn());
 
 vi.mock("../lib/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
@@ -26,6 +27,7 @@ vi.mock("../sse/task-list-broadcaster.js", () => ({
 
 vi.mock("../machine/workflow.js", () => ({
   getWorkflow: (...args: unknown[]) => mockGetWorkflow(...args),
+  restoreWorkflow: (...args: unknown[]) => mockRestoreWorkflow(...args),
 }));
 
 import { streamRoute } from "./stream.js";
@@ -83,6 +85,7 @@ describe("stream routes", () => {
 
   it("GET /stream/:taskId returns SSE when no workflow but has history", async () => {
     mockGetWorkflow.mockReturnValue(null);
+    mockRestoreWorkflow.mockReturnValue(null);
     mockSseManager.hasHistory.mockReturnValue(true);
     const fakeStream = new ReadableStream<Uint8Array>();
     mockSseManager.createStream.mockReturnValue(fakeStream);
@@ -94,6 +97,7 @@ describe("stream routes", () => {
 
   it("GET /stream/:taskId returns 404 when task not found and no history", async () => {
     mockGetWorkflow.mockReturnValue(null);
+    mockRestoreWorkflow.mockReturnValue(null);
     mockSseManager.hasHistory.mockReturnValue(false);
 
     const res = await app.request("/stream/nonexistent");
@@ -131,6 +135,19 @@ describe("stream routes", () => {
 
     const res = await app.request("/stream/task-5");
     expect(res.headers.get("Connection")).toBe("keep-alive");
+  });
+
+  it("GET /stream/:taskId attempts restore before returning 404", async () => {
+    mockGetWorkflow.mockReturnValue(null);
+    mockRestoreWorkflow.mockReturnValue({ id: "restored-task" });
+    const fakeStream = new ReadableStream<Uint8Array>();
+    mockSseManager.createStream.mockReturnValue(fakeStream);
+
+    const res = await app.request("/stream/task-restore");
+
+    expect(res.status).toBe(200);
+    expect(mockRestoreWorkflow).toHaveBeenCalledWith("task-restore");
+    expect(mockSseManager.createStream).toHaveBeenCalledWith("task-restore");
   });
 
   it("GET /stream/tasks body is a ReadableStream", async () => {

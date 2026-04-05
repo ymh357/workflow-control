@@ -39,6 +39,14 @@ export function getDb(): DatabaseSync {
       options TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS edge_slots (
+      task_id TEXT NOT NULL,
+      stage_name TEXT NOT NULL,
+      nonce TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (task_id, stage_name)
+    );
   `);
 
   logger.info({ dbPath }, "SQLite database initialized");
@@ -48,9 +56,18 @@ export function getDb(): DatabaseSync {
 export function cleanupOldData(days: number): void {
   const d = getDb();
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const cutoffMs = Date.now() - days * 24 * 60 * 60 * 1000;
   const sseResult = d.prepare("DELETE FROM sse_messages WHERE created_at < ?").run(cutoff);
   const qResult = d.prepare("DELETE FROM pending_questions WHERE created_at < ?").run(cutoff);
-  logger.info({ days, sseDeleted: sseResult.changes, questionsDeleted: qResult.changes }, "Cleaned up old data");
+  const slotResult = d.prepare("DELETE FROM edge_slots WHERE created_at < ?").run(cutoffMs);
+  logger.info({ days, sseDeleted: sseResult.changes, questionsDeleted: qResult.changes, slotsDeleted: slotResult.changes }, "Cleaned up old data");
+}
+
+export function closeDb(): void {
+  if (db) {
+    try { db.close(); } catch { /* best-effort */ }
+    db = undefined;
+  }
 }
 
 export function startPeriodicCleanup(intervalHours = 1, retentionDays = 7): void {

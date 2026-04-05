@@ -145,6 +145,17 @@ describe("GET /config/system", () => {
   });
 
   it("returns system info", async () => {
+    mockExistsSync.mockImplementation((p: any) => {
+      const path = String(p);
+      return path.includes("claude-md") || path.includes("gemini-md") || path.includes("codex-md");
+    });
+    mockReadFileSync.mockImplementation((p: any) => {
+      const path = String(p);
+      if (path.includes("claude-md")) return "# Claude";
+      if (path.includes("gemini-md")) return "# Gemini";
+      if (path.includes("codex-md")) return "# Codex";
+      return "";
+    });
     const res = await app.request("/config/system");
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -152,6 +163,9 @@ describe("GET /config/system", () => {
     expect(body.notifications).toBeDefined();
     expect(body.capabilities).toBeDefined();
     expect(body.sandbox).toBeDefined();
+    expect(body.instructions.globalClaudeMd).toBe("# Claude");
+    expect(body.instructions.globalGeminiMd).toBe("# Gemini");
+    expect(body.instructions.globalCodexMd).toBe("# Codex");
   });
 
   it("reports slack as configured when tokens present", async () => {
@@ -994,6 +1008,82 @@ describe("PUT /config/prompts/:category/:name", () => {
       content: "test",
     });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("PUT /config/workbench/:name", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockExistsSync.mockReturnValue(false);
+    mockRenameSync.mockImplementation(() => {});
+    mockWriteFileSync.mockImplementation(() => {});
+    mockMkdirSync.mockImplementation(() => undefined as any);
+    mockReaddirSync.mockReturnValue([]);
+  });
+
+  it("saves pipeline, prompts, and global instructions in one request", async () => {
+    const res = await jsonReq("PUT", "/config/workbench/test-pipeline", {
+      config: {
+        pipeline: {
+          name: "test-pipeline",
+          stages: [],
+        },
+        prompts: {
+          system: { analyzing: "# Analyze" },
+          fragments: {
+            architecture: "Arch guidance",
+          },
+          fragmentMeta: {
+            architecture: { id: "architecture", keywords: ["arch"], stages: "*", always: true },
+          },
+          globalConstraints: "Do the right thing",
+          globalClaudeMd: "# Claude rules",
+          globalGeminiMd: "# Gemini rules",
+          globalCodexMd: "# Codex rules",
+        },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+
+    const renameTargets = mockRenameSync.mock.calls.map((call) => String(call[1]));
+    expect(renameTargets).toContain("/mock/config/pipelines/test-pipeline/pipeline.yaml");
+    expect(renameTargets).toContain("/mock/config/pipelines/test-pipeline/prompts/global-constraints.md");
+    expect(renameTargets).toContain("/mock/config/pipelines/test-pipeline/prompts/system/analyzing.md");
+    expect(renameTargets).toContain("/mock/config/prompts/fragments/architecture.md");
+    expect(renameTargets).toContain("/mock/config/claude-md/global.md");
+    expect(renameTargets).toContain("/mock/config/gemini-md/global.md");
+    expect(renameTargets).toContain("/mock/config/codex-md/global.md");
+  });
+
+  it("accepts prompt references created within the same workbench payload", async () => {
+    const res = await jsonReq("PUT", "/config/workbench/test-pipeline", {
+      config: {
+        pipeline: {
+          name: "test-pipeline",
+          stages: [
+            {
+              name: "analyzing",
+              type: "agent",
+              runtime: { engine: "llm", system_prompt: "newPrompt" },
+            },
+          ],
+        },
+        prompts: {
+          system: { newPrompt: "# Analyze" },
+          fragments: {},
+          fragmentMeta: {},
+          globalConstraints: "",
+          globalClaudeMd: "",
+          globalGeminiMd: "",
+          globalCodexMd: "",
+        },
+      },
+    });
+
+    expect(res.status).toBe(200);
   });
 });
 

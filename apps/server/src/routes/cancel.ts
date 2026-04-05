@@ -16,5 +16,5 @@ cancelRoute.post("/tasks/:taskId/resume", async (c) => {
 
 cancelRoute.delete("/tasks/:taskId", async (c) => {
   const taskId = c.req.param("taskId");
-  return actionToResponse(c, deleteTask(taskId));
+  return actionToResponse(c, await deleteTask(taskId));
 });

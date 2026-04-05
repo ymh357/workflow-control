@@ -60,6 +60,7 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
       status: "idle",
       retryCount: 0,
       qaRetryCount: 0,
+      stageRetryCount: {},
       stageSessionIds: {},
       store: {},
     },
@@ -67,9 +68,16 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
       CANCEL: {
         target: ".cancelled",
         guard: ({ context }) => context.status !== "cancelled",
-        actions: assign(({ context }) => ({
-          lastStage: context.status === "blocked" ? (context.lastStage ?? context.status) : context.status,
-        })),
+        actions: [
+          assign(({ context }) => ({
+            lastStage: context.status === "blocked" ? (context.lastStage ?? context.status) : context.status,
+            updatedAt: new Date().toISOString(),
+          })),
+          emit(({ context }): WorkflowEmittedEvent => ({
+            type: "wf.cancelAgent",
+            taskId: context.taskId,
+          })),
+        ],
       },
       INTERRUPT: {
         target: ".blocked",
@@ -83,6 +91,7 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
             lastStage: context.status,
             error: ("reason" in event ? (event as { reason?: string }).reason : undefined) || "Interrupted by user",
             errorCode: "interrupted" as const,
+            updatedAt: new Date().toISOString(),
           })),
           emit(({ context }): WorkflowEmittedEvent => ({
             type: "wf.cancelAgent",
@@ -97,10 +106,14 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
         actions: [
           ({ context }) => { taskLogger(context.taskId).info("Processing UPDATE_CONFIG event..."); },
           assign({
-            config: ({ context, event }) => ({
-              ...context.config!,
-              ...("config" in event ? (event as { config: Partial<NonNullable<WorkflowContext["config"]>> }).config : {}),
-            }),
+            config: ({ context, event }) => {
+              if (!context.config) return context.config;
+              return {
+                ...context.config,
+                ...("config" in event ? (event as { config: Partial<NonNullable<WorkflowContext["config"]>> }).config : {}),
+              };
+            },
+            updatedAt: () => new Date().toISOString(),
           }),
           ({ context }) => { taskLogger(context.taskId).info("Task configuration UPDATED successfully"); }
         ]
@@ -114,8 +127,10 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
               taskId: event.taskId,
               taskText: event.taskText,
               explicitRepoName: event.repoName,
+              updatedAt: new Date().toISOString(),
               retryCount: 0,
               qaRetryCount: 0,
+              stageRetryCount: {},
               config: event.config,
               ...(event.initialStore ? { store: event.initialStore } : {}),
               ...(event.worktreePath ? { worktreePath: event.worktreePath } : {}),
@@ -208,6 +223,7 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
                 return {
                   retryCount: 0, error: undefined, errorCode: undefined,
                   qaRetryCount: 0,
+                  stageRetryCount: {},
                   resumeInfo: sessionId ? { sessionId, feedback: "The system or user triggered a retry. Please inspect the current state and attempt to resolve any previous issues." } : undefined,
                 };
               }),
@@ -232,6 +248,7 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
               actions: assign(({ event }: { event: { sessionId: string } }) => ({
                 retryCount: 0, error: undefined, errorCode: undefined,
                 qaRetryCount: 0,
+                stageRetryCount: {},
                 resumeInfo: { sessionId: event.sessionId, sync: true },
               })),
             })) as any[]),
@@ -267,6 +284,7 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
                 return {
                   retryCount: 0, error: undefined, errorCode: undefined,
                   qaRetryCount: 0,
+                  stageRetryCount: {},
                   resumeInfo: sessionId ? { sessionId, feedback: "Task was cancelled and is now being resumed. Please inspect the current state and continue from where you left off." } : undefined,
                 };
               }),

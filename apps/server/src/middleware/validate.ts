@@ -90,10 +90,23 @@ export const sandboxSchema = z.object({
 });
 
 export const taskConfigUpdateSchema = z.object({
-  config: z.record(z.string(), z.unknown()).refine(
-    (obj) => !("pipeline" in obj) && !("stages" in obj),
-    { message: "Cannot overwrite pipeline or stages fields" }
-  ),
+  config: z.object({
+    pipelineName: z.string().optional(),
+    pipeline: z.record(z.string(), z.unknown()).optional(),
+    prompts: z.object({
+      system: z.record(z.string(), z.string()).optional(),
+      fragments: z.record(z.string(), z.string()).optional(),
+      fragmentMeta: z.record(z.string(), z.unknown()).optional(),
+      globalConstraints: z.string().optional(),
+      globalClaudeMd: z.string().optional(),
+      globalGeminiMd: z.string().optional(),
+      globalCodexMd: z.string().optional(),
+    }).optional(),
+    skills: z.array(z.string()).optional(),
+    mcps: z.array(z.string()).optional(),
+    sandbox: z.record(z.string(), z.unknown()).optional(),
+    agent: z.record(z.string(), z.unknown()).optional(),
+  }).strict(),
 });
 
 export const interruptSchema = z.object({

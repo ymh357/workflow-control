@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentResult } from "../agent/query-tracker.js";
 import { taskLogger } from "../lib/logger.js";
+import { getDb } from "../lib/db.js";
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -60,6 +61,19 @@ function slotKey(taskId: string, stageName: string): string {
   return JSON.stringify([taskId, stageName]);
 }
 
+// Pending recovery: results submitted against persisted slots after server restart.
+// Stored here so that when the stage re-runs (via RETRY), the new createSlot auto-resolves.
+const pendingRecovery = new Map<string, AgentResult>();
+
+export function setPendingRecovery(taskId: string, stageName: string, result: AgentResult): void {
+  const key = slotKey(taskId, stageName);
+  pendingRecovery.set(key, result);
+  // Auto-expire after 5 minutes if not consumed
+  setTimeout(() => {
+    pendingRecovery.delete(key);
+  }, 5 * 60 * 1000).unref();
+}
+
 export function createSlot(taskId: string, stageName: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<AgentResult> {
   const key = slotKey(taskId, stageName);
 
@@ -76,6 +90,9 @@ export function createSlot(taskId: string, stageName: string, timeoutMs = DEFAUL
   return new Promise<AgentResult>((resolve, reject) => {
     const timeoutTimer = setTimeout(() => {
       slots.delete(key);
+      try {
+        getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
+      } catch { /* non-critical */ }
       reject(new Error(`Edge agent timed out after ${Math.round(timeoutMs / 1000)}s waiting for stage "${stageName}"`));
     }, timeoutMs);
 
@@ -88,24 +105,72 @@ export function createSlot(taskId: string, stageName: string, timeoutMs = DEFAUL
       timeoutTimer,
     });
 
+    try {
+      getDb().prepare(
+        "INSERT OR REPLACE INTO edge_slots (task_id, stage_name, nonce, created_at) VALUES (?, ?, ?, ?)"
+      ).run(taskId, stageName, nonce, Date.now());
+    } catch { /* non-critical — slot still works in-memory */ }
+
     notifySlotCreated(info);
+
+    // Check if there's a pending recovery result for this slot (submitted after server restart)
+    const recoveryKey = slotKey(taskId, stageName);
+    const pending = pendingRecovery.get(recoveryKey);
+    if (pending) {
+      pendingRecovery.delete(recoveryKey);
+      taskLogger(taskId).info({ stageName }, "Auto-resolving slot from pending recovery result");
+      clearTimeout(timeoutTimer);
+      slots.delete(key);
+      try {
+        getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
+      } catch { /* ignore */ }
+      resolve(pending);
+    }
   });
 }
 
-export function resolveSlot(taskId: string, stageName: string, result: AgentResult, nonce?: string): boolean {
+export function resolveSlot(taskId: string, stageName: string, result: AgentResult, nonce?: string): boolean | "persisted" {
   const key = slotKey(taskId, stageName);
   const slot = slots.get(key);
-  if (!slot) return false;
 
-  if (nonce && slot.nonce !== nonce) {
-    taskLogger(taskId).warn({ stageName, expected: slot.nonce, received: nonce }, "Slot nonce mismatch — rejecting stale submission");
-    return false;
+  if (slot) {
+    if (nonce && slot.nonce !== nonce) {
+      taskLogger(taskId).warn({ stageName, expected: slot.nonce, received: nonce }, "Slot nonce mismatch — rejecting stale submission");
+      return false;
+    }
+
+    clearTimeout(slot.timeoutTimer);
+    slots.delete(key);
+    slot.resolve(result);
+    try {
+      getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
+    } catch { /* non-critical */ }
+    return true;
   }
 
-  clearTimeout(slot.timeoutTimer);
-  slots.delete(key);
-  slot.resolve(result);
-  return true;
+  // Fallback: check DB for persisted slot (server restarted since slot was created)
+  try {
+    const row = getDb().prepare(
+      "SELECT nonce, created_at FROM edge_slots WHERE task_id = ? AND stage_name = ?"
+    ).get(taskId, stageName) as { nonce: string; created_at: number } | undefined;
+    if (row) {
+      // Check if slot has expired
+      if (row.created_at && (Date.now() - row.created_at > DEFAULT_TIMEOUT_MS)) {
+        getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
+        taskLogger(taskId).warn({ stageName }, "Persisted slot expired, ignoring");
+        return false;
+      }
+      if (nonce && row.nonce !== nonce) {
+        taskLogger(taskId).warn({ stageName }, "Persisted slot nonce mismatch");
+        return false;
+      }
+      getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
+      taskLogger(taskId).info({ stageName }, "Resolved persisted slot (server had restarted)");
+      return "persisted";
+    }
+  } catch { /* DB access failed */ }
+
+  return false;
 }
 
 export function rejectSlot(taskId: string, stageName: string, error: Error): boolean {
@@ -116,6 +181,9 @@ export function rejectSlot(taskId: string, stageName: string, error: Error): boo
   clearTimeout(slot.timeoutTimer);
   slots.delete(key);
   slot.reject(error);
+  try {
+    getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
+  } catch { /* non-critical */ }
   return true;
 }
 
@@ -158,6 +226,15 @@ export function clearTaskSlots(taskId: string): void {
     slots.delete(key);
     taskLogger(taskId).info({ stageName: slot.stageName }, "Edge slot cleared on cancel");
   }
+  // Clean pendingRecovery for this task
+  for (const key of pendingRecovery.keys()) {
+    if (key.startsWith(`["${taskId}",`)) {
+      pendingRecovery.delete(key);
+    }
+  }
+  try {
+    getDb().prepare("DELETE FROM edge_slots WHERE task_id = ?").run(taskId);
+  } catch { /* non-critical */ }
 }
 
 // Event-driven wait: resolves when the next edge slot for this task is created,

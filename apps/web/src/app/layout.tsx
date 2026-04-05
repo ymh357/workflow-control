@@ -3,6 +3,7 @@ import { NextIntlClientProvider } from "next-intl";
 import { getLocale, getMessages } from "next-intl/server";
 import { ToastProvider } from "@/components/toast";
 import Nav from "@/components/nav";
+import ErrorBoundary from "@/components/error-boundary";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -22,7 +23,9 @@ const RootLayout = async ({ children }: { children: React.ReactNode }) => {
             <header className="border-b border-zinc-800 px-6 py-4">
               <Nav />
             </header>
-            <main className="mx-auto max-w-4xl px-6 py-8">{children}</main>
+            <main className="mx-auto max-w-4xl px-6 py-8">
+              <ErrorBoundary>{children}</ErrorBoundary>
+            </main>
           </ToastProvider>
         </NextIntlClientProvider>
       </body>

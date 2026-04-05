@@ -14,6 +14,7 @@ export type SSEListener = (msg: SSEMessage) => void;
 
 class SSEManager {
   private static readonly MAX_HISTORY = 500;
+  private static readonly MAX_HISTORY_TASKS = 100;
   private static readonly MAX_CONNECTIONS_PER_TASK = 10;
 
   // taskId -> list of active connections
@@ -130,6 +131,16 @@ class SSEManager {
     // Trim memory history to cap
     if (hist.length > SSEManager.MAX_HISTORY) {
       hist.splice(0, hist.length - SSEManager.MAX_HISTORY);
+    }
+
+    // Evict oldest task histories when total tasks exceed cap
+    if (this.history.size > SSEManager.MAX_HISTORY_TASKS) {
+      const iterator = this.history.keys();
+      while (this.history.size > SSEManager.MAX_HISTORY_TASKS) {
+        const oldest = iterator.next();
+        if (oldest.done) break;
+        this.history.delete(oldest.value);
+      }
     }
 
     // Persist to DB

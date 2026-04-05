@@ -67,6 +67,8 @@
   "claudeMdDesc": "Claude Code CLI 的全局项目指令。",
   "geminiMd": "GEMINI.md",
   "geminiMdDesc": "Gemini CLI 的全局项目指令。",
+  "codexMd": "CODEX.md",
+  "codexMdDesc": "Codex CLI 的全局项目指令。",
   "knowledgeFragments": "知识片段",
   "knowledgeFragmentsDesc": "跨所有流水线共享。此处的更改会影响所有流水线。",
   "selectFragment": "选择一个片段进行编辑",

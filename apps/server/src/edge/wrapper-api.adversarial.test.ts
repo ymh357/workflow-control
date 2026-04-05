@@ -441,14 +441,12 @@ describe("wrapper-api adversarial tests", () => {
       expect(body.reason).toBe("blocked");
     });
 
-    it("should return interrupted:false for completed task", async () => {
-      // BUG CANDIDATE: completed is a terminal state in next-stage (done:true),
-      // but check-interrupt says interrupted:false for completed.
-      // Is this inconsistent? A completed task should arguably also signal the runner to stop.
+    it("should return interrupted:true for completed task", async () => {
       mockGetTaskContext.mockReturnValue(makeContext({ status: "completed" }));
       const res = await app.request("/api/edge/task-1/check-interrupt");
       const body = await res.json();
-      expect(body.interrupted).toBe(false);
+      expect(body.interrupted).toBe(true);
+      expect(body.reason).toBe("completed");
     });
 
     it("should return interrupted:false for a custom stage status", async () => {

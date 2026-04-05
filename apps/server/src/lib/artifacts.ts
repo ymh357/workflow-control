@@ -1,4 +1,5 @@
 import { readFile as fsRead, writeFile as fsWrite, appendFile, access, mkdir, realpath } from "node:fs/promises";
+import { lstatSync } from "node:fs";
 import { join, dirname, resolve, relative, isAbsolute } from "node:path";
 
 const WORKFLOW_DIR = ".workflow";
@@ -28,7 +29,29 @@ async function assertNoSymlinkEscape(fullPath: string, worktreePath: string): Pr
       throw new Error(`Symlink escape detected: resolved to ${real}`);
     }
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      // File doesn't exist yet — check the nearest existing ancestor
+      let current = dirname(fullPath);
+      const base = resolve(worktreePath, WORKFLOW_DIR);
+      while (current.length >= base.length) {
+        try {
+          const realCurrent = await realpath(current);
+          const realBase = await realpath(base);
+          const rel = relative(realBase, realCurrent);
+          if (rel.startsWith("..") || isAbsolute(rel)) {
+            throw new Error(`Symlink escape detected: ancestor ${current} resolved to ${realCurrent}`);
+          }
+          return; // ancestor checks out
+        } catch (innerErr) {
+          if ((innerErr as NodeJS.ErrnoException).code === "ENOENT") {
+            current = dirname(current);
+            continue;
+          }
+          throw innerErr;
+        }
+      }
+      return;
+    }
     throw err;
   }
 }
@@ -41,6 +64,17 @@ export async function writeArtifact(
   const fullPath = workflowPath(worktreePath, relativePath);
   await mkdir(dirname(fullPath), { recursive: true });
   await assertNoSymlinkEscape(fullPath, worktreePath);
+
+  // Verify parent directory is not a symlink (TOCTOU mitigation)
+  try {
+    const parentStat = lstatSync(dirname(fullPath));
+    if (parentStat.isSymbolicLink()) {
+      throw new Error(`Artifact parent directory is a symlink: ${dirname(fullPath)}`);
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+  }
+
   await fsWrite(fullPath, content, "utf-8");
 }
 

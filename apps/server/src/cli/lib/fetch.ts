@@ -32,6 +32,9 @@ export async function fetchIndex(): Promise<RegistryIndex> {
 }
 
 export async function fetchManifest(packageName: string): Promise<PackageManifest> {
+  if (packageName.includes("..") || packageName.includes("/") || packageName.includes("\\")) {
+    throw new Error(`Invalid package name: ${packageName}`);
+  }
   if (hasLocalPackages()) {
     const manifestPath = path.join(REGISTRY_DIR, "packages", packageName, "manifest.yaml");
     if (!fs.existsSync(manifestPath)) {
@@ -53,6 +56,9 @@ export async function fetchPackageFile(
   packageName: string,
   filePath: string,
 ): Promise<string> {
+  if (packageName.includes("..") || packageName.includes("/") || packageName.includes("\\")) {
+    throw new Error(`Invalid package name: ${packageName}`);
+  }
   if (hasLocalPackages()) {
     const sourceFile = path.join(REGISTRY_DIR, "packages", packageName, filePath);
     if (!fs.existsSync(sourceFile)) {
@@ -74,9 +80,14 @@ export async function downloadPackageFiles(
   destDir: string,
 ): Promise<string[]> {
   const written: string[] = [];
+  const resolvedDestDir = path.resolve(destDir);
   for (const file of files) {
-    const content = await fetchPackageFile(packageName, file);
     const dest = path.join(destDir, file);
+    const resolved = path.resolve(dest);
+    if (!resolved.startsWith(resolvedDestDir + path.sep)) {
+      throw new Error(`File path escapes destination directory: ${file}`);
+    }
+    const content = await fetchPackageFile(packageName, file);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.writeFileSync(dest, content, "utf-8");
     written.push(dest);

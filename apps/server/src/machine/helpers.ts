@@ -103,7 +103,10 @@ export function emitPersistSession(): EmitAction {
 
 export function statusEntry(stateName: string): EmitAction[] {
   return [
-    assign({ status: stateName }),
+    assign({
+      status: stateName,
+      updatedAt: () => new Date().toISOString(),
+    }),
     emitNotionSync(),
     emitStatus(stateName),
     emitTaskListUpdate(),

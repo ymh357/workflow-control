@@ -6,6 +6,24 @@ import {
   afterEach,
   vi,
 } from "vitest";
+import { DatabaseSync } from "node:sqlite";
+
+// Create a real in-memory SQLite DB for persistence tests
+const testDb = new DatabaseSync(":memory:");
+testDb.exec("PRAGMA journal_mode = WAL");
+testDb.exec(`
+  CREATE TABLE IF NOT EXISTS edge_slots (
+    task_id TEXT NOT NULL,
+    stage_name TEXT NOT NULL,
+    nonce TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (task_id, stage_name)
+  );
+`);
+
+vi.mock("../lib/db.js", () => ({
+  getDb: () => testDb,
+}));
 
 vi.mock("../lib/logger.js", () => ({
   taskLogger: () => ({
@@ -29,6 +47,7 @@ import {
   addSlotListener,
   addTaskTerminationListener,
   notifyTaskTerminated,
+  setPendingRecovery,
 } from "./registry.js";
 
 // Helper to drain microtasks
@@ -524,6 +543,128 @@ describe("registry", () => {
       await slotPromise;
 
       vi.useRealTimers();
+    });
+  });
+
+  describe("slot persistence", () => {
+    beforeEach(() => {
+      // Clean DB rows between tests
+      testDb.exec("DELETE FROM edge_slots");
+    });
+
+    it("createSlot persists slot metadata to SQLite", async () => {
+      const promise = createSlot("tp-1", "persist-stage");
+      const nonce = getSlotNonce("tp-1", "persist-stage")!;
+
+      const row = testDb.prepare(
+        "SELECT task_id, stage_name, nonce FROM edge_slots WHERE task_id = ? AND stage_name = ?"
+      ).get("tp-1", "persist-stage") as { task_id: string; stage_name: string; nonce: string } | undefined;
+
+      expect(row).toBeDefined();
+      expect(row!.task_id).toBe("tp-1");
+      expect(row!.stage_name).toBe("persist-stage");
+      expect(row!.nonce).toBe(nonce);
+
+      resolveSlot("tp-1", "persist-stage", { resultText: "", costUsd: 0, durationMs: 0 });
+      await promise;
+    });
+
+    it("resolveSlot deletes persisted slot from DB", async () => {
+      const promise = createSlot("tp-2", "resolve-persist");
+
+      // Verify row exists
+      const before = testDb.prepare(
+        "SELECT 1 FROM edge_slots WHERE task_id = ? AND stage_name = ?"
+      ).get("tp-2", "resolve-persist");
+      expect(before).toBeDefined();
+
+      resolveSlot("tp-2", "resolve-persist", { resultText: "done", costUsd: 0, durationMs: 0 });
+      await promise;
+
+      const after = testDb.prepare(
+        "SELECT 1 FROM edge_slots WHERE task_id = ? AND stage_name = ?"
+      ).get("tp-2", "resolve-persist");
+      expect(after).toBeUndefined();
+    });
+
+    it("resolveSlot falls back to DB when in-memory slot is missing", () => {
+      // Directly insert a DB row (simulating server restart — no in-memory slot)
+      testDb.prepare(
+        "INSERT INTO edge_slots (task_id, stage_name, nonce, created_at) VALUES (?, ?, ?, ?)"
+      ).run("tp-3", "db-only-stage", "fake-nonce-123", Date.now());
+
+      const result = resolveSlot("tp-3", "db-only-stage", { resultText: "recovered", costUsd: 0, durationMs: 0 });
+      expect(result).toBe("persisted");
+
+      // DB row should be cleaned up
+      const row = testDb.prepare(
+        "SELECT 1 FROM edge_slots WHERE task_id = ? AND stage_name = ?"
+      ).get("tp-3", "db-only-stage");
+      expect(row).toBeUndefined();
+    });
+
+    it("resolveSlot rejects expired persisted slot", () => {
+      const expiredTime = Date.now() - 31 * 60 * 1000; // 31 minutes ago
+      testDb.prepare(
+        "INSERT INTO edge_slots (task_id, stage_name, nonce, created_at) VALUES (?, ?, ?, ?)"
+      ).run("tp-4", "expired-stage", "old-nonce", expiredTime);
+
+      const result = resolveSlot("tp-4", "expired-stage", { resultText: "late", costUsd: 0, durationMs: 0 });
+      expect(result).toBe(false);
+
+      // Expired row should be cleaned up
+      const row = testDb.prepare(
+        "SELECT 1 FROM edge_slots WHERE task_id = ? AND stage_name = ?"
+      ).get("tp-4", "expired-stage");
+      expect(row).toBeUndefined();
+    });
+
+    it("clearTaskSlots cleans both in-memory and DB slots", async () => {
+      const promise = createSlot("tp-5", "clear-persist");
+
+      // Verify in-memory and DB
+      expect(hasSlot("tp-5", "clear-persist")).toBe(true);
+      const before = testDb.prepare(
+        "SELECT 1 FROM edge_slots WHERE task_id = ?"
+      ).get("tp-5");
+      expect(before).toBeDefined();
+
+      clearTaskSlots("tp-5");
+
+      expect(hasSlot("tp-5", "clear-persist")).toBe(false);
+      const after = testDb.prepare(
+        "SELECT 1 FROM edge_slots WHERE task_id = ?"
+      ).get("tp-5");
+      expect(after).toBeUndefined();
+
+      await expect(promise).rejects.toThrow("Task cancelled");
+    });
+
+    it("setPendingRecovery is consumed by createSlot", async () => {
+      const recoveryResult = { resultText: "recovered-data", costUsd: 0.5, durationMs: 100 };
+      setPendingRecovery("tp-6", "recovery-stage", recoveryResult);
+
+      const result = await createSlot("tp-6", "recovery-stage");
+      expect(result.resultText).toBe("recovered-data");
+      expect(result.costUsd).toBe(0.5);
+
+      // Slot should not remain in memory
+      expect(hasSlot("tp-6", "recovery-stage")).toBe(false);
+    });
+
+    it("clearTaskSlots cleans pendingRecovery", async () => {
+      const recoveryResult = { resultText: "will-be-cleared", costUsd: 0, durationMs: 0 };
+      setPendingRecovery("tp-7", "pending-stage", recoveryResult);
+
+      clearTaskSlots("tp-7");
+
+      // Now createSlot should NOT auto-resolve (pending was cleared)
+      const promise = createSlot("tp-7", "pending-stage");
+      expect(hasSlot("tp-7", "pending-stage")).toBe(true);
+
+      resolveSlot("tp-7", "pending-stage", { resultText: "manual", costUsd: 0, durationMs: 0 });
+      const result = await promise;
+      expect(result.resultText).toBe("manual");
     });
   });
 });

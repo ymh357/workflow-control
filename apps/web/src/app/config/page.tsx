@@ -8,7 +8,7 @@ import RawYamlEditor from "@/components/config/raw-yaml-editor";
 import SandboxPanel from "@/components/config/sandbox-panel";
 import type { SandboxConfig } from "@/components/config/sandbox-panel";
 import { useToast } from "@/components/toast";
-import { parse as parseYAML, stringify as stringifyYAML } from "yaml";
+import { parse as parseYAML } from "yaml";
 import type { FragmentMeta } from "@/lib/pipeline-types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -16,23 +16,6 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 function normalizePromptKey(filename: string): string {
   const base = filename.replace(/\.md$/, "");
   return base.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
-}
-
-function rebuildFragmentFile(content: string, meta: FragmentMeta): string {
-  const lines = [
-    "---",
-    `id: ${meta.id}`,
-  ];
-  if (meta.keywords?.length) lines.push(`keywords: [${meta.keywords.join(", ")}]`);
-  if (meta.stages === "*") {
-    lines.push(`stages: "*"`);
-  } else if (Array.isArray(meta.stages) && meta.stages.length) {
-    lines.push(`stages: [${meta.stages.join(", ")}]`);
-  }
-  if (meta.always) lines.push("always: true");
-  lines.push("---", "");
-  lines.push(content);
-  return lines.join("\n");
 }
 
 interface SystemFullView {
@@ -154,9 +137,14 @@ const ConfigPage = () => {
 
       const cmdData = claudemdRes.ok ? await claudemdRes.json() : { content: "" };
       let gmdContent = "";
+      let xmdContent = "";
       try {
         const gmdRes = await fetch(`${API_BASE}/api/config/gemini-md/global/global.md`);
         if (gmdRes.ok) gmdContent = (await gmdRes.json()).content;
+      } catch { /* ignore */ }
+      try {
+        const xmdRes = await fetch(`${API_BASE}/api/config/codex-md/global/global.md`);
+        if (xmdRes.ok) xmdContent = (await xmdRes.json()).content;
       } catch { /* ignore */ }
 
       const system: Record<string, string> = {};
@@ -194,6 +182,7 @@ const ConfigPage = () => {
           globalConstraints: constraintsData.content || "",
           globalClaudeMd: cmdData.content || "",
           globalGeminiMd: gmdContent,
+          globalCodexMd: xmdContent,
         },
         agent: settingsData.settings?.agent || {},
         mcps: [],
@@ -221,88 +210,24 @@ const ConfigPage = () => {
 
   const handleGlobalUpdate = async (newConfig: any) => {
     const pipelineId = newConfig.pipelineName || activePipelineId || "pipeline-generator";
-    const put = (url: string, body: unknown) =>
-      fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-
-    const parallelOps: Array<{ label: string; promise: Promise<Response> }> = [
-      { label: "Pipeline YAML", promise: put(`${API_BASE}/api/config/pipelines/${pipelineId}`, { content: stringifyYAML(newConfig.pipeline) }) },
-      { label: "Constraints", promise: put(`${API_BASE}/api/config/pipelines/${pipelineId}/prompts/constraints`, { content: newConfig.prompts.globalConstraints }) },
-      { label: "CLAUDE.md", promise: put(`${API_BASE}/api/config/claude-md/global/global.md`, { content: newConfig.prompts.globalClaudeMd }) },
-      { label: "GEMINI.md", promise: put(`${API_BASE}/api/config/gemini-md/global/global.md`, { content: newConfig.prompts.globalGeminiMd }) },
-    ];
-
-    if (newConfig.sandbox && "enabled" in newConfig.sandbox) {
-      parallelOps.push({ label: "Sandbox", promise: put(`${API_BASE}/api/config/sandbox`, newConfig.sandbox) });
-    }
-
-    for (const [key, content] of Object.entries(newConfig.prompts.system)) {
-      const fileName = key.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
-      parallelOps.push({
-        label: `Prompt: ${fileName}`,
-        promise: put(`${API_BASE}/api/config/pipelines/${pipelineId}/prompts/system/${fileName}`, { content }),
-      });
-    }
-
-    // F1: Save fragments
-    if (newConfig.prompts.fragments) {
-      const meta: Record<string, FragmentMeta> = newConfig.prompts.fragmentMeta || {};
-      for (const [id, content] of Object.entries(newConfig.prompts.fragments as Record<string, string>)) {
-        const fragMeta = meta[id] || { id, keywords: [], stages: "*", always: false };
-        const fileContent = rebuildFragmentFile(content, fragMeta);
-        parallelOps.push({
-          label: `Fragment: ${id}`,
-          promise: put(`${API_BASE}/api/config/prompts/fragments/${id}`, { content: fileContent }),
-        });
-      }
-    }
-
-    // Delete removed fragments
-    if (newConfig._deletedFragments?.length) {
-      for (const id of newConfig._deletedFragments as string[]) {
-        parallelOps.push({
-          label: `Delete Fragment: ${id}`,
-          promise: fetch(`${API_BASE}/api/config/prompts/fragments/${id}`, { method: "DELETE" }),
-        });
-      }
-    }
-
-    // Delete removed/renamed system prompts
-    if (newConfig._deletedPrompts?.length) {
-      for (const key of newConfig._deletedPrompts as string[]) {
-        const fileName = key.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
-        parallelOps.push({
-          label: `Delete Prompt: ${fileName}`,
-          promise: fetch(`${API_BASE}/api/config/pipelines/${pipelineId}/prompts/system/${fileName}`, { method: "DELETE" }),
-        });
-      }
-    }
-
-    const results = await Promise.allSettled(parallelOps.map((op) => op.promise));
-    const failures: string[] = [];
-    results.forEach((r, i) => {
-      if (r.status === "rejected") {
-        failures.push(parallelOps[i].label);
-      } else if (!r.value.ok) {
-        failures.push(parallelOps[i].label);
-      }
+    const res = await fetch(`${API_BASE}/api/config/workbench/${pipelineId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ config: newConfig }),
     });
 
-    // Settings requires serial: GET then PUT
-    if (newConfig.agent) {
-      try {
-        const settingsRes = await fetch(`${API_BASE}/api/config/settings`);
-        if (settingsRes.ok) {
-          const { settings } = await settingsRes.json();
-          settings.agent = { ...(settings.agent ?? {}), ...newConfig.agent };
-          const putRes = await put(`${API_BASE}/api/config/settings`, { content: stringifyYAML(settings) });
-          if (!putRes.ok) failures.push("Settings");
-        }
-      } catch { failures.push("Settings"); }
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const items = Array.isArray(data.errors) && data.errors.length > 0
+        ? data.errors.join(", ")
+        : (data.error ?? "Unknown error");
+      toast.error(t("failedSave", { items }));
+      throw new Error(items);
     }
 
-    if (failures.length > 0) {
-      toast.error(t("failedSave", { items: failures.join(", ") }));
-      throw new Error("Partial save failure");
+    const data = await res.json();
+    if (Array.isArray(data.warnings) && data.warnings.length > 0) {
+      toast.info(data.warnings.join(" | "));
     }
   };
 

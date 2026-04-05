@@ -93,6 +93,22 @@ describe("actionToResponse", () => {
     );
   });
 
+  it("returns 400 for INVALID_CONFIG", () => {
+    const c = mockContext();
+    const result: ActionResult<never> = {
+      ok: false,
+      code: "INVALID_CONFIG",
+      message: "Pipeline not found",
+    };
+
+    actionToResponse(c as any, result);
+
+    expect(c.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "INVALID_CONFIG" }),
+      400,
+    );
+  });
+
   it("returns 500 for INTERNAL_ERROR", () => {
     const c = mockContext();
     const result: ActionResult<never> = {
@@ -146,6 +162,7 @@ describe("actionToResponse", () => {
       TASK_NOT_FOUND: 404,
       INVALID_STATE: 400,
       VALIDATION_FAILED: 400,
+      INVALID_CONFIG: 400,
       INTERNAL_ERROR: 500,
       QUESTION_NOT_FOUND: 404,
       QUESTION_STALE: 409,

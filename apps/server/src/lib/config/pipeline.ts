@@ -89,11 +89,13 @@ function deepMergeObjects(base: Record<string, any>, override: Record<string, an
 }
 
 function validateAndWarn(raw: unknown, label: string): PipelineConfig | null {
+  if (!raw || typeof raw !== "object") return null;
   const result = validatePipelineConfig(raw);
   if (!result.success) {
-    console.warn(`[config] Pipeline validation warnings for "${label}":`, result.errors?.issues);
+    console.error(`[config] Pipeline validation failed for "${label}":`, result.errors?.issues?.map((i) => `${i.path?.join(".")}: ${i.message}`).join("; "));
+    // Return raw with type cast for backward compatibility, but log prominently
+    return raw as PipelineConfig;
   }
-  // Graceful degradation: return raw cast even on validation failure
   return raw as PipelineConfig;
 }
 
@@ -113,7 +115,12 @@ export function loadPipelineConfig(name = "pipeline-generator"): PipelineConfig 
   if (existsSync(dirPath)) {
     try {
       const raw = readFileSync(dirPath, "utf-8");
-      let result = validateAndWarn(parseYAML(raw), name) as PipelineConfig;
+      const validated = validateAndWarn(parseYAML(raw), name);
+      if (!validated) {
+        pipelineCache.set(name, { value: null, ts: now });
+        return null;
+      }
+      let result = validated;
       // Check for .local/ override
       const localPath = join(CONFIG_DIR, "pipelines", `${name}.local`, "pipeline.yaml");
       if (existsSync(localPath)) {
@@ -135,7 +142,11 @@ export function loadPipelineConfig(name = "pipeline-generator"): PipelineConfig 
   if (!existsSync(legacyPath)) { pipelineCache.set(name, { value: null, ts: now }); return null; }
   try {
     const raw = readFileSync(legacyPath, "utf-8");
-    const result = validateAndWarn(parseYAML(raw), name) as PipelineConfig;
+    const result = validateAndWarn(parseYAML(raw), name);
+    if (!result) {
+      pipelineCache.set(name, { value: null, ts: now });
+      return null;
+    }
     pipelineCache.set(name, { value: result, ts: now });
     return result;
   } catch {
@@ -159,7 +170,8 @@ export function listAvailablePipelines(): PipelineManifest[] {
     if (!existsSync(yamlPath)) continue;
     try {
       const raw = readFileSync(yamlPath, "utf-8");
-      const parsed = validateAndWarn(parseYAML(raw), entry.name) as PipelineConfig;
+      const parsed = validateAndWarn(parseYAML(raw), entry.name);
+      if (!parsed) continue;
       const stages = parsed.stages || [];
       const flat = flattenStages(stages);
       const allMcps = new Set<string>();

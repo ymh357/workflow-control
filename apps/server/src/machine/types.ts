@@ -6,8 +6,10 @@ export interface WorkflowContext {
   taskText?: string;
   explicitRepoName?: string;
   status: string;
+  updatedAt?: string;
   retryCount: number;
   qaRetryCount: number;
+  stageRetryCount?: Record<string, number>;
   taskToken?: string;
   lastStage?: string;
   error?: string;
@@ -57,4 +59,4 @@ export type WorkflowEvent =
   | { type: "RESUME" };
 
 /** Terminal workflow states — no further stage transitions will occur. */
-export const TERMINAL_STATES = new Set(["completed", "error", "cancelled", "blocked"]);
+export const TERMINAL_STATES = new Set(["completed", "error", "cancelled"]);

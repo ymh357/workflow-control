@@ -3,11 +3,13 @@ import type { WorkflowContext } from "../machine/types.js";
 import { getLatestSessionId } from "../machine/helpers.js";
 import { getNestedValue } from "../lib/config-loader.js";
 import { questionManager } from "../lib/question-manager.js";
-import type { TaskSummary, TaskListSSEEvent } from "@workflow-control/shared";
+import { deriveCurrentStage, deriveUpdatedAt } from "../lib/task-view-helpers.js";
+import type { TaskSummary, TaskListSSEEvent, FailedRestoreSummary } from "@workflow-control/shared";
 
 interface GlobalSSEConnection {
   controller: ReadableStreamDefaultController<Uint8Array>;
   closed: boolean;
+  heartbeat?: ReturnType<typeof setInterval>;
 }
 
 interface ActorSnapshot {
@@ -29,6 +31,7 @@ class TaskListBroadcaster {
   private pendingUpdates = new Map<string, ReturnType<typeof setTimeout>>();
   private initialized = false;
   private providers?: TaskListProviders;
+  private failedRestores: FailedRestoreSummary[] = [];
 
   setProviders(p: TaskListProviders): void {
     this.providers = p;
@@ -40,17 +43,37 @@ class TaskListBroadcaster {
       throw new Error(`Too many global SSE connections (limit: ${TaskListBroadcaster.MAX_CONNECTIONS})`);
     }
 
+    let conn: GlobalSSEConnection;
+
     return new ReadableStream({
       start: (controller) => {
-        const conn: GlobalSSEConnection = { controller, closed: false };
+        conn = { controller, closed: false };
         this.connections.push(conn);
+
+        conn.heartbeat = setInterval(() => {
+          if (conn.closed) { clearInterval(conn.heartbeat); return; }
+          try {
+            controller.enqueue(encoder.encode(": heartbeat\n\n"));
+          } catch {
+            conn.closed = true;
+            clearInterval(conn.heartbeat);
+          }
+        }, 30_000);
 
         // Push full task list on connection
         const tasks = this.buildAllTaskSummaries();
-        const initEvent: TaskListSSEEvent = { type: "task_list_init", tasks };
+        const initEvent: TaskListSSEEvent = {
+          type: "task_list_init",
+          tasks,
+          failedRestores: [...this.failedRestores],
+        };
         this.sendToController(controller, initEvent);
       },
       cancel: () => {
+        if (conn) {
+          if (conn.heartbeat) clearInterval(conn.heartbeat);
+          conn.closed = true;
+        }
         this.cleanupClosedConnections();
       },
     });
@@ -83,20 +106,21 @@ class TaskListBroadcaster {
       const ctx = snap.context;
       const pipeline = ctx.config?.pipeline;
       const titlePath = pipeline?.display?.title_path;
+      const pendingQuestion = questionManager.getPersistedPending(taskId);
 
       return {
         id: taskId,
         taskText: ctx.taskText,
         status: ctx.status || "unknown",
-        currentStage: ctx.lastStage,
+        currentStage: deriveCurrentStage(ctx),
         sessionId: getLatestSessionId(ctx),
         branch: ctx.branch,
         error: ctx.error,
         totalCostUsd: ctx.totalCostUsd ?? 0,
         store: ctx.store ?? {},
         displayTitle: titlePath ? getNestedValue(ctx.store, titlePath) ?? taskId : taskId,
-        updatedAt: new Date().toISOString(),
-        pendingQuestion: !!questionManager.getPersistedPending(taskId),
+        updatedAt: deriveUpdatedAt(ctx, pendingQuestion),
+        pendingQuestion: !!pendingQuestion,
       };
     } catch {
       return null;
@@ -107,9 +131,18 @@ class TaskListBroadcaster {
     if (!this.providers) return [];
 
     if (!this.initialized) {
+      this.failedRestores = [];
       for (const id of loadAllPersistedTaskIds(50)) {
         if (!this.providers.getWorkflow(id)) {
-          try { this.providers.restoreWorkflow(id); } catch { /* skip failed restores */ }
+          try {
+            const restored = this.providers.restoreWorkflow(id);
+            if (!restored) {
+              this.failedRestores.push({ id, reason: "Task snapshot could not be restored" });
+            }
+          } catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            this.failedRestores.push({ id, reason });
+          }
         }
       }
       this.initialized = true;
@@ -144,6 +177,9 @@ class TaskListBroadcaster {
   }
 
   private cleanupClosedConnections(): void {
+    for (const c of this.connections) {
+      if (c.closed && c.heartbeat) clearInterval(c.heartbeat);
+    }
     this.connections = this.connections.filter((c) => !c.closed);
   }
 }

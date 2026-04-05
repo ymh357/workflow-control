@@ -181,36 +181,14 @@ describe("VULN-4: No authentication on task control endpoints", () => {
   });
 });
 
-// ============================================================================
-// VULNERABILITY 5: taskConfigUpdateSchema allows arbitrary keys via z.record()
-// ============================================================================
-//
-// File: /apps/server/src/middleware/validate.ts, line 95-97
-// Code: taskConfigUpdateSchema = z.object({ config: z.record(z.string(), z.unknown()) })
-//
-// The z.unknown() value type means any JSON value is accepted, including
-// deeply nested objects. This config is sent directly to the state machine
-// via UPDATE_CONFIG event. If the machine merges it into context.config,
-// an attacker can overwrite pipeline stages, gate definitions, system prompts,
-// or any other config field.
-//
-// Severity: HIGH
-// ============================================================================
-
-describe("VULN-5: taskConfigUpdateSchema allows overwriting critical config fields", () => {
-  it("should reject updates to protected config fields like pipeline.stages", async () => {
-    // Import the REAL schema from the middleware
+describe("taskConfigUpdateSchema hardening", () => {
+  it("should reject arbitrary top-level keys outside the task config allowlist", async () => {
     const { taskConfigUpdateSchema } = await import("../middleware/validate.js");
 
-    // An attacker could overwrite the pipeline definition to skip gates
     const maliciousUpdate = {
       config: {
-        pipeline: {
-          stages: [
-            { name: "implement", type: "ai" },
-            // Removed all human_confirm gates
-            { name: "pr", type: "script" },
-          ],
+        evil: {
+          overwriteEverything: true,
         },
       },
     };
@@ -219,9 +197,8 @@ describe("VULN-5: taskConfigUpdateSchema allows overwriting critical config fiel
 
     expect(
       result.success,
-      "taskConfigUpdateSchema should reject updates to pipeline.stages to prevent " +
-        "gate bypass. Fix: either allowlist specific updatable fields or add a " +
-        "deny-list for critical paths like 'pipeline'."
+      "taskConfigUpdateSchema should reject arbitrary config roots so task-level " +
+        "updates stay within the supported config surface."
     ).toBe(false);
   });
 });

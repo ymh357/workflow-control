@@ -176,6 +176,28 @@ describe("QuestionManager adversarial", () => {
       questionManager.answer(remaining[0].questionId, "done too");
       await p2;
     });
+
+    it("DB fallback returns the oldest pending question deterministically", () => {
+      const mockDbGet = vi.fn().mockReturnValue({
+        question_id: "persisted-q-oldest",
+        question: "Oldest question?",
+        options: JSON.stringify(["A", "B"]),
+        created_at: "2026-01-01T00:00:00.000Z",
+      });
+      mockPrepare.mockImplementation((sql: string) => {
+        if (sql.includes("ORDER BY created_at ASC")) return { get: mockDbGet };
+        return { run: vi.fn(), get: vi.fn() };
+      });
+
+      const result = questionManager.getPersistedPending("adv-task-4c");
+
+      expect(result).toEqual({
+        questionId: "persisted-q-oldest",
+        question: "Oldest question?",
+        options: ["A", "B"],
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+    });
   });
 
   // ── 5. Answer with wrong taskId ──
@@ -323,6 +345,7 @@ describe("QuestionManager adversarial", () => {
         question_id: "persisted-q-1",
         question: "From DB after restart?",
         options: JSON.stringify(["Yes", "No"]),
+        created_at: "2026-01-03T00:00:00.000Z",
       });
       mockPrepare.mockImplementation((sql: string) => {
         if (sql.includes("SELECT question_id")) return { get: mockDbGet };
@@ -334,6 +357,7 @@ describe("QuestionManager adversarial", () => {
         questionId: "persisted-q-1",
         question: "From DB after restart?",
         options: ["Yes", "No"],
+        createdAt: "2026-01-03T00:00:00.000Z",
       });
     });
 

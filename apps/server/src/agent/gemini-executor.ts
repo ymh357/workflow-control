@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { taskLogger } from "../lib/logger.js";
+import { buildChildEnv, registerChildCleanup } from "../lib/child-env.js";
 
 export interface GeminiMessage {
   type: "assistant" | "result" | "init" | "error";
@@ -80,9 +81,7 @@ function cleanupChildren() {
   activeTempDirs.clear();
 }
 
-process.on("exit", cleanupChildren);
-process.on("SIGTERM", () => { cleanupChildren(); process.exit(0); });
-process.on("SIGINT", () => { cleanupChildren(); process.exit(0); });
+registerChildCleanup(cleanupChildren);
 
 export function queryGemini(input: { prompt: string; options: GeminiOptions }): GeminiQuery {
   const { prompt, options } = input;
@@ -166,7 +165,7 @@ export function queryGemini(input: { prompt: string; options: GeminiOptions }): 
     
     child = spawn(options.geminiPath, args, {
       cwd: options.cwd || undefined,
-      env: { ...process.env, ...options.env, GEMINI_CLI_HOME: isolatedHome },
+      env: { ...buildChildEnv(options.env), GEMINI_CLI_HOME: isolatedHome, GEMINI_API_KEY: process.env.GEMINI_API_KEY },
       stdio: ["pipe", "pipe", "pipe"],
       detached: true,
     });
@@ -198,10 +197,14 @@ export function queryGemini(input: { prompt: string; options: GeminiOptions }): 
       }
     }, 30_000);
 
-    // Collect stderr as it arrives
+    // Collect stderr as it arrives (capped to prevent unbounded growth)
+    const MAX_STDERR_BYTES = 5 * 1024 * 1024; // 5MB
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString();
       stderrBuffer += text;
+      if (stderrBuffer.length > MAX_STDERR_BYTES) {
+        stderrBuffer = stderrBuffer.slice(-MAX_STDERR_BYTES);
+      }
       log.info({ stderr: text.trim().slice(0, 300) }, "Gemini stderr chunk");
     });
 

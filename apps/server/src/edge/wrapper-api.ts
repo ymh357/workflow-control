@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { getTaskSlots, addSlotListener, addTaskTerminationListener } from "./registry.js";
 import { getTaskContext } from "../actions/task-actions.js";
-import { getAllWorkflows } from "../machine/actor-registry.js";
+import { getAllWorkflows, getWorkflow } from "../machine/actor-registry.js";
 import { flattenStages } from "../lib/config-loader.js";
 import { TERMINAL_STATES } from "../machine/types.js";
 import { questionManager } from "../lib/question-manager.js";
@@ -11,6 +11,23 @@ import { taskLogger } from "../lib/logger.js";
 
 export function buildWrapperRoute(): Hono {
   const route = new Hono();
+
+  // Authentication middleware: verify X-Edge-Token against the task's taskToken
+  route.use("/:taskId/*", async (c, next) => {
+    const taskId = c.req.param("taskId");
+    const actor = getWorkflow(taskId);
+    if (!actor) {
+      return c.json({ error: "Task not found" }, 404);
+    }
+    const expectedToken = actor.getSnapshot()?.context?.taskToken;
+    if (expectedToken) {
+      const token = c.req.header("X-Edge-Token");
+      if (token !== expectedToken) {
+        return c.json({ error: "Unauthorized" }, 401);
+      }
+    }
+    await next();
+  });
 
   // GET /api/edge/:taskId/next-stage
   // Returns the next edge stage to execute, or waiting/done status.
@@ -37,6 +54,7 @@ export function buildWrapperRoute(): Hono {
       return c.json({
         stageName: slot.stageName,
         isGate,
+        cwd: ctx.stageCwds?.[slot.stageName] ?? ctx.worktreePath,
         ...(stageConfig && !isGate ? {
           stageOptions: {
             engine: stageConfig.engine,
@@ -88,7 +106,7 @@ export function buildWrapperRoute(): Hono {
       return c.json({ interrupted: true, reason: "Task not found" });
     }
 
-    const interrupted = ctx.status === "cancelled" || ctx.status === "blocked";
+    const interrupted = ["cancelled", "blocked", "completed", "error"].includes(ctx.status);
     return c.json({
       interrupted,
       reason: interrupted ? (ctx.error ?? ctx.status) : undefined,
@@ -227,6 +245,7 @@ export function buildWrapperRoute(): Hono {
     c.header("Content-Type", "text/event-stream");
     c.header("Cache-Control", "no-cache");
     c.header("Connection", "keep-alive");
+    c.header("X-Accel-Buffering", "no");
     return c.body(stream);
   });
 

@@ -154,6 +154,65 @@ describe("PUT /config/settings - YAML edge cases", () => {
   });
 });
 
+describe("PUT /config/workbench/:name - rollback safety", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockMkdirSync.mockImplementation(() => undefined as any);
+    mockWriteFileSync.mockImplementation(() => {});
+    mockUnlinkSync.mockImplementation(() => {});
+    mockReaddirSync.mockReturnValue([]);
+  });
+
+  it("restores previous files when a later write fails", async () => {
+    mockExistsSync.mockImplementation((p: any) => {
+      const path = String(p);
+      return path === "/mock/config/pipelines/test-pipeline/pipeline.yaml"
+        || path === "/mock/config/pipelines/test-pipeline/prompts/global-constraints.md";
+    });
+    mockReadFileSync.mockImplementation((p: any) => {
+      const path = String(p);
+      if (path === "/mock/config/pipelines/test-pipeline/pipeline.yaml") {
+        return 'name: "old"\nstages: []\n';
+      }
+      if (path === "/mock/config/pipelines/test-pipeline/prompts/global-constraints.md") {
+        return "old constraints";
+      }
+      return "";
+    });
+
+    let renameCount = 0;
+    mockRenameSync.mockImplementation(() => {
+      renameCount += 1;
+      if (renameCount === 3) {
+        throw new Error("rename failed mid-save");
+      }
+    });
+
+    const res = await jsonReq("PUT", "/config/workbench/test-pipeline", {
+      config: {
+        pipeline: {
+          name: "test-pipeline",
+          stages: [],
+        },
+        prompts: {
+          system: { analyzing: "# Analyze" },
+          fragments: {},
+          fragmentMeta: {},
+          globalConstraints: "new constraints",
+          globalClaudeMd: "# Claude rules",
+          globalGeminiMd: "# Gemini rules",
+          globalCodexMd: "# Codex rules",
+        },
+      },
+    });
+
+    expect(res.status).toBe(500);
+    expect(mockReadFileSync).toHaveBeenCalledWith("/mock/config/pipelines/test-pipeline/pipeline.yaml", "utf-8");
+    expect(mockReadFileSync).toHaveBeenCalledWith("/mock/config/pipelines/test-pipeline/prompts/global-constraints.md", "utf-8");
+    expect(mockWriteFileSync.mock.calls.length).toBeGreaterThan(3);
+  });
+});
+
 // ---------- PUT /config/sandbox - missing/extra fields ----------
 
 describe("PUT /config/sandbox - boundary conditions", () => {

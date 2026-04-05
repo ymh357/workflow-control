@@ -1,6 +1,7 @@
 import type { HookInput, HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
 import type { SandboxConfig, AgentRuntimeConfig, SubAgentDefinition } from "../lib/config-loader.js";
 import { taskLogger } from "../lib/logger.js";
+import { buildChildEnv } from "../lib/child-env.js";
 
 export function buildSandboxOptions(config: SandboxConfig | undefined): Record<string, unknown> {
   if (!config?.enabled) return {};
@@ -90,7 +91,7 @@ export function buildQueryOptions(params: {
     ...(stageConfig.model ? { model: stageConfig.model } : {}),
     ...(cwd ? { cwd } : {}),
     ...(resumeSessionId ? { resume: resumeSessionId } : {}),
-    env: { ...process.env, CLAUDECODE: "", CI: "true" },
+    env: { ...buildChildEnv({ ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }), CLAUDECODE: "", CI: "true" },
     ...sandboxOptions,
   };
 

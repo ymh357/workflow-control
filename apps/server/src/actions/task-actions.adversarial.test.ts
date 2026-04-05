@@ -14,7 +14,7 @@ const mockGetAllWorkflows = vi.fn(() => new Map());
 vi.mock("../machine/actor-registry.js", () => ({
   sendEvent: (...args: unknown[]) => mockSendEvent(...args),
   getWorkflow: (...args: unknown[]) => mockGetWorkflow(...args),
-  getAllWorkflows: (...args: any[]) => mockGetAllWorkflows(...args),
+  getAllWorkflows: () => mockGetAllWorkflows(),
   restoreWorkflow: (...args: unknown[]) => mockRestoreWorkflow(...args),
   deleteWorkflow: (...args: unknown[]) => mockDeleteWorkflow(...args),
   createTaskDraft: (...args: unknown[]) => mockCreateTaskDraft(...args),
@@ -36,10 +36,15 @@ vi.mock("../agent/executor.js", () => ({
 const mockWarn = vi.fn();
 const mockInfo = vi.fn();
 const mockTaskLoggerInstance = { warn: mockWarn, info: mockInfo, error: vi.fn(), debug: vi.fn() };
+const mockExecFile = vi.fn();
 
 vi.mock("../lib/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
   taskLogger: () => mockTaskLoggerInstance,
+}));
+
+vi.mock("node:child_process", () => ({
+  execFile: (...args: unknown[]) => mockExecFile(...args),
 }));
 
 vi.mock("../lib/question-manager.js", () => ({
@@ -882,6 +887,9 @@ describe("interruptTask adversarial", () => {
     mockGetWorkflow.mockReturnValue(actor);
     mockRestoreWorkflow.mockReturnValue(null);
     mockGetActiveQueryInfo.mockReturnValue(null);
+    mockSendEvent.mockImplementation(() => {
+      actor._setContext({ status: "blocked" });
+    });
 
     const { interruptTask } = await import("./task-actions.js");
     const result = await interruptTask("task-1", "Stop now");
@@ -895,6 +903,9 @@ describe("interruptTask adversarial", () => {
     mockGetWorkflow.mockReturnValue(actor);
     mockRestoreWorkflow.mockReturnValue(null);
     mockGetActiveQueryInfo.mockReturnValue(null);
+    mockSendEvent.mockImplementation(() => {
+      actor._setContext({ status: "blocked" });
+    });
 
     const { interruptTask } = await import("./task-actions.js");
     await interruptTask("task-1", "");
@@ -915,6 +926,35 @@ describe("interruptTask adversarial", () => {
     expect(mockInterruptActiveQuery).toHaveBeenCalledWith("task-1");
   });
 
+  it("returns INVALID_STATE when interrupt has no effect and there is no active query", async () => {
+    const actor = makeActorWithContext({ status: "running" });
+    mockGetWorkflow.mockReturnValue(actor);
+    mockRestoreWorkflow.mockReturnValue(null);
+    mockGetActiveQueryInfo.mockReturnValue(null);
+
+    const { interruptTask } = await import("./task-actions.js");
+    const result = await interruptTask("task-1", "stop");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("INVALID_STATE");
+    }
+  });
+
+  it("returns INVALID_STATE for completed tasks", async () => {
+    const actor = makeActorWithContext({ status: "completed" });
+    mockGetWorkflow.mockReturnValue(actor);
+    mockRestoreWorkflow.mockReturnValue(null);
+
+    const { interruptTask } = await import("./task-actions.js");
+    const result = await interruptTask("task-1", "stop");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("INVALID_STATE");
+    }
+  });
+
   it("does not call interruptActiveQuery when no active query", async () => {
     const actor = makeActorWithContext({ status: "running" });
     mockGetWorkflow.mockReturnValue(actor);
@@ -925,6 +965,61 @@ describe("interruptTask adversarial", () => {
     await interruptTask("task-1", "stop");
 
     expect(mockInterruptActiveQuery).not.toHaveBeenCalled();
+  });
+});
+
+// =====================================================================
+// sendMessage
+// =====================================================================
+
+describe("sendMessage adversarial", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns INVALID_STATE when task is not interruptible", async () => {
+    const actor = makeActorWithContext({ status: "completed" });
+    mockGetWorkflow.mockReturnValue(actor);
+    mockRestoreWorkflow.mockReturnValue(null);
+
+    const { sendMessage } = await import("./task-actions.js");
+    const result = await sendMessage("task-1", "hello");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("INVALID_STATE");
+    }
+  });
+
+  it("returns INVALID_STATE when fallback interrupt has no effect", async () => {
+    const actor = makeActorWithContext({ status: "running" });
+    mockGetWorkflow.mockReturnValue(actor);
+    mockRestoreWorkflow.mockReturnValue(null);
+    mockGetActiveQueryInfo.mockReturnValue(null);
+
+    const { sendMessage } = await import("./task-actions.js");
+    const result = await sendMessage("task-1", "hello");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("INVALID_STATE");
+    }
+  });
+
+  it("queues message when active query session exists", async () => {
+    const actor = makeActorWithContext({ status: "running" });
+    mockGetWorkflow.mockReturnValue(actor);
+    mockRestoreWorkflow.mockReturnValue(null);
+    mockGetActiveQueryInfo.mockReturnValue({ sessionId: "sess-1" });
+    mockQueueInterruptMessage.mockReturnValue(true);
+    mockInterruptActiveQuery.mockResolvedValue(undefined);
+
+    const { sendMessage } = await import("./task-actions.js");
+    const result = await sendMessage("task-1", "hello");
+
+    expect(result.ok).toBe(true);
+    expect(mockQueueInterruptMessage).toHaveBeenCalledWith("task-1", "hello");
+    expect(mockInterruptActiveQuery).toHaveBeenCalledWith("task-1");
   });
 });
 
@@ -981,27 +1076,67 @@ describe("answerQuestion adversarial", () => {
 describe("deleteTask adversarial", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockExecFile.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null) => void) => cb(null));
   });
 
-  it("calls cancelTask and deleteWorkflow on valid delete", async () => {
+  it("calls cancelTask, cleans worktree, and deleteWorkflow on valid delete", async () => {
+    const actor = makeActorWithContext({ status: "running", worktreePath: "/tmp/task-1-wt" });
+    mockGetWorkflow.mockReturnValue(actor);
+    mockRestoreWorkflow.mockReturnValue(null);
+    mockSendEvent.mockImplementation((_taskId: string, event: { type: string }) => {
+      if (event.type === "CANCEL") actor._setContext({ status: "cancelled" });
+      return true;
+    });
     const { deleteTask } = await import("./task-actions.js");
-    const result = deleteTask("task-1");
+    const result = await deleteTask("task-1");
 
     expect(mockCancelTask).toHaveBeenCalledWith("task-1");
+    expect(mockExecFile).toHaveBeenCalledWith(
+      "git",
+      ["worktree", "remove", "--force", "/tmp/task-1-wt"],
+      { timeout: 30_000 },
+      expect.any(Function),
+    );
     expect(mockDeleteWorkflow).toHaveBeenCalledWith("task-1");
+    expect(mockSendEvent).toHaveBeenCalledWith("task-1", { type: "CANCEL" });
     expect(result.ok).toBe(true);
   });
 
-  it("still returns ok for non-existent task (no-op)", async () => {
-    mockCancelTask.mockReturnValue(undefined);
-    mockDeleteWorkflow.mockReturnValue(undefined);
+  it("returns TASK_NOT_FOUND for non-existent task", async () => {
+    mockGetWorkflow.mockReturnValue(null);
+    mockRestoreWorkflow.mockReturnValue(null);
 
     const { deleteTask } = await import("./task-actions.js");
-    const result = deleteTask("nonexistent");
+    const result = await deleteTask("nonexistent");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("TASK_NOT_FOUND");
+    }
+    expect(mockCancelTask).not.toHaveBeenCalled();
+    expect(mockDeleteWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("cancels child sub-tasks before deleting parent task", async () => {
+    const actor = makeActorWithContext({ status: "running" });
+    mockGetWorkflow.mockReturnValue(actor);
+    mockRestoreWorkflow.mockReturnValue(null);
+    const child = makeActorWithContext({ status: "running" });
+    mockGetAllWorkflows.mockReturnValue(new Map([
+      ["task-1-sub-a", child],
+      ["task-1", actor],
+    ]));
+    mockSendEvent.mockImplementation((taskId: string, event: { type: string }) => {
+      if (taskId === "task-1" && event.type === "CANCEL") actor._setContext({ status: "cancelled" });
+      return true;
+    });
+
+    const { deleteTask } = await import("./task-actions.js");
+    const result = await deleteTask("task-1");
 
     expect(result.ok).toBe(true);
-    expect(mockCancelTask).toHaveBeenCalledWith("nonexistent");
-    expect(mockDeleteWorkflow).toHaveBeenCalledWith("nonexistent");
+    expect(mockSendEvent).toHaveBeenCalledWith("task-1-sub-a", { type: "CANCEL" });
+    expect(mockCancelTask).toHaveBeenCalledWith("task-1-sub-a");
   });
 });
 
@@ -1064,6 +1199,8 @@ describe("launch adversarial", () => {
   });
 
   it("returns ok on valid launch", async () => {
+    mockGetWorkflow.mockReturnValue(makeActorWithContext({ status: "idle" }));
+    mockRestoreWorkflow.mockReturnValue(null);
     mockLaunchTask.mockReturnValue(true);
 
     const { launch } = await import("./task-actions.js");
@@ -1073,8 +1210,9 @@ describe("launch adversarial", () => {
     expect(mockLaunchTask).toHaveBeenCalledWith("task-1");
   });
 
-  it("returns TASK_NOT_FOUND when launch fails", async () => {
-    mockLaunchTask.mockReturnValue(false);
+  it("returns TASK_NOT_FOUND when task does not exist", async () => {
+    mockGetWorkflow.mockReturnValue(null);
+    mockRestoreWorkflow.mockReturnValue(null);
 
     const { launch } = await import("./task-actions.js");
     const result = launch("no-such-task");
@@ -1083,5 +1221,19 @@ describe("launch adversarial", () => {
     if (!result.ok) {
       expect(result.code).toBe("TASK_NOT_FOUND");
     }
+  });
+
+  it("returns INVALID_STATE when task is not idle", async () => {
+    mockGetWorkflow.mockReturnValue(makeActorWithContext({ status: "running" }));
+    mockRestoreWorkflow.mockReturnValue(null);
+
+    const { launch } = await import("./task-actions.js");
+    const result = launch("task-1");
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.code).toBe("INVALID_STATE");
+    }
+    expect(mockLaunchTask).not.toHaveBeenCalled();
   });
 });

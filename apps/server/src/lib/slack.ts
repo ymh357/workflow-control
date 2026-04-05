@@ -1,6 +1,10 @@
 import { logger } from "./logger.js";
 import { loadSystemSettings } from "./config-loader.js";
 
+function escapeSlackMrkdwn(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 2, backoffMs = [1000, 2000]): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -71,12 +75,14 @@ async function sendSlackMessage(opts: { text: string; blocks?: unknown[] }): Pro
 }
 
 export async function notifyStageComplete(taskId: string, title: string, templateName: string): Promise<void> {
-  const text = `[${templateName}] *${title}*\nTask: \`${taskId.slice(0, 8)}\`\nPlease review.\n${taskLink(taskId)}`;
+  const text = `[${escapeSlackMrkdwn(templateName)}] *${escapeSlackMrkdwn(title)}*\nTask: \`${taskId.slice(0, 8)}\`\nPlease review.\n${taskLink(taskId)}`;
   await sendSlackMessage({ text });
 }
 
 export async function notifyBlocked(taskId: string, stage: string, error: string): Promise<void> {
-  const text = `[Blocked] Task \`${taskId.slice(0, 8)}\` stuck at *${stage}*\nError: ${error}\nUse Web UI to retry or CLI to debug.\n${taskLink(taskId)}`;
+  const safeStage = escapeSlackMrkdwn(stage);
+  const safeError = escapeSlackMrkdwn(error);
+  const text = `[Blocked] Task \`${taskId.slice(0, 8)}\` stuck at *${safeStage}*\nError: ${safeError}\nUse Web UI to retry or CLI to debug.\n${taskLink(taskId)}`;
   const interactive = hasSocketMode();
   const blocks: unknown[] = [
     { type: "section", text: { type: "mrkdwn", text } },
@@ -93,15 +99,16 @@ export async function notifyBlocked(taskId: string, stage: string, error: string
 }
 
 export async function notifyCompleted(taskId: string, deliverable: string): Promise<void> {
-  const text = `[Completed] Task \`${taskId.slice(0, 8)}\`\nDeliverable: ${deliverable}\nPlease review.\n${taskLink(taskId)}`;
+  const text = `[Completed] Task \`${taskId.slice(0, 8)}\`\nDeliverable: ${escapeSlackMrkdwn(deliverable)}\nPlease review.\n${taskLink(taskId)}`;
   await sendSlackMessage({ text });
 }
 
 export async function notifyQuestionAsked(taskId: string, questionId: string, question: string, options?: string[]): Promise<void> {
-  const text = `[Question] Task \`${taskId.slice(0, 8)}\` needs your input\n> ${question.slice(0, 200)}\nAnswer in Web UI.\n${taskLink(taskId)}`;
+  const safeQuestion = escapeSlackMrkdwn(question.slice(0, 200));
+  const text = `[Question] Task \`${taskId.slice(0, 8)}\` needs your input\n> ${safeQuestion}\nAnswer in Web UI.\n${taskLink(taskId)}`;
   const interactive = hasSocketMode();
   const blocks: unknown[] = [
-    { type: "section", text: { type: "mrkdwn", text: `[Question] Task \`${taskId.slice(0, 8)}\` needs your input\n> ${question.slice(0, 200)}` } },
+    { type: "section", text: { type: "mrkdwn", text: `[Question] Task \`${taskId.slice(0, 8)}\` needs your input\n> ${safeQuestion}` } },
     { type: "section", text: { type: "mrkdwn", text: `<${taskLink(taskId)}|Open in Web UI>` } },
   ];
 
@@ -135,10 +142,12 @@ export async function notifyCancelled(taskId: string): Promise<void> {
 }
 
 export async function notifyGenericGate(taskId: string, stageName: string, template: string): Promise<void> {
-  const text = `[Gate: ${stageName}] Task \`${taskId.slice(0, 8)}\` needs your approval.\nTemplate: ${template}\n${taskLink(taskId)}`;
+  const safeStageName = escapeSlackMrkdwn(stageName);
+  const safeTemplate = escapeSlackMrkdwn(template);
+  const text = `[Gate: ${safeStageName}] Task \`${taskId.slice(0, 8)}\` needs your approval.\nTemplate: ${safeTemplate}\n${taskLink(taskId)}`;
   const interactive = hasSocketMode();
   const blocks: unknown[] = [
-    { type: "section", text: { type: "mrkdwn", text: `[Gate: ${stageName}] Task \`${taskId.slice(0, 8)}\` needs your approval.\nTemplate: ${template}\n<${taskLink(taskId)}|Open in Web UI>` } },
+    { type: "section", text: { type: "mrkdwn", text: `[Gate: ${safeStageName}] Task \`${taskId.slice(0, 8)}\` needs your approval.\nTemplate: ${safeTemplate}\n<${taskLink(taskId)}|Open in Web UI>` } },
   ];
 
   if (interactive) {

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { sseManager } from "../sse/manager.js";
 import { taskListBroadcaster } from "../sse/task-list-broadcaster.js";
-import { getWorkflow } from "../machine/workflow.js";
+import { getWorkflow, restoreWorkflow } from "../machine/workflow.js";
 import { errorResponse, ErrorCode } from "../lib/error-response.js";
 
 export const streamRoute = new Hono();
@@ -21,12 +21,13 @@ streamRoute.get("/stream/tasks", (c) => {
   c.header("Content-Type", "text/event-stream");
   c.header("Cache-Control", "no-cache");
   c.header("Connection", "keep-alive");
+  c.header("X-Accel-Buffering", "no");
   return c.body(stream);
 });
 
 streamRoute.get("/stream/:taskId", (c) => {
   const taskId = c.req.param("taskId");
-  const workflow = getWorkflow(taskId);
+  const workflow = getWorkflow(taskId) ?? restoreWorkflow(taskId);
 
   if (!workflow && !sseManager.hasHistory(taskId)) {
     return errorResponse(c, 404, ErrorCode.TASK_NOT_FOUND, "Task not found");
@@ -45,5 +46,6 @@ streamRoute.get("/stream/:taskId", (c) => {
   c.header("Content-Type", "text/event-stream");
   c.header("Cache-Control", "no-cache");
   c.header("Connection", "keep-alive");
+  c.header("X-Accel-Buffering", "no");
   return c.body(stream);
 });

@@ -97,6 +97,7 @@ type GlobalSelection =
   | { type: "constraints" }
   | { type: "claudeMd" }
   | { type: "geminiMd" }
+  | { type: "codexMd" }
   | { type: "fragments" };
 
 interface GlobalEditorProps {
@@ -104,11 +105,13 @@ interface GlobalEditorProps {
   constraints: string;
   claudeMd: string;
   geminiMd: string;
+  codexMd: string;
   fragments: Record<string, string>;
   fragmentMeta: Record<string, FragmentMeta>;
   onConstraintsChange: (v: string) => void;
   onClaudeMdChange: (v: string) => void;
   onGeminiMdChange: (v: string) => void;
+  onCodexMdChange: (v: string) => void;
   onFragmentChange: (name: string, content: string) => void;
   onFragmentMetaChange: (name: string, meta: FragmentMeta) => void;
   onFragmentAdd: (name: string) => void;
@@ -121,11 +124,13 @@ const GlobalEditor = ({
   constraints,
   claudeMd,
   geminiMd,
+  codexMd,
   fragments,
   fragmentMeta,
   onConstraintsChange,
   onClaudeMdChange,
   onGeminiMdChange,
+  onCodexMdChange,
   onFragmentChange,
   onFragmentMetaChange,
   onFragmentAdd,
@@ -151,29 +156,21 @@ const GlobalEditor = ({
     );
   }
 
-  if (selection.type === "claudeMd") {
+  if (selection.type === "claudeMd" || selection.type === "geminiMd" || selection.type === "codexMd") {
+    const mdConfigs: Record<string, { title: string; desc: string; value: string; onChange: (v: string) => void }> = {
+      claudeMd: { title: t("claudeMd"), desc: t("claudeMdDesc"), value: claudeMd, onChange: (v) => onClaudeMdChange(v) },
+      geminiMd: { title: t("geminiMd"), desc: t("geminiMdDesc"), value: geminiMd, onChange: (v) => onGeminiMdChange(v) },
+      codexMd: { title: t("codexMd"), desc: t("codexMdDesc"), value: codexMd, onChange: (v) => onCodexMdChange(v) },
+    };
+    const cfg = mdConfigs[selection.type];
     return (
       <div className="flex flex-col h-full">
         <div className="shrink-0 mb-3">
-          <h3 className="text-sm font-bold text-zinc-100">{t("claudeMd")}</h3>
-          <p className="text-xs text-zinc-500 mt-0.5">{t("claudeMdDesc")}</p>
+          <h3 className="text-sm font-bold text-zinc-100">{cfg.title}</h3>
+          <p className="text-xs text-zinc-500 mt-0.5">{cfg.desc}</p>
         </div>
         <div className="flex-1" style={{ minHeight: 300 }}>
-          <CodeEditor language="markdown" value={claudeMd} onChange={(v) => onClaudeMdChange(v ?? "")} readOnly={readOnly} height="100%" />
-        </div>
-      </div>
-    );
-  }
-
-  if (selection.type === "geminiMd") {
-    return (
-      <div className="flex flex-col h-full">
-        <div className="shrink-0 mb-3">
-          <h3 className="text-sm font-bold text-zinc-100">{t("geminiMd")}</h3>
-          <p className="text-xs text-zinc-500 mt-0.5">{t("geminiMdDesc")}</p>
-        </div>
-        <div className="flex-1" style={{ minHeight: 300 }}>
-          <CodeEditor language="markdown" value={geminiMd} onChange={(v) => onGeminiMdChange(v ?? "")} readOnly={readOnly} height="100%" />
+          <CodeEditor language="markdown" value={cfg.value} onChange={(v) => cfg.onChange(v ?? "")} readOnly={readOnly} height="100%" />
         </div>
       </div>
     );

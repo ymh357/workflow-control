@@ -1,4 +1,5 @@
 import { sseManager } from "../sse/manager.js";
+import { taskListBroadcaster } from "../sse/task-list-broadcaster.js";
 import { notifyQuestionAsked } from "./slack.js";
 import { logger as rootLogger } from "./logger.js";
 import { getDb } from "./db.js";
@@ -11,14 +12,26 @@ interface PendingQuestion {
   taskId: string;
   question: string;
   options?: string[];
+  createdAt: string;
   resolve: (answer: string) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   warningTimer: ReturnType<typeof setTimeout>;
 }
 
+interface PendingQuestionView {
+  questionId: string;
+  question: string;
+  options?: string[];
+  createdAt: string;
+}
+
 class QuestionManager {
   private pending = new Map<string, PendingQuestion>();
+
+  private notifyTaskList(taskId: string): void {
+    taskListBroadcaster.broadcastTaskUpdate(taskId);
+  }
 
   async ask(
     taskId: string,
@@ -26,6 +39,7 @@ class QuestionManager {
     options?: string[],
   ): Promise<string> {
     const id = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
 
     let resolve!: (value: string) => void;
     let reject!: (reason: Error) => void;
@@ -37,6 +51,7 @@ class QuestionManager {
     const timer = setTimeout(() => {
       this.pending.delete(id);
       this.deleteFromDb(id);
+      this.notifyTaskList(taskId);
       reject(new Error(`Question timed out after ${QUESTION_TIMEOUT_MS / 60000} minutes`));
     }, QUESTION_TIMEOUT_MS);
 
@@ -49,7 +64,7 @@ class QuestionManager {
       });
     }, QUESTION_TIMEOUT_MS - WARNING_BEFORE_MS);
 
-    this.pending.set(id, { id, taskId, question, options, resolve, reject, timer, warningTimer });
+    this.pending.set(id, { id, taskId, question, options, createdAt, resolve, reject, timer, warningTimer });
 
     // Persist to DB
     try {
@@ -66,6 +81,7 @@ class QuestionManager {
       timestamp: new Date().toISOString(),
       data: { questionId: id, question, options },
     });
+    this.notifyTaskList(taskId);
 
     notifyQuestionAsked(taskId, id, question, options).catch((err) => {
       rootLogger.warn({ err, taskId }, "Failed to send question notification");
@@ -80,6 +96,7 @@ class QuestionManager {
       // Check if question exists in DB (server restarted, Promise lost)
       if (this.existsInDb(questionId)) {
         this.deleteFromDb(questionId);
+        if (taskId) this.notifyTaskList(taskId);
         return "stale";
       }
       return false;
@@ -90,6 +107,7 @@ class QuestionManager {
     this.pending.delete(questionId);
     this.deleteFromDb(questionId);
     q.resolve(answer);
+    this.notifyTaskList(q.taskId);
     return true;
   }
 
@@ -109,6 +127,7 @@ class QuestionManager {
       clearTimeout(q.warningTimer);
       this.pending.delete(id);
       q.reject(new Error("Task terminated"));
+      this.notifyTaskList(q.taskId);
     }
     // Clean DB
     try {
@@ -116,6 +135,7 @@ class QuestionManager {
     } catch {
       // Non-critical
     }
+    this.notifyTaskList(taskId);
   }
 
   hasPending(taskId: string): boolean {
@@ -125,32 +145,33 @@ class QuestionManager {
     return false;
   }
 
-  getAllPending(taskId: string): Array<{ questionId: string; question: string; options?: string[] }> {
-    const result: Array<{ questionId: string; question: string; options?: string[] }> = [];
+  getAllPending(taskId: string): PendingQuestionView[] {
+    const result: PendingQuestionView[] = [];
     for (const q of this.pending.values()) {
-      if (q.taskId === taskId) result.push({ questionId: q.id, question: q.question, options: q.options });
+      if (q.taskId === taskId) result.push({ questionId: q.id, question: q.question, options: q.options, createdAt: q.createdAt });
     }
     return result;
   }
 
-  getPending(taskId: string): { questionId: string; question: string; options?: string[] } | undefined {
+  getPending(taskId: string): PendingQuestionView | undefined {
     return this.getAllPending(taskId)[0];
   }
 
-  getPersistedPending(taskId: string): { questionId: string; question: string; options?: string[] } | undefined {
+  getPersistedPending(taskId: string): PendingQuestionView | undefined {
     // Check in-memory first
     const mem = this.getPending(taskId);
     if (mem) return mem;
     // Fallback to DB (e.g. after server restart, question is persisted but Promise is lost)
     try {
       const row = getDb().prepare(
-        "SELECT question_id, question, options FROM pending_questions WHERE task_id = ? LIMIT 1"
-      ).get(taskId) as { question_id: string; question: string; options: string | null } | undefined;
+        "SELECT question_id, question, options, created_at FROM pending_questions WHERE task_id = ? ORDER BY created_at ASC, question_id ASC LIMIT 1"
+      ).get(taskId) as { question_id: string; question: string; options: string | null; created_at: string } | undefined;
       if (!row) return undefined;
       return {
         questionId: row.question_id,
         question: row.question,
         options: row.options ? JSON.parse(row.options) : undefined,
+        createdAt: row.created_at,
       };
     } catch {
       return undefined;

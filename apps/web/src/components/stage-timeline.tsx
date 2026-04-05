@@ -8,12 +8,11 @@ import PipelineFlowGraph from "@/components/flow/pipeline-flow-graph";
 interface StageTimelineProps {
   currentStatus: string;
   stageCosts: Record<string, StageCostInfo>;
-  stageSessionIds?: Record<string, string>;
   pipelineStages?: PipelineStageEntry[];
   onStageClick?: (stageName: string) => void;
 }
 
-const StageTimeline = ({ currentStatus, stageCosts, stageSessionIds, pipelineStages, onStageClick }: StageTimelineProps) => {
+const StageTimeline = ({ currentStatus, stageCosts, pipelineStages, onStageClick }: StageTimelineProps) => {
   if (!pipelineStages?.length) return null;
 
   return (

@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { parse as parseYAML } from "yaml";
 
 import type { SystemSettings } from "./types.js";
+import { SystemSettingsSchema } from "./schema.js";
 
 export const CONFIG_DIR = resolve(import.meta.dirname, "../../../config");
 
@@ -61,7 +62,9 @@ export function loadSystemSettings(): SystemSettings {
     try {
       const raw = readFileSync(filePath, "utf-8");
       yamlConfig = parseYAML(raw) || {};
-    } catch { /* fallback to empty */ }
+    } catch (err) {
+      console.warn("[config] Failed to parse system-settings.yaml:", err instanceof Error ? err.message : String(err));
+    }
   }
 
   // Core defaults / ENV fallbacks for internal framework use
@@ -85,7 +88,11 @@ export function loadSystemSettings(): SystemSettings {
       gemini_model: process.env.GEMINI_MODEL || "auto",
       codex_model: process.env.CODEX_MODEL || "",
       default_engine: (process.env.DEFAULT_ENGINE as "claude" | "gemini" | "codex") || "claude",
-      max_budget_usd: Number(process.env.MAX_BUDGET_USD) || 10.0,
+      max_budget_usd: (() => {
+        const budgetEnv = process.env.MAX_BUDGET_USD;
+        const parsed = budgetEnv !== undefined ? Number(budgetEnv) : 10.0;
+        return Number.isFinite(parsed) ? parsed : 10.0;
+      })(),
     },
   };
 
@@ -116,6 +123,16 @@ export function loadSystemSettings(): SystemSettings {
   }
 
   const result = interpolateObject(merged);
+
+  // Validate merged settings against schema (warn but don't crash)
+  const validated = SystemSettingsSchema.safeParse(result);
+  if (!validated.success) {
+    console.warn(
+      "[config] System settings validation warnings:",
+      validated.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`),
+    );
+  }
+
   settingsCache = { value: result, ts: Date.now() };
   return result;
 }

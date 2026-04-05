@@ -14,7 +14,47 @@ import { getNestedValue } from "../lib/config-loader.js";
 import { extractJSON } from "../lib/json-extractor.js";
 import { getStageBuilder } from "./stage-registry.js";
 
+/**
+ * Filter store writes to only include keys declared in the stage's `writes` config.
+ * Undeclared keys are logged as warnings and dropped.
+ */
+function filterStoreWrites(
+  parsed: Record<string, unknown>,
+  declaredWrites: string[] | undefined,
+  stageName: string,
+  taskId: string,
+): Record<string, unknown> {
+  if (!declaredWrites || declaredWrites.length === 0) return parsed;
+  const allowed = new Set(declaredWrites);
+  const filtered: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (allowed.has(key)) {
+      filtered[key] = value;
+    } else {
+      console.warn(`[store] Stage "${stageName}" wrote undeclared key "${key}" (task ${taskId.slice(0, 8)}). Dropping.`);
+    }
+  }
+  return filtered;
+}
+
 export type StateNode = Record<string, unknown>;
+
+// --- Per-stage retry tracking helpers (parallel-safe) ---
+
+function getStageRetryCount(context: WorkflowContext, stageName: string): number {
+  return context.stageRetryCount?.[stageName] ?? context.retryCount;
+}
+
+function incrementStageRetryCount(context: WorkflowContext, stageName: string): Record<string, number> {
+  const current = context.stageRetryCount ?? {};
+  return { ...current, [stageName]: (current[stageName] ?? 0) + 1 };
+}
+
+function resetStageRetryCount(context: WorkflowContext, stageName: string): Record<string, number> {
+  const current = context.stageRetryCount ?? {};
+  const { [stageName]: _, ...rest } = current;
+  return rest;
+}
 
 // XState invoke onDone event shape. `output` is typed loosely because
 // different engines (agent vs script) produce different result shapes.
@@ -70,7 +110,7 @@ export function buildAgentState(
         {
           guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
             if ((runtime.writes?.length ?? 0) === 0) return false;
-            if (context.retryCount >= 2) return false;
+            if (getStageRetryCount(context, stateName) >= 2) return false;
             const text = event.output.resultText;
             if (!text) return true;
             try {
@@ -87,6 +127,7 @@ export function buildAgentState(
               const sessionId = event.output?.sessionId ?? context.stageSessionIds?.[stateName];
               return {
                 retryCount: context.retryCount + 1,
+                stageRetryCount: incrementStageRetryCount(context, stateName),
                 totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
                 totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
@@ -253,6 +294,7 @@ export function buildAgentState(
               return {
                 store,
                 retryCount: 0,
+                stageRetryCount: resetStageRetryCount(context, stateName),
                 ...(runtime.retry?.back_to ? { qaRetryCount: 0 } : {}),
                 resumeInfo: undefined,
                 totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
@@ -341,6 +383,7 @@ export function buildScriptState(
             return {
               store,
               retryCount: 0,
+              stageRetryCount: resetStageRetryCount(context, stateName),
               branch: store.branch ?? context.branch,
               worktreePath: store.worktreePath?.worktreePath ?? store.worktreePath ?? context.worktreePath,
             };
@@ -465,6 +508,28 @@ export function buildHumanGateState(
 }
 
 /**
+ * Sanitize store values for safe use in expr-eval expressions.
+ * Only primitive values (string, number, boolean, null/undefined) are allowed —
+ * objects, arrays, and functions are excluded to prevent expression injection.
+ */
+function sanitizeExprVars(store: Record<string, unknown>): Record<string, string | number | boolean> {
+  const safe: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(store)) {
+    if (typeof value === "string") {
+      safe[key] = value;
+    } else if (typeof value === "number") {
+      safe[key] = value;
+    } else if (typeof value === "boolean") {
+      safe[key] = value;
+    } else if (value === null || value === undefined) {
+      safe[key] = 0;
+    }
+    // Objects/arrays/functions are excluded — they can't be safely used in expressions
+  }
+  return safe;
+}
+
+/**
  * Condition Stage: Evaluates expression branches and transitions to the matching target.
  * Uses XState `always` (eventless transitions) — no invoke required.
  */
@@ -486,8 +551,9 @@ export function buildConditionState(
       guard: ({ context }: { context: WorkflowContext }) => {
         try {
           const expr = parser.parse(branch.when!);
-          // Expose store as `store` variable in expressions
-          return !!expr.evaluate({ store: context.store });
+          const safeStore = sanitizeExprVars(context.store);
+          // expr-eval supports booleans at runtime but its type defs don't include boolean in Value
+          return !!expr.evaluate({ store: safeStore } as Record<string, any>);
         } catch (err) {
           taskLogger(context.taskId).warn({ stage: stateName, when: branch.when, err }, "Condition branch expression evaluation failed");
           return false;
@@ -535,10 +601,12 @@ export function buildPipelineCallState(
         target: nextTarget,
         actions: [
           assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
-            const updates = event.output ?? {};
+            const raw = event.output ?? {};
+            const updates = filterStoreWrites(raw, runtime.writes, stateName, context.taskId);
             return {
               store: { ...context.store, ...updates },
               retryCount: 0,
+              stageRetryCount: resetStageRetryCount(context, stateName),
             };
           }),
           emitPersistSession(),
@@ -575,10 +643,13 @@ export function buildForeachState(
         target: nextTarget,
         actions: [
           assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
-            const updates = event.output ?? {};
+            const raw = event.output ?? {};
+            const declaredWrites = runtime.collect_to ? [runtime.collect_to] : undefined;
+            const updates = filterStoreWrites(raw, declaredWrites, stateName, context.taskId);
             return {
               store: { ...context.store, ...updates },
               retryCount: 0,
+              stageRetryCount: resetStageRetryCount(context, stateName),
             };
           }),
           emitPersistSession(),
@@ -631,7 +702,7 @@ export function buildParallelGroupState(
             assign(({ context }: { context: WorkflowContext }) => ({
               parallelDone: {
                 ...context.parallelDone,
-                [groupName]: [...(context.parallelDone?.[groupName] ?? []), stage.name],
+                [groupName]: [...new Set([...(context.parallelDone?.[groupName] ?? []), stage.name])],
               },
             })),
           ],
@@ -673,6 +744,7 @@ export function buildParallelGroupState(
           const { [groupName]: _, ...restParallelDone } = context.parallelDone ?? {};
           return {
             retryCount: 0,
+            stageRetryCount: {},
             resumeInfo: undefined,
             parallelDone: Object.keys(restParallelDone).length > 0 ? restParallelDone : undefined,
           };

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { registryService } from "../services/registry-service.js";
 import { validateBody, getValidatedBody } from "../middleware/validate.js";
 import { errorResponse, ErrorCode } from "../lib/error-response.js";
+import { logger } from "../lib/logger.js";
 
 const installSchema = z.object({
   packages: z.array(z.string().min(1)).min(1),
@@ -28,7 +29,8 @@ registryRoute.get("/registry/index", async (c) => {
     const index = await registryService.getIndex();
     return c.json(index);
   } catch (err) {
-    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, (err as Error).message);
+    logger.error({ err }, "Registry operation failed");
+    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });
 
@@ -39,7 +41,8 @@ registryRoute.get("/registry/search", async (c) => {
     const results = await registryService.search(q || undefined, type || undefined);
     return c.json({ packages: results });
   } catch (err) {
-    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, (err as Error).message);
+    logger.error({ err }, "Registry operation failed");
+    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });
 
@@ -49,7 +52,8 @@ registryRoute.get("/registry/packages/:name", async (c) => {
     const manifest = await registryService.getManifest(name);
     return c.json(manifest);
   } catch (err) {
-    return errorResponse(c, 404, ErrorCode.FILE_NOT_FOUND, (err as Error).message);
+    logger.error({ err }, "Registry operation failed");
+    return errorResponse(c, 404, ErrorCode.FILE_NOT_FOUND, "Package not found");
   }
 });
 
@@ -59,7 +63,8 @@ registryRoute.get("/registry/installed", (c) => {
     const installed = registryService.listInstalled(type || undefined);
     return c.json({ packages: installed });
   } catch (err) {
-    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, (err as Error).message);
+    logger.error({ err }, "Registry operation failed");
+    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });
 
@@ -68,7 +73,8 @@ registryRoute.get("/registry/outdated", async (c) => {
     const outdated = await registryService.checkOutdated();
     return c.json({ packages: outdated });
   } catch (err) {
-    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, (err as Error).message);
+    logger.error({ err }, "Registry operation failed");
+    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });
 
@@ -78,7 +84,8 @@ registryRoute.post("/registry/install", validateBody(installSchema), async (c) =
     const result = await registryService.install(body.packages);
     return c.json(result);
   } catch (err) {
-    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, (err as Error).message);
+    logger.error({ err }, "Registry operation failed");
+    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });
 
@@ -88,7 +95,8 @@ registryRoute.post("/registry/uninstall", validateBody(uninstallSchema), async (
     const result = await registryService.uninstall(body.packages);
     return c.json(result);
   } catch (err) {
-    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, (err as Error).message);
+    logger.error({ err }, "Registry operation failed");
+    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });
 
@@ -98,7 +106,8 @@ registryRoute.post("/registry/update", validateBody(updateSchema), async (c) => 
     const result = await registryService.update(body.name);
     return c.json(result);
   } catch (err) {
-    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, (err as Error).message);
+    logger.error({ err }, "Registry operation failed");
+    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });
 
@@ -107,7 +116,8 @@ registryRoute.get("/registry/local", (c) => {
     const localOnly = registryService.listLocalOnly();
     return c.json({ packages: localOnly });
   } catch (err) {
-    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, (err as Error).message);
+    logger.error({ err }, "Registry operation failed");
+    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });
 
@@ -116,7 +126,8 @@ registryRoute.post("/registry/bootstrap", async (c) => {
     const result = await registryService.bootstrap(["test-mixed"]);
     return c.json(result);
   } catch (err) {
-    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, (err as Error).message);
+    logger.error({ err }, "Registry operation failed");
+    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });
 
@@ -126,6 +137,7 @@ registryRoute.post("/registry/publish", validateBody(publishSchema), async (c) =
     const result = await registryService.publish(body.name, body.type);
     return c.json(result);
   } catch (err) {
-    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, (err as Error).message);
+    logger.error({ err }, "Registry operation failed");
+    return errorResponse(c, 500, ErrorCode.INTERNAL_ERROR, "Internal server error");
   }
 });

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { taskLogger } from "../lib/logger.js";
+import { buildChildEnv, registerChildCleanup } from "../lib/child-env.js";
 
 export interface CodexOptions {
   codexPath: string;
@@ -52,7 +53,7 @@ function cleanupChildren() {
   activeChildren.clear();
 }
 
-process.on("exit", cleanupChildren);
+registerChildCleanup(cleanupChildren);
 
 export function queryCodex(input: { prompt: string; options: CodexOptions }): CodexQuery {
   const { prompt, options } = input;
@@ -86,7 +87,7 @@ export function queryCodex(input: { prompt: string; options: CodexOptions }): Co
 
     child = spawn(options.codexPath, args, {
       cwd: options.cwd || undefined,
-      env: { ...process.env, ...options.env },
+      env: { ...buildChildEnv(options.env), OPENAI_API_KEY: process.env.OPENAI_API_KEY },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
@@ -119,9 +120,13 @@ export function queryCodex(input: { prompt: string; options: CodexOptions }): Co
       }
     }, 30_000);
 
+    const MAX_STDERR_BYTES = 5 * 1024 * 1024; // 5MB
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString();
       stderrBuffer += text;
+      if (stderrBuffer.length > MAX_STDERR_BYTES) {
+        stderrBuffer = stderrBuffer.slice(-MAX_STDERR_BYTES);
+      }
       log.info({ stderr: text.trim().slice(0, 300) }, "Codex stderr chunk");
     });
 

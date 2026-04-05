@@ -37,7 +37,7 @@ export async function persistSnapshot(taskId: string, actor: { getPersistedSnaps
 
 export function flushSnapshotSync(taskId: string, actor: { getPersistedSnapshot(): unknown }): void {
   const p = snapshotPath(taskId);
-  const tmp = `${p}.tmp.${Date.now()}`;
+  const tmp = `${p}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   try {
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(tmp, JSON.stringify({ version: SNAPSHOT_VERSION, snapshot: actor.getPersistedSnapshot() }));

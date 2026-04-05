@@ -140,7 +140,6 @@ function makeContext(overrides?: Partial<WorkflowContext>): WorkflowContext {
         globalClaudeMd: "",
         globalGeminiMd: "",
         globalCodexMd: "",
-        globalCodexMd: "",
       },
       skills: [],
       mcps: [],

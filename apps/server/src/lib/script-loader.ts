@@ -65,6 +65,14 @@ export async function loadDynamicScript(scriptId: string): Promise<DynamicScript
   if (!entry) return null;
 
   const entryPath = resolve(entry.dir, entry.manifest.entry);
+
+  // Path containment: ensure entry resolves inside config/scripts/
+  const scriptsBase = resolve(CONFIG_DIR, "scripts");
+  const resolvedEntry = resolve(entryPath);
+  if (!resolvedEntry.startsWith(scriptsBase + "/")) {
+    throw new Error(`Script entry path escapes scripts directory: ${entryPath}`);
+  }
+
   if (!existsSync(entryPath)) return null;
 
   try {

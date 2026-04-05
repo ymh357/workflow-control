@@ -12,6 +12,7 @@ import { clearTaskSlots, notifyTaskTerminated } from "../edge/registry.js";
 import { questionManager } from "../lib/question-manager.js";
 import { safeFire } from "../lib/safe-fire.js";
 import { taskLogger } from "../lib/logger.js";
+import path from "node:path";
 
 interface EmittingActor {
   on: <T extends WorkflowEmittedEvent["type"]>(
@@ -20,7 +21,11 @@ interface EmittingActor {
   ) => { unsubscribe(): void };
 }
 
+const registeredActors = new WeakSet<object>();
+
 export function registerSideEffects(actor: EmittingActor): void {
+  if (registeredActors.has(actor)) return;
+  registeredActors.add(actor);
   actor.on("wf.status", (event: Extract<WorkflowEmittedEvent, { type: "wf.status" }>) => {
     sseManager.pushMessage(event.taskId, {
       type: "status",
@@ -112,9 +117,9 @@ export function registerSideEffects(actor: EmittingActor): void {
   });
 
   actor.on("wf.worktreeCleanup", (event: Extract<WorkflowEmittedEvent, { type: "wf.worktreeCleanup" }>) => {
-    if (!event.worktreePath) return;
+    if (!event.worktreePath || !path.isAbsolute(event.worktreePath) || event.worktreePath.includes("..")) return;
     import("node:child_process").then(({ execFile }) => {
-      execFile("git", ["worktree", "remove", "--force", event.worktreePath], { timeout: 30_000 }, (err) => {
+      execFile("git", ["worktree", "remove", "--force", "--", event.worktreePath], { timeout: 30_000 }, (err) => {
         if (err) taskLogger(event.taskId).warn({ err, worktreePath: event.worktreePath }, "worktree cleanup failed");
       });
     }).catch((err) => { taskLogger(event.taskId).warn({ err }, "worktree cleanup: failed to import child_process"); });

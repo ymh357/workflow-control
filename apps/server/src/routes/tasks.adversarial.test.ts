@@ -135,6 +135,20 @@ describe("tasks routes — adversarial", () => {
       const body = await res.json();
       expect(body.failedRestores[0].reason).toBe("string error");
     });
+
+    it("reports restoreWorkflow returning undefined as a failed restore", async () => {
+      mockLoadAllPersistedTaskIds.mockReturnValue(["ghost-1"]);
+      mockGetWorkflow.mockReturnValue(null);
+      mockRestoreWorkflow.mockReturnValue(undefined);
+      mockGetAllWorkflows.mockReturnValue(new Map());
+
+      const res = await app.request("/tasks");
+      const body = await res.json();
+
+      expect(body.failedRestores).toEqual([
+        { id: "ghost-1", reason: "Task snapshot could not be restored" },
+      ]);
+    });
   });
 
   describe("POST /tasks/:taskId/message — edge cases", () => {
@@ -193,7 +207,7 @@ describe("tasks routes — adversarial", () => {
   });
 
   describe("PUT /tasks/:taskId/config — concurrent mutation", () => {
-    it("sends UPDATE_CONFIG event even if snapshot is stale", async () => {
+    it("rejects config updates while the task is still running", async () => {
       const actor = makeActor({ config: { old: true } });
       mockGetWorkflow.mockReturnValue(actor);
       mockSendEvent.mockReturnValue(true);
@@ -203,15 +217,12 @@ describe("tasks routes — adversarial", () => {
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ config: { newKey: "newValue" } }),
+          body: JSON.stringify({ config: { agent: { default_engine: "codex" } } }),
         },
       );
 
-      expect(res.status).toBe(200);
-      expect(mockSendEvent).toHaveBeenCalledWith(
-        "11111111-1111-1111-1111-111111111111",
-        { type: "UPDATE_CONFIG", config: { newKey: "newValue" } },
-      );
+      expect(res.status).toBe(409);
+      expect(mockSendEvent).not.toHaveBeenCalled();
     });
   });
 });

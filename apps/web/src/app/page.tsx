@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { useTranslations } from "next-intl";
-import type { CreateTaskResponse, TaskSummary } from "@workflow-control/shared";
+import type { CreateTaskResponse, TaskSummary, FailedRestoreSummary } from "@workflow-control/shared";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
@@ -52,6 +52,7 @@ const HomePage = () => {
   const [pipelines, setPipelines] = useState<PipelineManifest[]>([]);
   const [selectedPipeline, setSelectedPipeline] = useState<string>("");
   const [showAllOther, setShowAllOther] = useState(false);
+  const [failedRestores, setFailedRestores] = useState<FailedRestoreSummary[]>([]);
 
   const fetchPipelines = useCallback(async () => {
     try {
@@ -89,6 +90,7 @@ const HomePage = () => {
               const event = JSON.parse(dataLine.slice(6));
               if (event.type === "task_list_init") {
                 setTasks(event.tasks);
+                setFailedRestores(event.failedRestores ?? []);
               } else if (event.type === "task_updated") {
                 setTasks((prev) => {
                   const idx = prev.findIndex((t) => t.id === event.task.id);
@@ -242,6 +244,18 @@ const HomePage = () => {
   return (
     <div className="space-y-8">
       <section>
+        {failedRestores.length > 0 && (
+          <div className="mb-4 rounded-md border border-red-900/60 bg-red-950/40 px-4 py-3 text-sm text-red-200">
+            <div className="font-medium">{t("restoreIssues")}</div>
+            <div className="mt-1 space-y-1">
+              {failedRestores.map((failure) => (
+                <div key={failure.id} className="font-mono text-xs text-red-300">
+                  {failure.id.slice(0, 8)}... {failure.reason}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <h2 className="mb-4 text-xl font-semibold">{t("createTask")}</h2>
         <form onSubmit={handleSubmit} className="space-y-3">
           <div className="space-y-2">

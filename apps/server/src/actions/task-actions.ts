@@ -5,6 +5,8 @@ import { taskLogger, logger } from "../lib/logger.js";
 import type { WorkflowContext } from "../machine/types.js";
 import { type ErrorCodeValue } from "../lib/error-response.js";
 import { flattenStages } from "../lib/config-loader.js";
+import { execFile } from "node:child_process";
+import path from "node:path";
 
 // --- Result types ---
 
@@ -14,7 +16,7 @@ export type ActionResult<T = Record<string, unknown>> =
 
 export type ActionErrorCode = Extract<
   ErrorCodeValue,
-  "TASK_NOT_FOUND" | "INVALID_STATE" | "VALIDATION_FAILED" | "INTERNAL_ERROR" | "QUESTION_NOT_FOUND" | "QUESTION_STALE"
+  "TASK_NOT_FOUND" | "INVALID_STATE" | "VALIDATION_FAILED" | "INVALID_CONFIG" | "INTERNAL_ERROR" | "QUESTION_NOT_FOUND" | "QUESTION_STALE"
 >;
 
 function fail(code: ActionErrorCode, message: string): ActionResult<never> {
@@ -35,6 +37,23 @@ function getContext(taskId: string): WorkflowContext | null {
   const actor = getActor(taskId);
   if (!actor) return null;
   return actor.getSnapshot().context;
+}
+
+function canInterruptStatus(status: string): boolean {
+  return !["idle", "blocked", "cancelled", "completed", "error"].includes(status);
+}
+
+async function cleanupDeletedWorktree(taskId: string, worktreePath?: string): Promise<void> {
+  if (!worktreePath) return;
+  if (!path.isAbsolute(worktreePath) || worktreePath.includes("..")) return;
+  await new Promise<void>((resolve) => {
+    execFile("git", ["worktree", "remove", "--force", "--", worktreePath], { timeout: 30_000 }, (err) => {
+      if (err) {
+        taskLogger(taskId).warn({ err, worktreePath }, "delete: worktree cleanup failed");
+      }
+      resolve();
+    });
+  });
 }
 
 export function getTaskContext(taskId: string): WorkflowContext | null {
@@ -263,13 +282,23 @@ export async function interruptTask(
 ): Promise<ActionResult<void>> {
   const actor = getActor(taskId);
   if (!actor) return fail("TASK_NOT_FOUND", `Task ${taskId} not found`);
+  const status = actor.getSnapshot().context.status;
+  if (!canInterruptStatus(status)) {
+    return fail("INVALID_STATE", `Cannot interrupt task from status: ${status}`);
+  }
 
   const reason = message?.trim() || "Interrupted by user";
+  const statusBefore = status;
   sendEvent(taskId, { type: "INTERRUPT", reason });
+  const statusAfter = actor.getSnapshot().context.status;
 
   const info = getActiveQueryInfo(taskId);
   if (info) {
     await interruptActiveQuery(taskId);
+  }
+
+  if (!info && statusAfter === statusBefore) {
+    return fail("INVALID_STATE", `Interrupt had no effect from status: ${statusBefore}`);
   }
 
   return ok(undefined as unknown as void);
@@ -283,6 +312,10 @@ export async function sendMessage(
 
   const actor = getActor(taskId);
   if (!actor) return fail("TASK_NOT_FOUND", `Task ${taskId} not found`);
+  const statusBefore = actor.getSnapshot().context.status;
+  if (!canInterruptStatus(statusBefore)) {
+    return fail("INVALID_STATE", `Cannot send message from status: ${statusBefore}`);
+  }
 
   const log = taskLogger(taskId, "action:message");
   const info = getActiveQueryInfo(taskId);
@@ -296,6 +329,10 @@ export async function sendMessage(
     log.info("No sessionId available, falling back to INTERRUPT event");
     actor.send({ type: "INTERRUPT", reason: message });
     await interruptActiveQuery(taskId).catch(() => {});
+    const statusAfter = actor.getSnapshot().context.status;
+    if (statusAfter === statusBefore) {
+      return fail("INVALID_STATE", `Message interrupt had no effect from status: ${statusBefore}`);
+    }
   }
 
   return ok(undefined as unknown as void);
@@ -316,8 +353,23 @@ export function answerQuestion(
   return ok(undefined as unknown as void);
 }
 
-export function deleteTask(taskId: string): ActionResult<void> {
-  cancelTask(taskId);
+export async function deleteTask(taskId: string): Promise<ActionResult<void>> {
+  const actor = getActor(taskId);
+  if (!actor) return fail("TASK_NOT_FOUND", `Task ${taskId} not found`);
+
+  const snap = actor.getSnapshot();
+  const { status, worktreePath } = snap.context;
+  if (!["completed", "error", "cancelled"].includes(status)) {
+    const cancelled = await cancelTask_(taskId);
+    if (!cancelled.ok && cancelled.code !== "INVALID_STATE") {
+      return cancelled;
+    }
+  } else {
+    cancelSubTasks(taskId);
+    cancelTask(taskId);
+  }
+
+  await cleanupDeletedWorktree(taskId, worktreePath);
   deleteWorkflow(taskId);
   return ok(undefined as unknown as void);
 }
@@ -333,13 +385,26 @@ export function createTask(
     createTaskDraft(taskId, opts.repoName, opts.pipelineName, opts.taskText, opts.edge ? { edge: true } : undefined);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Task creation failed";
+    if (msg.includes("already in progress") || msg.includes("already exists")) {
+      return fail("INVALID_STATE", msg);
+    }
+    if (msg.toLowerCase().includes("not found")) {
+      return fail("INVALID_CONFIG", msg);
+    }
     return fail("INTERNAL_ERROR", msg);
   }
   return ok({ taskId });
 }
 
 export function launch(taskId: string): ActionResult<void> {
+  const actor = getActor(taskId);
+  if (!actor) return fail("TASK_NOT_FOUND", "Task not found");
+  const snap = actor.getSnapshot();
+  const isIdle = snap.value === "idle" || snap.context.status === "idle";
+  if (!isIdle) {
+    return fail("INVALID_STATE", "Task is already launched or not in draft state");
+  }
   const launched = launchTask(taskId);
-  if (!launched) return fail("TASK_NOT_FOUND", "Task not found or already launched");
+  if (!launched) return fail("INTERNAL_ERROR", "Failed to launch task");
   return ok(undefined as unknown as void);
 }

@@ -30,6 +30,9 @@ const actors = new Map<string, WorkflowActor>();
 const cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 const ACTOR_CLEANUP_DELAY_MS = 5 * 60 * 1000;
+const MAX_ACTORS = 200;
+const STALE_ACTOR_SWEEP_INTERVAL_MS = 10 * 60 * 1000;
+const STALE_ACTOR_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour for non-terminal actors with no updates
 
 function scheduleActorCleanup(taskId: string): void {
   const actor = actors.get(taskId);
@@ -48,6 +51,94 @@ function scheduleActorCleanup(taskId: string): void {
     }
   }, ACTOR_CLEANUP_DELAY_MS);
   cleanupTimers.set(taskId, timer);
+}
+
+export function sweepStaleActors(): void {
+  const terminalStates = new Set(["completed", "error", "cancelled"]);
+  const now = Date.now();
+  const toRemove: string[] = [];
+
+  // First pass: identify terminal actors
+  for (const [taskId, actor] of actors) {
+    try {
+      const snap = actor.getSnapshot();
+      if (terminalStates.has(snap.context?.status)) {
+        flushSnapshotSync(taskId, actor);
+        toRemove.push(taskId);
+      }
+    } catch {
+      toRemove.push(taskId);
+    }
+  }
+
+  // Remove collected
+  for (const taskId of toRemove) {
+    const actor = actors.get(taskId);
+    if (actor) actor.stop();
+    actors.delete(taskId);
+    sseManager.closeStream(taskId);
+    const timer = cleanupTimers.get(taskId);
+    if (timer) { clearTimeout(timer); cleanupTimers.delete(taskId); }
+  }
+
+  // Second pass: blocked actors older than max age
+  if (actors.size >= MAX_ACTORS) {
+    const staleBlocked: string[] = [];
+    for (const [taskId, actor] of actors) {
+      try {
+        const snap = actor.getSnapshot();
+        const ctx = snap.context;
+        if (ctx?.status === "blocked") {
+          const updated = ctx.updatedAt ? new Date(ctx.updatedAt).getTime() : 0;
+          if (now - updated > STALE_ACTOR_MAX_AGE_MS) {
+            flushSnapshotSync(taskId, actor);
+            staleBlocked.push(taskId);
+          }
+        }
+      } catch {
+        staleBlocked.push(taskId);
+      }
+    }
+    for (const taskId of staleBlocked) {
+      const actor = actors.get(taskId);
+      if (actor) actor.stop();
+      actors.delete(taskId);
+      sseManager.closeStream(taskId);
+    }
+  }
+
+  // Third pass: running actors with no updates for > 2 hours (likely stuck)
+  if (actors.size >= MAX_ACTORS) {
+    const stuckRunning: string[] = [];
+    const STUCK_RUNNING_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+    for (const [taskId, actor] of actors) {
+      try {
+        const snap = actor.getSnapshot();
+        const ctx = snap.context;
+        if (ctx?.status && !terminalStates.has(ctx.status) && ctx.status !== "blocked" && ctx.status !== "idle") {
+          const updated = ctx.updatedAt ? new Date(ctx.updatedAt).getTime() : 0;
+          if (now - updated > STUCK_RUNNING_MAX_AGE_MS) {
+            flushSnapshotSync(taskId, actor);
+            stuckRunning.push(taskId);
+          }
+        }
+      } catch {
+        stuckRunning.push(taskId);
+      }
+    }
+    for (const taskId of stuckRunning) {
+      const actor = actors.get(taskId);
+      if (actor) actor.stop();
+      actors.delete(taskId);
+      sseManager.closeStream(taskId);
+    }
+  }
+}
+
+const sweepTimer = setInterval(sweepStaleActors, STALE_ACTOR_SWEEP_INTERVAL_MS);
+
+export function stopSweepTimer(): void {
+  clearInterval(sweepTimer);
 }
 
 function subscribeForPersistence(taskId: string, actor: WorkflowActor): void {
@@ -85,6 +176,14 @@ export function createTaskDraft(
   taskText?: string,
   options?: { edge?: boolean; initialStore?: Record<string, any>; worktreePath?: string; branch?: string },
 ): WorkflowActor {
+  if (actors.size >= MAX_ACTORS) {
+    // Evict oldest terminal actors first
+    sweepStaleActors();
+    if (actors.size >= MAX_ACTORS) {
+      throw new Error("Too many active tasks. Delete old tasks before creating new ones.");
+    }
+  }
+
   const config = snapshotGlobalConfig(pipelineName);
 
   if (options?.edge) {
@@ -182,7 +281,7 @@ export function restoreWorkflow(taskId: string): WorkflowActor | undefined {
 
   try {
     const pipeline = snapshot.context!.config!.pipeline;
-    const currentPipeline = loadPipelineConfig();
+    const currentPipeline = loadPipelineConfig(snapshot.context?.config?.pipelineName ?? "pipeline-generator");
     if (currentPipeline) {
       const snapshotFp = pipelineFingerprint(pipeline);
       const currentFp = pipelineFingerprint(currentPipeline);

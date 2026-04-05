@@ -38,6 +38,8 @@
   "autoRetrying": "自动重试 {status}（第 {count} 次）",
   "autoRetryDesc": "Agent 执行失败，正在自动重试。你可以取消或强制重试。",
   "taskCancelled": "任务已取消",
+  "configSaved": "配置已保存",
+  "configSaveFailed": "配置保存失败",
   "completed": "已完成",
   "deliverable": "交付物",
   "totalCostLabel": "总花费：${cost}",
@@ -50,5 +52,6 @@
   "networkError": "网络错误",
   "loadingTaskData": "加载任务数据中...",
   "deleteConfirmDesc": "确定要删除 {id} 吗？它将被移至回收站。",
-  "noPipelines": "未找到流水线。"
+  "noPipelines": "未找到流水线。",
+  "restoreIssues": "恢复异常"
 }

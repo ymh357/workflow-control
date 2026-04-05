@@ -19,7 +19,7 @@ export interface StageTokenUsage extends TokenUsage {
 
 // --- Task Status (matches XState states) ---
 
-export type TaskStatus = string;
+export type TaskStatus = "idle" | "blocked" | "cancelled" | "completed" | "error" | (string & {});
 
 // --- Task ---
 
@@ -148,12 +148,18 @@ export interface TaskSummary {
   pendingQuestion?: boolean;
 }
 
+export interface FailedRestoreSummary {
+  id: string;
+  reason: string;
+}
+
 // --- Task Detail (used by task detail endpoint) ---
 
 export interface TaskDetail {
   id: string;
   taskText?: string;
   status: string;
+  updatedAt?: string;
   currentStage?: string;
   sessionId?: string;
   branch?: string;
@@ -176,7 +182,7 @@ export interface TaskDetail {
 // --- Task List SSE Events ---
 
 export type TaskListSSEEvent =
-  | { type: "task_list_init"; tasks: TaskSummary[] }
+  | { type: "task_list_init"; tasks: TaskSummary[]; failedRestores?: FailedRestoreSummary[] }
   | { type: "task_updated"; task: TaskSummary }
   | { type: "task_removed"; taskId: string };
 
@@ -186,6 +192,7 @@ export interface CreateTaskRequest {
   taskText: string;
   repoName?: string; // explicit repo binding; if omitted, AI extracts from ticket content
   pipelineName?: string; // pipeline to use; defaults to "pipeline-generator"
+  edge?: boolean; // run task on edge workers instead of local agent
 }
 
 export interface CreateTaskResponse {

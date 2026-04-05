@@ -111,6 +111,8 @@ describe("wrapper-api", () => {
         { taskId: "task-1", stageName: "build", createdAt: Date.now(), nonce: "123-1" },
       ]);
       mockGetTaskContext.mockReturnValue(makeContext({
+        worktreePath: "/tmp/task-1",
+        stageCwds: { build: "/tmp/task-1/packages/app" },
         config: {
           pipeline: {
             stages: [
@@ -124,6 +126,7 @@ describe("wrapper-api", () => {
       const body = await res.json();
       expect(body.stageName).toBe("build");
       expect(body.isGate).toBe(false);
+      expect(body.cwd).toBe("/tmp/task-1/packages/app");
       expect(body.stageOptions).toBeDefined();
       expect(body.stageOptions.engine).toBe("claude");
       expect(body.stageOptions.model).toBe("opus");
@@ -235,11 +238,12 @@ describe("wrapper-api", () => {
       expect(body.reason).toBeUndefined();
     });
 
-    it("should return interrupted=false for completed tasks", async () => {
+    it("should return interrupted=true for completed tasks", async () => {
       mockGetTaskContext.mockReturnValue(makeContext({ status: "completed" }));
       const res = await app.request("/api/edge/task-1/check-interrupt");
       const body = await res.json();
-      expect(body.interrupted).toBe(false);
+      expect(body.interrupted).toBe(true);
+      expect(body.reason).toBe("completed");
     });
   });
 

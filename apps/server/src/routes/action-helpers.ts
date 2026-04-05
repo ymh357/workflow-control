@@ -6,6 +6,7 @@ const codeMap: Record<ActionErrorCode, { status: number; code: ErrorCodeValue }>
   TASK_NOT_FOUND: { status: 404, code: ErrorCode.TASK_NOT_FOUND },
   INVALID_STATE: { status: 400, code: ErrorCode.INVALID_STATE },
   VALIDATION_FAILED: { status: 400, code: ErrorCode.VALIDATION_FAILED },
+  INVALID_CONFIG: { status: 400, code: ErrorCode.INVALID_CONFIG },
   INTERNAL_ERROR: { status: 500, code: ErrorCode.INTERNAL_ERROR },
   QUESTION_NOT_FOUND: { status: 404, code: ErrorCode.QUESTION_NOT_FOUND },
   QUESTION_STALE: { status: 409, code: ErrorCode.QUESTION_STALE },

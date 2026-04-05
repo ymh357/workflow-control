@@ -89,6 +89,7 @@ describe("TaskListBroadcaster — adversarial", () => {
 
     const text = new TextDecoder().decode(value);
     expect(text).toContain("task_list_init");
+    expect(text).toContain("corrupt");
   });
 
   it("broadcast to multiple connections where one is broken", async () => {

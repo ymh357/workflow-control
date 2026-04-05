@@ -67,6 +67,8 @@
   "claudeMdDesc": "Global project instructions for Claude Code CLI.",
   "geminiMd": "GEMINI.md",
   "geminiMdDesc": "Global project instructions for Gemini CLI.",
+  "codexMd": "CODEX.md",
+  "codexMdDesc": "Global project instructions for Codex CLI.",
   "knowledgeFragments": "Knowledge Fragments",
   "knowledgeFragmentsDesc": "Shared across all pipelines. Changes here affect all pipelines.",
   "selectFragment": "Select a fragment to edit",

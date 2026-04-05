@@ -161,8 +161,7 @@ describe("loadPipelineConfig adversarial", () => {
     mockReadFileSync.mockReturnValue("");
 
     const result = loadPipelineConfig("null-yaml");
-    // parseYAML("") returns null, validateAndWarn casts null as PipelineConfig
-    // which is still null, so loadPipelineConfig returns null
+    // parseYAML("") returns null, validateAndWarn rejects it and returns null
     expect(result).toBeNull();
   });
 

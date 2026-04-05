@@ -9,6 +9,7 @@ import { z } from "zod";
 import { errorResponse, ErrorCode } from "../lib/error-response.js";
 import { sendMessage, interruptTask } from "../actions/task-actions.js";
 import { actionToResponse } from "./action-helpers.js";
+import { deriveCurrentStage, deriveUpdatedAt, isConfigEditable } from "../lib/task-view-helpers.js";
 
 export const tasksRoute = new Hono();
 
@@ -21,7 +22,12 @@ tasksRoute.get("/tasks", (c) => {
     const failedRestores: { id: string; reason: string }[] = [];
     for (const id of loadAllPersistedTaskIds(50)) {
       try {
-        if (!getWorkflow(id)) restoreWorkflow(id);
+        if (!getWorkflow(id)) {
+          const restored = restoreWorkflow(id);
+          if (!restored) {
+            failedRestores.push({ id, reason: "Task snapshot could not be restored" });
+          }
+        }
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         log.error({ taskId: id, err }, `Failed to restore task ${id}`);
@@ -40,18 +46,20 @@ tasksRoute.get("/tasks", (c) => {
         const ctx = snap.context;
         const pipeline = ctx.config?.pipeline;
         const titlePath = pipeline?.display?.title_path;
+        const pendingQuestion = questionManager.getPersistedPending(id);
         tasks.push({
           id,
           taskText: ctx.taskText,
           status: ctx.status || "unknown",
-          currentStage: ctx.lastStage,
+          currentStage: deriveCurrentStage(ctx),
           sessionId: getLatestSessionId(ctx),
           branch: ctx.branch,
           error: ctx.error,
           totalCostUsd: ctx.totalCostUsd ?? 0,
           store: ctx.store ?? {},
           displayTitle: titlePath ? getNestedValue(ctx.store, titlePath) ?? id : id,
-          updatedAt: new Date().toISOString(),
+          updatedAt: deriveUpdatedAt(ctx, pendingQuestion),
+          pendingQuestion: !!pendingQuestion,
         });
       } catch (err) {
         log.error({ taskId: id, err }, `Error processing snapshot for task ${id}`);
@@ -98,6 +106,9 @@ tasksRoute.put("/tasks/:taskId/config", validateBody(taskConfigUpdateSchema), as
   const taskId = c.req.param("taskId");
   const actor = getWorkflow(taskId) ?? restoreWorkflow(taskId);
   if (!actor) return errorResponse(c, 404, ErrorCode.TASK_NOT_FOUND, "Task not found");
+  if (!isConfigEditable(actor.getSnapshot().context.status)) {
+    return errorResponse(c, 409, ErrorCode.INVALID_STATE, "Task config can only be edited when the task is idle, blocked, cancelled, completed, or errored");
+  }
 
   const body = getValidatedBody(c) as { config: Record<string, unknown> };
 
@@ -119,12 +130,13 @@ tasksRoute.get("/tasks/:taskId", async (c) => {
   const pipeline = ctx.config?.pipeline;
   const titlePath = pipeline?.display?.title_path;
   const summaryPath = pipeline?.display?.completion_summary_path;
+  const pendingQuestion = questionManager.getPersistedPending(taskId);
 
   return c.json({
     id: taskId,
     taskText: ctx.taskText,
     status: ctx.status,
-    currentStage: ctx.lastStage,
+    currentStage: deriveCurrentStage(ctx),
     sessionId: getLatestSessionId(ctx),
     branch: ctx.branch,
     worktreePath: ctx.worktreePath,
@@ -132,7 +144,7 @@ tasksRoute.get("/tasks/:taskId", async (c) => {
     retryCount: ctx.retryCount,
     stageSessionIds: ctx.stageSessionIds,
     stageCwds: ctx.stageCwds,
-    pendingQuestion: questionManager.getPersistedPending(taskId),
+    pendingQuestion,
     totalCostUsd: ctx.totalCostUsd ?? 0,
     totalTokenUsage: ctx.totalTokenUsage,
     stageTokenUsages: ctx.stageTokenUsages,
@@ -141,5 +153,6 @@ tasksRoute.get("/tasks/:taskId", async (c) => {
     pipelineSchema: ctx.config?.pipeline?.stages,
     displayTitle: titlePath ? getNestedValue(ctx.store, titlePath) ?? taskId : taskId,
     completionSummary: summaryPath ? getNestedValue(ctx.store, summaryPath) : undefined,
+    updatedAt: deriveUpdatedAt(ctx, pendingQuestion),
   });
 });

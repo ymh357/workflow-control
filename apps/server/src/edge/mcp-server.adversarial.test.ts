@@ -381,3 +381,122 @@ describe("submit_stage_result - nonce-based stale submission", () => {
     expect(resolved).toBe(true);
   });
 });
+
+describe("cancel_task - token authentication", () => {
+  // Replicate validateTaskToken + cancel_task handler logic
+  function validateTaskToken(taskId: string, token?: string): string | null {
+    const ctx = mockGetTaskContext(taskId);
+    const expected = ctx?.taskToken;
+    if (!expected) return null;
+    if (!token) return "taskToken is required for this task";
+    if (token !== expected) return "Invalid taskToken";
+    return null;
+  }
+
+  it("rejects request with invalid taskToken", () => {
+    mockGetTaskContext.mockReturnValue({ taskId: "t1", taskToken: "correct-token", status: "running" } as any);
+    const authErr = validateTaskToken("t1", "wrong-token");
+    expect(authErr).toBe("Invalid taskToken");
+    // cancel action should NOT be called
+    expect(mockCancelTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects request when taskToken is missing but required", () => {
+    mockGetTaskContext.mockReturnValue({ taskId: "t1", taskToken: "correct-token", status: "running" } as any);
+    const authErr = validateTaskToken("t1", undefined);
+    expect(authErr).toBe("taskToken is required for this task");
+    expect(mockCancelTask).not.toHaveBeenCalled();
+  });
+
+  it("succeeds with valid taskToken", async () => {
+    mockGetTaskContext.mockReturnValue({ taskId: "t1", taskToken: "correct-token", status: "running" } as any);
+    mockCancelTask.mockResolvedValue({ ok: true, data: { status: "cancelled" } } as any);
+
+    const authErr = validateTaskToken("t1", "correct-token");
+    expect(authErr).toBeNull();
+
+    // Proceed to cancel
+    const result = await mockCancelTask("t1");
+    expect(result.ok).toBe(true);
+    expect(mockCancelTask).toHaveBeenCalledWith("t1");
+  });
+});
+
+describe("interrupt_task - token authentication", () => {
+  function validateTaskToken(taskId: string, token?: string): string | null {
+    const ctx = mockGetTaskContext(taskId);
+    const expected = ctx?.taskToken;
+    if (!expected) return null;
+    if (!token) return "taskToken is required for this task";
+    if (token !== expected) return "Invalid taskToken";
+    return null;
+  }
+
+  it("rejects request with invalid taskToken", () => {
+    mockGetTaskContext.mockReturnValue({ taskId: "t1", taskToken: "valid-token", status: "running" } as any);
+    const authErr = validateTaskToken("t1", "invalid-token");
+    expect(authErr).toBe("Invalid taskToken");
+    expect(mockInterruptTask).not.toHaveBeenCalled();
+  });
+
+  it("rejects request when taskToken is missing but required", () => {
+    mockGetTaskContext.mockReturnValue({ taskId: "t1", taskToken: "valid-token", status: "running" } as any);
+    const authErr = validateTaskToken("t1", undefined);
+    expect(authErr).toBe("taskToken is required for this task");
+    expect(mockInterruptTask).not.toHaveBeenCalled();
+  });
+
+  it("succeeds with valid taskToken", async () => {
+    mockGetTaskContext.mockReturnValue({ taskId: "t1", taskToken: "valid-token", status: "running" } as any);
+    mockInterruptTask.mockResolvedValue({ ok: true, data: { status: "blocked" } } as any);
+
+    const authErr = validateTaskToken("t1", "valid-token");
+    expect(authErr).toBeNull();
+
+    const result = await mockInterruptTask("t1", "Need to fix issue");
+    expect(result.ok).toBe(true);
+    expect(mockInterruptTask).toHaveBeenCalledWith("t1", "Need to fix issue");
+  });
+});
+
+describe("check_interrupts - token authentication", () => {
+  function validateTaskToken(taskId: string, token?: string): string | null {
+    const ctx = mockGetTaskContext(taskId);
+    const expected = ctx?.taskToken;
+    if (!expected) return null;
+    if (!token) return "taskToken is required for this task";
+    if (token !== expected) return "Invalid taskToken";
+    return null;
+  }
+
+  it("rejects request with invalid taskToken", () => {
+    mockGetTaskContext.mockReturnValue({ taskId: "t1", taskToken: "secret-token", status: "running" } as any);
+    const authErr = validateTaskToken("t1", "bad-token");
+    expect(authErr).toBe("Invalid taskToken");
+  });
+
+  it("rejects request when taskToken is missing but required", () => {
+    mockGetTaskContext.mockReturnValue({ taskId: "t1", taskToken: "secret-token", status: "running" } as any);
+    const authErr = validateTaskToken("t1", undefined);
+    expect(authErr).toBe("taskToken is required for this task");
+  });
+
+  it("succeeds with valid taskToken and returns interrupt status", () => {
+    mockGetTaskContext.mockReturnValue({ taskId: "t1", taskToken: "secret-token", status: "running" } as any);
+
+    const authErr = validateTaskToken("t1", "secret-token");
+    expect(authErr).toBeNull();
+
+    // Simulate the check_interrupts handler logic
+    const context = mockGetTaskContext("t1")!;
+    const interrupted = context.status === "cancelled" || context.status === "blocked";
+    expect(interrupted).toBe(false);
+  });
+
+  it("allows legacy tasks without token (validateTaskToken returns null)", () => {
+    mockGetTaskContext.mockReturnValue({ taskId: "t1", status: "running" } as any);
+
+    const authErr = validateTaskToken("t1", undefined);
+    expect(authErr).toBeNull(); // No token registered, allow access
+  });
+});

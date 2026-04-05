@@ -18,6 +18,7 @@ function createSSEMessage(taskId: string, type: SSEMessage["type"], data: unknow
 }
 
 const MAX_RESUME_DEPTH = 3;
+const MAX_RESULT_TEXT = 5 * 1024 * 1024; // 5MB cap to prevent unbounded accumulation
 const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes (large structured outputs need time to construct)
 
 export async function processAgentStream(params: {
@@ -69,7 +70,9 @@ export async function processAgentStream(params: {
           for (const block of message.message.content) {
             if (block.type === "text" && block.text) {
               sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_text", { text: block.text }));
-              resultText += block.text;
+              if (resultText.length < MAX_RESULT_TEXT) {
+                resultText += block.text;
+              }
             }
             if (block.type === "thinking" && (block as any).thinking) {
               sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_thinking", {

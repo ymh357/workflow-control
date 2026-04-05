@@ -11,6 +11,7 @@ const mockTaskListBroadcaster = vi.hoisted(() => ({
 }));
 
 const mockGetWorkflow = vi.hoisted(() => vi.fn());
+const mockRestoreWorkflow = vi.hoisted(() => vi.fn());
 
 vi.mock("../lib/logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
@@ -26,6 +27,7 @@ vi.mock("../sse/task-list-broadcaster.js", () => ({
 
 vi.mock("../machine/workflow.js", () => ({
   getWorkflow: (...args: unknown[]) => mockGetWorkflow(...args),
+  restoreWorkflow: (...args: unknown[]) => mockRestoreWorkflow(...args),
 }));
 
 import { streamRoute } from "./stream.js";
@@ -41,6 +43,7 @@ describe("stream routes — adversarial", () => {
 
   it("GET /stream/:taskId with path traversal in taskId", async () => {
     mockGetWorkflow.mockReturnValue(null);
+    mockRestoreWorkflow.mockReturnValue(null);
     mockSseManager.hasHistory.mockReturnValue(false);
 
     const res = await app.request("/stream/../../etc/passwd");
@@ -105,6 +108,7 @@ describe("stream routes — adversarial", () => {
   it("GET /stream/:taskId with very long taskId doesn't crash", async () => {
     const longId = "a".repeat(10_000);
     mockGetWorkflow.mockReturnValue(null);
+    mockRestoreWorkflow.mockReturnValue(null);
     mockSseManager.hasHistory.mockReturnValue(false);
 
     const res = await app.request(`/stream/${longId}`);

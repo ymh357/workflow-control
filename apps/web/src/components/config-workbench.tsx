@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useTranslations } from "next-intl";
 import type { FragmentMeta } from "@/lib/pipeline-types";
 import PipelineEditor from "@/components/config/pipeline-editor";
+import { useToast } from "@/components/toast";
 
 export interface ConfigWorkbenchProps {
   mode?: "task" | "global";
@@ -18,6 +19,7 @@ export interface ConfigWorkbenchProps {
       globalConstraints: string;
       globalClaudeMd: string;
       globalGeminiMd?: string;
+      globalCodexMd?: string;
     };
     [key: string]: unknown;
   };
@@ -39,6 +41,7 @@ const ConfigWorkbench = ({
   availableMcps,
 }: ConfigWorkbenchProps) => {
   const t = useTranslations("Config");
+  const toast = useToast();
   const [forceEdit, setForceEdit] = useState(false);
   const lastTaskId = useRef(taskId || "global");
   const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -68,16 +71,21 @@ const ConfigWorkbench = ({
 
   const handleInterrupt = async () => {
     if (!taskId) return;
-    setForceEdit(true);
     try {
-      await fetch(`${API_BASE}/api/tasks/${taskId}/interrupt`, {
+      const res = await fetch(`${API_BASE}/api/tasks/${taskId}/interrupt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: "User interrupted to edit configuration." }),
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error ?? `Interrupt failed (${res.status})`);
+      }
+      setForceEdit(true);
     } catch (err) {
       console.error("Interrupt failed", err);
       setForceEdit(false);
+      toast.error(err instanceof Error ? err.message : t("savingFailed"));
     }
   };
 

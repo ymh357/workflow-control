@@ -14,6 +14,7 @@ import DynamicStoreViewer from "@/components/dynamic-store-viewer";
 import ConfigWorkbench from "@/components/config-workbench";
 import type { PipelineStageSchema, PipelineStageEntry } from "@/lib/pipeline-types";
 import { flattenPipelineStages } from "@/lib/pipeline-types";
+import { useToast } from "@/components/toast";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
@@ -28,22 +29,26 @@ interface PendingQuestion {
   options?: string[];
 }
 
+async function readApiError(res: Response, fallback: string): Promise<string> {
+  try {
+    const text = await res.text();
+    try {
+      const data = JSON.parse(text);
+      if (data && typeof data === "object" && "error" in data && typeof data.error === "string") {
+        return data.error;
+      }
+    } catch { /* not JSON */ }
+    if (text) return text;
+  } catch { /* ignore */ }
+  return fallback;
+}
+
 const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
   const t = useTranslations("Tasks");
   const tc = useTranslations("Common");
+  const toast = useToast();
   const { id: taskId } = use(params);
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
-
-  // Restore messages from sessionStorage after hydration
-  useEffect(() => {
-    try {
-      const saved = sessionStorage.getItem(`messages:${taskId}`);
-      if (saved) {
-        const parsed = JSON.parse(saved) as DisplayMessage[];
-        if (parsed.length > 0) setMessages(parsed);
-      }
-    } catch { /* ignore */ }
-  }, [taskId]);
   const [status, setStatus] = useState<string>("connecting");
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [question, setQuestion] = useState<PendingQuestion | null>(null);
@@ -77,6 +82,9 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
   questionRef.current = question;
   const taskRef = useRef(task);
   taskRef.current = task;
+  const sseConnectedRef = useRef(false);
+  const seenMessageIdsRef = useRef(new Set<string>());
+  const handleMessageRef = useRef<(msg: SSEMessage) => void>(() => {});
 
   // Fetch task details periodically (stable callback — only depends on taskId)
   const fetchTask = useCallback(async () => {
@@ -99,8 +107,17 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
             return updated;
           });
         }
-        if (data.pendingQuestion && !questionRef.current) {
-          setQuestion(data.pendingQuestion);
+        if (data.pendingQuestion) {
+          const nextQuestion = data.pendingQuestion as PendingQuestion;
+          const currentQuestion = questionRef.current;
+          if (
+            !currentQuestion ||
+            currentQuestion.questionId !== nextQuestion.questionId ||
+            currentQuestion.question !== nextQuestion.question
+          ) {
+            setQuestion(nextQuestion);
+            setAnswer("");
+          }
         } else if (!data.pendingQuestion && questionRef.current) {
           setQuestion(null);
           setAnswer("");
@@ -113,6 +130,15 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
     fetchTask();
   }, [fetchTask]);
 
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!sseConnectedRef.current) {
+        void fetchTask();
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [fetchTask]);
+
   // Fetch available MCPs for config editor
   useEffect(() => {
     fetch(`${API_BASE}/api/config/system`)
@@ -120,19 +146,6 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
       .then((data) => { if (data?.capabilities?.mcps) setAvailableMcps(data.capabilities.mcps); })
       .catch(() => {});
   }, []);
-
-  // Persist messages to sessionStorage
-  useEffect(() => {
-    if (messages.length === 0) return;
-    try {
-      const toCache = messages.map((m) =>
-        m.type === "agent_thinking" && m.content.length > 500
-          ? { ...m, content: m.content.slice(0, 500) }
-          : m
-      );
-      sessionStorage.setItem(`messages:${taskId}`, JSON.stringify(toCache));
-    } catch { /* quota exceeded */ }
-  }, [messages, taskId]);
 
   // Elapsed timer for active stages
   useEffect(() => {
@@ -165,6 +178,7 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
         }
 
         reader = res.body.getReader();
+        sseConnectedRef.current = true;
         const decoder = new TextDecoder();
         let buffer = "";
 
@@ -180,7 +194,7 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
             if (!line.startsWith("data: ")) continue;
             try {
               const msg: SSEMessage = JSON.parse(line.slice(6));
-              handleMessage(msg);
+              handleMessageRef.current(msg);
             } catch { /* skip malformed */ }
           }
         }
@@ -194,12 +208,13 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
     };
 
     const scheduleReconnect = () => {
+      sseConnectedRef.current = false;
       if (controller.signal.aborted) return;
       reconnectTimer = setTimeout(connect, 2000);
     };
 
     connect();
-    return () => { controller.abort(); clearTimeout(reconnectTimer); };
+    return () => { sseConnectedRef.current = false; controller.abort(); clearTimeout(reconnectTimer); };
   }, [taskId, sseKey]);
 
   const handleMessage = (msg: SSEMessage) => {
@@ -329,8 +344,17 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
         break;
     }
   };
+  handleMessageRef.current = handleMessage;
 
   const addMessage = (msg: SSEMessage, content: string, detail?: Record<string, unknown>) => {
+    const dedupKey = `${msg.type}:${msg.timestamp}:${JSON.stringify(msg.data).slice(0, 200)}`;
+    if (seenMessageIdsRef.current.has(dedupKey)) return;
+    seenMessageIdsRef.current.add(dedupKey);
+    // Cap the dedup set to prevent memory growth
+    if (seenMessageIdsRef.current.size > 3000) {
+      const arr = [...seenMessageIdsRef.current];
+      seenMessageIdsRef.current = new Set(arr.slice(-2000));
+    }
     setMessages((prev) => {
       // Merge adjacent agent_text messages
       if (msg.type === "agent_text" && prev.length > 0) {
@@ -368,11 +392,17 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.ok) console.error("Confirm failed:", await res.text().catch(() => res.status));
+      if (!res.ok) {
+        const errorText = await readApiError(res, `Failed (${res.status})`);
+        console.error("Confirm failed:", errorText);
+        toast.error(errorText);
+        return;
+      }
       setFeedbackText("");
       fetchTask();
     } catch (err) {
       console.error("Confirm error:", err);
+      toast.error(t("networkError"));
     }
   };
 
@@ -383,11 +413,17 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reason: "Rejected by user", ...(targetStage ? { targetStage } : {}) }),
       });
-      if (!res.ok) console.error("Reject failed:", await res.text().catch(() => res.status));
+      if (!res.ok) {
+        const errorText = await readApiError(res, `Failed (${res.status})`);
+        console.error("Reject failed:", errorText);
+        toast.error(errorText);
+        return;
+      }
       setFeedbackText("");
       fetchTask();
     } catch (err) {
       console.error("Reject error:", err);
+      toast.error(t("networkError"));
     }
   };
 
@@ -398,13 +434,18 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(sync ? { sync: true } : {}),
       });
-      if (!res.ok) console.error("Retry failed:", await res.text().catch(() => res.status));
+      if (!res.ok) {
+        const errorText = await readApiError(res, `Failed (${res.status})`);
+        console.error("Retry failed:", errorText);
+        toast.error(errorText);
+        return;
+      }
       setMessages([]);
-      try { sessionStorage.removeItem(`messages:${taskId}`); } catch {}
       setSseKey((k) => k + 1);
       fetchTask();
     } catch (err) {
       console.error("Retry error:", err);
+      toast.error(t("networkError"));
     }
   };
 
@@ -416,11 +457,17 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ questionId: question.questionId, answer: answer.trim() }),
       });
-      if (!res.ok) console.error("Answer failed:", await res.text().catch(() => res.status));
+      if (!res.ok) {
+        const errorText = await readApiError(res, `Failed (${res.status})`);
+        console.error("Answer failed:", errorText);
+        toast.error(errorText);
+        return;
+      }
       setQuestion(null);
       setAnswer("");
     } catch (err) {
       console.error("Answer error:", err);
+      toast.error(t("networkError"));
     }
   };
 
@@ -457,48 +504,82 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ feedback: fb, ...(targetStage ? { targetStage } : {}) }),
       });
-      if (!res.ok) console.error("Feedback failed:", await res.text().catch(() => res.status));
+      if (!res.ok) {
+        const errorText = await readApiError(res, `Failed (${res.status})`);
+        console.error("Feedback failed:", errorText);
+        toast.error(errorText);
+        return;
+      }
       setFeedbackText("");
       fetchTask();
     } catch (err) {
       console.error("Feedback error:", err);
+      toast.error(t("networkError"));
     }
   };
 
   const handleCancel = async () => {
     try {
-      await fetch(`${API_BASE}/api/tasks/${taskId}/cancel`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/tasks/${taskId}/cancel`, { method: "POST" });
+      if (!res.ok) {
+        const errorText = await readApiError(res, `Failed (${res.status})`);
+        console.error("Cancel failed:", errorText);
+        toast.error(errorText);
+        return;
+      }
       fetchTask();
     } catch (err) {
       console.error("Cancel error:", err);
+      toast.error(t("networkError"));
     }
   };
 
   const handleDelete = async () => {
     try {
-      await fetch(`${API_BASE}/api/tasks/${taskId}`, { method: "DELETE" });
+      const res = await fetch(`${API_BASE}/api/tasks/${taskId}`, { method: "DELETE" });
+      if (!res.ok) {
+        const errorText = await readApiError(res, `Failed (${res.status})`);
+        console.error("Delete failed:", errorText);
+        toast.error(errorText);
+        return;
+      }
       window.location.href = "/";
     } catch (err) {
       console.error("Delete error:", err);
+      toast.error(t("networkError"));
     }
   };
 
   const handleResume = async () => {
     try {
-      await fetch(`${API_BASE}/api/tasks/${taskId}/resume`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/tasks/${taskId}/resume`, { method: "POST" });
+      if (!res.ok) {
+        const errorText = await readApiError(res, `Failed (${res.status})`);
+        console.error("Resume failed:", errorText);
+        toast.error(errorText);
+        return;
+      }
       fetchTask();
     } catch (err) {
       console.error("Resume error:", err);
+      toast.error(t("networkError"));
     }
   };
 
   const handleLaunch = async () => {
     try {
-      await fetch(`${API_BASE}/api/tasks/${taskId}/launch`, { method: "POST" });
+      const res = await fetch(`${API_BASE}/api/tasks/${taskId}/launch`, { method: "POST" });
+      if (!res.ok) {
+        const errorText = await readApiError(res, `Failed (${res.status})`);
+        console.error("Launch failed:", errorText);
+        toast.error(errorText);
+        return;
+      }
       setActiveView("workflow");
       fetchTask();
     } catch (err) {
       console.error("Launch error:", err);
+      toast.error(t("networkError"));
     }
   };
 
@@ -513,7 +594,13 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
       if (data.config) {
         setTask((prev) => prev ? { ...prev, config: data.config } : prev);
       }
+      toast.success(t("configSaved"));
+      return;
     }
+    const data = await res.json().catch(() => ({}));
+    const message = data.error ?? t("configSaveFailed");
+    toast.error(message);
+    throw new Error(message);
   };
 
   const handleStageClick = (stageName: string) => {
@@ -656,7 +743,6 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
             <StageTimeline
               currentStatus={status}
               stageCosts={stageCosts}
-              stageSessionIds={task.stageSessionIds}
               pipelineStages={task.pipelineSchema}
               onStageClick={handleStageClick}
             />
@@ -875,10 +961,10 @@ const TaskPage = ({ params }: { params: Promise<{ id: string }> }) => {
               <h3 className="mb-2 text-lg font-semibold text-green-400">{t("completed")}</h3>
               {task?.completionSummary && (
                 <p className="text-sm text-zinc-300">
-                  {task.completionSummary.startsWith("http") ? (
+                  {/^https?:\/\//i.test(task.completionSummary) ? (
                     <>{t("deliverable")}: <a href={task.completionSummary} className="text-blue-400 underline">{task.completionSummary}</a></>
                   ) : (
-                    <>{t("deliverable")}: {task.completionSummary}</>
+                    <>{t("deliverable")}: <span className="text-zinc-300">{task.completionSummary}</span></>
                   )}
                 </p>
               )}

@@ -93,6 +93,24 @@ describe("TaskListBroadcaster", () => {
       expect(providers.restoreWorkflow).toHaveBeenCalledWith("persisted-1");
     });
 
+    it("includes failed restore details in init event when restore returns undefined", async () => {
+      const broadcaster = await freshBroadcaster();
+      (loadAllPersistedTaskIds as ReturnType<typeof vi.fn>).mockReturnValue(["broken-1"]);
+      const providers = makeProviders(new Map());
+      (providers.restoreWorkflow as ReturnType<typeof vi.fn>).mockReturnValue(undefined);
+      broadcaster.setProviders(providers);
+
+      const stream = broadcaster.createStream();
+      const reader = stream.getReader();
+      const { value } = await reader.read();
+      reader.releaseLock();
+
+      const event = JSON.parse(new TextDecoder().decode(value).replace(/^data: /, "").trim());
+      expect(event.failedRestores).toEqual([
+        { id: "broken-1", reason: "Task snapshot could not be restored" },
+      ]);
+    });
+
     it("enforces MAX_CONNECTIONS (20) limit", async () => {
       const broadcaster = await freshBroadcaster();
       broadcaster.setProviders(makeProviders(new Map()));
@@ -160,6 +178,27 @@ describe("TaskListBroadcaster", () => {
 
       // No error, stream is still alive
       expect(stream).toBeDefined();
+    });
+
+    it("uses pending question createdAt as updatedAt for actionable tasks", async () => {
+      const broadcaster = await freshBroadcaster();
+      const actors = new Map([["t1", makeActor("t1", { updatedAt: "2026-01-01T00:00:00.000Z" })]]);
+      broadcaster.setProviders(makeProviders(actors));
+      const { questionManager } = await import("../lib/question-manager.js");
+      vi.mocked(questionManager.getPersistedPending).mockReturnValue({
+        questionId: "q1",
+        question: "Need input",
+        createdAt: "2026-01-02T00:00:00.000Z",
+      });
+
+      const stream = broadcaster.createStream();
+      const reader = stream.getReader();
+      const { value } = await reader.read();
+      reader.releaseLock();
+
+      const text = new TextDecoder().decode(value);
+      expect(text).toContain('"updatedAt":"2026-01-02T00:00:00.000Z"');
+      expect(text).toContain('"pendingQuestion":true');
     });
   });
 

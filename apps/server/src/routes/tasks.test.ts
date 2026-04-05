@@ -91,6 +91,7 @@ describe("tasks routes", () => {
       mockGetAllWorkflows.mockReturnValue(new Map([["task-1", actor]]));
       mockGetLatestSessionId.mockReturnValue("sess-1");
       mockGetNestedValue.mockReturnValue("My Task");
+      mockGetPersistedPending.mockReturnValue(null);
 
       const res = await app.request("/tasks");
 
@@ -101,6 +102,7 @@ describe("tasks routes", () => {
       expect(body.tasks[0].status).toBe("coding");
       expect(body.tasks[0].displayTitle).toBe("My Task");
       expect(body.tasks[0].totalCostUsd).toBe(1.5);
+      expect(body.tasks[0].pendingQuestion).toBe(false);
       expect(body.failedRestores).toEqual([]);
     });
 
@@ -144,6 +146,21 @@ describe("tasks routes", () => {
       expect(body.failedRestores[0].reason).toBe("corrupt snapshot");
     });
 
+    it("reports restore attempts that return no workflow", async () => {
+      mockLoadAllPersistedTaskIds.mockReturnValue(["missing-1"]);
+      mockGetWorkflow.mockReturnValue(null);
+      mockRestoreWorkflow.mockReturnValue(undefined);
+      mockGetAllWorkflows.mockReturnValue(new Map());
+
+      const res = await app.request("/tasks");
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.failedRestores).toEqual([
+        { id: "missing-1", reason: "Task snapshot could not be restored" },
+      ]);
+    });
+
     it("skips actors with missing snapshot context", async () => {
       mockLoadAllPersistedTaskIds.mockReturnValue([]);
       const badActor = { getSnapshot: () => ({ context: null }) };
@@ -167,6 +184,7 @@ describe("tasks routes", () => {
       });
       mockGetAllWorkflows.mockReturnValue(new Map([["task-no-title", actor]]));
       mockGetLatestSessionId.mockReturnValue(null);
+      mockGetPersistedPending.mockReturnValue(null);
 
       const res = await app.request("/tasks");
 
@@ -185,6 +203,7 @@ describe("tasks routes", () => {
       });
       mockGetAllWorkflows.mockReturnValue(new Map([["t", actor]]));
       mockGetLatestSessionId.mockReturnValue(null);
+      mockGetPersistedPending.mockReturnValue(null);
 
       const res = await app.request("/tasks");
 
@@ -280,15 +299,21 @@ describe("tasks routes", () => {
       mockGetWorkflow.mockReturnValue(actor);
       mockGetLatestSessionId.mockReturnValue(null);
       mockGetPersistedPending.mockReturnValue({
-        id: "q-1",
-        text: "What repo?",
+        questionId: "q-1",
+        question: "What repo?",
+        createdAt: "2026-01-04T00:00:00.000Z",
       });
 
       const res = await app.request("/tasks/11111111-1111-1111-1111-111111111111");
 
       expect(res.status).toBe(200);
       const body = await res.json();
-      expect(body.pendingQuestion).toEqual({ id: "q-1", text: "What repo?" });
+      expect(body.pendingQuestion).toEqual({
+        questionId: "q-1",
+        question: "What repo?",
+        createdAt: "2026-01-04T00:00:00.000Z",
+      });
+      expect(body.updatedAt).toBe("2026-01-04T00:00:00.000Z");
     });
   });
 
@@ -499,8 +524,8 @@ describe("tasks routes", () => {
 
   describe("PUT /tasks/:taskId/config", () => {
     it("returns updated config on success", async () => {
-      const updatedConfig = { pipeline: { stages: [] }, model: "gpt-4o" };
-      const actor = makeActor({ config: updatedConfig });
+      const updatedConfig = { pipeline: { stages: [] }, agent: { default_engine: "codex" } };
+      const actor = makeActor({ status: "blocked", config: updatedConfig });
       mockGetWorkflow.mockReturnValue(actor);
       mockSendEvent.mockReturnValue(true);
 
@@ -509,7 +534,7 @@ describe("tasks routes", () => {
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ config: { model: "gpt-4o" } }),
+          body: JSON.stringify({ config: { agent: { default_engine: "codex" } } }),
         },
       );
 
@@ -519,7 +544,7 @@ describe("tasks routes", () => {
       expect(body.config).toEqual(updatedConfig);
       expect(mockSendEvent).toHaveBeenCalledWith(
         "11111111-1111-1111-1111-111111111111",
-        { type: "UPDATE_CONFIG", config: { model: "gpt-4o" } },
+        { type: "UPDATE_CONFIG", config: { agent: { default_engine: "codex" } } },
       );
     });
 
@@ -532,11 +557,28 @@ describe("tasks routes", () => {
         {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ config: { model: "gpt-4o" } }),
+          body: JSON.stringify({ config: { agent: { default_engine: "codex" } } }),
         },
       );
 
       expect(res.status).toBe(404);
+    });
+
+    it("returns 409 while task is still running", async () => {
+      const actor = makeActor({ status: "running" });
+      mockGetWorkflow.mockReturnValue(actor);
+
+      const res = await app.request(
+        "/tasks/11111111-1111-1111-1111-111111111111/config",
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config: { agent: { default_engine: "codex" } } }),
+        },
+      );
+
+      expect(res.status).toBe(409);
+      expect(mockSendEvent).not.toHaveBeenCalled();
     });
 
     it("returns 400 when config field is missing", async () => {

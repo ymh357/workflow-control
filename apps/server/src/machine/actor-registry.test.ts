@@ -74,7 +74,6 @@ vi.mock("./workflow-lifecycle.js", () => ({
       globalClaudeMd: "",
       globalGeminiMd: "",
         globalCodexMd: "",
-        globalCodexMd: "",
     },
     skills: [],
     mcps: [],
@@ -138,6 +137,8 @@ import {
   startWorkflow,
   deleteWorkflow,
   restoreWorkflow,
+  sweepStaleActors,
+  stopSweepTimer,
 } from "./actor-registry.js";
 import type { WorkflowActor } from "./actor-registry.js";
 import { flushSnapshotSync } from "./persistence.js";
@@ -289,4 +290,222 @@ describe("actor-registry", () => {
     expect(all.has("task-m2")).toBe(true);
     expect(all.size).toBeGreaterThanOrEqual(2);
   });
+});
+
+describe("actor sweep and capacity", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    for (const [id] of getAllWorkflows()) {
+      deleteWorkflow(id);
+    }
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Helper: create a mock actor directly in the actors Map to avoid
+  // going through createTaskDraft (which triggers xstate machinery).
+  function injectMockActor(
+    taskId: string,
+    contextOverrides: Record<string, any> = {},
+  ): void {
+    const actors = getAllWorkflows();
+    const ctx = {
+      taskId,
+      status: "idle",
+      updatedAt: new Date().toISOString(),
+      retryCount: 0,
+      qaRetryCount: 0,
+      stageSessionIds: {},
+      store: {},
+      ...contextOverrides,
+    };
+    actors.set(taskId, {
+      getSnapshot: () => ({ value: ctx.status, status: "active", context: ctx }),
+      getPersistedSnapshot: () => ({}),
+      subscribe: () => ({ unsubscribe: vi.fn() }),
+      send: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as WorkflowActor);
+  }
+
+  // --- Pass 1: terminal actors ---
+
+  it("sweepStaleActors removes terminal actors (completed, error, cancelled)", () => {
+    injectMockActor("term-1", { status: "completed" });
+    injectMockActor("term-2", { status: "error" });
+    injectMockActor("term-3", { status: "cancelled" });
+    injectMockActor("alive-1", { status: "running" });
+
+    expect(getAllWorkflows().size).toBe(4);
+
+    sweepStaleActors();
+
+    expect(getAllWorkflows().has("term-1")).toBe(false);
+    expect(getAllWorkflows().has("term-2")).toBe(false);
+    expect(getAllWorkflows().has("term-3")).toBe(false);
+    expect(getAllWorkflows().has("alive-1")).toBe(true);
+    expect(getAllWorkflows().size).toBe(1);
+
+    expect(mockCloseStream).toHaveBeenCalledWith("term-1");
+    expect(mockCloseStream).toHaveBeenCalledWith("term-2");
+    expect(mockCloseStream).toHaveBeenCalledWith("term-3");
+    expect(flushSnapshotSync).toHaveBeenCalledTimes(3);
+  });
+
+  // --- Pass 1: actors that throw on getSnapshot are removed ---
+
+  it("sweepStaleActors removes actors that throw on getSnapshot", () => {
+    const actors = getAllWorkflows();
+    actors.set("broken-1", {
+      getSnapshot: () => { throw new Error("broken"); },
+      getPersistedSnapshot: () => ({}),
+      subscribe: () => ({ unsubscribe: vi.fn() }),
+      send: vi.fn(),
+      start: vi.fn(),
+      stop: vi.fn(),
+    } as unknown as WorkflowActor);
+
+    sweepStaleActors();
+
+    expect(getAllWorkflows().has("broken-1")).toBe(false);
+    expect(mockCloseStream).toHaveBeenCalledWith("broken-1");
+  });
+
+  // --- Pass 2: stale blocked actors evicted when at capacity ---
+
+  it("sweepStaleActors evicts stale blocked actors when at MAX_ACTORS capacity", () => {
+    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+    // Fill to exactly 200 actors: 199 running + 1 stale blocked
+    for (let i = 0; i < 199; i++) {
+      injectMockActor(`running-${i}`, { status: "running" });
+    }
+    injectMockActor("stale-blocked", {
+      status: "blocked",
+      updatedAt: twoHoursAgo,
+    });
+
+    expect(getAllWorkflows().size).toBe(200);
+
+    sweepStaleActors();
+
+    // Pass 1 removes nothing (no terminal). Pass 2 triggers because size >= 200.
+    expect(getAllWorkflows().has("stale-blocked")).toBe(false);
+    expect(getAllWorkflows().size).toBe(199);
+  });
+
+  // --- Pass 2: recently-updated blocked actors survive ---
+
+  it("sweepStaleActors keeps recently-updated blocked actors even at capacity", () => {
+    for (let i = 0; i < 199; i++) {
+      injectMockActor(`running-${i}`, { status: "running" });
+    }
+    injectMockActor("fresh-blocked", {
+      status: "blocked",
+      updatedAt: new Date().toISOString(),
+    });
+
+    expect(getAllWorkflows().size).toBe(200);
+
+    sweepStaleActors();
+
+    // Fresh blocked actor should survive pass 2
+    expect(getAllWorkflows().has("fresh-blocked")).toBe(true);
+    expect(getAllWorkflows().size).toBe(200);
+  });
+
+  // --- Pass 3: stuck running actors evicted when still at capacity ---
+
+  it("sweepStaleActors evicts stuck running actors (>2h no update) when at capacity", () => {
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+
+    for (let i = 0; i < 199; i++) {
+      injectMockActor(`active-${i}`, { status: "running" });
+    }
+    injectMockActor("stuck-running", {
+      status: "running",
+      updatedAt: threeHoursAgo,
+    });
+
+    expect(getAllWorkflows().size).toBe(200);
+
+    sweepStaleActors();
+
+    // Pass 1: no terminal. Pass 2: no blocked. Pass 3: stuck running evicted.
+    expect(getAllWorkflows().has("stuck-running")).toBe(false);
+    expect(getAllWorkflows().size).toBe(199);
+  });
+
+  // --- Pass 3: idle actors are NOT evicted (only non-idle, non-blocked, non-terminal) ---
+
+  it("sweepStaleActors does not evict idle actors even when stale and at capacity", () => {
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+
+    for (let i = 0; i < 199; i++) {
+      injectMockActor(`active-${i}`, { status: "running" });
+    }
+    injectMockActor("old-idle", {
+      status: "idle",
+      updatedAt: threeHoursAgo,
+    });
+
+    expect(getAllWorkflows().size).toBe(200);
+
+    sweepStaleActors();
+
+    // idle is excluded from pass 3 (only targets non-idle, non-blocked, non-terminal)
+    expect(getAllWorkflows().has("old-idle")).toBe(true);
+  });
+
+  // --- createTaskDraft throws when MAX_ACTORS exceeded ---
+
+  it("createTaskDraft throws when MAX_ACTORS exceeded and sweep cannot free space", () => {
+    // Fill with 200 non-terminal, fresh, running actors (un-sweepable)
+    for (let i = 0; i < 200; i++) {
+      injectMockActor(`cap-${i}`, { status: "running" });
+    }
+
+    expect(getAllWorkflows().size).toBe(200);
+
+    expect(() => createTaskDraft("overflow-task")).toThrow(
+      "Too many active tasks. Delete old tasks before creating new ones.",
+    );
+
+    expect(getAllWorkflows().has("overflow-task")).toBe(false);
+  });
+
+  // --- createTaskDraft succeeds after sweep frees terminal actors ---
+
+  it("createTaskDraft succeeds when sweep frees terminal actors below capacity", () => {
+    // 199 running + 1 terminal = 200 total
+    for (let i = 0; i < 199; i++) {
+      injectMockActor(`cap-${i}`, { status: "running" });
+    }
+    injectMockActor("terminal-freeup", { status: "completed" });
+
+    expect(getAllWorkflows().size).toBe(200);
+
+    // Should trigger sweep, free the terminal actor, then succeed
+    const actor = createTaskDraft("new-task-after-sweep");
+    expect(actor).toBeDefined();
+    expect(getWorkflow("new-task-after-sweep")).toBe(actor);
+    expect(getAllWorkflows().has("terminal-freeup")).toBe(false);
+  });
+
+  // --- stopSweepTimer clears the interval ---
+
+  it("stopSweepTimer clears the sweep interval", () => {
+    const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
+
+    stopSweepTimer();
+
+    expect(clearIntervalSpy).toHaveBeenCalled();
+    clearIntervalSpy.mockRestore();
+  });
+
 });

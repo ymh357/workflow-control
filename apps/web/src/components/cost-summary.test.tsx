@@ -119,12 +119,14 @@ describe("CostSummary", () => {
             outputTokens: 50,
             cacheReadTokens: 0,
             cacheCreationTokens: 0,
+            totalTokens: 150,
             modelBreakdown: [
               {
                 modelName: "claude-3-sonnet",
                 inputTokens: 100,
                 outputTokens: 50,
                 cacheReadTokens: 0,
+                totalTokens: 150,
                 costUsd: 0.01,
               },
             ],

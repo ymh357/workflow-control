@@ -31,28 +31,17 @@ describe("retry routes — adversarial", () => {
     app.route("/", retryRoute);
   });
 
-  it("handles sync field as string 'true' — should fail JSON parse catch path", async () => {
-    // The route does c.req.json().catch(() => ({})) then accesses body.sync
-    // If body is { sync: "true" }, it's a string, not boolean
-    mockRetryTask.mockReturnValue({ ok: true, data: {} });
-
+  it("rejects sync field when provided as a string", async () => {
     const res = await app.request(
       "/tasks/11111111-1111-1111-1111-111111111111/retry",
       json({ sync: "true" }),
     );
 
-    // No schema validation on this route's body (it catches JSON parse errors)
-    // So "true" string passes through as sync value
-    expect(res.status).toBe(200);
-    expect(mockRetryTask).toHaveBeenCalledWith(
-      "11111111-1111-1111-1111-111111111111",
-      { sync: "true" },
-    );
+    expect(res.status).toBe(400);
+    expect(mockRetryTask).not.toHaveBeenCalled();
   });
 
-  it("handles invalid JSON body — falls back to empty object", async () => {
-    mockRetryTask.mockReturnValue({ ok: true, data: {} });
-
+  it("rejects invalid JSON body", async () => {
     const res = await app.request(
       "/tasks/11111111-1111-1111-1111-111111111111/retry",
       {
@@ -62,11 +51,8 @@ describe("retry routes — adversarial", () => {
       },
     );
 
-    expect(res.status).toBe(200);
-    expect(mockRetryTask).toHaveBeenCalledWith(
-      "11111111-1111-1111-1111-111111111111",
-      { sync: undefined },
-    );
+    expect(res.status).toBe(400);
+    expect(mockRetryTask).not.toHaveBeenCalled();
   });
 
   it("retryTask throws async error", async () => {

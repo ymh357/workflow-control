@@ -41,6 +41,7 @@ type LeftSelection =
   | { type: "constraints" }
   | { type: "claudeMd" }
   | { type: "geminiMd" }
+  | { type: "codexMd" }
   | { type: "fragments" }
   | { type: "yaml" }
   | { type: "visualizer" };
@@ -55,6 +56,7 @@ interface PipelineEditorConfig {
     globalConstraints: string;
     globalClaudeMd: string;
     globalGeminiMd?: string;
+    globalCodexMd?: string;
   };
   _deletedFragments?: string[];
   _deletedPrompts?: string[];
@@ -273,6 +275,7 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
   useEffect(() => {
     setDraft(structuredClone(initialConfig));
     setSavedSnapshot(structuredClone(initialConfig));
+    setIsDirty(false);
   }, [initialConfig]);
 
   // Validation
@@ -285,16 +288,15 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
     [draft.pipeline, draft.prompts.system, knownMcpSet]
   );
 
-  // Dirty check
-  const isDirty = useMemo(() => {
-    return JSON.stringify(draft) !== JSON.stringify(savedSnapshot);
-  }, [draft, savedSnapshot]);
+  // Dirty flag (set on edit, cleared on save/discard/external config change)
+  const [isDirty, setIsDirty] = useState(false);
 
   // --- Updaters ---
 
   const updateDraft = useCallback((updater: (prev: PipelineEditorConfig) => PipelineEditorConfig) => {
     if (readOnly) return;
     setDraft(updater);
+    setIsDirty(true);
   }, [readOnly]);
 
   const updateStage = useCallback((index: number, updates: Partial<Stage>) => {
@@ -465,6 +467,7 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
     try {
       await onSave(draft);
       setSavedSnapshot(structuredClone(draft));
+      setIsDirty(false);
       setSaveStatus("success");
       setTimeout(() => setSaveStatus("idle"), 2000);
     } catch {
@@ -475,6 +478,7 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
 
   const handleDiscard = () => {
     setDraft(structuredClone(savedSnapshot));
+    setIsDirty(false);
     setDiscardConfirm(false);
   };
 
@@ -819,6 +823,7 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
               { key: "constraints" as const, label: t("constraints") },
               { key: "claudeMd" as const, label: t("claudeMd") },
               { key: "geminiMd" as const, label: t("geminiMd") },
+              { key: "codexMd" as const, label: t("codexMd") },
               { key: "fragments" as const, label: `${t("fragments")} (${Object.keys(draft.prompts.fragments).length})` },
             ] as const).map((item) => (
               <button
@@ -941,12 +946,13 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
             />
           )}
 
-          {(selection.type === "constraints" || selection.type === "claudeMd" || selection.type === "geminiMd" || selection.type === "fragments") && (
+          {(selection.type === "constraints" || selection.type === "claudeMd" || selection.type === "geminiMd" || selection.type === "codexMd" || selection.type === "fragments") && (
             <GlobalEditor
               selection={selection}
               constraints={draft.prompts.globalConstraints}
               claudeMd={draft.prompts.globalClaudeMd}
               geminiMd={draft.prompts.globalGeminiMd || ""}
+              codexMd={draft.prompts.globalCodexMd || ""}
               fragments={draft.prompts.fragments}
               fragmentMeta={draft.prompts.fragmentMeta || {}}
               onConstraintsChange={(v) => updateDraft((prev) => {
@@ -962,6 +968,11 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
               onGeminiMdChange={(v) => updateDraft((prev) => {
                 const next = structuredClone(prev);
                 next.prompts.globalGeminiMd = v;
+                return next;
+              })}
+              onCodexMdChange={(v) => updateDraft((prev) => {
+                const next = structuredClone(prev);
+                next.prompts.globalCodexMd = v;
                 return next;
               })}
               onFragmentChange={(name, content) => updateDraft((prev) => {
@@ -1009,7 +1020,7 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
                     try {
                       const parsed = parseYAML(v ?? "");
                       if (parsed?.stages) {
-                        setDraft((prev) => ({ ...prev, pipeline: parsed }));
+                        updateDraft((prev) => ({ ...prev, pipeline: parsed }));
                       }
                     } catch {
                       // Ignore parse errors during editing
@@ -1022,7 +1033,7 @@ const PipelineEditor = ({ config: initialConfig, readOnly = false, onSave, avail
             </div>
           )}
 
-          {selection.type !== "stage" && selection.type !== "parallelChild" && selection.type !== "constraints" && selection.type !== "claudeMd" && selection.type !== "geminiMd" && selection.type !== "fragments" && selection.type !== "yaml" && (
+          {selection.type !== "stage" && selection.type !== "parallelChild" && selection.type !== "constraints" && selection.type !== "claudeMd" && selection.type !== "geminiMd" && selection.type !== "codexMd" && selection.type !== "fragments" && selection.type !== "yaml" && (
             <div className="flex items-center justify-center h-full text-zinc-600 text-sm italic">
               {t("selectStageOrSection")}
             </div>

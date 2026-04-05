@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+const { broadcastTaskUpdate } = vi.hoisted(() => ({
+  broadcastTaskUpdate: vi.fn(),
+}));
+
 vi.mock("../sse/manager.js", () => ({
   sseManager: {
     pushMessage: vi.fn(),
@@ -13,6 +17,10 @@ vi.mock("./slack.js", () => ({
 vi.mock("./logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
   taskLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+}));
+
+vi.mock("../sse/task-list-broadcaster.js", () => ({
+  taskListBroadcaster: { broadcastTaskUpdate },
 }));
 
 const mockPrepare = vi.fn();
@@ -69,6 +77,20 @@ describe("QuestionManager", () => {
       expect(answer).toBe("Red");
     });
 
+    it("broadcasts task list update when a question is asked", async () => {
+      broadcastTaskUpdate.mockClear();
+      const promise = questionManager.ask("task-broadcast-1", "Need input?");
+      await vi.waitFor(() => {
+        expect(
+          broadcastTaskUpdate.mock.calls.some(([taskId]) => taskId === "task-broadcast-1"),
+        ).toBe(true);
+      });
+
+      const pending = questionManager.getPending("task-broadcast-1");
+      questionManager.answer(pending!.questionId, "done");
+      await promise;
+    });
+
     it("persists question to DB", async () => {
       const mockRun = vi.fn();
       mockPrepare.mockReturnValue({ run: mockRun, get: vi.fn() });
@@ -123,6 +145,23 @@ describe("QuestionManager", () => {
       expect(result).toBe(false);
     });
 
+    it("broadcasts task list update when a question is answered", async () => {
+      const promise = questionManager.ask("task-10b", "Q?");
+      await Promise.resolve();
+      broadcastTaskUpdate.mockClear();
+
+      const pending = questionManager.getPending("task-10b");
+      const result = questionManager.answer(pending!.questionId, "A");
+
+      expect(result).toBe(true);
+      await vi.waitFor(() => {
+        expect(
+          broadcastTaskUpdate.mock.calls.some(([taskId]) => taskId === "task-10b"),
+        ).toBe(true);
+      });
+      await promise;
+    });
+
     it("returns false when taskId does not match", async () => {
       const promise = questionManager.ask("task-11", "Q?");
       const pending = questionManager.getPending("task-11");
@@ -147,6 +186,21 @@ describe("QuestionManager", () => {
 
       const result = questionManager.answer("db-q-1", "late answer");
       expect(result).toBe("stale");
+    });
+
+    it("broadcasts task list update when a stale DB-only question is cleared", () => {
+      broadcastTaskUpdate.mockClear();
+      const mockGet = vi.fn().mockReturnValue({ question_id: "db-q-1" });
+      const mockRun = vi.fn();
+      mockPrepare.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT 1")) return { get: mockGet };
+        if (sql.includes("DELETE")) return { run: mockRun };
+        return { run: vi.fn(), get: vi.fn() };
+      });
+
+      const result = questionManager.answer("db-q-1", "late answer", "task-stale-1");
+      expect(result).toBe("stale");
+      expect(broadcastTaskUpdate).toHaveBeenCalledWith("task-stale-1");
     });
   });
 
@@ -223,6 +277,7 @@ describe("QuestionManager", () => {
       const result = questionManager.getPersistedPending("task-40");
       expect(result).toBeDefined();
       expect(result!.question).toBe("In memory?");
+      expect(result!.createdAt).toBeTruthy();
 
       questionManager.cancelForTask("task-40");
       await promise.catch(() => {});
@@ -233,6 +288,7 @@ describe("QuestionManager", () => {
         question_id: "db-q-99",
         question: "From DB?",
         options: JSON.stringify(["X", "Y"]),
+        created_at: "2026-01-01T00:00:00.000Z",
       });
       mockPrepare.mockImplementation((sql: string) => {
         if (sql.includes("SELECT question_id")) return { get: mockGet };
@@ -244,6 +300,7 @@ describe("QuestionManager", () => {
         questionId: "db-q-99",
         question: "From DB?",
         options: ["X", "Y"],
+        createdAt: "2026-01-01T00:00:00.000Z",
       });
     });
 
@@ -258,6 +315,7 @@ describe("QuestionManager", () => {
         question_id: "db-q-100",
         question: "No options?",
         options: null,
+        created_at: "2026-01-02T00:00:00.000Z",
       });
       mockPrepare.mockImplementation((sql: string) => {
         if (sql.includes("SELECT question_id")) return { get: mockGet };
@@ -269,6 +327,7 @@ describe("QuestionManager", () => {
         questionId: "db-q-100",
         question: "No options?",
         options: undefined,
+        createdAt: "2026-01-02T00:00:00.000Z",
       });
     });
   });
@@ -315,6 +374,7 @@ describe("QuestionManager", () => {
   describe("timeout behavior", () => {
     it("question times out after 30 minutes", async () => {
       vi.useFakeTimers();
+      broadcastTaskUpdate.mockClear();
 
       const promise = questionManager.ask("task-50", "Will timeout?");
 
@@ -322,6 +382,7 @@ describe("QuestionManager", () => {
 
       await expect(promise).rejects.toThrow("timed out");
       expect(questionManager.hasPending("task-50")).toBe(false);
+      expect(broadcastTaskUpdate).toHaveBeenCalledWith("task-50");
     });
 
     it("sends warning SSE message at 20 minutes (10 min before timeout)", async () => {

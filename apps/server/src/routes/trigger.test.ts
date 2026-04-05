@@ -105,7 +105,7 @@ describe("trigger routes", () => {
     it("returns 409 when task already exists", async () => {
       mockCreateTask.mockReturnValue({
         ok: false,
-        code: "INTERNAL_ERROR",
+        code: "INVALID_STATE",
         message: "Task already exists",
       });
 
@@ -120,7 +120,7 @@ describe("trigger routes", () => {
     it("returns 400 when pipeline not found", async () => {
       mockCreateTask.mockReturnValue({
         ok: false,
-        code: "INTERNAL_ERROR",
+        code: "INVALID_CONFIG",
         message: "Pipeline not found",
       });
 
@@ -181,11 +181,11 @@ describe("trigger routes", () => {
       expect(mockLaunch).toHaveBeenCalledWith("11111111-1111-1111-1111-111111111111");
     });
 
-    it("returns 404 when task not found or already launched", async () => {
+    it("returns 404 when task not found", async () => {
       mockLaunch.mockReturnValue({
         ok: false,
         code: "TASK_NOT_FOUND",
-        message: "Task not found or already launched",
+        message: "Task not found",
       });
 
       const res = await app.request(
@@ -196,7 +196,24 @@ describe("trigger routes", () => {
       expect(res.status).toBe(404);
       const body = await res.json();
       expect(body.code).toBe("TASK_NOT_FOUND");
-      expect(body.error).toBe("Task not found or already launched");
+      expect(body.error).toBe("Task not found");
+    });
+
+    it("returns 400 when task is already launched or not idle", async () => {
+      mockLaunch.mockReturnValue({
+        ok: false,
+        code: "INVALID_STATE",
+        message: "Task is already launched or not in draft state",
+      });
+
+      const res = await app.request(
+        "/tasks/11111111-1111-1111-1111-111111111111/launch",
+        { method: "POST" },
+      );
+
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.code).toBe("INVALID_STATE");
     });
   });
 });
