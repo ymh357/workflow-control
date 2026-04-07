@@ -508,25 +508,24 @@ export function buildHumanGateState(
 }
 
 /**
- * Sanitize store values for safe use in expr-eval expressions.
- * Only primitive values (string, number, boolean, null/undefined) are allowed —
- * objects, arrays, and functions are excluded to prevent expression injection.
+ * Recursively sanitize store values for safe use in expr-eval expressions.
+ * Primitives, plain objects, and arrays are preserved (to support nested
+ * property access like `store.config.items`). Functions are excluded.
  */
-function sanitizeExprVars(store: Record<string, unknown>): Record<string, string | number | boolean> {
-  const safe: Record<string, string | number | boolean> = {};
-  for (const [key, value] of Object.entries(store)) {
-    if (typeof value === "string") {
-      safe[key] = value;
-    } else if (typeof value === "number") {
-      safe[key] = value;
-    } else if (typeof value === "boolean") {
-      safe[key] = value;
-    } else if (value === null || value === undefined) {
-      safe[key] = 0;
+function sanitizeExprVars(value: unknown): unknown {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === "function") return undefined;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.map(sanitizeExprVars);
+  if (typeof value === "object") {
+    const safe: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const sanitized = sanitizeExprVars(v);
+      if (sanitized !== undefined) safe[k] = sanitized;
     }
-    // Objects/arrays/functions are excluded — they can't be safely used in expressions
+    return safe;
   }
-  return safe;
+  return undefined;
 }
 
 /**

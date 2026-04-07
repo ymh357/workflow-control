@@ -1,8 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { parse as parseYaml } from "yaml";
 import type { PackageManifest } from "../lib/types.js";
-import { TYPE_DIR_MAP } from "../lib/constants.js";
+import { TYPE_DIR_MAP, REGISTRY_DIR } from "../lib/constants.js";
 import { publishToGitHub } from "../lib/github.js";
 
 const REQUIRED_FIELDS: (keyof PackageManifest)[] = [
@@ -111,5 +112,20 @@ export async function publishCommand(directory: string | undefined): Promise<voi
   } catch (err) {
     console.error(`\nPublish failed: ${(err as Error).message}`);
     process.exit(1);
+  }
+
+  // Rebuild local index.json so the running server picks up the new package
+  const buildIndexPath = path.join(REGISTRY_DIR, "build-index.ts");
+  if (fs.existsSync(buildIndexPath)) {
+    try {
+      console.log("\nRebuilding local registry index...");
+      execFileSync("npx", ["tsx", buildIndexPath], {
+        encoding: "utf-8",
+        stdio: "inherit",
+        timeout: 15_000,
+      });
+    } catch (err) {
+      console.warn(`Warning: failed to rebuild index.json: ${(err as Error).message}`);
+    }
   }
 }

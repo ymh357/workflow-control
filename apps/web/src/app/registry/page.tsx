@@ -230,6 +230,7 @@ const RegistryPage = () => {
         throw new Error(err.error || "Publish failed");
       }
       showToast(t("publishSuccess", { name }), "success");
+      await fetchData();
     } catch (err) {
       showToast(t("error", { message: (err as Error).message }), "error");
     } finally {

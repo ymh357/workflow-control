@@ -35,6 +35,7 @@ vi.mock("../lib/constants.js", () => ({
     gate: "gates",
     script: "scripts",
   },
+  REGISTRY_DIR: "/mock/registry",
 }));
 
 import * as fs from "node:fs";
