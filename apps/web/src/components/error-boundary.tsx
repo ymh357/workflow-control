@@ -43,7 +43,7 @@ class ErrorBoundary extends Component<Props, State> {
         </div>
       );
     }
-    return <div key={this.state.resetKey}>{this.props.children}</div>;
+    return this.props.children;
   }
 }
 
