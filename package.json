@@ -12,7 +12,7 @@
     "registry:build": "pnpm --filter server registry:build",
     "test": "pnpm --filter shared --filter server --filter web run test",
     "test:e2e": "pnpm --filter web test:e2e",
-    "postinstall": "echo '\n  Run pnpm setup to configure your environment.\n'"
+    "postinstall": "chmod +x node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null; echo '\n  Run pnpm setup to configure your environment.\n'"
   },
   "engines": {
     "node": ">=20"

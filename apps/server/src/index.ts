@@ -31,12 +31,18 @@ import { join } from "node:path";
 
 // --- Global error handlers: prevent server crash from async/XState errors ---
 process.on("uncaughtException", (err) => {
-  logger.fatal({ err }, "Uncaught exception — shutting down");
+  const detail = err instanceof Error
+    ? { message: err.message, stack: err.stack, name: err.name }
+    : { raw: String(err), type: typeof err };
+  logger.fatal({ err, detail }, "Uncaught exception — shutting down");
   // Give pending I/O a brief window to flush before exit
   setTimeout(() => process.exit(1), 1000).unref();
 });
 process.on("unhandledRejection", (reason) => {
-  logger.fatal({ reason }, "Unhandled rejection — shutting down");
+  const detail = reason instanceof Error
+    ? { message: reason.message, stack: reason.stack, name: reason.name }
+    : { raw: String(reason), type: typeof reason };
+  logger.fatal({ reason, detail }, "Unhandled rejection — shutting down");
   setTimeout(() => process.exit(1), 1000).unref();
 });
 

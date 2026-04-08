@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { getTaskSlots, addSlotListener, addTaskTerminationListener } from "./registry.js";
+import { getTaskSlots, getAllSlots, addSlotListener, addTaskTerminationListener } from "./registry.js";
 import { getTaskContext } from "../actions/task-actions.js";
 import { getAllWorkflows, getWorkflow } from "../machine/actor-registry.js";
 import { flattenStages } from "../lib/config-loader.js";
@@ -44,17 +44,25 @@ export function buildWrapperRoute(): Hono {
       return c.json({ done: true, status: ctx.status });
     }
 
-    // Check for pending edge slots
-    const slots = getTaskSlots(taskId);
+    // Check for pending edge slots (own task + child sub-pipeline tasks)
+    const ownSlots = getTaskSlots(taskId);
+    const childSlots = getAllSlots().filter(
+      (s) => s.taskId !== taskId && s.taskId.startsWith(taskId),
+    );
+    const slots = ownSlots.length > 0 ? ownSlots : childSlots;
     if (slots.length > 0) {
       const slot = slots[0];
-      const stages = ctx.config?.pipeline?.stages ? flattenStages(ctx.config.pipeline.stages) : [];
-      const stageConfig = stages.find((s) => s.name === slot.stageName);
+      // Resolve stage config from the correct task's pipeline (parent or child)
+      const slotCtx = slot.taskId === taskId ? ctx : getTaskContext(slot.taskId);
+      const slotStages = slotCtx?.config?.pipeline?.stages ? flattenStages(slotCtx.config.pipeline.stages) : [];
+      const stageConfig = slotStages.find((s) => s.name === slot.stageName);
       const isGate = stageConfig?.type === "human_confirm";
       return c.json({
+        // Use child taskId so edge runner submits result to the correct task
+        taskId: slot.taskId,
         stageName: slot.stageName,
         isGate,
-        cwd: ctx.stageCwds?.[slot.stageName] ?? ctx.worktreePath,
+        cwd: (slotCtx?.stageCwds as Record<string, string> | undefined)?.[slot.stageName] ?? ctx.worktreePath,
         ...(stageConfig && !isGate ? {
           stageOptions: {
             engine: stageConfig.engine,

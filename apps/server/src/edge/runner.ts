@@ -339,6 +339,11 @@ function writeGeminiProjectSettings(serverUrl: string, cwd: string): void {
     try { settings = JSON.parse(geminiSettingsBackup.content); } catch { /* start fresh */ }
   }
   settings.hooks = template.hooks;
+  // Override mcpServers to only include workflow-control, preventing global MCP servers
+  // (browsermcp, notion, figma, etc.) from loading and causing slow initialization.
+  settings.mcpServers = {
+    "wfctl": { type: "http", url: `${serverUrl}/mcp` },
+  };
 
   fs.mkdirSync(geminiDir, { recursive: true });
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 });
@@ -1035,11 +1040,13 @@ async function runPipeline(
       }
 
       if (next.stageName) {
+        // Use child taskId if returned (for sub-pipeline edge slots)
+        const effectiveTaskId = (next as any).taskId ?? taskId;
         if (next.isGate) {
-          await handleGate(taskId, next.stageName, serverUrl);
+          await handleGate(effectiveTaskId, next.stageName, serverUrl);
         } else {
           const result = await runStage(
-            taskId, next.stageName, serverUrl, next.cwd ?? process.cwd(), engine,
+            effectiveTaskId, next.stageName, serverUrl, next.cwd ?? process.cwd(), engine,
             mcpConfigPath, hooksSettingsPath,
             onCancel, next.stageOptions,
           );

@@ -47,7 +47,7 @@ export async function runPipelineCall(
   log.info({ childTaskId, stageName, pipelineName: runtime.pipeline_name }, "Launching sub-pipeline");
 
   // Inherit edge execution mode from parent so sub-pipeline's agent stages
-  // create edge slots instead of spawning server-side agent processes.
+  // create edge slots that the edge runner can pick up and execute.
   const isParentEdge = context.config?.pipeline?.default_execution_mode === "edge";
 
   createTaskDraft(
