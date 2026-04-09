@@ -13,8 +13,21 @@ vi.mock("node:fs", () => ({
   cpSync: vi.fn(),
 }));
 
+vi.mock("node:fs/promises", () => ({
+  readFile: vi.fn(),
+}));
+
 vi.mock("node:crypto", () => ({
   randomBytes: vi.fn(() => ({ toString: () => "abcdef123456" })),
+}));
+
+vi.mock("@workflow-control/shared", () => ({
+  validatePipelineLogic: vi.fn(() => []),
+  getValidationErrors: vi.fn(() => []),
+}));
+
+vi.mock("../lib/config/mcp.js", () => ({
+  buildMcpFromRegistry: vi.fn(() => null),
 }));
 
 vi.mock("../lib/config-loader.js", () => ({
@@ -57,9 +70,11 @@ vi.mock("../scripts/index.js", () => ({
 }));
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync, renameSync, realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { clearConfigCache, loadSystemSettings, loadMcpRegistry } from "../lib/config-loader.js";
 
 const mockReadFileSync = vi.mocked(readFileSync);
+const mockReadFile = vi.mocked(readFile);
 const mockExistsSync = vi.mocked(existsSync);
 const mockReaddirSync = vi.mocked(readdirSync);
 const mockWriteFileSync = vi.mocked(writeFileSync);
@@ -104,7 +119,7 @@ describe("safePath - symlink directory escape", () => {
   it("allows path when realpath stays within base", async () => {
     mockExistsSync.mockImplementation((p: any) => String(p).includes("pipeline.yaml"));
     mockRealpathSync.mockImplementation((p: any) => String(p));
-    mockReadFileSync.mockReturnValue('name: "ok"\nstages: []\n');
+    mockReadFile.mockResolvedValue('name: "ok"\nstages: []\n');
 
     const res = await app.request("/config/pipelines/safe-name");
     expect(res.status).toBe(200);
@@ -380,7 +395,7 @@ describe("prompt path resolution - boundary cases", () => {
 
   it("auto-appends .md extension when not present", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("# content");
+    mockReadFile.mockResolvedValue("# content");
 
     const res = await app.request("/config/prompts/system/my-prompt");
     expect(res.status).toBe(200);
@@ -388,7 +403,7 @@ describe("prompt path resolution - boundary cases", () => {
 
   it("does not double-append .md when already present", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("# content");
+    mockReadFile.mockResolvedValue("# content");
 
     const res = await app.request("/config/prompts/system/my-prompt.md");
     expect(res.status).toBe(200);

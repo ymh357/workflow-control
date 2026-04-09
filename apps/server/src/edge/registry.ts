@@ -16,6 +16,7 @@ interface EdgeSlot extends EdgeSlotInfo {
   resolve: (result: AgentResult) => void;
   reject: (error: Error) => void;
   timeoutTimer: ReturnType<typeof setTimeout>;
+  timeoutMs: number;
 }
 
 const slots = new Map<string, EdgeSlot>();
@@ -103,6 +104,7 @@ export function createSlot(taskId: string, stageName: string, timeoutMs = DEFAUL
       resolve,
       reject,
       timeoutTimer,
+      timeoutMs,
     });
 
     try {
@@ -184,6 +186,35 @@ export function rejectSlot(taskId: string, stageName: string, error: Error): boo
   try {
     getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
   } catch { /* non-critical */ }
+  return true;
+}
+
+const MAX_ABSOLUTE_LIFETIME_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+/** Reset the timeout timer for an active slot. Returns true if renewed. */
+export function renewSlot(taskId: string, stageName: string): boolean {
+  const key = slotKey(taskId, stageName);
+  const slot = slots.get(key);
+  if (!slot) return false;
+
+  if (Date.now() - slot.createdAt > MAX_ABSOLUTE_LIFETIME_MS) {
+    slots.delete(key);
+    try {
+      getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
+    } catch { /* non-critical */ }
+    slot.reject(new Error(`Edge slot exceeded absolute lifetime (${MAX_ABSOLUTE_LIFETIME_MS / 3600000}h) for ${stageName}`));
+    return false;
+  }
+
+  clearTimeout(slot.timeoutTimer);
+  slot.timeoutTimer = setTimeout(() => {
+    slots.delete(key);
+    try {
+      getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
+    } catch { /* non-critical */ }
+    slot.reject(new Error(`Edge slot timed out for ${stageName} (after renewal)`));
+  }, slot.timeoutMs);
+
   return true;
 }
 

@@ -1,0 +1,11 @@
+name: invariants-library
+version: 1.0.0
+type: fragment
+description: Reusable invariant templates for common pipeline patterns
+author: workflow-control
+tags:
+  - invariants
+  - constraints
+  - quality
+files:
+  - invariants-library.md

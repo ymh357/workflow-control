@@ -10,6 +10,7 @@ export interface WorkflowContext {
   retryCount: number;
   qaRetryCount: number;
   stageRetryCount?: Record<string, number>;
+  verifyRetryCount?: Record<string, number>;
   taskToken?: string;
   lastStage?: string;
   error?: string;
@@ -54,6 +55,7 @@ export type WorkflowEvent =
   | { type: "REJECT"; reason?: string; targetStage?: string }
   | { type: "REJECT_WITH_FEEDBACK"; feedback: string; targetStage?: string }
   | { type: "RETRY" }
+  | { type: "RETRY_FROM"; fromStage: string }
   | { type: "SYNC_RETRY"; sessionId: string }
   | { type: "CANCEL" }
   | { type: "RESUME" };

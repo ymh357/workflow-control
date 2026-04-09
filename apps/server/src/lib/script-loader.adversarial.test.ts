@@ -127,7 +127,7 @@ describe("script-loader adversarial", () => {
     // No error thrown
   });
 
-  it("entry path with relative traversal resolves correctly", async () => {
+  it("entry path with relative traversal is rejected by path containment check", async () => {
     mockExistsSync.mockReturnValue(true);
     mockReaddirSync.mockReturnValue([
       { name: "traversal", isDirectory: () => true },
@@ -136,9 +136,9 @@ describe("script-loader adversarial", () => {
       "name: Traversal\nversion: 1.0.0\ntype: script\nscript_id: traversal\nentry: ../../../etc/passwd",
     );
 
-    // resolve() will normalize the path but existsSync returns true
-    // The import will fail since the file isn't a valid module
-    const result = await loadDynamicScript("traversal");
-    expect(result).toBeNull();
+    // Security hardening: path containment check rejects entries that escape the scripts directory
+    await expect(loadDynamicScript("traversal")).rejects.toThrow(
+      /escapes scripts directory/,
+    );
   });
 });

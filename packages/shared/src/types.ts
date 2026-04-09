@@ -53,7 +53,8 @@ export type SSEMessageType =
   | "question_timeout_warning"
   | "cost_update"
   | "error"
-  | "user_message";
+  | "user_message"
+  | "agent_red_flag";
 
 export interface SSEMessage {
   type: SSEMessageType;
@@ -129,6 +130,17 @@ export interface SSEQuestionTimeoutWarningMessage extends SSEMessage {
 export interface SSEUserMessageMessage extends SSEMessage {
   type: "user_message";
   data: { text: string };
+}
+
+export interface SSERedFlagMessage extends SSEMessage {
+  type: "agent_red_flag";
+  data: {
+    flags: Array<{
+      category: string;
+      description: string;
+      matched: string;
+    }>;
+  };
 }
 
 // --- Task Summary (used by task list SSE) ---

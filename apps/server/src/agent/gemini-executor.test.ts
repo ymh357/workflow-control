@@ -468,27 +468,36 @@ describe("interrupt and close", () => {
 });
 
 describe("environment and cwd", () => {
-  it("merges custom env with process.env", () => {
+  it("passes GEMINI_API_KEY from process.env (not from options.env)", () => {
     const fakeChild = createFakeChild();
     mockSpawn.mockReturnValue(fakeChild);
 
-    const iter = queryGemini({
-      prompt: "test",
-      options: {
-        geminiPath: "/usr/bin/gemini",
-        env: { GEMINI_API_KEY: "key-123" },
-        cwd: "/my/project",
-      },
-    });
-    iter[Symbol.asyncIterator]().next();
+    const originalKey = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = "process-env-key";
 
-    const [, , spawnOpts] = mockSpawn.mock.calls[0];
-    expect(spawnOpts.env.GEMINI_API_KEY).toBe("key-123");
-    expect(spawnOpts.cwd).toBe("/my/project");
-    expect(spawnOpts.detached).toBe(true);
-    expect(spawnOpts.stdio).toEqual(["pipe", "pipe", "pipe"]);
+    try {
+      const iter = queryGemini({
+        prompt: "test",
+        options: {
+          geminiPath: "/usr/bin/gemini",
+          env: { GEMINI_API_KEY: "options-env-key" },
+          cwd: "/my/project",
+        },
+      });
+      iter[Symbol.asyncIterator]().next();
 
-    fakeChild.stdout.emit("end");
-    fakeChild.emit("exit", 0, null);
+      const [, , spawnOpts] = mockSpawn.mock.calls[0];
+      // GEMINI_API_KEY comes from process.env, not options.env (filtered by buildChildEnv)
+      expect(spawnOpts.env.GEMINI_API_KEY).toBe("process-env-key");
+      expect(spawnOpts.cwd).toBe("/my/project");
+      expect(spawnOpts.detached).toBe(true);
+      expect(spawnOpts.stdio).toEqual(["pipe", "pipe", "pipe"]);
+
+      fakeChild.stdout.emit("end");
+      fakeChild.emit("exit", 0, null);
+    } finally {
+      if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = originalKey;
+    }
   });
 });

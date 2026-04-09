@@ -13,8 +13,21 @@ vi.mock("node:fs", () => ({
   realpathSync: vi.fn((p: string) => p),
 }));
 
+vi.mock("node:fs/promises", () => ({
+  readFile: vi.fn(),
+}));
+
 vi.mock("node:crypto", () => ({
   randomBytes: vi.fn(() => ({ toString: () => "abcdef123456" })),
+}));
+
+vi.mock("@workflow-control/shared", () => ({
+  validatePipelineLogic: vi.fn(() => []),
+  getValidationErrors: vi.fn(() => []),
+}));
+
+vi.mock("../lib/config/mcp.js", () => ({
+  buildMcpFromRegistry: vi.fn(() => null),
 }));
 
 vi.mock("../lib/config-loader.js", () => ({
@@ -57,9 +70,11 @@ vi.mock("../scripts/index.js", () => ({
 }));
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync, unlinkSync, renameSync, realpathSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { clearConfigCache, loadSystemSettings, loadMcpRegistry, listAvailablePipelines } from "../lib/config-loader.js";
 
 const mockReadFileSync = vi.mocked(readFileSync);
+const mockReadFile = vi.mocked(readFile);
 const mockExistsSync = vi.mocked(existsSync);
 const mockReaddirSync = vi.mocked(readdirSync);
 const mockWriteFileSync = vi.mocked(writeFileSync);
@@ -112,7 +127,7 @@ describe("safePath - path traversal prevention", () => {
 
   it("accepts valid pipeline name", async () => {
     mockExistsSync.mockImplementation((p: any) => String(p).includes("pipeline.yaml"));
-    mockReadFileSync.mockReturnValue('name: "valid"\nstages: []\n');
+    mockReadFile.mockResolvedValue('name: "valid"\nstages: []\n');
 
     const res = await app.request("/config/pipelines/my-pipeline");
     expect(res.status).toBe(200);
@@ -149,13 +164,13 @@ describe("GET /config/system", () => {
       const path = String(p);
       return path.includes("claude-md") || path.includes("gemini-md") || path.includes("codex-md");
     });
-    mockReadFileSync.mockImplementation((p: any) => {
+    mockReadFile.mockImplementation(((p: any) => {
       const path = String(p);
-      if (path.includes("claude-md")) return "# Claude";
-      if (path.includes("gemini-md")) return "# Gemini";
-      if (path.includes("codex-md")) return "# Codex";
-      return "";
-    });
+      if (path.includes("claude-md")) return Promise.resolve("# Claude");
+      if (path.includes("gemini-md")) return Promise.resolve("# Gemini");
+      if (path.includes("codex-md")) return Promise.resolve("# Codex");
+      return Promise.resolve("");
+    }) as any);
     const res = await app.request("/config/system");
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -189,7 +204,7 @@ describe("GET /config/settings", () => {
 
   it("returns raw and parsed settings when file exists", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue('agent:\n  max_budget_usd: 10\n');
+    mockReadFile.mockResolvedValue('agent:\n  max_budget_usd: 10\n');
     vi.mocked(loadSystemSettings).mockReturnValue({ agent: { max_budget_usd: 10 } } as any);
 
     const res = await app.request("/config/settings");
@@ -263,7 +278,7 @@ describe("GET /config/pipelines/:name", () => {
     mockExistsSync.mockImplementation((p: any) => {
       return String(p).includes("pipeline.yaml");
     });
-    mockReadFileSync.mockReturnValue('name: "test"\nstages:\n  - name: s1\n    type: agent\n');
+    mockReadFile.mockResolvedValue('name: "test"\nstages:\n  - name: s1\n    type: agent\n');
 
     const res = await app.request("/config/pipelines/test-pipe");
     expect(res.status).toBe(200);
@@ -274,15 +289,9 @@ describe("GET /config/pipelines/:name", () => {
   });
 
   it("returns raw with null parsed on bad YAML", async () => {
-    mockExistsSync.mockImplementation((p: any) => String(p).includes("pipeline.yaml"));
-    mockReadFileSync.mockImplementation(() => {
-      throw new Error("bad yaml");
-    });
-
-    // The route catches parse errors differently - file exists but parseYAML throws
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("valid content");
-    // Simulate invalid yaml that won't throw on read but may not parse as expected
+    mockReadFile.mockResolvedValue("valid content");
+    // Simulate content that parses but may not match expected structure
     const res = await app.request("/config/pipelines/test-pipe");
     expect(res.status).toBe(200);
   });
@@ -314,7 +323,8 @@ describe("PUT /config/pipelines/:name", () => {
     });
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.code).toBe("INVALID_CONFIG");
+    expect(body.ok).toBe(false);
+    expect(body.errors).toBeDefined();
   });
 
   it("rejects stages without name/type", async () => {
@@ -434,7 +444,7 @@ describe("GET /config/mcps", () => {
 
   it("returns parsed registry when file exists", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue('notion:\n  command: npx\n  args: ["-y", "@notionhq/notion-mcp-server"]\n');
+    mockReadFile.mockResolvedValue('notion:\n  command: npx\n  args: ["-y", "@notionhq/notion-mcp-server"]\n');
 
     const res = await app.request("/config/mcps");
     expect(res.status).toBe(200);
@@ -509,7 +519,7 @@ describe("GET /config/prompts", () => {
 describe("GET /config/prompts/:category/:name", () => {
   it("returns prompt content", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("# System prompt content");
+    mockReadFile.mockResolvedValue("# System prompt content");
 
     const res = await app.request("/config/prompts/system/analyze");
     expect(res.status).toBe(200);
@@ -530,7 +540,7 @@ describe("GET /config/prompts/:category/:name", () => {
 
   it("handles global constraints path", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("Constraints content");
+    mockReadFile.mockResolvedValue("Constraints content");
 
     const res = await app.request("/config/prompts/global/constraints");
     expect(res.status).toBe(200);
@@ -572,21 +582,21 @@ describe("config files (gates/hooks/skills)", () => {
 
   it("accepts gates subdir", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("gate content");
+    mockReadFile.mockResolvedValue("gate content");
     const res = await app.request("/config/files/gates/lint.yaml");
     expect(res.status).toBe(200);
   });
 
   it("accepts hooks subdir", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("hook content");
+    mockReadFile.mockResolvedValue("hook content");
     const res = await app.request("/config/files/hooks/pre-deploy.yaml");
     expect(res.status).toBe(200);
   });
 
   it("accepts skills subdir", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("skill content");
+    mockReadFile.mockResolvedValue("skill content");
     const res = await app.request("/config/files/skills/search.md");
     expect(res.status).toBe(200);
   });
@@ -635,14 +645,14 @@ describe("claude-md layers", () => {
 
   it("accepts global layer", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("global content");
+    mockReadFile.mockResolvedValue("global content");
     const res = await app.request("/config/claude-md/global/base.md");
     expect(res.status).toBe(200);
   });
 
   it("accepts stage layer", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("stage content");
+    mockReadFile.mockResolvedValue("stage content");
     const res = await app.request("/config/claude-md/stage/analyze.md");
     expect(res.status).toBe(200);
   });
@@ -821,7 +831,7 @@ describe("PUT /config/pipelines/:name/prompts/constraints", () => {
 describe("GET /config/pipelines/:name/prompts/constraints with file", () => {
   it("returns file content when it exists", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("constraint content here");
+    mockReadFile.mockResolvedValue("constraint content here");
     const res = await app.request("/config/pipelines/my-pipe/prompts/constraints");
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -836,7 +846,7 @@ describe("GET /config/pipelines/:name/prompts/system/:promptName", () => {
 
   it("returns prompt content when found", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("prompt body");
+    mockReadFile.mockResolvedValue("prompt body");
     const res = await app.request("/config/pipelines/my-pipe/prompts/system/analyze");
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -851,14 +861,14 @@ describe("GET /config/pipelines/:name/prompts/system/:promptName", () => {
 
   it("appends .md to names without extension", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("content");
+    mockReadFile.mockResolvedValue("content");
     const res = await app.request("/config/pipelines/my-pipe/prompts/system/analyze");
     expect(res.status).toBe(200);
   });
 
   it("handles names already ending with .md", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("content");
+    mockReadFile.mockResolvedValue("content");
     const res = await app.request("/config/pipelines/my-pipe/prompts/system/analyze.md");
     expect(res.status).toBe(200);
   });
@@ -931,7 +941,7 @@ describe("GET /config/pipeline (legacy)", () => {
 
   it("returns raw and parsed when file exists", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue('name: "legacy"\nstages:\n  - name: s1\n    type: agent\n');
+    mockReadFile.mockResolvedValue('name: "legacy"\nstages:\n  - name: s1\n    type: agent\n');
     const res = await app.request("/config/pipeline");
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -1268,7 +1278,7 @@ describe("GET /config/gemini-md/:layer/:name", () => {
 
   it("returns global layer content", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("gemini global content");
+    mockReadFile.mockResolvedValue("gemini global content");
     const res = await app.request("/config/gemini-md/global/base.md");
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -1277,7 +1287,7 @@ describe("GET /config/gemini-md/:layer/:name", () => {
 
   it("returns stage layer content", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("gemini stage content");
+    mockReadFile.mockResolvedValue("gemini stage content");
     const res = await app.request("/config/gemini-md/stage/analyze.md");
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -1369,7 +1379,7 @@ describe("DELETE /config/gemini-md/:layer/:name", () => {
 describe("GET /config/mcps - parse error", () => {
   it("returns empty registry on unparseable YAML", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("{{invalid yaml");
+    mockReadFile.mockResolvedValue("{{invalid yaml");
     const res = await app.request("/config/mcps");
     expect(res.status).toBe(200);
     const body = await res.json();
@@ -1382,7 +1392,7 @@ describe("GET /config/mcps - parse error", () => {
 describe("GET /config/settings - parse error", () => {
   it("returns empty settings when loadSystemSettings throws", async () => {
     mockExistsSync.mockReturnValue(true);
-    mockReadFileSync.mockReturnValue("valid: yaml");
+    mockReadFile.mockResolvedValue("valid: yaml");
     vi.mocked(loadSystemSettings).mockImplementation(() => { throw new Error("corrupt"); });
 
     const res = await app.request("/config/settings");

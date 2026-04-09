@@ -183,12 +183,12 @@ describe("side-effects adversarial", () => {
     expect(payload.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
-  it("registering side effects on same actor twice doubles event handlers", () => {
-    // Register again
+  it("registering side effects on same actor twice is idempotent (no duplicate handlers)", () => {
+    // Register again — idempotency guard (WeakSet) prevents duplicate registration
     registerSideEffects(actor as any);
     actor.emit({ type: "wf.taskListUpdate", taskId: "t-double" });
-    // Should be called twice (one per registration)
-    expect(broadcastTaskUpdate).toHaveBeenCalledTimes(2);
+    // Should only be called once thanks to the idempotency guard
+    expect(broadcastTaskUpdate).toHaveBeenCalledTimes(1);
   });
 
   it("wf.cancelQuestions calls questionManager.cancelForTask", () => {

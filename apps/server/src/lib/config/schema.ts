@@ -174,6 +174,11 @@ export const PipelineStageConfigSchema = z.object({
       notify: z.string().optional(),
     })
     .optional(),
+  invariants: z.array(z.string()).optional(),
+  verify_commands: z.array(z.string()).optional(),
+  verify_policy: z.enum(["must_pass", "warn", "skip"]).optional(),
+  verify_max_retries: z.number().int().min(0).optional(),
+  stage_timeout_sec: z.number().int().min(1).max(86400).optional(),
 });
 
 // --- Parallel Group ---

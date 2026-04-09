@@ -8,11 +8,12 @@ import {
   statusEntry, emitStatus, emitTaskListUpdate, emitPersistSession, getLatestSessionId,
   handleStageError,
 } from "./helpers.js";
-import { taskLogger } from "../lib/logger.js";
-import type { AgentStageConfig, ScriptStageConfig, HumanGateRuntimeConfig, PipelineStageConfig, ConditionStageConfig, PipelineCallStageConfig, ForeachStageConfig } from "../lib/config-loader.js";
+import { logger, taskLogger } from "../lib/logger.js";
+import type { AgentStageConfig, AgentRuntimeConfig, ScriptStageConfig, HumanGateRuntimeConfig, PipelineStageConfig, ConditionStageConfig, PipelineCallStageConfig, ForeachStageConfig } from "../lib/config-loader.js";
 import { getNestedValue } from "../lib/config-loader.js";
 import { extractJSON } from "../lib/json-extractor.js";
 import { getStageBuilder } from "./stage-registry.js";
+import { formatVerifyFailures } from "../agent/verify-commands.js";
 
 /**
  * Filter store writes to only include keys declared in the stage's `writes` config.
@@ -54,6 +55,15 @@ function resetStageRetryCount(context: WorkflowContext, stageName: string): Reco
   const current = context.stageRetryCount ?? {};
   const { [stageName]: _, ...rest } = current;
   return rest;
+}
+
+function getVerifyRetryCount(context: WorkflowContext, stageName: string): number {
+  return context.verifyRetryCount?.[stageName] ?? 0;
+}
+
+function incrementVerifyRetryCount(context: WorkflowContext, stageName: string): Record<string, number> {
+  const current = context.verifyRetryCount ?? {};
+  return { ...current, [stageName]: (current[stageName] ?? 0) + 1 };
 }
 
 // XState invoke onDone event shape. `output` is typed loosely because
@@ -259,6 +269,72 @@ export function buildAgentState(
             emitTaskListUpdate(),
           ],
         }] : []),
+        // Verify failure + retries exhausted -> blocked
+        {
+          guard: ({ context, event }: { context: WorkflowContext; event: DoneEvent }) => {
+            if (!(event.output as any)?.verifyFailed) return false;
+            const maxVerifyRetries = (stage as any).verify_max_retries ?? 2;
+            return getVerifyRetryCount(context, stateName) >= maxVerifyRetries;
+          },
+          target: opts?.blockedTarget ?? "blocked",
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const output = event.output as any;
+              return {
+                error: `Verification failed after max retries. ${formatVerifyFailures(output.verifyResults ?? []).slice(0, 500)}`,
+                lastStage: stateName,
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
+              };
+            }),
+            ({ context }: { context: WorkflowContext }) => {
+              taskLogger(context.taskId).error({ stage: stateName }, context.error ?? "Verification failed after max retries");
+            },
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.error",
+              taskId: context.taskId,
+              error: context.error ?? "Verification failed after max retries",
+            })),
+          ],
+        },
+        // Verify failure + retries remaining -> re-enter stage
+        {
+          guard: ({ event }: { event: DoneEvent }) => {
+            return !!(event.output as any)?.verifyFailed;
+          },
+          target: stateName,
+          reenter: true,
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const output = event.output as any;
+              const failureDetail = formatVerifyFailures(output.verifyResults ?? []);
+              return {
+                verifyRetryCount: incrementVerifyRetryCount(context, stateName),
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
+                stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
+                stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
+                resumeInfo: output.sessionId
+                  ? {
+                      sessionId: output.sessionId,
+                      feedback: `VERIFICATION FAILED. Your changes did not pass the required verification commands. Fix the issues and try again.\n\nFailures:\n${failureDetail}`,
+                    }
+                  : undefined,
+              };
+            }),
+            ({ context }: { context: WorkflowContext }) => {
+              taskLogger(context.taskId).warn({ stage: stateName, retryCount: getStageRetryCount(context, stateName) }, "Verify commands failed, retrying stage");
+            },
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.status",
+              taskId: context.taskId,
+              status: context.status,
+              message: `${stateName}: verification failed, retrying (attempt ${getStageRetryCount(context, stateName)})`,
+            })),
+          ],
+        },
         // Normal path: process output and advance
         {
           target: nextTarget,
@@ -668,6 +744,18 @@ export function buildParallelGroupState(
   nextTarget: string,
   prevAgentTarget: string,
 ): StateNode {
+  for (const childStage of group.stages) {
+    if (childStage.type === "agent" && childStage.runtime) {
+      const runtime = childStage.runtime as AgentRuntimeConfig;
+      if (!runtime.reads || Object.keys(runtime.reads).length === 0) {
+        logger.warn(
+          { stage: childStage.name, group: group.name },
+          `Parallel stage "${childStage.name}" in group "${group.name}" has no "reads" declaration — undeclared store access may cause race conditions`
+        );
+      }
+    }
+  }
+
   const groupName = group.name;
   const regions: Record<string, StateNode> = {};
   const stageOpts = { blockedTarget: "#workflow.blocked", statePrefix: "#workflow" };

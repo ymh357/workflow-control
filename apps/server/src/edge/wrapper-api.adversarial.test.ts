@@ -13,8 +13,10 @@ vi.mock("../lib/logger.js", () => ({
   }),
 }));
 
+const mockGetWorkflow = vi.fn();
 vi.mock("../machine/actor-registry.js", () => ({
   getAllWorkflows: vi.fn(() => new Map()),
+  getWorkflow: (...args: unknown[]) => mockGetWorkflow(...args),
 }));
 
 const mockGetTaskContext = vi.fn();
@@ -40,6 +42,7 @@ vi.mock("../sse/manager.js", () => ({
 
 vi.mock("./registry.js", () => ({
   getTaskSlots: vi.fn(() => []),
+  getAllSlots: vi.fn(() => []),
   addSlotListener: vi.fn(() => () => {}),
   addTaskTerminationListener: vi.fn(() => () => {}),
 }));
@@ -66,6 +69,11 @@ describe("wrapper-api adversarial tests", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Auth middleware calls getWorkflow(taskId) — return a mock actor with no taskToken
+    // so middleware passes through without requiring X-Edge-Token header.
+    mockGetWorkflow.mockReturnValue({
+      getSnapshot: () => ({ context: {} }),
+    });
     app = new Hono();
     app.route("/api/edge", buildWrapperRoute());
   });

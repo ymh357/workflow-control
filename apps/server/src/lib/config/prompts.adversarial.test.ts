@@ -45,14 +45,12 @@ describe("loadPipelineSystemPrompt adversarial", () => {
     expect(loadPipelineSystemPrompt("pipe", "stage")).toBe("prompt with whitespace");
   });
 
-  it("handles pipeline name with path-traversal characters (join normalizes)", () => {
-    // join normalizes "../evil" so the resulting path won't contain "../evil" literally
-    // The function checks local first, then base; path.join resolves traversal
+  it("rejects pipeline name with path-traversal characters", () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("evil content");
     const result = loadPipelineSystemPrompt("../evil", "stage");
-    // Should still work because existsSync returns true and readFileSync returns content
-    expect(result).toBe("evil content");
+    // safeName rejects names containing ".." or "/"
+    expect(result).toBeNull();
   });
 
   it("returns null when both local and base read throw", () => {
@@ -64,11 +62,12 @@ describe("loadPipelineSystemPrompt adversarial", () => {
     expect(loadPipelineSystemPrompt("pipe", "stage")).toBeNull();
   });
 
-  it("handles empty string prompt name", () => {
+  it("rejects empty string prompt name", () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue("content");
     const result = loadPipelineSystemPrompt("pipe", "");
-    expect(result).toBe("content");
+    // safeName rejects empty strings
+    expect(result).toBeNull();
   });
 });
 

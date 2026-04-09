@@ -140,6 +140,15 @@ export interface PipelineStageConfig {
   on_complete?: {
     notify?: string;
   };
+  // Hard constraints the agent MUST NOT violate. Injected into system prompt
+  // and checked against output text for violation signals.
+  invariants?: string[];
+  // Shell commands to run after agent completes. Stage fails if any command exits non-zero.
+  verify_commands?: string[];
+  verify_policy?: "must_pass" | "warn" | "skip";
+  verify_max_retries?: number;
+  // Timeout in seconds for edge execution of this stage. Default: 1800 (30 min).
+  stage_timeout_sec?: number;
 }
 
 // Narrowed stage config types for type-safe builders
@@ -192,6 +201,8 @@ export interface PipelineConfig {
   codex_md?: { global?: string };
   display?: { title_path?: string; completion_summary_path?: string };
   integrations?: { notion_page_id_path?: string };
+  // Pipeline-level invariants applied to ALL agent stages
+  invariants?: string[];
 }
 
 export interface PipelineManifest {

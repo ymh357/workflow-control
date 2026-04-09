@@ -25,5 +25,5 @@ retryRoute.post("/tasks/:taskId/retry", async (c) => {
     return errorResponse(c, 400, ErrorCode.VALIDATION_FAILED, "Validation failed", details);
   }
 
-  return actionToResponse(c, retryTask(taskId, { sync: parsed.data.sync }));
+  return actionToResponse(c, retryTask(taskId, { sync: parsed.data.sync, fromStage: parsed.data.fromStage }));
 });

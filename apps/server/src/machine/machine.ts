@@ -5,7 +5,7 @@ import { runAgent, runScript } from "../agent/executor.js";
 import { runEdgeAgent } from "../edge/actor.js";
 import { runPipelineCall } from "../agent/pipeline-executor.js";
 import { runForeach } from "../agent/foreach-executor.js";
-import { type PipelineConfig, type AgentRuntimeConfig, type ScriptRuntimeConfig, type PipelineCallRuntimeConfig, type ForeachRuntimeConfig, getNestedValue, isParallelGroup } from "../lib/config-loader.js";
+import { type PipelineConfig, type AgentRuntimeConfig, type ScriptRuntimeConfig, type PipelineCallRuntimeConfig, type ForeachRuntimeConfig, getNestedValue, isParallelGroup, flattenStages } from "../lib/config-loader.js";
 import {
   statusEntry, emitStatus, emitNotionSync, emitTaskListUpdate, emitPersistSession, loggedActor,
 } from "./helpers.js";
@@ -237,6 +237,46 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
                   type: "wf.error",
                   taskId: context.taskId,
                   error: `Cannot retry from stage "${context.lastStage}". Stage is not retryable.`,
+                })),
+              ],
+            },
+          ],
+          RETRY_FROM: [
+            ...(retryable.map((s) => ({
+              target: childToGroup.get(s) ?? s,
+              guard: ({ event }: { event: { type: "RETRY_FROM"; fromStage: string } }) => event.fromStage === s,
+              actions: assign(({ context }: { context: WorkflowContext }) => {
+                const sessionId = context.stageSessionIds[s];
+                const resetCounts = { ...(context.stageRetryCount ?? {}) };
+                // Reset target stage and all stages after it
+                const allStages = context.config?.pipeline?.stages
+                  ? flattenStages(context.config.pipeline.stages).map(st => st.name)
+                  : [];
+                const targetIdx = allStages.indexOf(s);
+                if (targetIdx >= 0) {
+                  for (let i = targetIdx; i < allStages.length; i++) {
+                    delete resetCounts[allStages[i]];
+                  }
+                }
+                return {
+                  retryCount: 0, error: undefined, errorCode: undefined,
+                  qaRetryCount: 0,
+                  stageRetryCount: resetCounts,
+                  verifyRetryCount: {},
+                  lastStage: s,
+                  resumeInfo: sessionId ? { sessionId, feedback: `User requested retry from stage "${s}". Please inspect the current state and attempt to resolve any previous issues.` } : undefined,
+                };
+              }),
+            })) as any[]),
+            {
+              actions: [
+                ({ context, event }) => {
+                  taskLogger(context.taskId).error({ fromStage: (event as any).fromStage }, "RETRY_FROM: unknown or non-retryable stage");
+                },
+                emit(({ context, event }): WorkflowEmittedEvent => ({
+                  type: "wf.error",
+                  taskId: context.taskId,
+                  error: `Cannot retry from stage "${(event as any).fromStage}". Stage is not retryable or does not exist.`,
                 })),
               ],
             },
