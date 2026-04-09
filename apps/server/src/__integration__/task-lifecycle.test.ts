@@ -453,7 +453,7 @@ describe("Task lifecycle integration", () => {
         durationMs: 500,
         sessionId: "edge-session-1",
       });
-      expect(resolved).toBe(true);
+      expect(resolved).toBe("resolved");
 
       await waitFor(actor, (snap) => snap.status === "done", { timeout: 5000 });
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getAllSlots, hasSlot, getSlotNonce, resolveSlot, setPendingRecovery, renewSlot } from "./registry.js";
+import { getAllSlots, hasSlot, getSlotNonce, resolveSlot, setPendingRecovery, renewSlot, type ResolveSlotResult } from "./registry.js";
 import { buildTier1Context } from "../agent/context-builder.js";
 import { buildSystemAppendPrompt, buildStaticPromptPrefix } from "../agent/prompt-builder.js";
 import { extractJSON } from "../lib/json-extractor.js";
@@ -62,7 +62,7 @@ function findStageConfig(context: WorkflowContext, stageName: string): PipelineS
   return flattenStages(context.config.pipeline.stages).find((s) => s.name === stageName);
 }
 
-async function buildStageContext(taskId: string, stageName: string): Promise<Record<string, unknown> | null> {
+async function buildStageContext(taskId: string, stageName: string, compact = false): Promise<Record<string, unknown> | null> {
   const context = getTaskContext(taskId);
   if (!context) return null;
 
@@ -83,7 +83,7 @@ async function buildStageContext(taskId: string, stageName: string): Promise<Rec
     cwd: context.worktreePath,
   });
 
-  const staticPrefix = buildStaticPromptPrefix(context.config, stageEngine);
+  const staticPrefix = compact ? undefined : buildStaticPromptPrefix(context.config, stageEngine);
 
   const storeReads: Record<string, unknown> = {};
   if (runtime.reads) {
@@ -94,12 +94,20 @@ async function buildStageContext(taskId: string, stageName: string): Promise<Rec
 
   const mcpList = stageConfig.mcps ?? [];
 
+  // Detect foreach sub-task and expose foreachItem (Issue #1)
+  let foreachItem: unknown = undefined;
+  let foreachItemVar: string | undefined = undefined;
+  if (context.foreachMeta) {
+    foreachItemVar = context.foreachMeta.itemVar;
+    foreachItem = context.store[context.foreachMeta.itemVar];
+  }
+
   return {
     taskId,
     stageName,
     tier1Context,
     systemPrompt,
-    staticPromptPrefix: staticPrefix,
+    ...(staticPrefix !== undefined ? { staticPromptPrefix: staticPrefix } : {}),
     outputSchema: stageConfig.outputs ?? null,
     storeReads,
     mcps: mcpList,
@@ -107,6 +115,14 @@ async function buildStageContext(taskId: string, stageName: string): Promise<Rec
     branch: context.branch ?? "",
     writes: runtime.writes ?? [],
     resumeInfo: context.resumeInfo ?? null,
+    ...(foreachItem !== undefined ? { foreachItem, foreachItemVar } : {}),
+    contextUsageHint: {
+      tier1Context: "Task description and store value summaries for prompt injection (token-budgeted, may be lossy for large values).",
+      systemPrompt: "Stage-specific instructions, constraints, and output format requirements.",
+      ...(staticPrefix !== undefined ? { staticPromptPrefix: "Cross-stage shared prompt prefix (constraints + fragments). Omit in compact mode to save tokens." } : {}),
+      storeReads: "Full structured JSON data from declared stage reads. Use these as the authoritative data inputs.",
+      outputSchema: "Required output format — your response must contain JSON with these fields.",
+    },
   };
 }
 
@@ -204,6 +220,11 @@ export function createEdgeMcpServer(): McpServer {
             }
           }
         }
+        // Detect foreach item for sub-tasks (Issue #1)
+        const fMeta = context?.foreachMeta;
+        const foreachItem = fMeta ? context?.store?.[fMeta.itemVar] : undefined;
+        const skippedStages = context?.skippedStages ?? [];
+
         return {
           taskId: slot.taskId,
           stageName: slot.stageName,
@@ -212,6 +233,8 @@ export function createEdgeMcpServer(): McpServer {
           createdAt: new Date(slot.createdAt).toISOString(),
           waitingSeconds: Math.round((Date.now() - slot.createdAt) / 1000),
           ...(parallelGroup ? { parallelGroup } : {}),
+          ...(foreachItem !== undefined ? { foreachItem, foreachItemVar: fMeta!.itemVar } : {}),
+          ...(skippedStages.length > 0 ? { skippedStages } : {}),
         };
       });
       return textResult(JSON.stringify(enriched, null, 2));
@@ -226,14 +249,15 @@ export function createEdgeMcpServer(): McpServer {
       taskId: z.string().describe("The task ID"),
       stageName: z.string().describe("The stage name to get context for"),
       taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
+      compact: z.boolean().optional().default(false).describe("When true, omit staticPromptPrefix to reduce response size for edge agents with limited context windows"),
     },
-    async ({ taskId, stageName, taskToken }) => {
+    async ({ taskId, stageName, taskToken, compact }) => {
       const authErr = validateTaskToken(taskId, taskToken);
       if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
       if (!hasSlot(taskId, stageName)) {
         return textResult(JSON.stringify({ error: `No pending edge slot for ${taskId}::${stageName}` }), true);
       }
-      const ctx = await buildStageContext(taskId, stageName);
+      const ctx = await buildStageContext(taskId, stageName, compact);
       if (!ctx) {
         return textResult(JSON.stringify({ error: `Could not build context for ${taskId}::${stageName}` }), true);
       }
@@ -328,8 +352,13 @@ export function createEdgeMcpServer(): McpServer {
       };
       const resolved = resolveSlot(taskId, stageName, agentResult, nonce);
 
-      if (!resolved) {
-        return textResult(JSON.stringify({ error: `No pending edge slot for ${taskId}::${stageName}. It may have timed out or already been resolved.` }), true);
+      if (resolved === "not_found" || resolved === "nonce_mismatch" || resolved === "expired") {
+        const errorMessages: Record<string, string> = {
+          not_found: `No pending edge slot for ${taskId}::${stageName}. It may have timed out or already been resolved.`,
+          nonce_mismatch: `Nonce mismatch for ${taskId}::${stageName}. Your submission is stale — a newer slot exists. Call get_stage_context to get the current nonce and retry.`,
+          expired: `Edge slot for ${taskId}::${stageName} has expired. Trigger a retry_task to re-create the slot.`,
+        };
+        return textResult(JSON.stringify({ error: errorMessages[resolved], reason: resolved }), true);
       }
 
       // Handle persisted slot recovery (server restarted since slot was created).
@@ -361,8 +390,9 @@ export function createEdgeMcpServer(): McpServer {
       // are more strongly followed than system prompts from thousands of tokens ago.
       const postCtx = getTaskContext(taskId);
       const allStages = postCtx?.config?.pipeline?.stages ? flattenStages(postCtx.config.pipeline.stages) : [];
-      const completedStages = Object.keys(postCtx?.stageTokenUsages ?? {}).length;
-      const progress = `${completedStages}/${allStages.length}`;
+      const completedCount = postCtx?.completedStages ? new Set(postCtx.completedStages).size : Object.keys(postCtx?.stageTokenUsages ?? {}).length;
+      const progress = `${completedCount}/${allStages.length}`;
+      const skippedStages = postCtx?.skippedStages ?? [];
       const isTerminal = postCtx ? TERMINAL_STATES.has(postCtx.status) : false;
 
       let nextAction: string;
@@ -385,6 +415,7 @@ export function createEdgeMcpServer(): McpServer {
         instruction,
         pipelineProgress: progress,
         taskStatus: postCtx?.status ?? "unknown",
+        ...(skippedStages.length > 0 ? { skippedStages } : {}),
       }, null, 2));
     },
   );
@@ -582,6 +613,9 @@ export function createEdgeMcpServer(): McpServer {
         worktreePath: context.worktreePath,
         totalCostUsd: context.totalCostUsd ?? 0,
         storeKeys: Object.keys(context.store),
+        completedStages: context.completedStages ?? [],
+        skippedStages: context.skippedStages ?? [],
+        executionHistory: context.executionHistory ?? [],
       }, null, 2));
     },
   );

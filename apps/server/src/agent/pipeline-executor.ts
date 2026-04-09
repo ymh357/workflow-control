@@ -54,7 +54,7 @@ export async function runPipelineCall(
     childTaskId,
     undefined,
     runtime.pipeline_name,
-    undefined,
+    context.taskText,
     {
       initialStore: childInitialStore,
       worktreePath: context.worktreePath,

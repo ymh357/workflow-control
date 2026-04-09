@@ -127,7 +127,7 @@ describe("registry", () => {
         durationMs: 500,
       });
 
-      expect(result).toBe(true);
+      expect(result).toBe("resolved");
       expect(hasSlot("t1", "resolve-test")).toBe(false);
 
       const agentResult = await promise;
@@ -135,15 +135,15 @@ describe("registry", () => {
       expect(agentResult.costUsd).toBe(1.5);
     });
 
-    it("should return false when no slot exists", () => {
-      expect(resolveSlot("nope", "nope", { resultText: "", costUsd: 0, durationMs: 0 })).toBe(false);
+    it("should return 'not_found' when no slot exists", () => {
+      expect(resolveSlot("nope", "nope", { resultText: "", costUsd: 0, durationMs: 0 })).toBe("not_found");
     });
 
     it("should reject when nonce does not match", () => {
       const promise = createSlot("t1", "nonce-test");
       const result = resolveSlot("t1", "nonce-test", { resultText: "", costUsd: 0, durationMs: 0 }, "wrong-nonce");
 
-      expect(result).toBe(false);
+      expect(result).toBe("nonce_mismatch");
       // Slot should still exist
       expect(hasSlot("t1", "nonce-test")).toBe(true);
 
@@ -157,7 +157,7 @@ describe("registry", () => {
       const nonce = getSlotNonce("t1", "nonce-match")!;
       const result = resolveSlot("t1", "nonce-match", { resultText: "ok", costUsd: 0, durationMs: 0 }, nonce);
 
-      expect(result).toBe(true);
+      expect(result).toBe("resolved");
       const agentResult = await promise;
       expect(agentResult.resultText).toBe("ok");
     });
@@ -166,7 +166,7 @@ describe("registry", () => {
       const promise = createSlot("t1", "no-nonce");
       const result = resolveSlot("t1", "no-nonce", { resultText: "ok", costUsd: 0, durationMs: 0 });
 
-      expect(result).toBe(true);
+      expect(result).toBe("resolved");
       await promise;
     });
   });
@@ -462,7 +462,7 @@ describe("registry", () => {
       vi.useRealTimers();
     });
 
-    it("resolveSlot returns false after timeout (slot already removed)", async () => {
+    it("resolveSlot returns 'not_found' after timeout (slot already removed)", async () => {
       vi.useFakeTimers();
       const promise = createSlot("t-to2", "stage-y", 200);
 
@@ -475,7 +475,7 @@ describe("registry", () => {
         costUsd: 0,
         durationMs: 0,
       });
-      expect(result).toBe(false);
+      expect(result).toBe("not_found");
       vi.useRealTimers();
     });
   });
@@ -610,7 +610,7 @@ describe("registry", () => {
       ).run("tp-4", "expired-stage", "old-nonce", expiredTime);
 
       const result = resolveSlot("tp-4", "expired-stage", { resultText: "late", costUsd: 0, durationMs: 0 });
-      expect(result).toBe(false);
+      expect(result).toBe("expired");
 
       // Expired row should be cleaned up
       const row = testDb.prepare(

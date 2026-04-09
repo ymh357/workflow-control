@@ -131,7 +131,7 @@ export function buildWrapperRoute(): Hono {
       const ctx = snapshot.context;
       if (!TERMINAL_STATES.has(ctx.status)) {
         const stages = ctx.config?.pipeline?.stages ? flattenStages(ctx.config.pipeline.stages) : [];
-        const completedStages = Object.keys(ctx.stageTokenUsages ?? {}).length;
+        const completedStages = ctx.completedStages ? new Set(ctx.completedStages).size : Object.keys(ctx.stageTokenUsages ?? {}).length;
         return c.json({
           isTerminal: false,
           taskId,

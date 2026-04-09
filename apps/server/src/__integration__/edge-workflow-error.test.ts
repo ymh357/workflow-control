@@ -327,7 +327,7 @@ describe("Edge Workflow Error Paths", () => {
         { resultText: makeResultText({ result: "hacked" }), costUsd: 0, durationMs: 0 },
         "completely-wrong-nonce",
       );
-      expect(wrongResult).toBe(false);
+      expect(wrongResult).toBe("nonce_mismatch");
 
       // Slot should still exist
       expect(getTaskSlots(taskId).length).toBe(1);
@@ -358,7 +358,7 @@ describe("Edge Workflow Error Paths", () => {
         { resultText: makeResultText({ data: "bad" }), costUsd: 0, durationMs: 0 },
         "wrong-nonce",
       );
-      expect(failedAttempt).toBe(false);
+      expect(failedAttempt).toBe("nonce_mismatch");
 
       // Second attempt with correct nonce succeeds
       const successAttempt = resolveSlot(
@@ -367,7 +367,7 @@ describe("Edge Workflow Error Paths", () => {
         { resultText: makeResultText({ data: "good" }), costUsd: 0.001, durationMs: 50 },
         correctNonce!,
       );
-      expect(successAttempt).toBe(true);
+      expect(successAttempt).toBe("resolved");
 
       await vi.waitFor(() => {
         expect(actor.getSnapshot().context.status).toBe("completed");

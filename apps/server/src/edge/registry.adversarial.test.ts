@@ -41,8 +41,8 @@ describe("registry adversarial tests", () => {
       const first = resolveSlot("t-dbl", "s1", result("first"));
       const second = resolveSlot("t-dbl", "s1", result("second"));
 
-      expect(first).toBe(true);
-      expect(second).toBe(false);
+      expect(first).toBe("resolved");
+      expect(second).toBe("not_found");
 
       // The promise should resolve with the FIRST value only
       const r = await p;
@@ -72,7 +72,7 @@ describe("registry adversarial tests", () => {
       await expect(p).rejects.toThrow("timed out");
 
       const ok = resolveSlot("t-rto", "s1", result("late"));
-      expect(ok).toBe(false);
+      expect(ok).toBe("not_found");
       expect(hasSlot("t-rto", "s1")).toBe(false);
       vi.useRealTimers();
     });
@@ -120,7 +120,7 @@ describe("registry adversarial tests", () => {
 
       // Trying to resolve with the old nonce should fail
       const ok = resolveSlot("t-dup2", "s1", result("stale"), oldNonce);
-      expect(ok).toBe(false);
+      expect(ok).toBe("nonce_mismatch");
 
       // Slot should still exist for the new nonce
       expect(hasSlot("t-dup2", "s1")).toBe(true);
@@ -241,12 +241,12 @@ describe("registry adversarial tests", () => {
 
       // Try wrong nonce
       const bad = resolveSlot("t-nonce", "s1", result("bad"), "wrong-nonce-123");
-      expect(bad).toBe(false);
+      expect(bad).toBe("nonce_mismatch");
       expect(hasSlot("t-nonce", "s1")).toBe(true);
 
       // Correct nonce should still work
       const good = resolveSlot("t-nonce", "s1", result("good"), correctNonce);
-      expect(good).toBe(true);
+      expect(good).toBe("resolved");
 
       const r = await p;
       expect(r.resultText).toBe("good");
@@ -257,7 +257,7 @@ describe("registry adversarial tests", () => {
 
       // Resolve without nonce - should succeed regardless
       const ok = resolveSlot("t-nonce2", "s1", result("bypassed"));
-      expect(ok).toBe(true);
+      expect(ok).toBe("resolved");
 
       const r = await p;
       expect(r.resultText).toBe("bypassed");
@@ -268,7 +268,7 @@ describe("registry adversarial tests", () => {
 
       // Empty string is falsy, so the nonce check should be skipped
       const ok = resolveSlot("t-nonce3", "s1", result("empty"), "");
-      expect(ok).toBe(true);
+      expect(ok).toBe("resolved");
 
       const r = await p;
       expect(r.resultText).toBe("empty");

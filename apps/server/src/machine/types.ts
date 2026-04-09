@@ -25,6 +25,10 @@ export interface WorkflowContext {
   stageCwds?: Record<string, string>;
   stageCheckpoints?: Record<string, unknown>;
   parallelDone?: Record<string, string[]>;
+  completedStages?: string[];
+  skippedStages?: string[];
+  executionHistory?: Array<{ stage: string; action: "completed" | "skipped"; timestamp: string }>;
+  foreachMeta?: { itemVar: string; parentTaskId: string; itemIndex: number };
   rejectIntoGroup?: { group: string; stage: string };
   resumeInfo?: { sessionId: string; feedback?: string; sync?: boolean };
   config?: {

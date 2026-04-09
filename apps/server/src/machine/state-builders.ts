@@ -378,6 +378,8 @@ export function buildAgentState(
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
                 stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
                 stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
+                completedStages: [...(context.completedStages ?? []), stateName],
+                executionHistory: [...(context.executionHistory ?? []), { stage: stateName, action: "completed" as const, timestamp: new Date().toISOString() }],
               };
             }),
             emit(({ event, context }: { event: DoneEvent; context: WorkflowContext }): WorkflowEmittedEvent => ({
@@ -462,6 +464,8 @@ export function buildScriptState(
               stageRetryCount: resetStageRetryCount(context, stateName),
               branch: store.branch ?? context.branch,
               worktreePath: store.worktreePath?.worktreePath ?? store.worktreePath ?? context.worktreePath,
+              completedStages: [...(context.completedStages ?? []), stateName],
+              executionHistory: [...(context.executionHistory ?? []), { stage: stateName, action: "completed" as const, timestamp: new Date().toISOString() }],
             };
           }),
           emitPersistSession(),
@@ -527,11 +531,13 @@ export function buildHumanGateState(
       CONFIRM: {
         target: stage.on_approve_to ?? nextTarget,
         actions: [
-          assign(({ event }: { event: WorkflowEvent }) => {
+          assign(({ event, context }: { event: WorkflowEvent; context: WorkflowContext }) => {
             const repoOverride = (event as { repoName?: string }).repoName;
             return {
               retryCount: 0,
               ...(repoOverride ? { explicitRepoName: repoOverride } : {}),
+              completedStages: [...(context.completedStages ?? []), stateName],
+              executionHistory: [...(context.executionHistory ?? []), { stage: stateName, action: "completed" as const, timestamp: new Date().toISOString() }],
             };
           }),
         ],
@@ -618,9 +624,26 @@ export function buildConditionState(
   const { runtime } = stage;
   const parser = new Parser();
 
+  const allBranchTargets = runtime.branches.map((b) => b.to);
+
   const transitions = runtime.branches.map((branch) => {
+    const skippedTargets = allBranchTargets.filter((t) => t !== branch.to);
+    const trackingAction = assign(({ context }: { context: WorkflowContext }) => {
+      const existingSkipped = new Set(context.skippedStages ?? []);
+      const newSkipped = skippedTargets.filter((t) => !existingSkipped.has(t));
+      return {
+        completedStages: [...(context.completedStages ?? []), stateName],
+        skippedStages: [...(context.skippedStages ?? []), ...newSkipped],
+        executionHistory: [
+          ...(context.executionHistory ?? []),
+          { stage: stateName, action: "completed" as const, timestamp: new Date().toISOString() },
+          ...newSkipped.map((t) => ({ stage: t, action: "skipped" as const, timestamp: new Date().toISOString() })),
+        ],
+      };
+    });
+
     if (branch.default) {
-      return { target: branch.to };
+      return { target: branch.to, actions: [trackingAction] };
     }
     return {
       guard: ({ context }: { context: WorkflowContext }) => {
@@ -635,13 +658,29 @@ export function buildConditionState(
         }
       },
       target: branch.to,
+      actions: [trackingAction],
     };
   });
 
   // If no default branch defined, add a fallback to blocked
   const hasDefault = runtime.branches.some((b) => b.default);
   if (!hasDefault) {
-    transitions.push({ target: opts?.blockedTarget ?? "blocked" });
+    transitions.push({
+      target: opts?.blockedTarget ?? "blocked",
+      actions: [assign(({ context }: { context: WorkflowContext }) => {
+        const existingSkipped = new Set(context.skippedStages ?? []);
+        const newSkipped = allBranchTargets.filter((t) => !existingSkipped.has(t));
+        return {
+          completedStages: [...(context.completedStages ?? []), stateName],
+          skippedStages: [...(context.skippedStages ?? []), ...newSkipped],
+          executionHistory: [
+            ...(context.executionHistory ?? []),
+            { stage: stateName, action: "completed" as const, timestamp: new Date().toISOString() },
+            ...newSkipped.map((t) => ({ stage: t, action: "skipped" as const, timestamp: new Date().toISOString() })),
+          ],
+        };
+      })],
+    });
   }
 
   return {
@@ -682,6 +721,8 @@ export function buildPipelineCallState(
               store: { ...context.store, ...updates },
               retryCount: 0,
               stageRetryCount: resetStageRetryCount(context, stateName),
+              completedStages: [...(context.completedStages ?? []), stateName],
+              executionHistory: [...(context.executionHistory ?? []), { stage: stateName, action: "completed" as const, timestamp: new Date().toISOString() }],
             };
           }),
           emitPersistSession(),
@@ -725,6 +766,8 @@ export function buildForeachState(
               store: { ...context.store, ...updates },
               retryCount: 0,
               stageRetryCount: resetStageRetryCount(context, stateName),
+              completedStages: [...(context.completedStages ?? []), stateName],
+              executionHistory: [...(context.executionHistory ?? []), { stage: stateName, action: "completed" as const, timestamp: new Date().toISOString() }],
             };
           }),
           emitPersistSession(),

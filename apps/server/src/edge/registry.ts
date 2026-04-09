@@ -131,14 +131,16 @@ export function createSlot(taskId: string, stageName: string, timeoutMs = DEFAUL
   });
 }
 
-export function resolveSlot(taskId: string, stageName: string, result: AgentResult, nonce?: string): boolean | "persisted" {
+export type ResolveSlotResult = "resolved" | "persisted" | "nonce_mismatch" | "not_found" | "expired";
+
+export function resolveSlot(taskId: string, stageName: string, result: AgentResult, nonce?: string): ResolveSlotResult {
   const key = slotKey(taskId, stageName);
   const slot = slots.get(key);
 
   if (slot) {
     if (nonce && slot.nonce !== nonce) {
       taskLogger(taskId).warn({ stageName, expected: slot.nonce, received: nonce }, "Slot nonce mismatch — rejecting stale submission");
-      return false;
+      return "nonce_mismatch";
     }
 
     clearTimeout(slot.timeoutTimer);
@@ -147,7 +149,7 @@ export function resolveSlot(taskId: string, stageName: string, result: AgentResu
     try {
       getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
     } catch { /* non-critical */ }
-    return true;
+    return "resolved";
   }
 
   // Fallback: check DB for persisted slot (server restarted since slot was created)
@@ -160,11 +162,11 @@ export function resolveSlot(taskId: string, stageName: string, result: AgentResu
       if (row.created_at && (Date.now() - row.created_at > DEFAULT_TIMEOUT_MS)) {
         getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
         taskLogger(taskId).warn({ stageName }, "Persisted slot expired, ignoring");
-        return false;
+        return "expired";
       }
       if (nonce && row.nonce !== nonce) {
         taskLogger(taskId).warn({ stageName }, "Persisted slot nonce mismatch");
-        return false;
+        return "nonce_mismatch";
       }
       getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
       taskLogger(taskId).info({ stageName }, "Resolved persisted slot (server had restarted)");
@@ -172,7 +174,7 @@ export function resolveSlot(taskId: string, stageName: string, result: AgentResu
     }
   } catch { /* DB access failed */ }
 
-  return false;
+  return "not_found";
 }
 
 export function rejectSlot(taskId: string, stageName: string, error: Error): boolean {

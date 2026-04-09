@@ -6,7 +6,7 @@ vi.mock("./registry.js", () => ({
   getAllSlots: vi.fn(() => []),
   hasSlot: vi.fn(() => false),
   getSlotNonce: vi.fn(() => undefined),
-  resolveSlot: vi.fn(() => false),
+  resolveSlot: vi.fn(() => "not_found" as const),
 }));
 
 vi.mock("../agent/context-builder.js", () => ({
@@ -363,22 +363,22 @@ describe("get_store_value - dot notation edge cases", () => {
 });
 
 describe("submit_stage_result - nonce-based stale submission", () => {
-  it("returns error when resolveSlot returns false (stale nonce)", () => {
-    mockResolveSlot.mockReturnValue(false);
+  it("returns error when resolveSlot returns nonce_mismatch (stale nonce)", () => {
+    mockResolveSlot.mockReturnValue("nonce_mismatch" as const);
     const resolved = mockResolveSlot("t1", "s1", { resultText: "{}", costUsd: 0, durationMs: 0 }, "old-nonce");
-    expect(resolved).toBe(false);
+    expect(resolved).toBe("nonce_mismatch");
   });
 
   it("skips validation when getTaskContext returns null (race condition: task deleted)", () => {
     mockGetTaskContext.mockReturnValue(null);
-    mockResolveSlot.mockReturnValue(true);
+    mockResolveSlot.mockReturnValue("resolved" as const);
 
     // When context is null, validation is skipped and resolveSlot proceeds
     const context = mockGetTaskContext("deleted-task");
     expect(context).toBeNull();
     // resolveSlot should still be callable
     const resolved = mockResolveSlot("deleted-task", "s1", { resultText: "{}", costUsd: 0, durationMs: 0 });
-    expect(resolved).toBe(true);
+    expect(resolved).toBe("resolved");
   });
 });
 

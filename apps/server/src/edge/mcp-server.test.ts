@@ -6,7 +6,7 @@ vi.mock("./registry.js", () => ({
   getAllSlots: vi.fn(() => []),
   hasSlot: vi.fn(() => false),
   getSlotNonce: vi.fn(() => undefined),
-  resolveSlot: vi.fn(() => false),
+  resolveSlot: vi.fn(() => "not_found"),
 }));
 
 vi.mock("../agent/context-builder.js", () => ({

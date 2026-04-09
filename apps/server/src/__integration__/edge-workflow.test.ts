@@ -312,7 +312,7 @@ describe("Edge Workflow Integration", () => {
         { resultText: makeResultText({ result: "done" }), costUsd: 0, durationMs: 0 },
         nonce!,
       );
-      expect(ok).toBe(true);
+      expect(ok).toBe("resolved");
 
       await vi.waitFor(() => {
         expect(actor.getSnapshot().context.status).toBe("completed");
@@ -337,7 +337,7 @@ describe("Edge Workflow Integration", () => {
         { resultText: makeResultText({ result: "done" }), costUsd: 0, durationMs: 0 },
         "wrong-nonce-12345",
       );
-      expect(ok).toBe(false);
+      expect(ok).toBe("nonce_mismatch");
 
       // Slot should still exist (not consumed)
       expect(getTaskSlots(taskId).length).toBe(1);

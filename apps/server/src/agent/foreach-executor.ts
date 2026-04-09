@@ -122,9 +122,17 @@ export async function runForeach(
     };
 
     // Build a context copy with the item injected into the store
+    const itemLabel = typeof item === "string" ? item : JSON.stringify(item).slice(0, 200);
     const itemContext: WorkflowContext = {
       ...context,
-      store: { ...context.store, [runtime.item_var]: item },
+      taskText: context.taskText
+        ? `${context.taskText} [foreach item ${idx}: ${itemLabel}]`
+        : `Foreach item ${idx}: ${itemLabel}`,
+      foreachMeta: { itemVar: runtime.item_var, parentTaskId, itemIndex: idx },
+      store: {
+        ...context.store,
+        [runtime.item_var]: item,
+      },
     };
 
     // If worktree isolation, create an isolated worktree for this item
