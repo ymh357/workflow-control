@@ -26,6 +26,22 @@ export async function buildSystemAppendPrompt(params: PromptBuilderParams): Prom
   const effectiveConstraints = privateConfig?.prompts.globalConstraints || DEFAULT_GLOBAL_CONSTRAINTS;
   appendParts.push(effectiveConstraints);
 
+  // Invariants (pipeline-level + stage-level)
+  const pipelineInvariants = privateConfig?.pipeline?.invariants ?? [];
+  const stageInvariants = (() => {
+    if (!privateConfig?.pipeline?.stages) return [];
+    const found = flattenStages(privateConfig.pipeline.stages).find((s: any) => s.name === stageName);
+    return found?.invariants ?? [];
+  })();
+  const allInvariants = [...pipelineInvariants, ...stageInvariants];
+  if (allInvariants.length > 0) {
+    appendParts.push(
+      `## INVARIANTS (Hard Constraints — Violations Will Cause Stage Failure)\n` +
+      allInvariants.map((inv: string, i: number) => `${i + 1}. ${inv}`).join("\n") +
+      `\n\nThese are non-negotiable rules. If you cannot satisfy an invariant, stop and explain why rather than proceeding in violation.`
+    );
+  }
+
   // 2. Resolve active fragments
   let resolvedFragments: { id: string; content: string }[];
   if (privateConfig?.prompts.fragmentMeta) {
