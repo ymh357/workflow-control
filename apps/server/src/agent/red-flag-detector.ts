@@ -1,5 +1,3 @@
-import { taskLogger } from "../lib/logger.js";
-
 const RED_FLAG_PATTERNS: Array<{ pattern: RegExp; category: string; description: string }> = [
   { pattern: /\b(?:should|probably|likely|might)\s+(?:work|fix|resolve|pass|be\s+(?:fine|ok|correct))/i, category: "unverified_claim", description: "Uncertain language in completion claim" },
   { pattern: /\bI\s+(?:think|believe|assume|expect)\s+(?:this|that|it)\s+(?:should|will|is)/i, category: "unverified_claim", description: "Assumption-based claim without verification" },
@@ -15,6 +13,11 @@ export interface RedFlag {
   position: number;
 }
 
+// Returns at most one match per pattern per call. This is intentional:
+// the RedFlagAccumulator calls this on overlapping 500-char windows,
+// so repeated occurrences are caught across successive checks.
+// The accumulator's 200-char dedup threshold prevents double-reporting
+// of matches near window boundaries.
 export function detectRedFlags(text: string): RedFlag[] {
   const flags: RedFlag[] = [];
   for (const { pattern, category, description } of RED_FLAG_PATTERNS) {

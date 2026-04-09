@@ -4,8 +4,8 @@ import {
 import {
   getFragmentRegistry, resolveFragmentsFromSnapshot,
   type FragmentMeta, type AgentRuntimeConfig, type StageOutputSchema, type OutputFieldSchema,
-  flattenStages,
 } from "../lib/config-loader.js";
+import { findStageConfig } from "../lib/config/stage-lookup.js";
 import { buildCapabilitySummary, formatCapabilityPrompt } from "../lib/capability-registry.js";
 
 interface PromptBuilderParams {
@@ -28,11 +28,8 @@ export async function buildSystemAppendPrompt(params: PromptBuilderParams): Prom
 
   // Invariants (pipeline-level + stage-level)
   const pipelineInvariants = privateConfig?.pipeline?.invariants ?? [];
-  const stageInvariants = (() => {
-    if (!privateConfig?.pipeline?.stages) return [];
-    const found = flattenStages(privateConfig.pipeline.stages).find((s: any) => s.name === stageName);
-    return found?.invariants ?? [];
-  })();
+  const invariantStageConf = findStageConfig(privateConfig?.pipeline?.stages, stageName);
+  const stageInvariants = invariantStageConf?.invariants ?? [];
   const allInvariants = [...pipelineInvariants, ...stageInvariants];
   if (allInvariants.length > 0) {
     appendParts.push(
@@ -72,9 +69,7 @@ export async function buildSystemAppendPrompt(params: PromptBuilderParams): Prom
   appendParts.push(effectiveStagePrompt);
 
   // 5. Resolve pipeline stage config (needed by multiple sections below)
-  const pipelineStage = privateConfig?.pipeline?.stages
-    ? flattenStages(privateConfig.pipeline.stages).find((s: any) => s.name === stageName)
-    : undefined;
+  const pipelineStage = findStageConfig(privateConfig?.pipeline?.stages, stageName);
 
   // 6. Dynamic keyword injection for analyzing stage
   if (stageName === "analyzing") {

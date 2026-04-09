@@ -7,6 +7,18 @@ import type { SSEMessage } from "../types/index.js";
 const execAsync = promisify(exec);
 const VERIFY_TIMEOUT_MS = 60_000;
 
+const SENSITIVE_ENV_PATTERNS = [/_TOKEN$/, /_SECRET$/, /_KEY$/, /_PASSWORD$/, /^ANTHROPIC_/, /^OPENAI_/];
+
+function filterSensitiveEnv(env: NodeJS.ProcessEnv): Record<string, string | undefined> {
+  const filtered: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (!SENSITIVE_ENV_PATTERNS.some(p => p.test(key))) {
+      filtered[key] = value;
+    }
+  }
+  return filtered;
+}
+
 export interface VerifyResult {
   command: string;
   passed: boolean;
@@ -41,15 +53,18 @@ export async function runVerifyCommands(
         cwd,
         timeout: VERIFY_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
-        env: { ...process.env, CI: "true", FORCE_COLOR: "0" },
+        env: { ...filterSensitiveEnv(process.env), CI: "true", FORCE_COLOR: "0" },
       });
       const durationMs = Date.now() - start;
       results.push({ command, passed: true, exitCode: 0, stdout: stdout.slice(0, 4000), stderr: stderr.slice(0, 2000), durationMs });
       log.info({ command, durationMs }, "Verify command passed");
     } catch (err: any) {
       const durationMs = Date.now() - start;
-      results.push({ command, passed: false, exitCode: err.code ?? 1, stdout: (err.stdout ?? "").slice(0, 4000), stderr: (err.stderr ?? "").slice(0, 2000), durationMs });
-      log.warn({ command, exitCode: err.code ?? 1, stderr: (err.stderr ?? "").slice(0, 500) }, "Verify command failed");
+      const timedOut = !!err.killed;
+      const exitCode = timedOut ? 124 : (err.code ?? 1);
+      const stderr = (err.stderr ?? "").slice(0, 2000);
+      results.push({ command, passed: false, exitCode, stdout: (err.stdout ?? "").slice(0, 4000), stderr, durationMs });
+      log.warn({ command, exitCode, timedOut, stderr: stderr.slice(0, 500) }, timedOut ? "Verify command timed out" : "Verify command failed");
     }
   }
 
