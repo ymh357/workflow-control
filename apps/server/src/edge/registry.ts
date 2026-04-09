@@ -187,6 +187,24 @@ export function rejectSlot(taskId: string, stageName: string, error: Error): boo
   return true;
 }
 
+/** Reset the timeout timer for an active slot. Returns true if renewed. */
+export function renewSlot(taskId: string, stageName: string, timeoutMs: number = DEFAULT_TIMEOUT_MS): boolean {
+  const key = slotKey(taskId, stageName);
+  const slot = slots.get(key);
+  if (!slot) return false;
+
+  clearTimeout(slot.timeoutTimer);
+  slot.timeoutTimer = setTimeout(() => {
+    slots.delete(key);
+    try {
+      getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
+    } catch { /* non-critical */ }
+    slot.reject(new Error(`Edge slot timed out for ${stageName} (after renewal)`));
+  }, timeoutMs);
+
+  return true;
+}
+
 export function hasSlot(taskId: string, stageName: string): boolean {
   return slots.has(slotKey(taskId, stageName));
 }
