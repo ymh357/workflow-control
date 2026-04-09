@@ -241,6 +241,34 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
               ],
             },
           ],
+          RETRY_FROM: [
+            ...(retryable.map((s) => ({
+              target: childToGroup.get(s) ?? s,
+              guard: ({ event }: { event: { type: "RETRY_FROM"; fromStage: string } }) => event.fromStage === s,
+              actions: assign(({ context }: { context: WorkflowContext }) => {
+                const sessionId = context.stageSessionIds[s];
+                return {
+                  retryCount: 0, error: undefined, errorCode: undefined,
+                  qaRetryCount: 0,
+                  stageRetryCount: {},
+                  lastStage: s,
+                  resumeInfo: sessionId ? { sessionId, feedback: `User requested retry from stage "${s}". Please inspect the current state and attempt to resolve any previous issues.` } : undefined,
+                };
+              }),
+            })) as any[]),
+            {
+              actions: [
+                ({ context, event }) => {
+                  taskLogger(context.taskId).error({ fromStage: (event as any).fromStage }, "RETRY_FROM: unknown or non-retryable stage");
+                },
+                emit(({ context, event }): WorkflowEmittedEvent => ({
+                  type: "wf.error",
+                  taskId: context.taskId,
+                  error: `Cannot retry from stage "${(event as any).fromStage}". Stage is not retryable or does not exist.`,
+                })),
+              ],
+            },
+          ],
           SYNC_RETRY: [
             ...(retryable.map((s) => ({
               target: childToGroup.get(s) ?? s,

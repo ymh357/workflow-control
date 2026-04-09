@@ -55,6 +55,7 @@ export type WorkflowEvent =
   | { type: "REJECT"; reason?: string; targetStage?: string }
   | { type: "REJECT_WITH_FEEDBACK"; feedback: string; targetStage?: string }
   | { type: "RETRY" }
+  | { type: "RETRY_FROM"; fromStage: string }
   | { type: "SYNC_RETRY"; sessionId: string }
   | { type: "CANCEL" }
   | { type: "RESUME" };

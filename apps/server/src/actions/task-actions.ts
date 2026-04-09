@@ -118,7 +118,7 @@ export function rejectGate(
 
 export function retryTask(
   taskId: string,
-  opts?: { sync?: boolean },
+  opts?: { sync?: boolean; fromStage?: string },
 ): ActionResult<{ lastStage: string | undefined; statusAfter: string }> {
   const actor = getActor(taskId);
   if (!actor) return fail("TASK_NOT_FOUND", `Task ${taskId} not found`);
@@ -134,6 +134,17 @@ export function retryTask(
 
   if (status === "blocked") {
     const lastStage = ctx.lastStage;
+
+    if (opts?.fromStage) {
+      sendEvent(taskId, { type: "RETRY_FROM", fromStage: opts.fromStage });
+      const after = actor.getSnapshot();
+      const statusAfter = after.context.status;
+      if (statusAfter === "blocked") {
+        return fail("INVALID_STATE", `Cannot retry from stage "${opts.fromStage}"`);
+      }
+      return ok({ lastStage, statusAfter });
+    }
+
     const sessionId = lastStage && ctx.stageSessionIds?.[lastStage];
 
     if (opts?.sync && sessionId) {

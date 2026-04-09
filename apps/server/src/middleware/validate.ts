@@ -115,4 +115,5 @@ export const interruptSchema = z.object({
 
 export const retrySchema = z.object({
   sync: z.boolean().optional(),
+  fromStage: z.string().optional(),
 });
