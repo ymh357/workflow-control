@@ -146,6 +146,7 @@ export interface PipelineStageConfig {
   // Shell commands to run after agent completes. Stage fails if any command exits non-zero.
   verify_commands?: string[];
   verify_policy?: "must_pass" | "warn" | "skip";
+  verify_max_retries?: number;
 }
 
 // Narrowed stage config types for type-safe builders
