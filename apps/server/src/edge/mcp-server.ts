@@ -122,6 +122,8 @@ async function buildStageContext(taskId: string, stageName: string, compact = fa
       ...(staticPrefix !== undefined ? { staticPromptPrefix: "Cross-stage shared prompt prefix (constraints + fragments). Omit in compact mode to save tokens." } : {}),
       storeReads: "Full structured JSON data from declared stage reads. Use these as the authoritative data inputs.",
       outputSchema: "Required output format — your response must contain JSON with these fields.",
+      worktreePath: "Absolute path to the git worktree for this task. Use as the root directory for all file reads and writes.",
+      branch: "Git branch name for this task's worktree. Use when committing or referencing version control.",
     },
   };
 }

@@ -270,6 +270,14 @@ export async function runForeach(
     }
   }
 
+  // Cross-item consistency check: detect when multiple items produced different
+  // values for the same data point. Helps catch inconsistencies when parallel
+  // agents independently interpret the same source data (e.g., different URL
+  // formats for the same endpoint).
+  if (collectedResults.length > 1) {
+    detectCrossItemInconsistencies(collectedResults, log, stageName);
+  }
+
   if (runtime.collect_to) {
     // Strip "store." prefix if present
     const collectKey = runtime.collect_to.startsWith("store.") ? runtime.collect_to.slice(6) : runtime.collect_to;
@@ -308,5 +316,72 @@ function cleanupDanglingSubTasks(
 
   if (cleaned > 0) {
     log.info({ stageName, cleaned }, "Cleaned up dangling sub-tasks");
+  }
+}
+
+/**
+ * Detect data inconsistencies across foreach item results.
+ *
+ * When multiple agents independently process the same source data, they may
+ * produce different representations of the same fact (e.g., different URL
+ * formats for the same endpoint). This function extracts string values from
+ * each item's result, finds values that look like the same data point but
+ * differ across items, and logs warnings. Downstream stages can use the
+ * `__consistencyWarnings` annotation to flag potential issues.
+ */
+function detectCrossItemInconsistencies(
+  results: Record<string, any>[],
+  log: ReturnType<typeof taskLogger>,
+  stageName: string,
+): void {
+  // Collect all leaf string values from each item's result, keyed by JSON path
+  const itemValues: Map<string, string[]> = new Map();
+  for (const result of results) {
+    collectLeafStrings(result, "", itemValues);
+  }
+
+  // Find keys where items produced different values (possible inconsistency)
+  const inconsistencies: { key: string; values: string[] }[] = [];
+  for (const [key, values] of itemValues) {
+    if (key.startsWith("__")) continue; // Skip internal metadata keys
+    if (values.length < 2) continue;
+    const unique = [...new Set(values)];
+    if (unique.length > 1) {
+      inconsistencies.push({ key, values: unique });
+    }
+  }
+
+  if (inconsistencies.length > 0) {
+    log.warn(
+      { stageName, count: inconsistencies.length, keys: inconsistencies.map((i) => i.key) },
+      "Cross-item data inconsistencies detected in foreach results",
+    );
+    // Annotate each result with warnings so downstream stages can flag them
+    for (const result of results) {
+      result.__consistencyWarnings = inconsistencies;
+    }
+  }
+}
+
+function collectLeafStrings(
+  obj: unknown,
+  prefix: string,
+  out: Map<string, string[]>,
+): void {
+  if (obj === null || obj === undefined) return;
+  if (typeof obj === "string") {
+    const existing = out.get(prefix) ?? [];
+    existing.push(obj);
+    out.set(prefix, existing);
+    return;
+  }
+  if (Array.isArray(obj)) {
+    // Skip arrays — cross-item comparison of array elements is not meaningful
+    return;
+  }
+  if (typeof obj === "object") {
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      collectLeafStrings(value, prefix ? `${prefix}.${key}` : key, out);
+    }
   }
 }

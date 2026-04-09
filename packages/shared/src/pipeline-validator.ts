@@ -326,6 +326,19 @@ function validateStage(
     if (!rt?.item_var) {
       issues.push({ severity: "error", stageIndex: entryIndex, field: "item_var", message: `Foreach stage "${stage.name}" must have runtime.item_var` });
     }
+    // Warn if item_var is not explicitly listed in reads (auto-injected at runtime but explicit declaration improves readability)
+    if (rt?.item_var && rt?.reads) {
+      const reads = rt.reads as Record<string, string>;
+      const itemVar = rt.item_var as string;
+      if (!Object.keys(reads).includes(itemVar) && !Object.values(reads).includes(itemVar)) {
+        issues.push({
+          severity: "warning",
+          stageIndex: entryIndex,
+          field: "item_var",
+          message: `Foreach stage "${stage.name}": item_var "${itemVar}" is not explicitly listed in reads. It will be auto-injected at runtime, but explicit declaration improves readability and edge agent visibility.`,
+        });
+      }
+    }
   }
 
   // Check output schema field key duplicates
