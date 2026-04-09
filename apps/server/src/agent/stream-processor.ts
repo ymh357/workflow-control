@@ -12,6 +12,7 @@ import {
   hasPendingResume,
 } from "./query-tracker.js";
 import { persistSessionId } from "./session-persister.js";
+import { RedFlagAccumulator } from "./red-flag-detector.js";
 
 function createSSEMessage(taskId: string, type: SSEMessage["type"], data: unknown): SSEMessage {
   return { type, taskId, timestamp: new Date().toISOString(), data };
@@ -33,6 +34,7 @@ export async function processAgentStream(params: {
   let resultText = "", sessionId: string | undefined, costUsd = 0, durationMs = 0;
   let tokenUsage: StageTokenUsage | undefined;
   let toolCallCount = 0;
+  const redFlagAccumulator = new RedFlagAccumulator();
 
   registerQuery(taskId, { query: agentQuery, stageName });
   let handledResume = false;
@@ -72,6 +74,15 @@ export async function processAgentStream(params: {
               sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_text", { text: block.text }));
               if (resultText.length < MAX_RESULT_TEXT) {
                 resultText += block.text;
+              }
+              const newFlags = redFlagAccumulator.append(block.text);
+              if (newFlags.length > 0) {
+                for (const flag of newFlags) {
+                  taskLogger(taskId, stageName).warn({ flag: flag.category, matched: flag.matchedText }, "Red flag detected in agent output");
+                }
+                sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_red_flag", {
+                  flags: newFlags.map(f => ({ category: f.category, description: f.description, matched: f.matchedText })),
+                }));
               }
             }
             if (block.type === "thinking" && (block as any).thinking) {
@@ -161,6 +172,11 @@ export async function processAgentStream(params: {
     const userMessage = consumePendingResume(taskId)!;
     taskLogger(taskId, stageName).info({ sessionId }, "stream ended with pending resume, resuming with user message");
     return onResume({ sessionId, resumePrompt: userMessage });
+  }
+
+  const flagSummary = redFlagAccumulator.getFlagSummary();
+  if (flagSummary) {
+    taskLogger(taskId, stageName).warn({ flagSummary }, "Red flags detected during stage execution");
   }
 
   taskLogger(taskId, stageName).info({ costUsd: costUsd.toFixed(3), durationMs, sessionId: sessionId ?? "none", resultTextLength: resultText.length, tokenUsage: tokenUsage ? { input: tokenUsage.inputTokens, output: tokenUsage.outputTokens } : undefined }, "stage DONE");

@@ -53,7 +53,8 @@ export type SSEMessageType =
   | "question_timeout_warning"
   | "cost_update"
   | "error"
-  | "user_message";
+  | "user_message"
+  | "agent_red_flag";
 
 export interface SSEMessage {
   type: SSEMessageType;

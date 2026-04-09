@@ -87,6 +87,7 @@ export interface AgentResult {
   durationMs: number;
   cwd?: string;
   tokenUsage?: StageTokenUsage;
+  redFlags?: Array<{ category: string; description: string; matchedText: string; position: number }>;
 }
 
 export class AgentError extends Error {
