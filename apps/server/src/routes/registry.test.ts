@@ -58,7 +58,7 @@ describe("registry routes", () => {
     expect(res.status).toBe(500);
     const body = await res.json();
     expect(body.code).toBe("INTERNAL_ERROR");
-    expect(body.error).toBe("boom");
+    expect(body.error).toBe("Internal server error");
   });
 
   it("GET /registry/search passes query params", async () => {

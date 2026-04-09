@@ -80,15 +80,16 @@ describe("registry routes — adversarial", () => {
     expect(body.code).toBe("VALIDATION_FAILED");
   });
 
-  it("error responses expose service error message — potential info leakage", async () => {
+  it("error responses do not expose sensitive path information", async () => {
     const sensitiveMsg = "ENOENT: /home/user/.secret/config.yaml";
     mockRegistryService.getIndex.mockRejectedValue(new Error(sensitiveMsg));
 
     const res = await app.request("/registry/index");
     expect(res.status).toBe(500);
     const body = await res.json();
-    // This tests that the raw error message is exposed
-    expect(body.error).toBe(sensitiveMsg);
+    // Security hardening: raw error messages are no longer exposed
+    expect(body.error).toBe("Internal server error");
+    expect(body.error).not.toContain("/home/user");
   });
 
   it("POST /registry/update with invalid JSON body returns 400", async () => {
