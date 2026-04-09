@@ -7,6 +7,7 @@ vi.mock("../lib/json-extractor.js", () => ({
 }));
 
 vi.mock("../lib/logger.js", () => ({
+  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
   taskLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 

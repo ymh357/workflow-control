@@ -119,6 +119,7 @@ vi.mock("../agent/context-builder.js", () => ({
 }));
 
 vi.mock("node:child_process", () => ({
+  exec: vi.fn(),
   execFile: vi.fn(),
 }));
 
