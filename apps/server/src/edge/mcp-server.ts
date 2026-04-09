@@ -10,6 +10,7 @@ import { getNestedValue, listAvailablePipelines, flattenStages } from "../lib/co
 import { TERMINAL_STATES } from "../machine/types.js";
 import type { WorkflowContext } from "../machine/types.js";
 import type { AgentRuntimeConfig, PipelineStageConfig } from "../lib/config-loader.js";
+import type { ConditionRuntimeConfig } from "../lib/config/types.js";
 import type { SSEMessage } from "../types/index.js";
 import { taskLogger } from "../lib/logger.js";
 import {
@@ -193,6 +194,46 @@ export function createEdgeMcpServer(): McpServer {
       const nonce = getSlotNonce(taskId, stageName);
       if (nonce) ctx.nonce = nonce;
       return textResult(JSON.stringify(ctx, null, 2));
+    },
+  );
+
+  // --- get_stage_schema ---
+  server.tool(
+    "get_stage_schema",
+    "Get lightweight schema for a stage — only outputSchema, writes, reads keys, and nonce. Use this instead of get_stage_context when you only need to know the output format.",
+    {
+      taskId: z.string(),
+      stageName: z.string(),
+      taskToken: z.string().optional(),
+    },
+    async ({ taskId, stageName, taskToken }) => {
+      if (taskToken) {
+        const err = validateTaskToken(taskId, taskToken);
+        if (err) return textResult(JSON.stringify({ error: err }), true);
+      }
+
+      const context = getTaskContext(taskId);
+      if (!context) {
+        return textResult(JSON.stringify({ error: "Task not found" }), true);
+      }
+
+      const stageConf = findStageConfig(context, stageName);
+      if (!stageConf) {
+        return textResult(JSON.stringify({ error: `Stage "${stageName}" not found in pipeline` }), true);
+      }
+
+      const runtime = stageConf.runtime;
+      const nonce = getSlotNonce(taskId, stageName);
+
+      const schema = {
+        stageName,
+        writes: (runtime && "writes" in runtime) ? runtime.writes ?? [] : [],
+        reads: (runtime && "reads" in runtime) ? Object.keys(runtime.reads ?? {}) : [],
+        outputSchema: stageConf.outputs ?? null,
+        nonce: nonce ?? null,
+      };
+
+      return textResult(JSON.stringify(schema), false);
     },
   );
 
