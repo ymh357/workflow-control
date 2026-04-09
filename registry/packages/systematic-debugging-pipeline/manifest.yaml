@@ -1,0 +1,19 @@
+name: systematic-debugging-pipeline
+version: 1.0.0
+type: pipeline
+description: >
+  Structured debugging pipeline enforcing reproduce -> root-cause -> fix -> verify flow.
+  Prevents random fix attempts by requiring root cause identification before any code changes.
+author: workflow-control
+tags:
+  - debugging
+  - investigation
+  - root-cause
+  - superpowers
+engine_compat: claude
+files:
+  - pipeline.yaml
+  - prompts/global-constraints.md
+  - prompts/system/reproduce.md
+  - prompts/system/root-cause.md
+  - prompts/system/fix-and-verify.md
