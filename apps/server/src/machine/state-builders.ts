@@ -259,6 +259,72 @@ export function buildAgentState(
             emitTaskListUpdate(),
           ],
         }] : []),
+        // Verify failure + retries exhausted -> blocked
+        {
+          guard: ({ context, event }: { context: WorkflowContext; event: DoneEvent }) => {
+            if (!(event.output as any)?.verifyFailed) return false;
+            const retries = getStageRetryCount(context, stateName);
+            return retries >= 2;
+          },
+          target: opts?.blockedTarget ?? "blocked",
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const output = event.output as any;
+              return {
+                error: `Verification failed after max retries. ${output.resultText?.split?.("__VERIFY_FAILED__")?.[1]?.slice(0, 500) ?? ""}`,
+                lastStage: stateName,
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
+              };
+            }),
+            ({ context }: { context: WorkflowContext }) => {
+              taskLogger(context.taskId).error({ stage: stateName }, context.error ?? "Verification failed after max retries");
+            },
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.error",
+              taskId: context.taskId,
+              error: context.error ?? "Verification failed after max retries",
+            })),
+          ],
+        },
+        // Verify failure + retries remaining -> re-enter stage
+        {
+          guard: ({ event }: { event: DoneEvent }) => {
+            return !!(event.output as any)?.verifyFailed;
+          },
+          target: stateName,
+          reenter: true,
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const output = event.output as any;
+              const failureDetail = output.resultText?.split?.("__VERIFY_FAILED__")?.[1] ?? "unknown";
+              return {
+                stageRetryCount: incrementStageRetryCount(context, stateName),
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
+                stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
+                stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
+                resumeInfo: output.sessionId
+                  ? {
+                      sessionId: output.sessionId,
+                      feedback: `VERIFICATION FAILED. Your changes did not pass the required verification commands. Fix the issues and try again.\n\nFailures:\n${failureDetail}`,
+                    }
+                  : undefined,
+              };
+            }),
+            ({ context }: { context: WorkflowContext }) => {
+              taskLogger(context.taskId).warn({ stage: stateName, retryCount: getStageRetryCount(context, stateName) }, "Verify commands failed, retrying stage");
+            },
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.status",
+              taskId: context.taskId,
+              status: context.status,
+              message: `${stateName}: verification failed, retrying (attempt ${getStageRetryCount(context, stateName)})`,
+            })),
+          ],
+        },
         // Normal path: process output and advance
         {
           target: nextTarget,

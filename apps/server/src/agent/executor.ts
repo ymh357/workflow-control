@@ -6,12 +6,13 @@ import { createWorktree, installDepsInWorktree, resolveRepoPath, initRepo } from
 import { join } from "node:path";
 import { taskLogger } from "../lib/logger.js";
 import { injectWorktreeConfig } from "../lib/worktree-injector.js";
-import { loadSystemSettings, getNestedValue, type AgentRuntimeConfig, type ScriptRuntimeConfig } from "../lib/config-loader.js";
+import { loadSystemSettings, getNestedValue, flattenStages, type AgentRuntimeConfig, type ScriptRuntimeConfig } from "../lib/config-loader.js";
 import type { WorkflowContext } from "../machine/types.js";
 import { buildTier1Context } from "./context-builder.js";
 import { type AgentResult } from "./query-tracker.js";
 import { scriptRegistry } from "../scripts/index.js";
 import { executeStage } from "./stage-executor.js";
+import { runVerifyCommands, formatVerifyFailures } from "./verify-commands.js";
 
 // ── Mock executor (MOCK_EXECUTOR=true only, never runs in production) ──
 const _mockCallCounts = new Map<string, number>(); // key: taskId:stageName
@@ -94,7 +95,7 @@ export async function runAgent(
 
   const { stageName, worktreePath, tier1Context, enabledSteps, resumeInfo, interactive, runtime, context: inputContext } = input;
 
-  return executeStage(taskId, stageName, tier1Context, runtime.system_prompt, {
+  const result = await executeStage(taskId, stageName, tier1Context, runtime.system_prompt, {
     cwd: worktreePath,
     interactive,
     enabledSteps,
@@ -104,6 +105,29 @@ export async function runAgent(
     runtime,
     injectedContext: inputContext,
   });
+
+  // Run verify commands if configured
+  const pipelineStages = inputContext?.config?.pipeline?.stages;
+  const stageConf = pipelineStages
+    ? flattenStages(pipelineStages).find((s: any) => s.name === stageName)
+    : undefined;
+  const verifyCommands = stageConf?.verify_commands as string[] | undefined;
+  const verifyPolicy = (stageConf?.verify_policy ?? "must_pass") as string;
+
+  if (verifyCommands?.length && verifyPolicy !== "skip") {
+    const { allPassed, results: verifyResults } = await runVerifyCommands(taskId, stageName, verifyCommands, worktreePath);
+    if (!allPassed && verifyPolicy === "must_pass") {
+      const failures = formatVerifyFailures(verifyResults);
+      return {
+        ...result,
+        resultText: result.resultText + `\n\n__VERIFY_FAILED__\n${failures}`,
+        verifyFailed: true,
+        verifyResults,
+      };
+    }
+  }
+
+  return result;
 }
 
 export async function runScript(

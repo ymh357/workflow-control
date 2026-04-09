@@ -88,6 +88,8 @@ export interface AgentResult {
   cwd?: string;
   tokenUsage?: StageTokenUsage;
   redFlags?: Array<{ category: string; description: string; matchedText: string; position: number }>;
+  verifyFailed?: boolean;
+  verifyResults?: Array<{ command: string; passed: boolean; exitCode: number; stdout: string; stderr: string; durationMs: number }>;
 }
 
 export class AgentError extends Error {
