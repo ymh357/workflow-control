@@ -1,0 +1,20 @@
+name: plan-then-execute
+version: 1.0.0
+type: pipeline
+description: >
+  Superpowers-inspired pipeline enforcing brainstorm -> plan -> execute -> verify flow.
+  Ensures design is approved before implementation begins and all work is verified before completion.
+author: workflow-control
+tags:
+  - planning
+  - execution
+  - verification
+  - superpowers
+engine_compat: claude
+files:
+  - pipeline.yaml
+  - prompts/global-constraints.md
+  - prompts/system/brainstorm.md
+  - prompts/system/write-plan.md
+  - prompts/system/execute-task.md
+  - prompts/system/verify-completion.md
