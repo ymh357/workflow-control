@@ -181,7 +181,11 @@ export function retryTask(
   if (snapAfterInterrupt.context.status !== "blocked") {
     return fail("INVALID_STATE", "Failed to interrupt task for retry");
   }
-  sendEvent(taskId, { type: "RETRY" });
+  if (opts?.fromStage) {
+    sendEvent(taskId, { type: "RETRY_FROM", fromStage: opts.fromStage });
+  } else {
+    sendEvent(taskId, { type: "RETRY" });
+  }
 
   return ok({ lastStage: ctx.lastStage, statusAfter: actor.getSnapshot().context.status });
 }

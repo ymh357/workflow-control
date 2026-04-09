@@ -6,10 +6,10 @@ import { buildTier1Context } from "../agent/context-builder.js";
 import { buildSystemAppendPrompt, buildStaticPromptPrefix } from "../agent/prompt-builder.js";
 import { extractJSON } from "../lib/json-extractor.js";
 import { sseManager } from "../sse/manager.js";
-import { getNestedValue, listAvailablePipelines, flattenStages } from "../lib/config-loader.js";
+import { getNestedValue, listAvailablePipelines, flattenStages, isParallelGroup } from "../lib/config-loader.js";
 import { TERMINAL_STATES } from "../machine/types.js";
 import type { WorkflowContext } from "../machine/types.js";
-import type { AgentRuntimeConfig, PipelineStageConfig, PipelineConfig, ForeachRuntimeConfig } from "../lib/config-loader.js";
+import type { AgentRuntimeConfig, PipelineStageConfig, PipelineConfig, PipelineStageEntry, ForeachRuntimeConfig } from "../lib/config-loader.js";
 import type { ConditionRuntimeConfig } from "../lib/config/types.js";
 import type { SSEMessage } from "../types/index.js";
 import { taskLogger } from "../lib/logger.js";
@@ -137,12 +137,28 @@ function validateStageOutput(
     return { valid: false, missing, reason: `Missing required output fields: ${missing.join(", ")}` };
   }
 
-  // Check downstream foreach dependencies
+  // Check downstream foreach dependencies (skip condition-gated stages)
   if (pipelineConfig?.stages) {
     const allStages = flattenStages(pipelineConfig.stages);
+
+    // Build set of stages behind non-default condition branches (may be skipped)
+    const conditionGated = new Set<string>();
+    for (const s of allStages) {
+      if (s.type === "condition" && s.runtime) {
+        const condRuntime = s.runtime as ConditionRuntimeConfig;
+        for (const branch of condRuntime.branches) {
+          if (!branch.default) {
+            conditionGated.add(branch.to);
+          }
+        }
+      }
+    }
+
     const currentIdx = allStages.findIndex((s) => s.name === stageConfig.name);
     for (let i = currentIdx + 1; i < allStages.length; i++) {
       const downstream = allStages[i];
+      // Skip foreach stages that are behind condition gates (may not execute)
+      if (conditionGated.has(downstream.name)) continue;
       if (downstream.type === "foreach" && downstream.runtime) {
         const foreachRuntime = downstream.runtime as ForeachRuntimeConfig;
         const itemsPath = foreachRuntime.items.startsWith("store.") ? foreachRuntime.items.slice(6) : foreachRuntime.items;
@@ -237,10 +253,8 @@ export function createEdgeMcpServer(): McpServer {
       taskToken: z.string().optional(),
     },
     async ({ taskId, stageName, taskToken }) => {
-      if (taskToken) {
-        const err = validateTaskToken(taskId, taskToken);
-        if (err) return textResult(JSON.stringify({ error: err }), true);
-      }
+      const authErr = validateTaskToken(taskId, taskToken);
+      if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
 
       const context = getTaskContext(taskId);
       if (!context) {
@@ -255,10 +269,13 @@ export function createEdgeMcpServer(): McpServer {
       const runtime = stageConf.runtime;
       const nonce = getSlotNonce(taskId, stageName);
 
+      const isAgent = runtime && "engine" in runtime && (runtime as AgentRuntimeConfig).engine === "llm";
+      const agentRuntime = isAgent ? runtime as AgentRuntimeConfig : undefined;
+
       const schema = {
         stageName,
-        writes: (runtime && "writes" in runtime) ? runtime.writes ?? [] : [],
-        reads: (runtime && "reads" in runtime) ? Object.keys(runtime.reads ?? {}) : [],
+        writes: agentRuntime?.writes ?? [],
+        reads: agentRuntime?.reads ? Object.keys(agentRuntime.reads) : [],
         outputSchema: stageConf.outputs ?? null,
         nonce: nonce ?? null,
       };
@@ -408,7 +425,7 @@ export function createEdgeMcpServer(): McpServer {
       });
       // Renew slot timeout on every progress report
       renewSlot(taskId, stageName);
-      return textResult(JSON.stringify({ ok: true, slotRenewed: true }));
+      return textResult(JSON.stringify({ ok: true }));
     },
   );
 
@@ -507,6 +524,16 @@ export function createEdgeMcpServer(): McpServer {
           for (const branch of condRuntime.branches) {
             if (!branch.default) {
               conditionGated.add(branch.to);
+            }
+          }
+        }
+      }
+      // Also mark stages inside condition-gated parallel groups
+      if (pipelineConfig?.stages) {
+        for (const entry of pipelineConfig.stages) {
+          if (isParallelGroup(entry) && conditionGated.has(entry.parallel.name)) {
+            for (const childStage of entry.parallel.stages) {
+              conditionGated.add(childStage.name);
             }
           }
         }
