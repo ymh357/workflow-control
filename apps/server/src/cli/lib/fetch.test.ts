@@ -149,18 +149,9 @@ describe("fetchManifest", () => {
     );
   });
 
-  it("handles package name with special characters in URL", async () => {
-    vi.mocked(fs.existsSync).mockReturnValue(false);
-    globalFetch.mockResolvedValue({
-      ok: true,
-      text: () => Promise.resolve('{"name":"@scope/pkg"}'),
-    });
-
-    await fetchManifest("@scope/pkg");
-
-    expect(globalFetch).toHaveBeenCalledWith(
-      "https://example.com/registry/packages/@scope/pkg/manifest.yaml",
-    );
+  it("rejects package name with special characters (path traversal guard)", async () => {
+    // Security hardening: package names containing "/" or ".." are rejected
+    await expect(fetchManifest("@scope/pkg")).rejects.toThrow("Invalid package name");
   });
 });
 

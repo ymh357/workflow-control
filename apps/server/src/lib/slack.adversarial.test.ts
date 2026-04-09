@@ -157,7 +157,7 @@ describe("notifyQuestionAsked adversarial", () => {
 });
 
 describe("notifyBlocked adversarial", () => {
-  it("error message with special characters is included verbatim", async () => {
+  it("error message with special characters is HTML-escaped for Slack mrkdwn", async () => {
     setupSlackConfig();
     fetchSpy.mockResolvedValue({
       ok: true,
@@ -168,8 +168,11 @@ describe("notifyBlocked adversarial", () => {
     await notifyBlocked("abcd1234-5678", "stage", dangerousError);
 
     const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
-    // No escaping is done - raw error is included
-    expect(body.text).toContain(dangerousError);
+    // escapeSlackMrkdwn replaces & < > with HTML entities
+    expect(body.text).toContain("&amp;");
+    expect(body.text).toContain("&lt;angle&gt;");
+    expect(body.text).not.toContain(" & ");
+    expect(body.text).not.toContain("<angle>");
   });
 });
 

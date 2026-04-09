@@ -86,7 +86,7 @@ describe("slack-app — adversarial", () => {
     expect(mockConfirmGate).toHaveBeenCalledWith("");
   });
 
-  it("gate_feedback_modal with malformed private_metadata throws but acks first", async () => {
+  it("gate_feedback_modal with malformed private_metadata is handled gracefully", async () => {
     await initApp();
 
     const viewArgs = {
@@ -98,12 +98,12 @@ describe("slack-app — adversarial", () => {
       client: { conversations: { history: vi.fn() }, chat: { update: vi.fn() } },
     };
 
-    await expect(viewHandlers.get("gate_feedback_modal")!(viewArgs)).rejects.toThrow();
-    // ack() is called before JSON.parse, so it should have been called
+    // After security hardening, malformed JSON is caught and the handler returns gracefully
+    await expect(viewHandlers.get("gate_feedback_modal")!(viewArgs)).resolves.not.toThrow();
     expect(viewArgs.ack).toHaveBeenCalled();
   });
 
-  it("answer_option_* with malformed JSON in action.value throws", async () => {
+  it("answer_option_* with malformed JSON in action.value is handled gracefully", async () => {
     await initApp();
 
     let optionHandler: Function | undefined;
@@ -115,8 +115,8 @@ describe("slack-app — adversarial", () => {
     }
 
     const args = makeArgs({ action: { value: "not json" } });
-    await expect(optionHandler!(args)).rejects.toThrow();
-    // ack should be called before parse
+    // After security hardening, malformed JSON is caught and the handler returns gracefully
+    await expect(optionHandler!(args)).resolves.not.toThrow();
     expect(args.ack).toHaveBeenCalled();
   });
 

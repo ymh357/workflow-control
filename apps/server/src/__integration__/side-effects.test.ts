@@ -309,7 +309,7 @@ describe("registerSideEffects", () => {
 
       expect(execFileMock).toHaveBeenCalledWith(
         "git",
-        ["worktree", "remove", "--force", "/tmp/wt-cleanup"],
+        ["worktree", "remove", "--force", "--", "/tmp/wt-cleanup"],
         { timeout: 30_000 },
         expect.any(Function),
       );

@@ -1093,7 +1093,7 @@ describe("deleteTask adversarial", () => {
     expect(mockCancelTask).toHaveBeenCalledWith("task-1");
     expect(mockExecFile).toHaveBeenCalledWith(
       "git",
-      ["worktree", "remove", "--force", "/tmp/task-1-wt"],
+      ["worktree", "remove", "--force", "--", "/tmp/task-1-wt"],
       { timeout: 30_000 },
       expect.any(Function),
     );
