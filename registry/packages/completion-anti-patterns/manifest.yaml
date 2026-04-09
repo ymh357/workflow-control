@@ -1,0 +1,11 @@
+name: completion-anti-patterns
+version: 1.0.0
+type: fragment
+description: Anti-patterns for task completion claims and verification requirements
+author: workflow-control
+tags:
+  - verification
+  - completion
+  - quality
+files:
+  - completion-anti-patterns.md
