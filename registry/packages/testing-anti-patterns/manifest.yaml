@@ -1,0 +1,11 @@
+name: testing-anti-patterns
+version: 1.0.0
+type: fragment
+description: Testing anti-patterns and red flags to avoid when writing tests
+author: workflow-control
+tags:
+  - testing
+  - anti-patterns
+  - quality
+files:
+  - testing-anti-patterns.md
