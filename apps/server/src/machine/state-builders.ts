@@ -9,7 +9,7 @@ import {
   handleStageError,
 } from "./helpers.js";
 import { taskLogger } from "../lib/logger.js";
-import type { AgentStageConfig, ScriptStageConfig, HumanGateRuntimeConfig, PipelineStageConfig, ConditionStageConfig, PipelineCallStageConfig, ForeachStageConfig } from "../lib/config-loader.js";
+import type { AgentStageConfig, AgentRuntimeConfig, ScriptStageConfig, HumanGateRuntimeConfig, PipelineStageConfig, ConditionStageConfig, PipelineCallStageConfig, ForeachStageConfig } from "../lib/config-loader.js";
 import { getNestedValue } from "../lib/config-loader.js";
 import { extractJSON } from "../lib/json-extractor.js";
 import { getStageBuilder } from "./stage-registry.js";
@@ -734,6 +734,19 @@ export function buildParallelGroupState(
   nextTarget: string,
   prevAgentTarget: string,
 ): StateNode {
+  for (const childStage of group.stages) {
+    if (childStage.type === "agent" && childStage.runtime) {
+      const runtime = childStage.runtime as AgentRuntimeConfig;
+      if (!runtime.reads || Object.keys(runtime.reads).length === 0) {
+        console.warn(
+          `[parallel-isolation] Stage "${childStage.name}" in parallel group "${group.name}" has no "reads" declaration. ` +
+          `In parallel execution, undeclared store access leads to race conditions. ` +
+          `Add explicit reads to ensure deterministic context injection.`
+        );
+      }
+    }
+  }
+
   const groupName = group.name;
   const regions: Record<string, StateNode> = {};
   const stageOpts = { blockedTarget: "#workflow.blocked", statePrefix: "#workflow" };
