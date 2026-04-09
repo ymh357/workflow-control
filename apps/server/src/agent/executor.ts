@@ -6,7 +6,8 @@ import { createWorktree, installDepsInWorktree, resolveRepoPath, initRepo } from
 import { join } from "node:path";
 import { taskLogger } from "../lib/logger.js";
 import { injectWorktreeConfig } from "../lib/worktree-injector.js";
-import { loadSystemSettings, getNestedValue, flattenStages, type AgentRuntimeConfig, type ScriptRuntimeConfig } from "../lib/config-loader.js";
+import { loadSystemSettings, getNestedValue, type AgentRuntimeConfig, type ScriptRuntimeConfig } from "../lib/config-loader.js";
+import { flattenStages } from "../lib/config/types.js";
 import type { WorkflowContext } from "../machine/types.js";
 import { buildTier1Context } from "./context-builder.js";
 import { type AgentResult } from "./query-tracker.js";
