@@ -113,7 +113,14 @@ async function buildStageContext(taskId: string, stageName: string): Promise<Rec
 // Pre-validate output against runtime.writes (same logic as state-builders.ts onDone guard).
 // All declared write fields must be present — matches the guard in state-builders.ts
 // which retries when any field is missing (!runtime.writes.every(field => parsed[field] !== undefined)).
-function validateStageOutput(resultText: string, writes: string[]): { valid: boolean; missing?: string[]; reason?: string } {
+function validateStageOutput(
+  stageConfig: PipelineStageConfig,
+  resultText: string,
+  pipelineConfig?: PipelineConfig,
+): { valid: true } | { valid: false; missing?: string[]; reason: string } {
+  const runtime = stageConfig.runtime as AgentRuntimeConfig | undefined;
+  const writes = runtime?.writes ?? [];
+
   if (writes.length === 0) return { valid: true };
   if (!resultText) return { valid: false, reason: "resultText is empty" };
 
@@ -128,6 +135,29 @@ function validateStageOutput(resultText: string, writes: string[]): { valid: boo
   const missing = writes.filter((field) => parsed[field] === undefined);
   if (missing.length > 0) {
     return { valid: false, missing, reason: `Missing required output fields: ${missing.join(", ")}` };
+  }
+
+  // Check downstream foreach dependencies
+  if (pipelineConfig?.stages) {
+    const allStages = flattenStages(pipelineConfig.stages);
+    const currentIdx = allStages.findIndex((s) => s.name === stageConfig.name);
+    for (let i = currentIdx + 1; i < allStages.length; i++) {
+      const downstream = allStages[i];
+      if (downstream.type === "foreach" && downstream.runtime) {
+        const foreachRuntime = downstream.runtime as ForeachRuntimeConfig;
+        const itemsPath = foreachRuntime.items.startsWith("store.") ? foreachRuntime.items.slice(6) : foreachRuntime.items;
+        const rootKey = itemsPath.split(".")[0];
+        if (writes.includes(rootKey)) {
+          const value = getNestedValue(parsed, itemsPath);
+          if (!Array.isArray(value)) {
+            return {
+              valid: false,
+              reason: `Downstream foreach stage "${downstream.name}" expects "${foreachRuntime.items}" to be an array, but got ${typeof value}. Fix the output to include this field as an array.`,
+            };
+          }
+        }
+      }
+    }
   }
 
   return { valid: true };
@@ -258,16 +288,18 @@ export function createEdgeMcpServer(): McpServer {
       const context = getTaskContext(taskId);
       if (context) {
         const stageConfig = findStageConfig(context, stageName);
-        const runtime = stageConfig?.runtime as AgentRuntimeConfig | undefined;
-        const writes = runtime?.writes ?? [];
-        const validation = validateStageOutput(resultText, writes);
-        if (!validation.valid) {
-          return textResult(JSON.stringify({
-            error: "Output validation failed",
-            reason: validation.reason,
-            missingFields: validation.missing,
-            expectedFields: writes,
-          }, null, 2), true);
+        if (stageConfig) {
+          const runtime = stageConfig.runtime as AgentRuntimeConfig | undefined;
+          const writes = runtime?.writes ?? [];
+          const validation = validateStageOutput(stageConfig, resultText, context.config?.pipeline);
+          if (!validation.valid) {
+            return textResult(JSON.stringify({
+              error: "Output validation failed",
+              reason: validation.reason,
+              missingFields: validation.missing,
+              expectedFields: writes,
+            }, null, 2), true);
+          }
         }
       }
 
@@ -535,11 +567,12 @@ export function createEdgeMcpServer(): McpServer {
       taskId: z.string().describe("The task ID"),
       taskToken: z.string().optional().describe("Task authentication token from trigger_task"),
       sync: z.boolean().optional().describe("Use sync retry mode (resumes same session) when available"),
+      fromStage: z.string().optional().describe("Stage name to retry from. If omitted, retries from the last failed stage."),
     },
-    async ({ taskId, taskToken, sync }) => {
+    async ({ taskId, taskToken, sync, fromStage }) => {
       const authErr = validateTaskToken(taskId, taskToken);
       if (authErr) return textResult(JSON.stringify({ error: authErr }), true);
-      const result = retryTask(taskId, { sync });
+      const result = retryTask(taskId, { sync, fromStage });
       if (!result.ok) return actionToTextResult(result);
 
       const { lastStage, statusAfter } = result.data;
