@@ -132,6 +132,17 @@ export interface SSEUserMessageMessage extends SSEMessage {
   data: { text: string };
 }
 
+export interface SSERedFlagMessage extends SSEMessage {
+  type: "agent_red_flag";
+  data: {
+    flags: Array<{
+      category: string;
+      description: string;
+      matched: string;
+    }>;
+  };
+}
+
 // --- Task Summary (used by task list SSE) ---
 
 export interface TaskSummary {
