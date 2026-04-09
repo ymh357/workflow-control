@@ -147,6 +147,8 @@ export interface PipelineStageConfig {
   verify_commands?: string[];
   verify_policy?: "must_pass" | "warn" | "skip";
   verify_max_retries?: number;
+  // Timeout in seconds for edge execution of this stage. Default: 1800 (30 min).
+  stage_timeout_sec?: number;
 }
 
 // Narrowed stage config types for type-safe builders

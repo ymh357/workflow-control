@@ -1,5 +1,6 @@
 import type { AgentResult } from "../agent/query-tracker.js";
 import type { AgentRuntimeConfig } from "../lib/config-loader.js";
+import { flattenStages } from "../lib/config/types.js";
 import type { WorkflowContext } from "../machine/types.js";
 import { sseManager } from "../sse/manager.js";
 import { createSlot } from "./registry.js";
@@ -19,7 +20,13 @@ export async function runEdgeAgent(
     resumeInfo?: { sessionId: string; feedback?: string; sync?: boolean };
   },
 ): Promise<AgentResult> {
-  const timeoutMs = DEFAULT_EDGE_TIMEOUT_MS;
+  const pipelineStages = input.context?.config?.pipeline?.stages;
+  const stageConf = pipelineStages
+    ? flattenStages(pipelineStages).find((s) => s.name === input.stageName)
+    : undefined;
+  const timeoutMs = stageConf?.stage_timeout_sec
+    ? stageConf.stage_timeout_sec * 1000
+    : DEFAULT_EDGE_TIMEOUT_MS;
 
   sseManager.pushMessage(taskId, {
     type: "status",
