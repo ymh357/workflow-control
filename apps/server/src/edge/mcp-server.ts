@@ -9,7 +9,7 @@ import { sseManager } from "../sse/manager.js";
 import { getNestedValue, listAvailablePipelines, flattenStages } from "../lib/config-loader.js";
 import { TERMINAL_STATES } from "../machine/types.js";
 import type { WorkflowContext } from "../machine/types.js";
-import type { AgentRuntimeConfig, PipelineStageConfig } from "../lib/config-loader.js";
+import type { AgentRuntimeConfig, PipelineStageConfig, PipelineConfig, ForeachRuntimeConfig } from "../lib/config-loader.js";
 import type { ConditionRuntimeConfig } from "../lib/config/types.js";
 import type { SSEMessage } from "../types/index.js";
 import { taskLogger } from "../lib/logger.js";
