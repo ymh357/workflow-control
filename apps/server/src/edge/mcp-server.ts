@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getAllSlots, hasSlot, getSlotNonce, resolveSlot, setPendingRecovery } from "./registry.js";
+import { getAllSlots, hasSlot, getSlotNonce, resolveSlot, setPendingRecovery, renewSlot } from "./registry.js";
 import { buildTier1Context } from "../agent/context-builder.js";
 import { buildSystemAppendPrompt, buildStaticPromptPrefix } from "../agent/prompt-builder.js";
 import { extractJSON } from "../lib/json-extractor.js";
@@ -374,7 +374,9 @@ export function createEdgeMcpServer(): McpServer {
         timestamp: new Date().toISOString(),
         data: data as SSEMessage["data"],
       });
-      return textResult(JSON.stringify({ ok: true }));
+      // Renew slot timeout on every progress report
+      renewSlot(taskId, stageName);
+      return textResult(JSON.stringify({ ok: true, slotRenewed: true }));
     },
   );
 
@@ -465,11 +467,30 @@ export function createEdgeMcpServer(): McpServer {
         })
         .map((s) => s.name);
 
+      // Identify condition-gated stages for transparency
+      const conditionGated = new Set<string>();
+      for (const s of stages) {
+        if (s.type === "condition" && s.runtime) {
+          const condRuntime = s.runtime as ConditionRuntimeConfig;
+          for (const branch of condRuntime.branches) {
+            if (!branch.default) {
+              conditionGated.add(branch.to);
+            }
+          }
+        }
+      }
+
+      const edgeStageDetails = edgeStages.map((name: string) => ({
+        name,
+        conditionGated: conditionGated.has(name),
+      }));
+
       return textResult(JSON.stringify({
         taskId,
         taskToken,
         pipeline,
         edgeStages,
+        edgeStageDetails,
       }, null, 2));
     },
   );
