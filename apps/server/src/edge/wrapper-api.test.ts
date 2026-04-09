@@ -37,13 +37,16 @@ vi.mock("../sse/manager.js", () => ({
 
 vi.mock("./registry.js", () => ({
   getTaskSlots: vi.fn(() => []),
+  getAllSlots: vi.fn(() => []),
   addSlotListener: vi.fn(() => () => {}),
   addTaskTerminationListener: vi.fn(() => () => {}),
 }));
 
 const mockGetAllWorkflows = vi.fn(() => new Map());
+const mockGetWorkflow = vi.fn();
 vi.mock("../machine/actor-registry.js", () => ({
   getAllWorkflows: () => mockGetAllWorkflows(),
+  getWorkflow: (...args: unknown[]) => mockGetWorkflow(...args),
 }));
 
 import { buildWrapperRoute } from "./wrapper-api.js";
@@ -69,6 +72,11 @@ describe("wrapper-api", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Auth middleware calls getWorkflow(taskId) — return a mock actor with no taskToken
+    // so middleware passes through without requiring X-Edge-Token header.
+    mockGetWorkflow.mockReturnValue({
+      getSnapshot: () => ({ context: {} }),
+    });
     app = new Hono();
     app.route("/api/edge", buildWrapperRoute());
   });
@@ -91,11 +99,11 @@ describe("wrapper-api", () => {
       expect(body.status).toBe("completed");
     });
 
-    it("should return done for blocked tasks", async () => {
+    it("should return waiting for blocked tasks (blocked is no longer terminal)", async () => {
       mockGetTaskContext.mockReturnValue(makeContext({ status: "blocked" }));
       const res = await app.request("/api/edge/task-1/next-stage");
       const body = await res.json();
-      expect(body.done).toBe(true);
+      expect(body.waiting).toBe(true);
       expect(body.status).toBe("blocked");
     });
 
