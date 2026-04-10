@@ -19,7 +19,8 @@ export function validatePipeline(
   knownMcps?: Set<string>,
 ): ValidationIssue[] {
   const promptKeys = new Set(Object.keys(state.prompts).map(normalizePromptKey));
-  return validatePipelineLogic(state.pipeline.stages as any, promptKeys, knownMcps);
+  const injected = Array.isArray((state.pipeline as any).injected_context) ? new Set((state.pipeline as any).injected_context as string[]) : undefined;
+  return validatePipelineLogic(state.pipeline.stages as any, promptKeys, knownMcps, injected);
 }
 
 export function getStageIssues(

@@ -15,6 +15,7 @@ interface StageRuntime {
   on_reject_to?: string;
   on_approve_to?: string;
   retry?: { max_retries?: number; back_to?: string };
+  exclusive_write_group?: string;
   [key: string]: unknown;
 }
 
@@ -54,10 +55,30 @@ export function validatePipelineLogic(
   stages: StageEntry[],
   promptKeys?: Set<string>,
   knownMcps?: Set<string>,
+  injectedStoreKeys?: Set<string>,
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const allWrites = new Map<string, number>();
+  const writeOriginStage = new Map<string, string>(); // write key → stage name that wrote it
+
+  // Pre-populate writes with externally injected store keys (e.g., from parent foreach reads)
+  if (injectedStoreKeys) {
+    for (const key of injectedStoreKeys) {
+      allWrites.set(key, -1);
+      writeOriginStage.set(key, "__injected__");
+    }
+  }
   const allStageNames = new Set<string>();
+
+  // Build stage-by-name map for cross-referencing (includes parallel group children)
+  const stageByName = new Map<string, StageConfig>();
+  for (const entry of stages) {
+    if (isParallelGroup(entry)) {
+      for (const s of entry.parallel.stages) stageByName.set(s.name, s);
+    } else {
+      stageByName.set((entry as StageConfig).name, entry as StageConfig);
+    }
+  }
 
   // Collect all names
   for (const entry of stages) {
@@ -147,13 +168,14 @@ export function validatePipelineLogic(
 
       // Validate individual child stages
       for (const s of group.stages) {
-        validateStage(s, i, allWrites, allStageNames, promptKeysNormalized, knownMcps, issues);
+        validateStage(s, i, allWrites, allStageNames, promptKeysNormalized, knownMcps, issues, stageByName, writeOriginStage);
       }
 
       // Track group writes
       for (const s of group.stages) {
         for (const w of s.runtime?.writes ?? []) {
           allWrites.set(w, i);
+          writeOriginStage.set(w, s.name);
         }
       }
 
@@ -162,20 +184,35 @@ export function validatePipelineLogic(
 
     // Regular stage
     const stage = entry as StageConfig;
-    validateStage(stage, i, allWrites, allStageNames, promptKeysNormalized, knownMcps, issues);
+
+    // Foreach item_var is self-referencing: the stage itself injects it for its own reads.
+    // Register before validateStage so reads check can find it.
+    if (stage.type === "foreach") {
+      const rt = stage.runtime as Record<string, unknown> | undefined;
+      const itemVar = rt?.item_var as string | undefined;
+      if (itemVar) {
+        allWrites.set(itemVar, i);
+        writeOriginStage.set(itemVar, stage.name);
+      }
+    }
+
+    validateStage(stage, i, allWrites, allStageNames, promptKeysNormalized, knownMcps, issues, stageByName, writeOriginStage);
 
     if (stage.runtime?.writes) {
       for (const w of stage.runtime.writes) {
         allWrites.set(w, i);
+        writeOriginStage.set(w, stage.name);
       }
     }
 
     // Foreach collect_to is an implicit write
     if (stage.type === "foreach") {
-      const collectTo = (stage.runtime as Record<string, unknown>)?.collect_to as string | undefined;
+      const rt = stage.runtime as Record<string, unknown> | undefined;
+      const collectTo = rt?.collect_to as string | undefined;
       if (collectTo) {
         const key = collectTo.startsWith("store.") ? collectTo.slice(6) : collectTo;
         allWrites.set(key, i);
+        writeOriginStage.set(key, stage.name);
       }
     }
 
@@ -193,6 +230,8 @@ function validateStage(
   promptKeysNormalized: Set<string> | undefined,
   knownMcps: Set<string> | undefined,
   issues: ValidationIssue[],
+  stageByName?: Map<string, StageConfig>,
+  writeOriginStage?: Map<string, string>,
 ): void {
   const runtime = stage.runtime;
 
@@ -248,11 +287,20 @@ function validateStage(
   if (runtime?.writes) {
     for (const w of runtime.writes) {
       if (allWrites.has(w)) {
+        // Skip warning if both stages declare the same exclusive_write_group
+        const prevStageName = writeOriginStage?.get(w);
+        const prevEntry = prevStageName ? stageByName?.get(prevStageName) : undefined;
+        const prevGroup = prevEntry?.runtime?.exclusive_write_group;
+        const curGroup = runtime.exclusive_write_group;
+        if (curGroup && prevGroup && curGroup === prevGroup) {
+          continue;
+        }
+        const prevEntryIndex = allWrites.get(w)!;
         issues.push({
           severity: "warning",
           stageIndex: entryIndex,
           field: "writes",
-          message: `"${w}" in "${stage.name}" also written by entry ${allWrites.get(w)! + 1}`,
+          message: `"${w}" in "${stage.name}" also written by entry ${prevEntryIndex + 1}`,
         });
       }
     }

@@ -226,7 +226,8 @@ async function generateSkeleton(description: string, engine: "claude" | "gemini"
       const validatedObj = validation.data!;
 
       // Logical validation (reads/writes consistency, routing targets, parallel rules)
-      const logicIssues = validatePipelineLogic(validatedObj.stages as any);
+      const injected = Array.isArray((validatedObj as any).injected_context) ? new Set((validatedObj as any).injected_context as string[]) : undefined;
+      const logicIssues = validatePipelineLogic(validatedObj.stages as any, undefined, undefined, injected);
       const logicErrors = getValidationErrors(logicIssues);
       if (logicErrors.length > 0) {
         const errMsg = logicErrors.map((e) => `${e.field ? `[${e.field}] ` : ""}${e.message}`).join("; ");

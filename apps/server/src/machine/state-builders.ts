@@ -651,7 +651,11 @@ export function buildConditionState(
           const expr = parser.parse(branch.when!);
           const safeStore = sanitizeExprVars(context.store);
           // expr-eval supports booleans at runtime but its type defs don't include boolean in Value
-          return !!expr.evaluate({ store: safeStore } as Record<string, any>);
+          return !!expr.evaluate({
+            store: safeStore,
+            contains: (arr: unknown, val: unknown) => Array.isArray(arr) && arr.includes(val),
+            hasAny: (arr: unknown, ...vals: unknown[]) => Array.isArray(arr) && vals.some((v) => arr.includes(v)),
+          } as Record<string, any>);
         } catch (err) {
           taskLogger(context.taskId).warn({ stage: stateName, when: branch.when, err }, "Condition branch expression evaluation failed");
           return false;

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-04-09T12:55:00.611Z",
+  "updated_at": "2026-04-10T14:47:50.631Z",
   "packages": [
     {
       "name": "completion-anti-patterns",
@@ -314,6 +314,45 @@
         "mixed"
       ],
       "engine_compat": "mixed"
+    },
+    {
+      "name": "tech-research",
+      "version": "1.0.0",
+      "type": "pipeline",
+      "description": "General-purpose technology research pipeline. Supports Web3 protocols, open-source tools, commercial products, technical concepts, and architecture decisions. Dynamically adapts research strategy, information sources, and verification methods based on subject type classification.\n",
+      "author": "workflow-control",
+      "tags": [
+        "research",
+        "technology",
+        "analysis",
+        "claude"
+      ],
+      "engine_compat": "claude"
+    },
+    {
+      "name": "tech-research-collector",
+      "version": "1.0.0",
+      "type": "pipeline",
+      "description": "Sub-pipeline for per-target primary source collection. Invoked by tech-research foreach.",
+      "author": "workflow-control",
+      "tags": [
+        "research",
+        "sub-pipeline"
+      ],
+      "engine_compat": "claude"
+    },
+    {
+      "name": "tech-research-writer",
+      "version": "1.0.0",
+      "type": "pipeline",
+      "description": "Sub-pipeline for writing individual tech research deliverables. Invoked by tech-research foreach.",
+      "author": "workflow-control",
+      "tags": [
+        "research",
+        "writing",
+        "sub-pipeline"
+      ],
+      "engine_compat": "claude"
     },
     {
       "name": "test-integration",

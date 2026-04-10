@@ -72,7 +72,8 @@ If validation fails, an error is thrown and nothing is written.
     // Logical validation (reads/writes consistency, routing targets, parallel rules)
     const parsedObj = parsed as { stages?: unknown[] };
     if (parsedObj.stages) {
-      const logicIssues = validatePipelineLogic(parsedObj.stages as any);
+      const injected = Array.isArray((parsed as any).injected_context) ? new Set((parsed as any).injected_context as string[]) : undefined;
+      const logicIssues = validatePipelineLogic(parsedObj.stages as any, undefined, undefined, injected);
       const errors = getValidationErrors(logicIssues);
       if (errors.length > 0) {
         const details = errors.map((e) => `${e.field ? `[${e.field}] ` : ""}${e.message}`);
