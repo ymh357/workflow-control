@@ -97,7 +97,7 @@ export async function executeStage(
     sseManager.pushMessage(taskId, createSSEMessage(taskId, "stage_change", { stage: stageName }));
   }
 
-  const effectiveTier1 = buildTier1Context(context, runtime);
+  const effectiveTier1 = buildTier1Context(context, runtime, undefined, stageName);
 
   // Absolute execution timeout for web mode
   const stageTimeoutSec = privateStage?.stage_timeout_sec ?? 1800;

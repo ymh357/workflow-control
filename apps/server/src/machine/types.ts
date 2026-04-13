@@ -4,6 +4,7 @@ import type { TokenUsage, StageTokenUsage } from "@workflow-control/shared";
 export interface StageCheckpoint {
   gitHead?: string;
   startedAt: string;
+  readsSnapshot?: Record<string, unknown>;
 }
 
 export interface WorkflowContext {

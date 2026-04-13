@@ -108,15 +108,34 @@ export function statusEntry(stateName: string): EmitAction[] {
       status: stateName,
       updatedAt: () => new Date().toISOString(),
     }),
-    assign(({ context }: { context: WorkflowContext }) => ({
-      stageCheckpoints: {
-        ...context.stageCheckpoints,
-        [stateName]: {
-          gitHead: getGitHead(context.worktreePath),
-          startedAt: new Date().toISOString(),
+    assign(({ context }: { context: WorkflowContext }) => {
+      // Capture readsSnapshot for incremental diff on resume
+      const stageConfig = context.config?.pipeline?.stages
+        ? flattenStages(context.config.pipeline.stages).find((s) => s.name === stateName)
+        : undefined;
+      const reads = (stageConfig?.runtime as { reads?: Record<string, string> } | undefined)?.reads;
+      let readsSnapshot: Record<string, unknown> | undefined;
+      if (reads) {
+        readsSnapshot = {};
+        for (const [, rawPath] of Object.entries(reads)) {
+          const storePath = rawPath.startsWith("store.") ? rawPath.slice(6) : rawPath;
+          const rootKey = storePath.split(".")[0];
+          if (context.store[rootKey] !== undefined) {
+            readsSnapshot[rootKey] = JSON.parse(JSON.stringify(context.store[rootKey]));
+          }
+        }
+      }
+      return {
+        stageCheckpoints: {
+          ...context.stageCheckpoints,
+          [stateName]: {
+            gitHead: getGitHead(context.worktreePath),
+            startedAt: new Date().toISOString(),
+            ...(readsSnapshot ? { readsSnapshot } : {}),
+          },
         },
-      },
-    })),
+      };
+    }),
     emitNotionSync(),
     emitStatus(stateName),
     emitTaskListUpdate(),

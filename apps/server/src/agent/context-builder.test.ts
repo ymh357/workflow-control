@@ -437,3 +437,101 @@ describe("buildTier1Context - semantic summary preference", () => {
     expect(result).toContain("[object] tasks, approach, details");
   });
 });
+
+describe("buildTier1Context - incremental diff on resume", () => {
+  it("shows unchanged for reads matching checkpoint", () => {
+    const ctx = makeContext({
+      store: {
+        requirements: { summary: "build a todo app" },
+        design: { architecture: "React + Node" },
+      },
+      resumeInfo: { sessionId: "sess-1", feedback: "fix the bug" },
+      stageCheckpoints: {
+        execute: {
+          startedAt: "2026-04-13T00:00:00Z",
+          readsSnapshot: {
+            requirements: { summary: "build a todo app" },
+            design: { architecture: "React + Node" },
+          },
+        },
+      },
+    });
+    const runtime = {
+      reads: { "Requirements": "requirements", "Design": "design" },
+    } as any;
+    const result = buildTier1Context(ctx, runtime, 8000, "execute");
+    expect(result).toContain("Unchanged since previous attempt");
+    expect(result).not.toContain("build a todo app");
+  });
+
+  it("shows full value when read changed since checkpoint", () => {
+    const ctx = makeContext({
+      store: {
+        requirements: { summary: "build a todo app v2" },
+        design: { architecture: "React + Node" },
+      },
+      resumeInfo: { sessionId: "sess-1", feedback: "fix the bug" },
+      stageCheckpoints: {
+        execute: {
+          startedAt: "2026-04-13T00:00:00Z",
+          readsSnapshot: {
+            requirements: { summary: "build a todo app" },
+            design: { architecture: "React + Node" },
+          },
+        },
+      },
+    });
+    const runtime = {
+      reads: { "Requirements": "requirements", "Design": "design" },
+    } as any;
+    const result = buildTier1Context(ctx, runtime, 8000, "execute");
+    expect(result).toContain("build a todo app v2");
+  });
+
+  it("shows full value when no checkpoint exists", () => {
+    const ctx = makeContext({
+      store: { requirements: { summary: "build a todo app" } },
+      resumeInfo: { sessionId: "sess-1" },
+    });
+    const runtime = { reads: { "Requirements": "requirements" } } as any;
+    const result = buildTier1Context(ctx, runtime, 8000, "execute");
+    expect(result).toContain("build a todo app");
+  });
+
+  it("shows full value when no currentStage provided", () => {
+    const ctx = makeContext({
+      store: { requirements: { summary: "build a todo app" } },
+      resumeInfo: { sessionId: "sess-1" },
+      stageCheckpoints: {
+        execute: {
+          startedAt: "2026-04-13T00:00:00Z",
+          readsSnapshot: {
+            requirements: { summary: "build a todo app" },
+          },
+        },
+      },
+    });
+    const runtime = { reads: { "Requirements": "requirements" } } as any;
+    const result = buildTier1Context(ctx, runtime, 8000);
+    expect(result).toContain("build a todo app");
+    expect(result).not.toContain("Unchanged");
+  });
+
+  it("shows full value when no resumeInfo", () => {
+    const ctx = makeContext({
+      store: { requirements: { summary: "build a todo app" } },
+      stageCheckpoints: {
+        execute: {
+          startedAt: "2026-04-13T00:00:00Z",
+          readsSnapshot: {
+            requirements: { summary: "build a todo app" },
+          },
+        },
+      },
+    });
+    const runtime = { reads: { "Requirements": "requirements" } } as any;
+    const result = buildTier1Context(ctx, runtime, 8000, "execute");
+    expect(result).toContain("build a todo app");
+    expect(result).not.toContain("Unchanged");
+  });
+});
