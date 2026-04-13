@@ -1,4 +1,5 @@
 import type { WebClient } from '@slack/web-api';
+import { formatSlackMessage } from './formatter.js';
 import { logger } from '../logger.js';
 import type { Config } from '../types.js';
 
@@ -44,20 +45,20 @@ export const createMessageUpdater = (
 
     try {
       if (!currentTs) {
-        currentTs = await postNewMessage(accumulated);
+        currentTs = await postNewMessage(formatSlackMessage(accumulated));
         lastUpdateTime = Date.now();
         messageIndex++;
       } else if (accumulated.length > config.maxMessageLength) {
         const splitPoint = accumulated.lastIndexOf('\n', config.maxMessageLength);
         const cutoff = splitPoint > 0 ? splitPoint : config.maxMessageLength;
 
-        await updateMessage(currentTs, accumulated.slice(0, cutoff));
+        await updateMessage(currentTs, formatSlackMessage(accumulated.slice(0, cutoff)));
         accumulated = accumulated.slice(cutoff);
-        currentTs = await postNewMessage(accumulated || '...');
+        currentTs = await postNewMessage(formatSlackMessage(accumulated) || '...');
         lastUpdateTime = Date.now();
         messageIndex++;
       } else {
-        await updateMessage(currentTs, accumulated);
+        await updateMessage(currentTs, formatSlackMessage(accumulated));
       }
     } catch (err) {
       logger.error({ err }, 'flushUpdate failed');
@@ -94,10 +95,11 @@ export const createMessageUpdater = (
 
       if (!accumulated && !currentTs) return;
 
+      const formatted = formatSlackMessage(accumulated);
       if (!currentTs) {
-        await postNewMessage(accumulated || '(empty response)');
+        await postNewMessage(formatted || '(empty response)');
       } else {
-        await updateMessage(currentTs, accumulated);
+        await updateMessage(currentTs, formatted);
       }
     },
   };
