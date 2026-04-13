@@ -789,9 +789,11 @@ describe("Parallel workflow integration", () => {
 
       await waitForStatus(actor, "blocked");
 
-      // Verify sibling data persists in store while blocked
+      // With transactional store (R4), sibling writes are staged, not committed,
+      // when the group is blocked. Verify data is in staging area, not in store.
       let ctx = actor.getSnapshot().context;
-      expect(ctx.store.techContext).toEqual({ libs: ["svelte"] });
+      expect(ctx.store.techContext).toBeUndefined();
+      expect(ctx.parallelStagedWrites?.techPrep).toEqual({ techContext: { libs: ["svelte"] } });
       expect(ctx.lastStage).toBe("apiReview");
 
       // RETRY: apiReview should re-run; techPrep should be skipped
