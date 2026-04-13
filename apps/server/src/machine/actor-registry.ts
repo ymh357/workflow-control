@@ -1,5 +1,6 @@
 import { createActor } from "xstate";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, unlinkSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { WorkflowContext, WorkflowEvent } from "./types.js";
 import { createWorkflowMachine } from "./machine.js";
 import { registerSideEffects } from "./side-effects.js";
@@ -10,7 +11,7 @@ import { cancelTask } from "../agent/query-tracker.js";
 import { taskLogger } from "../lib/logger.js";
 import { safeFire } from "../lib/safe-fire.js";
 import { taskListBroadcaster } from "../sse/task-list-broadcaster.js";
-import { loadPipelineConfig, flattenStages } from "../lib/config-loader.js";
+import { loadPipelineConfig, flattenStages, loadSystemSettings } from "../lib/config-loader.js";
 import { snapshotGlobalConfig } from "./workflow-lifecycle.js";
 
 // --- Types ---
@@ -167,6 +168,63 @@ export function deleteWorkflow(taskId: string): boolean {
   return true;
 }
 
+// --- Store Inheritance ---
+
+export function resolveInheritedStore(
+  pipelineName: string | undefined,
+  storePersistence: { inherit_from: string; inherit_keys: string[] | "*" } | undefined,
+): Record<string, any> {
+  if (!pipelineName || !storePersistence || storePersistence.inherit_from === "none") return {};
+
+  try {
+    const settings = loadSystemSettings();
+    const dataDir = settings.paths?.data_dir || "/tmp/workflow-control-data";
+    const tasksDir = join(dataDir, "tasks");
+
+    let files: string[];
+    try {
+      files = readdirSync(tasksDir).filter(f => f.endsWith(".json")).sort().reverse();
+    } catch {
+      return {};
+    }
+
+    for (const file of files) {
+      try {
+        const raw = JSON.parse(readFileSync(join(tasksDir, file), "utf-8"));
+        const snap = raw?.persistedSnapshot ?? raw;
+        const ctx = snap?.context;
+        if (!ctx || ctx.status !== "completed") continue;
+        if (ctx.config?.pipelineName !== pipelineName) continue;
+
+        const sourceStore = ctx.store ?? {};
+        if (storePersistence.inherit_keys === "*") return { ...sourceStore };
+
+        const inherited: Record<string, any> = {};
+        for (const key of storePersistence.inherit_keys) {
+          if (sourceStore[key] !== undefined) {
+            inherited[key] = sourceStore[key];
+            const summaryKey = `${key}.__semantic_summary`;
+            if (sourceStore[summaryKey] !== undefined) {
+              inherited[summaryKey] = sourceStore[summaryKey];
+            }
+            const mechanicalKey = `${key}.__summary`;
+            if (sourceStore[mechanicalKey] !== undefined) {
+              inherited[mechanicalKey] = sourceStore[mechanicalKey];
+            }
+          }
+        }
+        return inherited;
+      } catch {
+        continue;
+      }
+    }
+  } catch (err) {
+    taskLogger("system").warn({ err, pipelineName }, "Store inheritance scan failed");
+  }
+
+  return {};
+}
+
 // --- Task Creation ---
 
 export function createTaskDraft(
@@ -190,6 +248,12 @@ export function createTaskDraft(
     config.pipeline.default_execution_mode = "edge";
   }
 
+  const inherited = resolveInheritedStore(
+    pipelineName ?? config.pipelineName,
+    config.pipeline.store_persistence,
+  );
+  const mergedInitialStore = { ...inherited, ...(options?.initialStore ?? {}) };
+
   const machine = createWorkflowMachine(config.pipeline);
 
   const actor = createActor(machine, {
@@ -212,7 +276,7 @@ export function createTaskDraft(
     taskText,
     repoName,
     config,
-    initialStore: options?.initialStore,
+    initialStore: mergedInitialStore,
     worktreePath: options?.worktreePath,
     branch: options?.branch,
   });
