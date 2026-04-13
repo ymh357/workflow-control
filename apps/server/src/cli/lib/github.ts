@@ -8,7 +8,7 @@ const REGISTRY_REPO = process.env.OG_REGISTRY_REPO || "workflow-control-registry
 function gh(args: string[]): string {
   return execFileSync("gh", args, {
     encoding: "utf-8",
-    timeout: 30_000,
+    timeout: 60_000,
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
 }
@@ -72,7 +72,7 @@ async function uploadFile(
 
   execFileSync("gh", args, {
     encoding: "utf-8",
-    timeout: 30_000,
+    timeout: 60_000,
     stdio: ["ignore", "pipe", "pipe"],
   });
 }
