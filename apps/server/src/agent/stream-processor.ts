@@ -55,6 +55,20 @@ export async function processAgentStream(params: {
   };
   resetInactivityTimer();
 
+  const startTime = Date.now();
+  let lastToolUse: { name: string; timestamp: string } | undefined;
+
+  const heartbeatInterval = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_progress", {
+      phase: "heartbeat",
+      toolCallCount,
+      elapsedSeconds: elapsed,
+      lastToolName: lastToolUse?.name,
+      lastToolAt: lastToolUse?.timestamp,
+    }));
+  }, 30_000);
+
   try {
     for await (const message of agentQuery) {
       resetInactivityTimer();
@@ -91,6 +105,7 @@ export async function processAgentStream(params: {
               }));
             }
             if (block.type === "tool_use") {
+              lastToolUse = { name: block.name, timestamp: new Date().toISOString() };
               sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_tool_use", { toolName: block.name, input: block.input as Record<string, unknown> }));
               toolCallCount++;
               sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_progress", {
@@ -155,6 +170,7 @@ export async function processAgentStream(params: {
     throw err;
   } finally {
     clearTimeout(inactivityTimer);
+    clearInterval(heartbeatInterval);
     if (!handledResume) {
       unregisterQuery(taskId);
     }

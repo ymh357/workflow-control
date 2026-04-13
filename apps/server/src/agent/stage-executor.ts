@@ -99,6 +99,23 @@ export async function executeStage(
 
   const effectiveTier1 = buildTier1Context(context, runtime);
 
+  // Absolute execution timeout for web mode
+  const stageTimeoutSec = privateStage?.stage_timeout_sec ?? 1800;
+  const abortController = new AbortController();
+  const absoluteTimer = setTimeout(() => {
+    taskLogger(taskId, stageName).error({ timeoutSec: stageTimeoutSec }, "Stage absolute execution timeout reached");
+    abortController.abort(new Error(`Stage execution timeout after ${stageTimeoutSec}s`));
+  }, stageTimeoutSec * 1000);
+
+  const warningTimer = setTimeout(() => {
+    const remainingSec = Math.floor(stageTimeoutSec * 0.2);
+    sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_progress", {
+      phase: "timeout_approaching",
+      remainingSeconds: remainingSec,
+      message: `Stage will timeout in ${remainingSec}s`,
+    }));
+  }, stageTimeoutSec * 0.8 * 1000);
+
   // Check for previous checkpoint from interrupted execution
   const checkpoint = context.stageCheckpoints?.[stageName];
   const MAX_CHECKPOINT_CHARS = 4000;
@@ -217,6 +234,7 @@ export async function executeStage(
       outputFormat,
       agents: agentDefs,
       runtime,
+      abortSignal: abortController.signal,
     });
 
     agentQuery = query({ prompt: effectivePrompt, options: options as Parameters<typeof query>[0]["options"] }) as AgentQuery;
@@ -227,16 +245,22 @@ export async function executeStage(
     ? (agentQuery as any).effectiveCwd as string | undefined
     : cwd;
 
-  const result = await processAgentStream({
-    taskId,
-    stageName,
-    agentQuery,
-    resumeDepth: _resumeDepth,
-    onResume: ({ sessionId, resumePrompt: rp }) =>
-      executeStage(taskId, stageName, prompt, stagePrompt, {
-        ...stageOpts, resumeSessionId: sessionId, resumePrompt: rp, _resumeDepth: _resumeDepth + 1,
-      }),
-  });
+  let result: AgentResult;
+  try {
+    result = await processAgentStream({
+      taskId,
+      stageName,
+      agentQuery,
+      resumeDepth: _resumeDepth,
+      onResume: ({ sessionId, resumePrompt: rp }) =>
+        executeStage(taskId, stageName, prompt, stagePrompt, {
+          ...stageOpts, resumeSessionId: sessionId, resumePrompt: rp, _resumeDepth: _resumeDepth + 1,
+        }),
+    });
+  } finally {
+    clearTimeout(absoluteTimer);
+    clearTimeout(warningTimer);
+  }
 
   return { ...result, cwd: effectiveCwd || cwd };
 }

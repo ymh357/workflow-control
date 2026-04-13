@@ -51,6 +51,7 @@ export function buildQueryOptions(params: {
   outputFormat?: { type: "json_schema"; schema: Record<string, unknown> };
   agents?: Record<string, SubAgentDefinition>;
   runtime?: AgentRuntimeConfig;
+  abortSignal?: AbortSignal;
 }): Record<string, unknown> {
   const {
     taskId, stageName, appendPrompt, stageConfig, sandboxConfig,
@@ -92,6 +93,7 @@ export function buildQueryOptions(params: {
     ...(cwd ? { cwd } : {}),
     ...(resumeSessionId ? { resume: resumeSessionId } : {}),
     env: { ...buildChildEnv({ ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }), CLAUDECODE: "", CI: "true" },
+    ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
     ...sandboxOptions,
   };
 
