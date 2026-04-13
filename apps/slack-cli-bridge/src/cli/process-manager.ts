@@ -28,6 +28,42 @@ const buildEnv = (): NodeJS.ProcessEnv => {
   return env;
 };
 
+const summarizeToolInput = (name: string, input: Record<string, unknown>): string => {
+  switch (name) {
+    case 'Read':
+    case 'Write':
+      return String(input.file_path ?? '');
+    case 'Edit':
+      return String(input.file_path ?? '');
+    case 'Bash':
+      return truncate(String(input.command ?? ''), 200);
+    case 'Grep':
+      return `${input.pattern ?? ''} ${input.path ?? ''}`.trim();
+    case 'Glob':
+      return `${input.pattern ?? ''} ${input.path ?? ''}`.trim();
+    default: {
+      const s = JSON.stringify(input);
+      return truncate(s, 200);
+    }
+  }
+};
+
+const truncate = (s: string, max: number): string => {
+  if (s.length <= max) return s;
+  return s.slice(0, max) + '... (truncated)';
+};
+
+const summarizeToolResult = (content: unknown): string => {
+  if (typeof content === 'string') return truncate(content, 500);
+  if (Array.isArray(content)) {
+    const textParts = content
+      .filter((b: Record<string, unknown>) => b.type === 'text' && typeof b.text === 'string')
+      .map((b: Record<string, unknown>) => b.text as string);
+    return truncate(textParts.join('\n'), 500);
+  }
+  return truncate(JSON.stringify(content), 500);
+};
+
 export class ProcessManager {
   private processes = new Map<string, ManagedProcess>();
   private config: Config;
@@ -216,6 +252,23 @@ export class ProcessManager {
             logger.error({ err }, 'onEnd callback failed');
           });
         }
+        continue;
+      }
+
+      // Tool use event — show what tool is being called
+      if (event.type === 'tool_use' && managed.callbacks) {
+        const toolName = event.name as string ?? 'unknown';
+        const toolInput = (event.input as Record<string, unknown>) ?? {};
+        const summary = summarizeToolInput(toolName, toolInput);
+        managed.callbacks.onText(`\n> Tool: ${toolName} ${summary}\n`);
+        continue;
+      }
+
+      // Tool result event — show tool output summary
+      if (event.type === 'tool_result' && managed.callbacks) {
+        const content = event.content ?? event.output ?? '';
+        const summary = summarizeToolResult(content);
+        managed.callbacks.onText(`> Result: ${summary}\n\n`);
         continue;
       }
 
