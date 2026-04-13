@@ -12,6 +12,7 @@ import { clearTaskSlots, notifyTaskTerminated } from "../edge/registry.js";
 import { questionManager } from "../lib/question-manager.js";
 import { safeFire } from "../lib/safe-fire.js";
 import { taskLogger } from "../lib/logger.js";
+import { emitWorkflowEvent } from "./event-emitter.js";
 import path from "node:path";
 
 interface EmittingActor {
@@ -33,6 +34,13 @@ export function registerSideEffects(actor: EmittingActor): void {
       timestamp: new Date().toISOString(),
       data: { status: event.status, message: event.message },
     });
+    if (event.status === "completed") {
+      emitWorkflowEvent(event.taskId, "stage_completed", event.status);
+    } else if (event.status === "blocked" || event.status === "error") {
+      emitWorkflowEvent(event.taskId, "stage_failed", event.status, event.message ? { message: event.message } : undefined);
+    } else {
+      emitWorkflowEvent(event.taskId, "stage_started", event.status);
+    }
   });
 
   actor.on("wf.error", (event: Extract<WorkflowEmittedEvent, { type: "wf.error" }>) => {
@@ -50,6 +58,10 @@ export function registerSideEffects(actor: EmittingActor): void {
       taskId: event.taskId,
       timestamp: new Date().toISOString(),
       data: { totalCostUsd: event.totalCostUsd, stageCostUsd: event.stageCostUsd, stageTokenUsage: event.stageTokenUsage },
+    });
+    emitWorkflowEvent(event.taskId, "cost_update", undefined, {
+      totalCostUsd: event.totalCostUsd,
+      stageCostUsd: event.stageCostUsd,
     });
   });
 
@@ -71,6 +83,7 @@ export function registerSideEffects(actor: EmittingActor): void {
   actor.on("wf.slackBlocked", (event: Extract<WorkflowEmittedEvent, { type: "wf.slackBlocked" }>) => {
     safeFire(notifyBlocked(event.taskId, event.stage, event.error), event.taskId, "notifyBlocked failed");
     notifyTaskTerminated(event.taskId, "blocked");
+    emitWorkflowEvent(event.taskId, "stage_failed", event.stage, { error: event.error });
   });
 
   actor.on("wf.slackStageComplete", (event: Extract<WorkflowEmittedEvent, { type: "wf.slackStageComplete" }>) => {
@@ -110,6 +123,7 @@ export function registerSideEffects(actor: EmittingActor): void {
     cancelTask(event.taskId);
     clearTaskSlots(event.taskId);
     notifyTaskTerminated(event.taskId, "cancelled");
+    emitWorkflowEvent(event.taskId, "task_cancelled");
   });
 
   actor.on("wf.cancelQuestions", (event: Extract<WorkflowEmittedEvent, { type: "wf.cancelQuestions" }>) => {

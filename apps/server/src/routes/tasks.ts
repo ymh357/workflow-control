@@ -10,6 +10,7 @@ import { errorResponse, ErrorCode } from "../lib/error-response.js";
 import { sendMessage, interruptTask } from "../actions/task-actions.js";
 import { actionToResponse } from "./action-helpers.js";
 import { deriveCurrentStage, deriveUpdatedAt, isConfigEditable } from "../lib/task-view-helpers.js";
+import { loadEvents } from "../machine/workflow-events.js";
 
 export const tasksRoute = new Hono();
 
@@ -155,4 +156,11 @@ tasksRoute.get("/tasks/:taskId", async (c) => {
     completionSummary: summaryPath ? getNestedValue(ctx.store, summaryPath) : undefined,
     updatedAt: deriveUpdatedAt(ctx, pendingQuestion),
   });
+});
+
+// 6. Get task event timeline
+tasksRoute.get("/tasks/:taskId/events", (c) => {
+  const taskId = c.req.param("taskId");
+  const events = loadEvents(taskId);
+  return c.json({ taskId, events });
 });
