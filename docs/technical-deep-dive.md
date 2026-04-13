@@ -502,45 +502,37 @@ CCW 的 `content_ref` 模式值得借鉴: 工作流结构在 JSON 中, 执行内
 
 ---
 
-## 汇总: 优先级排序的改进建议
+## 汇总: 改进建议实施状态
 
-### P0 (高价值, 建议优先实施)
+### 已完成 (2026-04-13)
 
-| # | 改进 | 来源 | 复杂度 | 价值 |
-|---|------|------|--------|------|
-| 1 | **关键消息预写日志** -- CONFIRM/REJECT 处理前先持久化, 防崩溃丢失 | Temporal Signal | 低 | 高 |
-| 2 | **Checkpoint 链** -- 每 stage 完成生成带递增 ID 的 checkpoint, 支持精确恢复 | LangGraph Checkpointer | 中 | 高 |
-| 3 | **Stage 级 git checkpoint** -- 失败时 `git reset` 到 stage 开始的 commit (compensation) | Temporal Saga | 中 | 高 |
+| # | 改进 | 来源 | Commit |
+|---|------|------|--------|
+| 1+2+5 | **Workflow Event Log** -- 审计追踪 events.jsonl + API | Temporal + LangGraph | `9bc15b9` |
+| 3 | **Stage Git Checkpoint + Compensation** -- git_reset/git_stash on failure | Temporal Saga | `7a1d340` |
+| 7 | **writes merge strategy** -- append/merge/replace for parallel groups | LangGraph Channel | `42902dd` |
+| 8 | **子管道事件订阅替代轮询** -- actor.subscribe() | LangGraph 子图 | `d345a28` |
+| 9 | **LLM Decision Gate** -- 新 stage type, LLM 运行时动态路由 | CCW DecisionNode | `a7f6960` |
+| 13 | **可配置 max_attempts** -- 每 stage 独立控制重试次数 | Temporal RetryPolicy | `98e3bd4` |
 
-### P1 (中高价值, 第二批)
+### 已评估并推迟
 
-| # | 改进 | 来源 | 复杂度 | 价值 |
-|---|------|------|--------|------|
-| 4 | **分层超时** -- heartbeat_interval + execution_timeout + idle_timeout | Temporal 四层超时 | 中 | 高 |
-| 5 | **轻量级事件日志** -- 在快照模型上叠加关键决策事件, 支持审计 | Temporal Event Sourcing | 低 | 中 |
-| 6 | **Pipeline 配置版本校验** -- 恢复时检测 YAML 变更, 警告/拒绝不兼容恢复 | Temporal Versioning | 低 | 中 |
-| 7 | **writes merge strategy** -- 支持 append/merge, 解锁并行 stage 协同写入 | LangGraph Channel | 低 | 中 |
-| 8 | **子管道事件通知替代轮询** -- XState waitFor 替代 2s 轮询 | LangGraph 子图 | 中 | 中 |
+| # | 改进 | 原因 |
+|---|------|------|
+| 4 | 分层超时 (heartbeat) | 需要改 agent runner 执行循环, 架构改动大 |
+| 6 | Pipeline 配置版本校验 | 当前 fingerprint warn 已够用, 强制拒绝恢复可能造成数据丢失 |
+| 10+11 | 智能上下文 (动态 fragment + 跨 pipeline 记忆) | 需要 LLM 提取 + 向量搜索, 独立 session 实施 |
+| 12+16 | 并行执行 v2 (事务性 + DAG) | 大版本重构, 等基础稳定后启动 |
+| 14 | 进程内调度队列 | 单用户场景价值不高 |
 
-### P2 (中价值, 视需求实施)
+### 已评估并放弃
 
-| # | 改进 | 来源 | 复杂度 | 价值 |
-|---|------|------|--------|------|
-| 9 | **LLM Decision Gate** -- 新 stage type, LLM 运行时动态路由 | CCW DecisionNode | 中 | 中 |
-| 10 | **动态 fragment 选择** -- 基于热度/相关性运行时选择注入内容 | CCW Context-First | 高 | 中 |
-| 11 | **跨 pipeline 记忆** -- 完成后提取关键发现, 持久化供后续引用 | CCW Wisdom Accumulation | 高 | 中 |
-| 12 | **并行 group 事务性** -- 所有 stage 成功才 apply store 更新 | LangGraph superstep 事务 | 中 | 中 |
-| 13 | **指数退避重试** -- 可配置 backoff_factor + jitter | Temporal RetryPolicy | 低 | 低 |
-| 14 | **进程内优先队列** -- 多 pipeline 公平调度 + 并发控制 | Temporal Task Queue | 中 | 中 |
-
-### P3 (长期演进)
-
-| # | 改进 | 来源 | 复杂度 | 价值 |
-|---|------|------|--------|------|
-| 15 | **Reactive stage** -- 监听 store key 变更自动触发 (数据驱动) | LangGraph Pregel | 高 | 低 |
-| 16 | **DAG 调度** -- depends_on 字段, 从线性升级为 DAG | CCW Queue Scheduler | 高 | 中 |
-| 17 | **子 pipeline ParentClosePolicy** -- TERMINATE/ABANDON | Temporal Child Workflow | 中 | 低 |
-| 18 | **结构化搜索属性** -- dashboard 过滤/排序 | Temporal Visibility | 低 | 低 |
+| # | 改进 | 原因 |
+|---|------|------|
+| 13b | 指数退避 | XState actions 是同步的, 延迟需要中间 state, 成本过高 |
+| 15 | Reactive stage | 与 LLM Decision Gate 冲突, 且用例可通过现有 side-effects 覆盖 |
+| 17 | 子 pipeline ParentClosePolicy | 依赖 #8 完成 (已完成), 但实际需求不迫切 |
+| 18 | 结构化搜索属性 | dashboard 当前 task 量级不需要复杂查询 |
 
 ---
 
