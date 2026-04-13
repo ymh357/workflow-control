@@ -9,7 +9,7 @@ import {
   handleStageError,
 } from "./helpers.js";
 import { logger, taskLogger } from "../lib/logger.js";
-import type { AgentStageConfig, AgentRuntimeConfig, ScriptStageConfig, HumanGateRuntimeConfig, PipelineStageConfig, ConditionStageConfig, PipelineCallStageConfig, ForeachStageConfig } from "../lib/config-loader.js";
+import type { AgentStageConfig, AgentRuntimeConfig, ScriptStageConfig, HumanGateRuntimeConfig, PipelineStageConfig, ConditionStageConfig, PipelineCallStageConfig, ForeachStageConfig, LlmDecisionStageConfig } from "../lib/config-loader.js";
 import { getNestedValue } from "../lib/config-loader.js";
 import { extractJSON } from "../lib/json-extractor.js";
 import { getStageBuilder } from "./stage-registry.js";
@@ -831,6 +831,64 @@ export function buildForeachState(
         ],
       },
       onError: handleStageError(stateName, undefined, opts),
+    },
+  };
+}
+
+/**
+ * LLM Decision Stage: Invokes an LLM to choose which branch to take.
+ * Similar to condition stage but uses runtime LLM evaluation instead of static expressions.
+ */
+export function buildLlmDecisionState(
+  _nextTarget: string,
+  _prevAgentTarget: string,
+  stage: LlmDecisionStageConfig,
+  opts?: { blockedTarget?: string },
+): StateNode {
+  const stateName = stage.name;
+  const { runtime } = stage;
+  const allGotoTargets = runtime.choices.map((c) => c.goto);
+
+  return {
+    entry: statusEntry(stateName),
+    invoke: {
+      src: "runLlmDecision",
+      input: ({ context }: { context: WorkflowContext }) => ({
+        taskId: context.taskId,
+        stageName: stateName,
+        context,
+        runtime,
+      }),
+      onDone: runtime.choices.map((choice) => ({
+        target: choice.goto,
+        guard: ({ event }: { event: { output: { choiceId: string; goto: string } } }) =>
+          event.output.choiceId === choice.id,
+        actions: [
+          assign(({ context }: { context: WorkflowContext }) => {
+            const skippedTargets = allGotoTargets.filter((t) => t !== choice.goto);
+            const existingSkipped = new Set(context.skippedStages ?? []);
+            const newSkipped = skippedTargets.filter((t) => !existingSkipped.has(t));
+            return {
+              completedStages: [...(context.completedStages ?? []), stateName],
+              skippedStages: [...(context.skippedStages ?? []), ...newSkipped],
+              executionHistory: [
+                ...(context.executionHistory ?? []),
+                { stage: stateName, action: "completed" as const, timestamp: new Date().toISOString() },
+                ...newSkipped.map((t) => ({ stage: t, action: "skipped" as const, timestamp: new Date().toISOString() })),
+              ],
+            };
+          }),
+        ],
+      })),
+      onError: {
+        target: opts?.blockedTarget ?? "blocked",
+        actions: [
+          assign(({ event }: { event: { error: unknown } }) => ({
+            error: event.error instanceof Error ? event.error.message : String(event.error),
+            lastStage: stateName,
+          })),
+        ],
+      },
     },
   };
 }

@@ -5,7 +5,8 @@ import { runAgent, runScript } from "../agent/executor.js";
 import { runEdgeAgent } from "../edge/actor.js";
 import { runPipelineCall } from "../agent/pipeline-executor.js";
 import { runForeach } from "../agent/foreach-executor.js";
-import { type PipelineConfig, type AgentRuntimeConfig, type ScriptRuntimeConfig, type PipelineCallRuntimeConfig, type ForeachRuntimeConfig, getNestedValue, isParallelGroup, flattenStages } from "../lib/config-loader.js";
+import { runLlmDecision } from "../agent/decision-runner.js";
+import { type PipelineConfig, type AgentRuntimeConfig, type ScriptRuntimeConfig, type PipelineCallRuntimeConfig, type ForeachRuntimeConfig, type LlmDecisionRuntimeConfig, getNestedValue, isParallelGroup, flattenStages } from "../lib/config-loader.js";
 import {
   statusEntry, emitStatus, emitNotionSync, emitTaskListUpdate, emitPersistSession, loggedActor,
 } from "./helpers.js";
@@ -30,6 +31,8 @@ export const workflowSetup = setup({
       runPipelineCall(input.taskId, input)),
     runForeach: loggedActor("foreach", (input: { taskId: string; stageName: string; context: WorkflowContext; runtime: ForeachRuntimeConfig }) =>
       runForeach(input.taskId, input)),
+    runLlmDecision: loggedActor("llm-decision", (input: { taskId: string; stageName: string; context: WorkflowContext; runtime: LlmDecisionRuntimeConfig }) =>
+      runLlmDecision(input.taskId, input)),
   },
 });
 

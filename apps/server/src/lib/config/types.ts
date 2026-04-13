@@ -94,13 +94,28 @@ export interface ForeachRuntimeConfig {
   auto_commit?: boolean;
 }
 
+export interface LlmDecisionChoice {
+  id: string;
+  description: string;
+  goto: string;
+}
+
+export interface LlmDecisionRuntimeConfig {
+  engine: "llm_decision";
+  prompt: string;
+  reads?: Record<string, string>;
+  choices: LlmDecisionChoice[];
+  default_choice: string;  // must match one of choices[].id
+}
+
 export type StageRuntimeConfig =
   | AgentRuntimeConfig
   | ScriptRuntimeConfig
   | HumanGateRuntimeConfig
   | ConditionRuntimeConfig
   | PipelineCallRuntimeConfig
-  | ForeachRuntimeConfig;
+  | ForeachRuntimeConfig
+  | LlmDecisionRuntimeConfig;
 
 // --- Output Schema Types ---
 
@@ -124,7 +139,7 @@ export interface StageOutputSchema {
 
 export interface PipelineStageConfig {
   name: string;
-  type: "agent" | "script" | "human_confirm" | "condition" | "pipeline" | "foreach";
+  type: "agent" | "script" | "human_confirm" | "condition" | "pipeline" | "foreach" | "llm_decision";
   engine?: "claude" | "gemini" | "codex";
   model?: string;
   thinking?: { type: string };
@@ -160,6 +175,7 @@ export type HumanGateStageConfig = PipelineStageConfig & { runtime: HumanGateRun
 export type ConditionStageConfig = PipelineStageConfig & { runtime: ConditionRuntimeConfig };
 export type PipelineCallStageConfig = PipelineStageConfig & { runtime: PipelineCallRuntimeConfig };
 export type ForeachStageConfig = PipelineStageConfig & { runtime: ForeachRuntimeConfig };
+export type LlmDecisionStageConfig = PipelineStageConfig & { runtime: LlmDecisionRuntimeConfig };
 
 // --- Parallel Group ---
 

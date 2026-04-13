@@ -81,17 +81,27 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
     const entry = pipeline.stages[i];
     if (isParallelGroup(entry)) continue;
     const stage = entry as PipelineStageConfig;
-    if (stage.type !== "condition") continue;
+    if (stage.type !== "condition" && stage.type !== "llm_decision") continue;
 
     const condRuntime = stage.runtime as Record<string, any> | undefined;
-    const branches = condRuntime?.branches as Array<{ to: string }> | undefined;
-    if (!branches) continue;
+
+    // Extract branch targets: condition uses branches[].to, llm_decision uses choices[].goto
+    let branchTargetNames: string[];
+    if (stage.type === "condition") {
+      const branches = condRuntime?.branches as Array<{ to: string }> | undefined;
+      if (!branches) continue;
+      branchTargetNames = branches.map((b) => b.to);
+    } else {
+      const choices = condRuntime?.choices as Array<{ goto: string }> | undefined;
+      if (!choices) continue;
+      branchTargetNames = choices.map((c) => c.goto);
+    }
 
     const builtInStates = new Set(["completed", "error", "blocked"]);
     const explicitConvergeTo = condRuntime?.converge_to as string | undefined;
 
-    // Collect branch targets that are downstream stages (after the condition, not built-in)
-    const allBranchTargets = new Set(branches.map((b) => b.to).filter((t) => t && !builtInStates.has(t)));
+    // Collect branch targets that are downstream stages (after the branching stage, not built-in)
+    const allBranchTargets = new Set(branchTargetNames.filter((t) => t && !builtInStates.has(t)));
     if (allBranchTargets.size === 0) continue;
 
     // Only consider targets that appear in the contiguous sequence after the condition
@@ -249,6 +259,18 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
         }
       }
 
+      if (stage.type === "llm_decision") {
+        const decisionRuntime = stage.runtime as Record<string, any> | undefined;
+        const choices = decisionRuntime?.choices as Array<{ id: string; goto: string }> | undefined;
+        if (choices) {
+          for (const choice of choices) {
+            if (choice.goto && !validTargets.has(choice.goto)) {
+              errors.push(`Stage "${stage.name}": llm_decision choice "${choice.id}" goto "${choice.goto}" references non-existent state`);
+            }
+          }
+        }
+      }
+
       // Validate pipeline_name existence is deferred to runtime (config loader may not know all pipelines)
       // But we validate that pipeline/foreach stages have the required fields
       if (stage.type === "pipeline") {
@@ -372,7 +394,7 @@ export function derivePipelineLists(pipeline: PipelineConfig): { retryable: Task
         retryable.push(stage.name);
         resumable.push(stage.name);
       }
-      // condition stages are not retryable/resumable (they are instant transitions)
+      // condition and llm_decision stages are not retryable/resumable (branching stages)
     }
   }
 

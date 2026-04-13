@@ -32,7 +32,7 @@ function writeStrategy(w: WriteDeclaration): string {
 
 interface StageConfig {
   name: string;
-  type: "agent" | "script" | "human_confirm" | "condition" | "pipeline" | "foreach";
+  type: "agent" | "script" | "human_confirm" | "condition" | "pipeline" | "foreach" | "llm_decision";
   runtime?: StageRuntime;
   outputs?: Record<string, { type: string; fields?: { key: string }[]; hidden?: boolean }>;
   [key: string]: unknown;

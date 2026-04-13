@@ -118,6 +118,23 @@ export const ForeachRuntimeConfigSchema = z.object({
   auto_commit: z.boolean().optional(),
 });
 
+const LlmDecisionChoiceSchema = z.object({
+  id: z.string().min(1),
+  description: z.string().min(1),
+  goto: z.string().min(1),
+});
+
+export const LlmDecisionRuntimeConfigSchema = z.object({
+  engine: z.literal("llm_decision"),
+  prompt: z.string().min(1),
+  reads: z.record(z.string(), z.string()).optional(),
+  choices: z.array(LlmDecisionChoiceSchema).min(2, "Must have at least 2 choices"),
+  default_choice: z.string().min(1),
+}).refine(
+  (data) => data.choices.some(c => c.id === data.default_choice),
+  { message: "default_choice must match one of the choices[].id values" }
+);
+
 export const StageRuntimeConfigSchema = z.discriminatedUnion("engine", [
   AgentRuntimeConfigSchema,
   ScriptRuntimeConfigSchema,
@@ -125,6 +142,7 @@ export const StageRuntimeConfigSchema = z.discriminatedUnion("engine", [
   ConditionRuntimeConfigSchema,
   PipelineCallRuntimeConfigSchema,
   ForeachRuntimeConfigSchema,
+  LlmDecisionRuntimeConfigSchema,
 ]);
 
 // --- Output Schema ---
@@ -161,7 +179,7 @@ export const StageOutputSchemaSchema = z.record(
 
 export const PipelineStageConfigSchema = z.object({
   name: z.string(),
-  type: z.enum(["agent", "script", "human_confirm", "condition", "pipeline", "foreach"]),
+  type: z.enum(["agent", "script", "human_confirm", "condition", "pipeline", "foreach", "llm_decision"]),
   engine: z.enum(["claude", "gemini", "codex", "mixed"]).optional(),
   model: z.string().optional(),
   thinking: z.object({ type: z.string() }).optional(),

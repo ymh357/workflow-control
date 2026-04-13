@@ -1,6 +1,6 @@
 import type { StateNode } from "./state-builders.js";
-import type { PipelineStageConfig, AgentStageConfig, ScriptStageConfig, HumanGateRuntimeConfig, ConditionStageConfig, PipelineCallStageConfig, ForeachStageConfig } from "../lib/config-loader.js";
-import { buildAgentState, buildScriptState, buildHumanGateState, buildConditionState, buildPipelineCallState, buildForeachState } from "./state-builders.js";
+import type { PipelineStageConfig, AgentStageConfig, ScriptStageConfig, HumanGateRuntimeConfig, ConditionStageConfig, PipelineCallStageConfig, ForeachStageConfig, LlmDecisionStageConfig } from "../lib/config-loader.js";
+import { buildAgentState, buildScriptState, buildHumanGateState, buildConditionState, buildPipelineCallState, buildForeachState, buildLlmDecisionState } from "./state-builders.js";
 
 export type StageBuilderOpts = { blockedTarget?: string; statePrefix?: string; childToGroup?: Map<string, string> };
 
@@ -25,6 +25,9 @@ export function getStageBuilder(stage: PipelineStageConfig): ((nextTarget: strin
   }
   if (stage.type === "foreach" && stage.runtime?.engine === "foreach") {
     return (next, prev, cfg, opts) => buildForeachState(next, prev, cfg as ForeachStageConfig, opts);
+  }
+  if (stage.type === "llm_decision" && stage.runtime?.engine === "llm_decision") {
+    return (next, prev, cfg, opts) => buildLlmDecisionState(next, prev, cfg as LlmDecisionStageConfig, opts);
   }
   return null;
 }
