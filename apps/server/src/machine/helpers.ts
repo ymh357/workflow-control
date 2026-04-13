@@ -255,7 +255,7 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
           const stageConfig = allStages.find((s: any) => s.name === stateName);
           const compensation = stageConfig?.runtime?.compensation;
           if (compensation?.strategy && compensation.strategy !== "none") {
-            const meta = context.stageCheckpoints?.[stateName] as { gitHead?: string } | undefined;
+            const meta = context.stageCheckpoints?.[stateName];
             const result = runCompensation(compensation.strategy, meta?.gitHead, context.worktreePath);
             if (result.success) {
               taskLogger(context.taskId).info({ stage: stateName, strategy: compensation.strategy }, "compensation executed");

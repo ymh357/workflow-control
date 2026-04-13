@@ -30,6 +30,7 @@ export interface AgentRuntimeConfig {
   available_steps?: { key: string; label: string }[];
   agents?: Record<string, SubAgentDefinition>;
   disallowed_tools?: string[];
+  compensation?: { strategy: "git_reset" | "git_stash" | "none" };
   retry?: {
     max_retries?: number;
     back_to?: string;
@@ -43,6 +44,7 @@ export interface ScriptRuntimeConfig {
   args?: Record<string, unknown>;
   reads?: Record<string, string>;
   timeout_sec?: number;
+  compensation?: { strategy: "git_reset" | "git_stash" | "none" };
   retry?: {
     max_retries?: number;
     back_to?: string;

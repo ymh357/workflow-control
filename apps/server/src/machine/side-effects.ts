@@ -12,7 +12,7 @@ import { clearTaskSlots, notifyTaskTerminated } from "../edge/registry.js";
 import { questionManager } from "../lib/question-manager.js";
 import { safeFire } from "../lib/safe-fire.js";
 import { taskLogger } from "../lib/logger.js";
-import { emitWorkflowEvent } from "./event-emitter.js";
+import { emitWorkflowEvent, clearEventCounter } from "./event-emitter.js";
 import path from "node:path";
 
 interface EmittingActor {
@@ -36,7 +36,7 @@ export function registerSideEffects(actor: EmittingActor): void {
     });
     if (event.status === "completed") {
       emitWorkflowEvent(event.taskId, "stage_completed", event.status);
-    } else if (event.status === "blocked" || event.status === "error") {
+    } else if (event.status === "error") {
       emitWorkflowEvent(event.taskId, "stage_failed", event.status, event.message ? { message: event.message } : undefined);
     } else {
       emitWorkflowEvent(event.taskId, "stage_started", event.status);
@@ -68,6 +68,7 @@ export function registerSideEffects(actor: EmittingActor): void {
   actor.on("wf.streamClose", (event: Extract<WorkflowEmittedEvent, { type: "wf.streamClose" }>) => {
     sseManager.closeStream(event.taskId);
     notifyTaskTerminated(event.taskId, "completed or error");
+    clearEventCounter(event.taskId);
   });
 
   actor.on("wf.notionSync", (event: Extract<WorkflowEmittedEvent, { type: "wf.notionSync" }>) => {

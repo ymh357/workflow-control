@@ -1,6 +1,11 @@
 import type { PipelineConfig, FragmentMeta, SandboxConfig } from "../lib/config-loader.js";
 import type { TokenUsage, StageTokenUsage } from "@workflow-control/shared";
 
+export interface StageCheckpoint {
+  gitHead?: string;
+  startedAt: string;
+}
+
 export interface WorkflowContext {
   taskId: string;
   taskText?: string;
@@ -23,7 +28,7 @@ export interface WorkflowContext {
   stageTokenUsages?: Record<string, StageTokenUsage>;
   stageSessionIds: Record<string, string>;
   stageCwds?: Record<string, string>;
-  stageCheckpoints?: Record<string, unknown>;
+  stageCheckpoints?: Record<string, StageCheckpoint>;
   parallelDone?: Record<string, string[]>;
   completedStages?: string[];
   skippedStages?: string[];

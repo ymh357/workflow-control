@@ -52,6 +52,9 @@ export const AgentRuntimeConfigSchema = z.object({
     .optional(),
   agents: z.record(z.string(), SubAgentDefinitionSchema).optional(),
   disallowed_tools: z.array(z.string()).optional(),
+  compensation: z.object({
+    strategy: z.enum(["git_reset", "git_stash", "none"]),
+  }).optional(),
   retry: RetrySchema.optional(),
 });
 
@@ -62,6 +65,9 @@ export const ScriptRuntimeConfigSchema = z.object({
   args: z.record(z.string(), z.unknown()).optional(),
   reads: z.record(z.string(), z.string()).optional(),
   timeout_sec: z.number().optional(),
+  compensation: z.object({
+    strategy: z.enum(["git_reset", "git_stash", "none"]),
+  }).optional(),
   retry: RetrySchema.optional(),
 });
 

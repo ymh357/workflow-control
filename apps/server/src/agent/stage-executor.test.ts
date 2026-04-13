@@ -336,7 +336,7 @@ describe("executeStage - checkpoint injection", () => {
   it("injects checkpoint context when stageCheckpoints has data for the stage", async () => {
     const ctx = makeContext({
       stageCheckpoints: {
-        build: { partialResult: "started implementing feature X" },
+        build: { gitHead: "abc123", startedAt: "2024-01-01T00:00:00Z" },
       },
     });
     await executeStage("task-1", "build", "do stuff", "stage-prompt", {

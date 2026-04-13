@@ -259,7 +259,7 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
                   const stageConfig = allStages.find((st: any) => st.name === s);
                   const compensation = stageConfig?.runtime?.compensation;
                   if (compensation?.strategy && compensation.strategy !== "none") {
-                    const meta = context.stageCheckpoints?.[s] as { gitHead?: string } | undefined;
+                    const meta = context.stageCheckpoints?.[s];
                     if (meta?.gitHead) {
                       const result = runCompensation(compensation.strategy, meta.gitHead, context.worktreePath);
                       taskLogger(context.taskId).info(

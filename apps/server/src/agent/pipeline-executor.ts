@@ -103,7 +103,7 @@ export async function runPipelineCall(
           }
         }
         resolve(updates);
-      } else if (status === "error" || status === "cancelled") {
+      } else if (status === "error" || status === "cancelled" || status === "blocked") {
         settled = true;
         clearTimeout(timeout);
         sub?.unsubscribe();

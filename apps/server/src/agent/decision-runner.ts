@@ -63,10 +63,12 @@ export async function runLlmDecision(
       .trim()
       .toLowerCase();
 
-    // Match response to a valid choice
-    const matched = runtime.choices.find(
-      (c) => responseText === c.id.toLowerCase() || responseText.includes(c.id.toLowerCase()),
-    );
+    // Exact match first
+    const exactMatch = runtime.choices.find((c) => responseText === c.id.toLowerCase());
+    // Substring match with longest-first to avoid short ID matching inside longer IDs
+    const sorted = [...runtime.choices].sort((a, b) => b.id.length - a.id.length);
+    const substringMatch = sorted.find((c) => responseText.includes(c.id.toLowerCase()));
+    const matched = exactMatch ?? substringMatch;
 
     if (matched) {
       log.info({ stage: stageName, choiceId: matched.id, goto: matched.goto }, "LLM decision resolved");

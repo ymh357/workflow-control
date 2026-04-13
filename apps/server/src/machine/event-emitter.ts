@@ -29,3 +29,7 @@ export async function emitWorkflowEvent(
     ...(payload !== undefined && { payload }),
   });
 }
+
+export function clearEventCounter(taskId: string): void {
+  counters.delete(taskId);
+}
