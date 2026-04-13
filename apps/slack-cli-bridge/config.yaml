@@ -1,5 +1,3 @@
-defaultCli: claude
-
 defaultCwd: ~/workflow-control
 
 # Maximum file download size in bytes (50MB)

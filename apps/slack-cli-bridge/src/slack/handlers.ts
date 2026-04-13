@@ -3,8 +3,6 @@ import type { WebClient } from '@slack/web-api';
 import { logger } from '../logger.js';
 import { loadConfig } from '../config.js';
 import type { ParsedMessage } from '../types.js';
-import { createGeminiAdapter } from '../cli/gemini.js';
-import { runCli } from '../cli/runner.js';
 import { ProcessManager } from '../cli/process-manager.js';
 import { createMessageUpdater } from './message-updater.js';
 import { downloadFiles, cleanupFiles } from './file-handler.js';
@@ -36,18 +34,11 @@ const isAllowed = (userId: string): boolean => {
 };
 
 const parseMessage = (text: string): ParsedMessage => {
-  let cli: ParsedMessage['cli'] = null;
   let cwd: ParsedMessage['cwd'] = null;
   let prompt = text;
 
   if (botUserId) {
     prompt = prompt.replace(new RegExp(`<@${botUserId}>`, 'g'), '').trim();
-  }
-
-  const cliMatch = prompt.match(/^@(claude|gemini)\s+/i);
-  if (cliMatch) {
-    cli = cliMatch[1].toLowerCase() as 'claude' | 'gemini';
-    prompt = prompt.slice(cliMatch[0].length);
   }
 
   const cwdMatch = prompt.match(/--cwd\s+(\S+)\s*/);
@@ -56,7 +47,7 @@ const parseMessage = (text: string): ParsedMessage => {
     prompt = prompt.replace(cwdMatch[0], '').trim();
   }
 
-  return { cli, cwd, prompt };
+  return { cwd, prompt };
 };
 
 export const handleMessage = async (
@@ -86,15 +77,14 @@ export const handleMessage = async (
   const parsed = parseMessage(text);
   if (!parsed.prompt.trim()) return;
 
-  logger.info({ channel, threadTs, cli: parsed.cli, prompt: parsed.prompt.slice(0, 100) }, 'Processing message');
+  logger.info({ channel, threadTs, prompt: parsed.prompt.slice(0, 100) }, 'Processing message');
 
   const existingSession = getSession(threadTs);
-  const cli = parsed.cli ?? existingSession?.cli ?? config.defaultCli;
   const cwd = parsed.cwd ?? existingSession?.cwd ?? config.defaultCwd;
   const sessionId = existingSession?.sessionId;
 
   if (!existingSession) {
-    createSession({ threadTs, channel, cli, cwd });
+    createSession({ threadTs, channel, cwd });
   }
 
   // Handle file attachments
@@ -152,10 +142,5 @@ export const handleMessage = async (
     },
   };
 
-  if (cli === 'claude') {
-    await processManager.sendMessage(threadTs, fullPrompt, sessionId, cwd, callbacks);
-  } else {
-    const adapter = createGeminiAdapter();
-    runCli({ adapter, prompt: fullPrompt, sessionId, cwd, ...callbacks });
-  }
+  await processManager.sendMessage(threadTs, fullPrompt, sessionId, cwd, callbacks);
 };

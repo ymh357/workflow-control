@@ -16,7 +16,6 @@ export const loadConfig = (): Config => {
   const parsed = parse(raw);
 
   cached = {
-    defaultCli: parsed.defaultCli ?? 'claude',
     defaultCwd: parsed.defaultCwd?.replace(/^~/, process.env.HOME ?? '') ?? process.cwd(),
     maxFileSize: parsed.maxFileSize ?? 52428800,
     sessionTtlHours: parsed.sessionTtlHours ?? 24,

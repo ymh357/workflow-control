@@ -1,5 +1,4 @@
 export interface Config {
-  defaultCli: 'claude' | 'gemini';
   defaultCwd: string;
   maxFileSize: number;
   sessionTtlHours: number;
@@ -10,7 +9,6 @@ export interface Config {
 export interface Session {
   threadTs: string;
   channel: string;
-  cli: 'claude' | 'gemini';
   cwd: string;
   sessionId?: string;
   createdAt: number;
@@ -21,14 +19,6 @@ export interface SessionStore {
 }
 
 export interface ParsedMessage {
-  cli: 'claude' | 'gemini' | null;
   cwd: string | null;
   prompt: string;
-}
-
-export interface CliAdapter {
-  name: string;
-  command: string;
-  buildArgs(params: { prompt: string; sessionId?: string }): string[];
-  extractSessionId(output: string): string | undefined;
 }

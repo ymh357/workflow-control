@@ -34,7 +34,6 @@ export const getSession = (threadTs: string): Session | undefined => {
 export const createSession = (params: {
   threadTs: string;
   channel: string;
-  cli: 'claude' | 'gemini';
   cwd: string;
 }): Session => {
   const session: Session = {
