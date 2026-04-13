@@ -12,219 +12,160 @@ This document covers the 5 remaining improvements that were deferred during the 
 
 | # | Feature | Priority | Est. Files | Dependency |
 |---|---------|----------|-----------|------------|
-| R1 | Intelligent Context: Cross-Pipeline Memory | High | 6 new + 3 modify | None |
-| R2 | Intelligent Context: Dynamic Fragment Selection | High | 2 modify | R1 |
+| R1 | Store Inheritance + Semantic Summary | High | 4 modify + 1 new | None |
+| R2 | Incremental Context Diff on Resume | High | 1 modify | R1 recommended |
 | R3 | Stage Execution Timeout + Heartbeat | High | 4 modify + 1 new | None |
 | R4 | Parallel Group Transactional Store | Medium | 2 modify | None |
 | R5 | DAG Scheduling (depends_on) | Medium | 3 modify | R4 recommended |
 
 Recommended execution order: R1 → R2 → R3 → R4 → R5
 
+### Design Philosophy: Store IS the Memory
+
+Competitive analysis revealed that CrewAI (4-layer memory + RAG), Mastra (observation compression), and CCW (wisdom accumulation) all build separate memory layers on top of their execution engines. But Workflow Control already has the most efficient session-to-session context transfer mechanism: **the store itself**.
+
+Each stage's `reads` declares exactly what context it needs; `writes` declares what it produces. This is zero-noise, declarative, structured memory -- superior to vector search or LLM-extracted discoveries for the pipeline orchestration use case.
+
+The real gaps are:
+1. **Store doesn't persist across pipeline runs** (each run starts from empty)
+2. **Resume injects full context** even when 99% hasn't changed since last attempt  
+3. **Large store values have no semantic compression** (only mechanical `__summary` for >8KB values)
+
+The improvements below address these three gaps by enhancing the existing store + reads/writes mechanism, NOT by adding a new memory layer.
+
 ---
 
-## R1: Cross-Pipeline Memory (Production Side)
+## R1: Store Inheritance + Semantic Summary
 
 ### Problem
 
-Every pipeline run starts from zero context. The 100th run of `linear-dev-cycle` injects the exact same fragments as the 1st. Project-specific patterns discovered during execution (naming conventions, preferred libraries, architectural decisions, common failure modes) are lost when the pipeline completes.
+Every pipeline run starts with an empty store. The 100th run of `linear-dev-cycle` on the same project has zero context from the previous 99 runs. Meanwhile, the completed tasks' snapshots sit on disk with fully structured store data.
+
+Additionally, store values passed between stages have no semantic compression. A `plan` with 15KB of markdown is passed wholesale to the `execute` stage's tier-1 context, even though the agent only needs "5 tasks, currently on task 3".
 
 ### Design
 
-**Memory extraction pipeline**: After a pipeline completes, a lightweight LLM call extracts key discoveries from the execution history and agent outputs, appending them to a persistent memory store.
+**1. Store Inheritance**
 
-**Data model**:
+New pipeline-level YAML config:
 
-```
-{projectRoot}/.workflow/memory/
-  discoveries.jsonl          # append-only, one discovery per line
-  entity-stats.json          # file/module access frequency across runs
-```
-
-**Discovery schema**:
-
-```typescript
-interface Discovery {
-  id: string;                    // ulid or similar
-  pipelineName: string;
-  taskId: string;
-  extractedAt: string;           // ISO timestamp
-  category: "pattern" | "convention" | "decision" | "failure_mode" | "dependency";
-  content: string;               // 1-3 sentences
-  relevance: string[];           // keywords for matching (e.g., ["testing", "vitest"])
-  confidence: number;            // 0-1, LLM self-assessed
-}
+```yaml
+store_persistence:
+  inherit_from: last_completed       # "last_completed" | "none" (default)
+  inherit_keys:                      # which keys to carry forward
+    - requirements
+    - design  
+    - conventions
+  # Or: inherit_keys: "*" for all keys
 ```
 
-**Entity stats schema**:
+When a new task launches with `inherit_from: last_completed`:
+1. Scan `{dataDir}/tasks/` for the most recent completed task using the same `pipelineName`
+2. Load that task's snapshot
+3. Extract the declared `inherit_keys` from its `store`
+4. Merge into the new task's initial store (before first stage runs)
 
-```typescript
-interface EntityStats {
-  entities: Record<string, {
-    type: "file" | "module" | "api" | "pattern";
-    accessCount: number;
-    lastAccessed: string;
-    stages: string[];            // which stages accessed this entity
-  }>;
-}
+This is implemented in `actor-registry.ts` `createTaskDraft()`, which already accepts an `initialStore` parameter. The inheritance simply pre-populates it.
+
+**2. Semantic Summary (per-write)**
+
+New optional field on writes declarations:
+
+```yaml
+stages:
+  - name: plan
+    runtime:
+      writes:
+        - key: tasks
+          summary_prompt: "Summarize: how many tasks, what's the overall approach, current progress"
+        - key: design          # no summary_prompt = no semantic summary
 ```
 
-**Extraction trigger**: Register a new side-effect handler for `wf.slackCompleted` (already exists, just extend). After completion notification, fire async extraction:
+When a stage completes and writes a value with `summary_prompt`:
+1. After the value is merged into store
+2. Call Anthropic Haiku with `{summary_prompt}\n\nContent:\n{value_truncated_to_4000_chars}`
+3. Store the result as `store.{key}.__semantic_summary`
+4. Downstream stages' `buildTier1Context` uses `__semantic_summary` when the full value exceeds the token budget, instead of the mechanical field-name-list `__summary`
 
-```typescript
-// New file: apps/server/src/agent/memory-extractor.ts
+This replaces the current `__summary` mechanism (which just lists field names + char count) with an LLM-generated semantic compression. The LLM call is async and non-blocking -- if it fails, tier-1 falls back to the existing `__summary` or truncated preview.
 
-export async function extractMemory(taskId: string, context: WorkflowContext): Promise<void> {
-  // 1. Collect inputs for extraction:
-  //    - context.executionHistory (what stages ran)
-  //    - context.store (all stage outputs)
-  //    - context.stageTokenUsages (cost data)
-  //    - events.jsonl for this task (decision timeline)
-
-  // 2. Build extraction prompt:
-  //    "Given this pipeline execution, extract 3-5 key discoveries..."
-  //    Include: stage outputs (truncated), error history, retry patterns
-
-  // 3. Call Anthropic API with haiku/sonnet (cost-efficient):
-  //    - model: claude-haiku-4-5-20251001
-  //    - max_tokens: 500
-  //    - Structured output: array of Discovery objects
-
-  // 4. Append discoveries to .workflow/memory/discoveries.jsonl
-
-  // 5. Update entity stats:
-  //    - Parse store keys to identify files/modules referenced
-  //    - Increment access counts in entity-stats.json
-}
-```
-
-**Entity tracking**: During stage execution, track which files the agent reads/writes. The stream processor already emits `agent_tool_use` events with tool names like `Read`, `Edit`, `Glob`. Parse these to build entity access patterns:
-
-```typescript
-// In stream-processor.ts, within the message iteration loop:
-// When tool_use is "Read" or "Edit", extract file path from input
-// Accumulate in a per-stage file access set
-// After stage completes, pass to entity tracker
-```
-
-**Integration with side-effects.ts**:
-
-```typescript
-actor.on("wf.slackCompleted", (event) => {
-  // existing notification code...
-  
-  // Async memory extraction (fire-and-forget)
-  const actor = getWorkflow(event.taskId);
-  if (actor) {
-    const context = actor.getSnapshot().context;
-    extractMemory(event.taskId, context).catch(err => {
-      taskLogger(event.taskId).warn({ err }, "memory extraction failed (non-blocking)");
-    });
-  }
-});
-```
+**Cost control**: Only runs when `summary_prompt` is explicitly declared. Uses Haiku (cheapest model, ~$0.001 per summary). Cached in store -- regenerated only when the source value changes.
 
 ### Files
 
 | File | Action | Description |
 |------|--------|-------------|
-| `apps/server/src/agent/memory-extractor.ts` | Create | Core extraction logic + Anthropic API call |
-| `apps/server/src/agent/memory-store.ts` | Create | Read/write discoveries.jsonl + entity-stats.json |
-| `apps/server/src/agent/memory-extractor.test.ts` | Create | Tests with mocked LLM responses |
-| `apps/server/src/agent/memory-store.test.ts` | Create | JSONL append/read + entity stats CRUD |
-| `apps/server/src/machine/side-effects.ts` | Modify | Wire extraction on pipeline completion |
-| `apps/server/src/agent/stream-processor.ts` | Modify | Track file access entities during execution |
+| `apps/server/src/machine/actor-registry.ts` | Modify | `createTaskDraft`: load and merge inherited store |
+| `apps/server/src/machine/state-builders.ts` | Modify | After store write, trigger semantic summary if configured |
+| `apps/server/src/agent/semantic-summary.ts` | Create | LLM-based summary generation (Haiku call) |
+| `apps/server/src/agent/context-builder.ts` | Modify | Prefer `__semantic_summary` over `__summary` in tier-1 |
+| `apps/server/src/lib/config/types.ts` | Modify | Add `summary_prompt` to WriteDeclaration |
 
 ### Edge Cases
 
-- **First run**: discoveries.jsonl doesn't exist yet, created on first write
-- **Extraction failure**: LLM call fails silently, logged as warning, no impact on pipeline
-- **Large stores**: Extraction prompt truncates store values to 2000 chars per key
-- **Concurrent pipelines**: JSONL append is safe for concurrent writes on same file
-- **Memory growth**: Add configurable retention (default: last 100 discoveries, FIFO eviction)
+- **First run**: No previous completed task exists, inheritance skipped silently
+- **Store key conflict**: Inherited keys are overwritten by stage writes (current run takes priority)
+- **Summary generation failure**: Falls back to existing `__summary` mechanism
+- **Sub-pipelines**: Do not inherit from parent pipeline's history (they have their own lifecycle)
+- **Foreach items**: Individual items do not trigger semantic summary (only the collected result does)
 
 ---
 
-## R2: Dynamic Fragment Selection (Consumption Side)
+## R2: Incremental Context Diff on Resume
 
 ### Problem
 
-Fragments are currently matched by static keywords declared in YAML frontmatter. A fragment about "vitest testing patterns" only activates if the pipeline designer explicitly adds `testing` to `enabledSteps`. The memory system (R1) produces discoveries, but there's no mechanism to inject them into future pipeline runs.
+When a stage is retried (RETRY_FROM or automatic retry), `buildTier1Context` re-injects the full reads context. For a stage that reads `requirements` (5KB) + `design` (10KB) + `plan` (15KB), that's 30KB of context the agent has already seen. The only new information might be a 200-byte error message. This wastes tokens and dilutes the signal.
 
 ### Design
 
-**New fragment source type**: `memory`
+When `context.resumeInfo` exists (indicating a retry/resume), `buildTier1Context` should:
 
-```yaml
-# Pipeline YAML
-knowledge_fragments:
-  - coding-standards            # existing: static fragment reference
-  - source: memory              # NEW: dynamic from memory store
-    max_tokens: 500
-    strategy: recent            # recent | relevant | hot_entities
-```
-
-**Resolution strategies**:
-
-- `recent`: Last N discoveries from discoveries.jsonl, FIFO, token-limited
-- `relevant`: Match discovery `relevance` keywords against current stage's `enabledSteps` and pipeline name
-- `hot_entities`: From entity-stats.json, list most-accessed files/modules as context
-
-**Integration point**: `resolveFragmentsFromSnapshot()` in prompt-builder.ts.
-
-Currently, this function only resolves fragments from the pre-loaded snapshot. Extend it to also resolve memory-based fragments:
+1. Load the preceding stage's checkpoint (from Phase 1 Spec A's event log, or from `stageCheckpoints`)
+2. Compare current store values with checkpoint store values for each `reads` key
+3. For unchanged values: inject only a one-line reference ("Requirements: unchanged since last attempt")
+4. For changed values: inject the full value (or diff if both old and new exist)
 
 ```typescript
-// In prompt-builder.ts, after standard fragment resolution:
+// In context-builder.ts, buildTier1Context:
 
-function resolveMemoryFragments(
-  stageName: string,
-  enabledSteps: string[] | undefined,
-  memoryConfig: { source: "memory"; max_tokens: number; strategy: string },
-  worktreePath: string | undefined,
-): { id: string; content: string }[] {
-  if (!worktreePath) return [];
+if (context.resumeInfo && context.stageCheckpoints?.[currentStage]) {
+  const prevStore = context.stageCheckpoints[currentStage].store ?? {};
   
-  const memoryDir = join(worktreePath, ".workflow", "memory");
-  
-  if (memoryConfig.strategy === "recent") {
-    const discoveries = loadRecentDiscoveries(memoryDir, memoryConfig.max_tokens);
-    return [{ id: "__memory_recent", content: formatDiscoveries(discoveries) }];
+  for (const [label, rawPath] of Object.entries(runtime.reads)) {
+    const currentVal = getNestedValue(store, storePath);
+    const prevVal = getNestedValue(prevStore, storePath);
+    
+    if (deepEqual(currentVal, prevVal)) {
+      addPart(`### ${label}\n> Unchanged since previous attempt. Use get_store_value("${storePath}") if needed.`);
+    } else {
+      // Inject full new value (existing logic)
+    }
   }
-  
-  if (memoryConfig.strategy === "relevant") {
-    const discoveries = loadRelevantDiscoveries(memoryDir, enabledSteps, memoryConfig.max_tokens);
-    return [{ id: "__memory_relevant", content: formatDiscoveries(discoveries) }];
-  }
-  
-  if (memoryConfig.strategy === "hot_entities") {
-    const entities = loadHotEntities(memoryDir, memoryConfig.max_tokens);
-    return [{ id: "__memory_entities", content: formatEntities(entities) }];
-  }
-  
-  return [];
 }
 ```
 
-**Formatted output injected into tier-1 context**:
+**Prerequisite**: This requires storing a snapshot of the store at stage entry time in `stageCheckpoints`. The current implementation (from Phase 1 Spec B) only stores `gitHead` and `startedAt`. Extend `StageCheckpoint` to optionally include a store snapshot of the reads keys:
 
+```typescript
+interface StageCheckpoint {
+  gitHead?: string;
+  startedAt: string;
+  readsSnapshot?: Record<string, unknown>;  // store values at stage entry for diff comparison
+}
 ```
-## Project Memory (auto-accumulated from previous runs)
 
-- [pattern] This project uses vitest with describe/it style, not test() (confidence: 0.9)
-- [convention] API routes follow /api/v1/{resource} naming (confidence: 0.85)
-- [decision] Chose Hono over Express for REST API due to edge runtime support (confidence: 0.95)
-```
+The `readsSnapshot` is populated in `statusEntry()` by capturing the current store values for the stage's declared reads. This adds ~5-50KB to context per stage but enables precise diff detection on resume.
 
 ### Files
 
 | File | Action | Description |
 |------|--------|-------------|
-| `apps/server/src/agent/prompt-builder.ts` | Modify | Add memory fragment resolution after standard fragments |
-| `apps/server/src/agent/context-builder.ts` | Modify | Inject memory context into tier-1 if configured |
+| `apps/server/src/agent/context-builder.ts` | Modify | Diff-based injection when resumeInfo present |
 
 ### Dependency
 
-R1 must be implemented first (provides the memory data that R2 consumes).
+Benefits from R1 (semantic summaries give better "unchanged" references), but can be implemented independently.
 
 ---
 
