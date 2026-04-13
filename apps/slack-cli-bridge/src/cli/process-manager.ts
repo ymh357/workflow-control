@@ -4,6 +4,7 @@ import type { Config } from '../types.js';
 import { updateSessionId } from '../session/manager.js';
 
 const IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const BUSY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 
 interface MessageCallbacks {
   onText: (text: string) => void;
@@ -26,6 +27,7 @@ interface ManagedProcess {
   state: 'initializing' | 'idle' | 'busy';
   callbacks: MessageCallbacks | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
+  busyTimer: ReturnType<typeof setTimeout> | null;
   buffer: string;
   queue: QueuedMessage[];
 }
@@ -113,6 +115,7 @@ export class ProcessManager {
 
     managed.state = 'busy';
     managed.callbacks = callbacks;
+    this.resetBusyTimer(managed);
     this.resetIdleTimer(managed);
 
     const stdinMsg = JSON.stringify({
@@ -134,6 +137,7 @@ export class ProcessManager {
       this.processes.set(threadTs, managed);
       managed.state = 'busy';
       managed.callbacks = callbacks;
+      this.resetBusyTimer(managed);
 
       try {
         managed.proc.stdin!.write(stdinMsg);
@@ -166,6 +170,7 @@ export class ProcessManager {
       state: 'initializing',
       callbacks: null,
       idleTimer: null,
+      busyTimer: null,
       buffer: '',
       queue: [],
     };
@@ -216,6 +221,9 @@ export class ProcessManager {
   }
 
   private handleStdout(managed: ManagedProcess, data: string): void {
+    if (managed.state === 'busy') {
+      this.resetBusyTimer(managed);
+    }
     managed.buffer += data;
     const lines = managed.buffer.split('\n');
     managed.buffer = lines.pop() ?? '';
@@ -272,6 +280,7 @@ export class ProcessManager {
           const cb = managed.callbacks;
           managed.callbacks = null;
           managed.state = 'idle';
+          this.clearBusyTimer(managed);
           this.resetIdleTimer(managed);
           Promise.resolve(cb.onEnd(sid)).then(() => {
             this.drainQueue(managed.threadTs);
@@ -327,10 +336,42 @@ export class ProcessManager {
     }, IDLE_TIMEOUT_MS);
   }
 
+  private resetBusyTimer(managed: ManagedProcess): void {
+    if (managed.busyTimer) {
+      clearTimeout(managed.busyTimer);
+    }
+    if (managed.state !== 'busy') {
+      managed.busyTimer = null;
+      return;
+    }
+    managed.busyTimer = setTimeout(() => {
+      logger.error({ threadTs: managed.threadTs }, 'Busy timeout — killing unresponsive process');
+      if (managed.callbacks) {
+        const cb = managed.callbacks;
+        managed.callbacks = null;
+        Promise.resolve(cb.onError('Request timed out (no output for 5 minutes)')).catch(() => {});
+      }
+      // Fail all queued messages
+      for (const queued of managed.queue) {
+        Promise.resolve(queued.callbacks.onError('Request timed out — process killed')).catch(() => {});
+      }
+      managed.queue = [];
+      this.killProcess(managed.threadTs);
+    }, BUSY_TIMEOUT_MS);
+  }
+
+  private clearBusyTimer(managed: ManagedProcess): void {
+    if (managed.busyTimer) {
+      clearTimeout(managed.busyTimer);
+      managed.busyTimer = null;
+    }
+  }
+
   private cleanup(threadTs: string): void {
     const managed = this.processes.get(threadTs);
     if (!managed) return;
     if (managed.idleTimer) clearTimeout(managed.idleTimer);
+    if (managed.busyTimer) clearTimeout(managed.busyTimer);
     this.processes.delete(threadTs);
   }
 
