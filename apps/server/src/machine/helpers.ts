@@ -2,6 +2,7 @@ import { fromPromise, assign, emit } from "xstate";
 import type { TaskStatus } from "../types/index.js";
 import type { WorkflowContext } from "./types.js";
 import type { WorkflowEmittedEvent } from "./events.js";
+import { getGitHead, runCompensation } from "./git-checkpoint.js";
 import { getNestedValue, flattenStages, isParallelGroup } from "../lib/config-loader.js";
 import { taskLogger } from "../lib/logger.js";
 import { AgentError } from "../agent/query-tracker.js";
@@ -107,6 +108,15 @@ export function statusEntry(stateName: string): EmitAction[] {
       status: stateName,
       updatedAt: () => new Date().toISOString(),
     }),
+    assign(({ context }: { context: WorkflowContext }) => ({
+      stageCheckpoints: {
+        ...context.stageCheckpoints,
+        [stateName]: {
+          gitHead: getGitHead(context.worktreePath),
+          startedAt: new Date().toISOString(),
+        },
+      },
+    })),
     emitNotionSync(),
     emitStatus(stateName),
     emitTaskListUpdate(),
@@ -234,6 +244,24 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
     {
       target: blockedTarget,
       actions: [
+        ({ context }: { context: WorkflowContext }) => {
+          const pipeline = context.config?.pipeline;
+          if (!pipeline) return;
+          const allStages = pipeline.stages.flatMap((entry: any) =>
+            entry.parallel ? entry.parallel.stages : [entry]
+          );
+          const stageConfig = allStages.find((s: any) => s.name === stateName);
+          const compensation = stageConfig?.runtime?.compensation;
+          if (compensation?.strategy && compensation.strategy !== "none") {
+            const meta = context.stageCheckpoints?.[stateName] as { gitHead?: string } | undefined;
+            const result = runCompensation(compensation.strategy, meta?.gitHead, context.worktreePath);
+            if (result.success) {
+              taskLogger(context.taskId).info({ stage: stateName, strategy: compensation.strategy }, "compensation executed");
+            } else {
+              taskLogger(context.taskId).warn({ stage: stateName, error: result.error }, "compensation failed (non-blocking)");
+            }
+          }
+        },
         assign(({ event }: ErrorActionArgs) => {
           const errorMsg = event.error instanceof Error ? event.error.message : String(event.error);
           return { error: errorMsg, lastStage: stateName };

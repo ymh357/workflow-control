@@ -306,10 +306,10 @@ describe("handleStageError", () => {
 });
 
 describe("statusEntry", () => {
-  it("returns an array of 4 actions", () => {
+  it("returns an array of 5 actions", () => {
     const result = statusEntry("myStage");
     expect(Array.isArray(result)).toBe(true);
-    expect(result).toHaveLength(4);
+    expect(result).toHaveLength(5);
   });
 
   it("first action is an assign (status setter)", () => {

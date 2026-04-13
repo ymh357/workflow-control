@@ -16,6 +16,7 @@ interface StageRuntime {
   on_approve_to?: string;
   retry?: { max_retries?: number; back_to?: string };
   exclusive_write_group?: string;
+  compensation?: { strategy: "git_reset" | "git_stash" | "none" };
   [key: string]: unknown;
 }
 
@@ -330,6 +331,27 @@ function validateStage(
       field: "retry",
       message: `retry.back_to "${runtime.retry.back_to}" does not match any stage`,
     });
+  }
+
+  // Compensation: validate strategy value and stage type
+  if (runtime?.compensation) {
+    const strategy = runtime.compensation.strategy;
+    if (!strategy || !["git_reset", "git_stash", "none"].includes(strategy)) {
+      issues.push({
+        severity: "error",
+        stageIndex: entryIndex,
+        field: "runtime.compensation.strategy",
+        message: `Invalid compensation strategy "${strategy}". Must be "git_reset", "git_stash", or "none".`,
+      });
+    }
+    if (stage.type !== "agent" && stage.type !== "script") {
+      issues.push({
+        severity: "warning",
+        stageIndex: entryIndex,
+        field: "runtime.compensation",
+        message: `Compensation is only meaningful for agent/script stages, not "${stage.type}".`,
+      });
+    }
   }
 
   // Condition: validate branches

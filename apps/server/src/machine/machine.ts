@@ -11,6 +11,7 @@ import {
 } from "./helpers.js";
 import { buildPipelineStates, derivePipelineLists } from "./pipeline-builder.js";
 import { taskLogger } from "../lib/logger.js";
+import { runCompensation } from "./git-checkpoint.js";
 
 export const workflowSetup = setup({
   types: {
@@ -245,28 +246,49 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
             ...(retryable.map((s) => ({
               target: childToGroup.get(s) ?? s,
               guard: ({ event }: { event: { type: "RETRY_FROM"; fromStage: string } }) => event.fromStage === s,
-              actions: assign(({ context }: { context: WorkflowContext }) => {
-                const sessionId = context.stageSessionIds[s];
-                const resetCounts = { ...(context.stageRetryCount ?? {}) };
-                // Reset target stage and all stages after it
-                const allStages = context.config?.pipeline?.stages
-                  ? flattenStages(context.config.pipeline.stages).map(st => st.name)
-                  : [];
-                const targetIdx = allStages.indexOf(s);
-                if (targetIdx >= 0) {
-                  for (let i = targetIdx; i < allStages.length; i++) {
-                    delete resetCounts[allStages[i]];
+              actions: [
+                ({ context }: { context: WorkflowContext }) => {
+                  const pipeline = context.config?.pipeline;
+                  if (!pipeline) return;
+                  const allStages = pipeline.stages.flatMap((entry: any) =>
+                    entry.parallel ? entry.parallel.stages : [entry]
+                  );
+                  const stageConfig = allStages.find((st: any) => st.name === s);
+                  const compensation = stageConfig?.runtime?.compensation;
+                  if (compensation?.strategy && compensation.strategy !== "none") {
+                    const meta = context.stageCheckpoints?.[s] as { gitHead?: string } | undefined;
+                    if (meta?.gitHead) {
+                      const result = runCompensation(compensation.strategy, meta.gitHead, context.worktreePath);
+                      taskLogger(context.taskId).info(
+                        { stage: s, strategy: compensation.strategy, success: result.success },
+                        "RETRY_FROM compensation"
+                      );
+                    }
                   }
-                }
-                return {
-                  retryCount: 0, error: undefined, errorCode: undefined,
-                  qaRetryCount: 0,
-                  stageRetryCount: resetCounts,
-                  verifyRetryCount: {},
-                  lastStage: s,
-                  resumeInfo: sessionId ? { sessionId, feedback: `User requested retry from stage "${s}". Please inspect the current state and attempt to resolve any previous issues.` } : undefined,
-                };
-              }),
+                },
+                assign(({ context }: { context: WorkflowContext }) => {
+                  const sessionId = context.stageSessionIds[s];
+                  const resetCounts = { ...(context.stageRetryCount ?? {}) };
+                  // Reset target stage and all stages after it
+                  const allStages = context.config?.pipeline?.stages
+                    ? flattenStages(context.config.pipeline.stages).map(st => st.name)
+                    : [];
+                  const targetIdx = allStages.indexOf(s);
+                  if (targetIdx >= 0) {
+                    for (let i = targetIdx; i < allStages.length; i++) {
+                      delete resetCounts[allStages[i]];
+                    }
+                  }
+                  return {
+                    retryCount: 0, error: undefined, errorCode: undefined,
+                    qaRetryCount: 0,
+                    stageRetryCount: resetCounts,
+                    verifyRetryCount: {},
+                    lastStage: s,
+                    resumeInfo: sessionId ? { sessionId, feedback: `User requested retry from stage "${s}". Please inspect the current state and attempt to resolve any previous issues.` } : undefined,
+                  };
+                }),
+              ],
             })) as any[]),
             {
               actions: [

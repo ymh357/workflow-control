@@ -190,10 +190,10 @@ describe("handleStageError adversarial", () => {
     expect((backToTransition.guard as Function)({ context: c })).toBe(true);
   });
 
-  it("final blocked transition actions array has 3 entries (assign, emitError, emitSlackBlocked)", () => {
+  it("final blocked transition actions array has 4 entries (compensation, assign, emitError, emitSlackBlocked)", () => {
     const transitions = handleStageError("myStage");
     const lastTransition = transitions[transitions.length - 1];
-    expect(lastTransition.actions).toHaveLength(3);
+    expect(lastTransition.actions).toHaveLength(4);
   });
 
   it("AgentError with non-'error' agentStatus still allows retry", () => {
@@ -236,9 +236,9 @@ describe("loggedActor adversarial", () => {
 });
 
 describe("statusEntry adversarial", () => {
-  it("always returns exactly 4 actions regardless of state name", () => {
-    expect(statusEntry("")).toHaveLength(4);
-    expect(statusEntry("a-very-long-state-name-that-is-unusual")).toHaveLength(4);
+  it("always returns exactly 5 actions regardless of state name", () => {
+    expect(statusEntry("")).toHaveLength(5);
+    expect(statusEntry("a-very-long-state-name-that-is-unusual")).toHaveLength(5);
   });
 });
 
