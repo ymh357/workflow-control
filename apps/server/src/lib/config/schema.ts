@@ -38,6 +38,7 @@ const WriteDeclarationSchema = z.union([
   z.object({
     key: z.string(),
     strategy: z.enum(["replace", "append", "merge"]).optional(),
+    summary_prompt: z.string().optional(),
   }),
 ]);
 
@@ -211,6 +212,7 @@ export const PipelineStageConfigSchema = z.object({
   verify_commands: z.array(z.string()).optional(),
   verify_policy: z.enum(["must_pass", "warn", "skip"]).optional(),
   verify_max_retries: z.number().int().min(0).optional(),
+  depends_on: z.array(z.string()).optional(),
   stage_timeout_sec: z.number().int().min(1).max(86400).optional(),
 });
 
@@ -227,6 +229,13 @@ export const PipelineStageEntrySchema = z.union([
   PipelineStageConfigSchema,
   ParallelGroupConfigSchema,
 ]);
+
+// --- Store Persistence ---
+
+const StorePersistenceSchema = z.object({
+  inherit_from: z.enum(["last_completed", "none"]),
+  inherit_keys: z.union([z.array(z.string()), z.literal("*")]),
+});
 
 // --- Pipeline Config ---
 
@@ -254,6 +263,7 @@ export const PipelineConfigSchema = z.object({
       notion_page_id_path: z.string().optional(),
     })
     .optional(),
+  store_persistence: StorePersistenceSchema.optional(),
 });
 
 // --- Pipeline Manifest ---

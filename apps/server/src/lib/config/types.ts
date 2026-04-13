@@ -19,7 +19,7 @@ export interface SubAgentDefinition {
   mcpServers?: (string | Record<string, unknown>)[];
 }
 
-export type WriteDeclaration = string | { key: string; strategy?: "replace" | "append" | "merge" };
+export type WriteDeclaration = string | { key: string; strategy?: "replace" | "append" | "merge"; summary_prompt?: string };
 
 export interface AgentRuntimeConfig {
   engine: "llm";
@@ -166,6 +166,7 @@ export interface PipelineStageConfig {
   verify_commands?: string[];
   verify_policy?: "must_pass" | "warn" | "skip";
   verify_max_retries?: number;
+  depends_on?: string[];
   // Timeout in seconds for edge execution of this stage. Default: 1800 (30 min).
   stage_timeout_sec?: number;
 }
@@ -221,6 +222,10 @@ export interface PipelineConfig {
   codex_md?: { global?: string };
   display?: { title_path?: string; completion_summary_path?: string };
   integrations?: { notion_page_id_path?: string };
+  store_persistence?: {
+    inherit_from: "last_completed" | "none";
+    inherit_keys: string[] | "*";
+  };
   // Pipeline-level invariants applied to ALL agent stages
   invariants?: string[];
 }
