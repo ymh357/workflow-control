@@ -35,6 +35,7 @@ interface StageConfig {
   type: "agent" | "script" | "human_confirm" | "condition" | "pipeline" | "foreach" | "llm_decision";
   runtime?: StageRuntime;
   outputs?: Record<string, { type: string; fields?: { key: string }[]; hidden?: boolean }>;
+  depends_on?: string[];
   [key: string]: unknown;
 }
 
@@ -98,6 +99,61 @@ export function validatePipelineLogic(
       for (const s of entry.parallel.stages) allStageNames.add(s.name);
     } else {
       allStageNames.add(entry.name);
+    }
+  }
+
+  // Validate depends_on
+  const usesDependsOn = stages.some(e => !isParallelGroup(e) && (e as StageConfig).depends_on?.length);
+  const usesParallelGroup = stages.some(e => isParallelGroup(e));
+
+  if (usesDependsOn && usesParallelGroup) {
+    issues.push({
+      severity: "error",
+      message: "Pipeline cannot use both depends_on and parallel_group. They are mutually exclusive.",
+    });
+  }
+
+  if (usesDependsOn) {
+    const depGraph = new Map<string, string[]>();
+    for (const entry of stages) {
+      if (isParallelGroup(entry)) continue;
+      const stage = entry as StageConfig;
+      if (stage.depends_on) {
+        for (const dep of stage.depends_on) {
+          if (!allStageNames.has(dep)) {
+            issues.push({
+              severity: "error",
+              stageIndex: stages.indexOf(entry),
+              field: "depends_on",
+              message: `Stage "${stage.name}" depends_on "${dep}" which does not exist`,
+            });
+          }
+        }
+        depGraph.set(stage.name, stage.depends_on);
+      }
+    }
+
+    // Cycle detection (DFS)
+    const visited = new Set<string>();
+    const inStack = new Set<string>();
+    function hasCycle(node: string): boolean {
+      if (inStack.has(node)) return true;
+      if (visited.has(node)) return false;
+      visited.add(node);
+      inStack.add(node);
+      for (const dep of depGraph.get(node) ?? []) {
+        if (hasCycle(dep)) return true;
+      }
+      inStack.delete(node);
+      return false;
+    }
+    for (const name of depGraph.keys()) {
+      if (hasCycle(name)) {
+        issues.push({
+          severity: "error",
+          message: `Cycle detected in depends_on graph involving "${name}"`,
+        });
+      }
     }
   }
 

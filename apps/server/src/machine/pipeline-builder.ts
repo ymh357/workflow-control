@@ -25,6 +25,55 @@ function collectAllNames(entries: PipelineStageEntry[]): string[] {
   return names;
 }
 
+function transformDagToParallelGroups(pipeline: PipelineConfig): PipelineConfig {
+  const hasDepends = pipeline.stages.some(
+    e => !isParallelGroup(e) && (e as PipelineStageConfig).depends_on?.length
+  );
+  if (!hasDepends) return pipeline;
+
+  const stages = pipeline.stages as PipelineStageConfig[];
+  const depMap = new Map<string, Set<string>>();
+  for (const s of stages) {
+    depMap.set(s.name, new Set(s.depends_on ?? []));
+  }
+
+  // Topological sort into levels
+  const levels: PipelineStageConfig[][] = [];
+  const placed = new Set<string>();
+
+  while (placed.size < stages.length) {
+    const level: PipelineStageConfig[] = [];
+    for (const s of stages) {
+      if (placed.has(s.name)) continue;
+      const deps = depMap.get(s.name) ?? new Set();
+      if ([...deps].every(d => placed.has(d))) {
+        level.push(s);
+      }
+    }
+    if (level.length === 0) break; // cycle (caught by validator)
+    for (const s of level) placed.add(s.name);
+    levels.push(level);
+  }
+
+  // Convert levels to pipeline entries
+  const newStages: PipelineStageEntry[] = [];
+  for (let i = 0; i < levels.length; i++) {
+    const level = levels[i];
+    if (level.length === 1) {
+      newStages.push(level[0]);
+    } else {
+      newStages.push({
+        parallel: {
+          name: `__dag_group_${i}`,
+          stages: level,
+        },
+      });
+    }
+  }
+
+  return { ...pipeline, stages: newStages };
+}
+
 const PASS_THROUGH_TYPES = new Set(["condition", "pipeline", "foreach"]);
 
 function findPrevAgentTarget(entries: PipelineStageEntry[], currentIndex: number): string | null {
@@ -45,16 +94,17 @@ function findPrevAgentTarget(entries: PipelineStageEntry[], currentIndex: number
 // --- Pipeline state generation ---
 
 export function buildPipelineStates(pipeline: PipelineConfig): Record<string, StateNode> {
+  const transformed = transformDagToParallelGroups(pipeline);
   const states: Record<string, StateNode> = {};
   const errors: string[] = [];
-  const validTargets = new Set(collectAllNames(pipeline.stages));
+  const validTargets = new Set(collectAllNames(transformed.stages));
   validTargets.add("completed");
   validTargets.add("error");
   validTargets.add("blocked");
 
   // Build child→group mapping for reject routing into parallel groups
   const childToGroup = new Map<string, string>();
-  for (const e of pipeline.stages) {
+  for (const e of transformed.stages) {
     if (isParallelGroup(e)) {
       for (const s of e.parallel.stages) {
         childToGroup.set(s.name, e.parallel.name);
@@ -77,8 +127,8 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
   // one branch is an "optional prefix" and should flow into the default branch
   // target after completion (e.g., competitorBenchmark → outputPlanning).
   const conditionNextOverrides = new Map<string, string>();
-  for (let i = 0; i < pipeline.stages.length; i++) {
-    const entry = pipeline.stages[i];
+  for (let i = 0; i < transformed.stages.length; i++) {
+    const entry = transformed.stages[i];
     if (isParallelGroup(entry)) continue;
     const stage = entry as PipelineStageConfig;
     if (stage.type !== "condition" && stage.type !== "llm_decision") continue;
@@ -106,8 +156,8 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
 
     // Only consider targets that appear in the contiguous sequence after the condition
     const downstreamTargets = new Set<string>();
-    for (let j = i + 1; j < pipeline.stages.length; j++) {
-      const name = getEntryName(pipeline.stages[j]);
+    for (let j = i + 1; j < transformed.stages.length; j++) {
+      const name = getEntryName(transformed.stages[j]);
       if (allBranchTargets.has(name)) {
         downstreamTargets.add(name);
       } else {
@@ -124,8 +174,8 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
     } else {
       // Auto convergence: first stage after the contiguous block of branch targets
       joinTarget = "completed";
-      for (let j = i + 1; j < pipeline.stages.length; j++) {
-        const name = getEntryName(pipeline.stages[j]);
+      for (let j = i + 1; j < transformed.stages.length; j++) {
+        const name = getEntryName(transformed.stages[j]);
         if (!downstreamTargets.has(name)) {
           joinTarget = name;
           break;
@@ -144,13 +194,13 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
     }
   }
 
-  for (let i = 0; i < pipeline.stages.length; i++) {
-    const entry = pipeline.stages[i];
-    const linearNext = i < pipeline.stages.length - 1
-      ? getEntryName(pipeline.stages[i + 1])
+  for (let i = 0; i < transformed.stages.length; i++) {
+    const entry = transformed.stages[i];
+    const linearNext = i < transformed.stages.length - 1
+      ? getEntryName(transformed.stages[i + 1])
       : "completed";
     const nextStateName = conditionNextOverrides.get(getEntryName(entry)) ?? linearNext;
-    const prevAgentState = findPrevAgentTarget(pipeline.stages, i) ?? "error";
+    const prevAgentState = findPrevAgentTarget(transformed.stages, i) ?? "error";
 
     if (isParallelGroup(entry)) {
       // Validate: no nested parallel, at least 2 stages, no human_confirm inside
@@ -162,8 +212,8 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
 
       // Inherit pipeline-level default_execution_mode for child stages
       for (const s of entry.parallel.stages) {
-        if (!s.execution_mode && pipeline.default_execution_mode && s.type === "agent") {
-          s.execution_mode = pipeline.default_execution_mode;
+        if (!s.execution_mode && transformed.default_execution_mode && s.type === "agent") {
+          s.execution_mode = transformed.default_execution_mode;
         }
       }
 
@@ -210,15 +260,15 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
       const stage = { ...entry as PipelineStageConfig };
 
       // Inherit pipeline-level default_execution_mode if stage doesn't specify one
-      if (!stage.execution_mode && pipeline.default_execution_mode && stage.type === "agent") {
-        stage.execution_mode = pipeline.default_execution_mode;
+      if (!stage.execution_mode && transformed.default_execution_mode && stage.type === "agent") {
+        stage.execution_mode = transformed.default_execution_mode;
       }
       const stateName = stage.name;
 
       // Find previous agent/script stage for feedback loops
       let prevAgentStateForGate: string | null = null;
       for (let j = i - 1; j >= 0; j--) {
-        const prev = pipeline.stages[j];
+        const prev = transformed.stages[j];
         if (isParallelGroup(prev)) {
           prevAgentStateForGate = prev.parallel.name;
           break;
@@ -295,7 +345,7 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
 
       // Warn: gate after parallel group without on_reject_to means all children re-run on reject
       if (stage.type === "human_confirm" && prevAgentStateForGate) {
-        const prevEntry = i > 0 ? pipeline.stages[i - 1] : undefined;
+        const prevEntry = i > 0 ? transformed.stages[i - 1] : undefined;
         const gateRuntime = stage.runtime as Record<string, any> | undefined;
         if (prevEntry && isParallelGroup(prevEntry) && !gateRuntime?.on_reject_to) {
           taskLogger("pipeline").warn(
@@ -336,7 +386,7 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
 
   // Detect back_to cycles (A->B->A) — only for flat stages
   const backToEdges = new Map<string, string>();
-  for (const entry of pipeline.stages) {
+  for (const entry of transformed.stages) {
     if (isParallelGroup(entry)) {
       for (const s of entry.parallel.stages) {
         const rt = s.runtime as Record<string, any> | undefined;
