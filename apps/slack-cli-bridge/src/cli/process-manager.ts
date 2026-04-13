@@ -95,7 +95,7 @@ export class ProcessManager {
   }
 
   private spawnProcess(threadTs: string, sessionId: string | undefined, cwd: string): ManagedProcess {
-    const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'];
+    const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions'];
     if (sessionId) {
       args.push('-r', sessionId);
     }
