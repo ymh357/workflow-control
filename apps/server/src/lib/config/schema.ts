@@ -27,6 +27,7 @@ export const SubAgentDefinitionSchema = z.object({
 
 const RetrySchema = z.object({
   max_retries: z.number().optional(),
+  max_attempts: z.number().optional(),
   back_to: z.string().optional(),
 });
 

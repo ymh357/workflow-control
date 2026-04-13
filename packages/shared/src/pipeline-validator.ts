@@ -16,7 +16,7 @@ interface StageRuntime {
   reads?: Record<string, string>;
   on_reject_to?: string;
   on_approve_to?: string;
-  retry?: { max_retries?: number; back_to?: string };
+  retry?: { max_retries?: number; max_attempts?: number; back_to?: string };
   exclusive_write_group?: string;
   compensation?: { strategy: "git_reset" | "git_stash" | "none" };
   [key: string]: unknown;

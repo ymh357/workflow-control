@@ -147,6 +147,7 @@ export function getLatestSessionId(context: WorkflowContext): string | undefined
 
 export interface StageRetryConfig {
   max_retries?: number;
+  max_attempts?: number;
   back_to?: string;
 }
 
@@ -179,7 +180,8 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
           taskLogger(context.taskId, "machine:error").info({ stage: stateName, agentStatus: event.error.agentStatus }, "Terminal agent error, skipping retry");
           return false;
         }
-        const canRetry = context.retryCount < MAX_STAGE_RETRIES;
+        const maxAttempts = retryConfig?.max_attempts ?? MAX_STAGE_RETRIES;
+        const canRetry = context.retryCount < maxAttempts;
         taskLogger(context.taskId, "machine:error").info({ stage: stateName, retryCount: context.retryCount, canRetry }, "Error caught in stage");
         return canRetry;
       },
