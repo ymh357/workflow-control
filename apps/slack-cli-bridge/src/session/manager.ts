@@ -1,12 +1,17 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs';
+import { writeFile } from 'fs/promises';
 import { join } from 'path';
 import { logger } from '../logger.js';
 import type { Session, SessionStore, Config } from '../types.js';
 
 const SESSION_DIR = join(process.env.HOME ?? '/tmp', '.slack-cli-bridge');
 const SESSION_FILE = join(SESSION_DIR, 'sessions.json');
+const DEBOUNCE_MS = 1000;
 
 let store: SessionStore = {};
+let dirty = false;
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let writeInFlight: Promise<void> | null = null;
 
 export const loadSessions = (): void => {
   if (!existsSync(SESSION_DIR)) {
@@ -23,8 +28,38 @@ export const loadSessions = (): void => {
   }
 };
 
-const saveSessions = (): void => {
-  writeFileSync(SESSION_FILE, JSON.stringify(store, null, 2));
+const scheduleSave = (): void => {
+  dirty = true;
+  if (debounceTimer) return;
+  debounceTimer = setTimeout(() => {
+    debounceTimer = null;
+    if (!dirty) return;
+    dirty = false;
+    writeInFlight = writeFile(SESSION_FILE, JSON.stringify(store, null, 2))
+      .then(() => {
+        writeInFlight = null;
+      })
+      .catch((err) => {
+        writeInFlight = null;
+        logger.error({ err }, 'Failed to persist sessions');
+      });
+  }, DEBOUNCE_MS);
+};
+
+export const flushSessions = async (): Promise<void> => {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+  if (writeInFlight) {
+    await writeInFlight;
+  }
+  if (dirty) {
+    dirty = false;
+    // Sync write on shutdown to guarantee persistence
+    writeFileSync(SESSION_FILE, JSON.stringify(store, null, 2));
+    logger.info('Sessions flushed on shutdown');
+  }
 };
 
 export const getSession = (threadTs: string): Session | undefined => {
@@ -41,7 +76,7 @@ export const createSession = (params: {
     createdAt: Date.now(),
   };
   store[params.threadTs] = session;
-  saveSessions();
+  scheduleSave();
   return session;
 };
 
@@ -49,7 +84,7 @@ export const updateSessionId = (threadTs: string, sessionId: string): void => {
   const session = store[threadTs];
   if (session) {
     session.sessionId = sessionId;
-    saveSessions();
+    scheduleSave();
     logger.info({ threadTs, sessionId }, 'Session ID updated');
   }
 };
@@ -67,7 +102,7 @@ export const cleanExpiredSessions = (config: Config): void => {
   }
 
   if (cleaned > 0) {
-    saveSessions();
+    scheduleSave();
     logger.info({ cleaned }, 'Expired sessions cleaned');
   }
 };

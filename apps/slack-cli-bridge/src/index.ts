@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { logger } from './logger.js';
-import { loadSessions, cleanExpiredSessions } from './session/manager.js';
+import { loadSessions, cleanExpiredSessions, flushSessions } from './session/manager.js';
 import { loadConfig } from './config.js';
 import { ProcessManager } from './cli/process-manager.js';
 import { createSlackApp, startApp } from './slack/app.js';
@@ -26,9 +26,10 @@ const main = async (): Promise<void> => {
   initProcessManager(pm);
 
   // Graceful shutdown
-  const shutdown = () => {
+  const shutdown = async () => {
     logger.info('Shutting down...');
     pm.shutdown();
+    await flushSessions();
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);
