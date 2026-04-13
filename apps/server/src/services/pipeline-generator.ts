@@ -262,7 +262,7 @@ async function generateStagePrompt(
   engine: "claude" | "gemini" | "codex"
 ): Promise<GeneratedPromptFile> {
   const stageOverview = flattenStages(pipelineObj.stages ?? [])
-    .map((s: any) => `- ${s.name} (${s.type})${s.runtime?.writes ? `: writes [${s.runtime.writes.join(", ")}]` : ""}`)
+    .map((s: any) => `- ${s.name} (${s.type})${s.runtime?.writes ? `: writes [${(s.runtime.writes as any[]).map((w: any) => typeof w === "string" ? w : w.key).join(", ")}]` : ""}`)
     .join("\n");
 
   const readsLines = Object.entries(stage.runtime?.reads ?? {})

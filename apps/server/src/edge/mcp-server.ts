@@ -113,7 +113,7 @@ async function buildStageContext(taskId: string, stageName: string, compact = fa
     mcps: mcpList,
     worktreePath: context.worktreePath ?? "",
     branch: context.branch ?? "",
-    writes: runtime.writes ?? [],
+    writes: (runtime.writes ?? []).map((w: string | { key: string; strategy?: string }) => typeof w === "string" ? w : w.key),
     resumeInfo: context.resumeInfo ?? null,
     ...(foreachItem !== undefined ? { foreachItem, foreachItemVar } : {}),
     contextUsageHint: {
@@ -137,7 +137,8 @@ function validateStageOutput(
   pipelineConfig?: PipelineConfig,
 ): { valid: true } | { valid: false; missing?: string[]; reason: string } {
   const runtime = stageConfig.runtime as AgentRuntimeConfig | undefined;
-  const writes = runtime?.writes ?? [];
+  const rawWrites = runtime?.writes ?? [];
+  const writes = rawWrites.map((w) => typeof w === "string" ? w : w.key);
 
   if (writes.length === 0) return { valid: true };
   if (!resultText) return { valid: false, reason: "resultText is empty" };

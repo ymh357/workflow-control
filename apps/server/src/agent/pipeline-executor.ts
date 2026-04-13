@@ -95,7 +95,8 @@ export async function runPipelineCall(
         log.info({ childTaskId }, "Sub-pipeline completed");
         const updates: Record<string, any> = {};
         if (runtime.writes?.length) {
-          for (const key of runtime.writes) {
+          for (const w of runtime.writes) {
+            const key = typeof w === "string" ? w : w.key;
             if (snap.context.store[key] !== undefined) {
               updates[key] = snap.context.store[key];
             }

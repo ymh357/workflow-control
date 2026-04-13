@@ -83,7 +83,7 @@ export async function runAgent(
       await new Promise(r => setTimeout(r, 2000));
     }
 
-    const writes = input.runtime.writes ?? [];
+    const writes = (input.runtime.writes ?? []).map(w => typeof w === "string" ? w : w.key);
     const mockData = _buildMockWrites(writes);
     return {
       resultText: JSON.stringify(mockData),
@@ -145,7 +145,8 @@ export async function runScript(
     const delayMs = Number(process.env.MOCK_EXECUTOR_DELAY_MS ?? 200);
     await new Promise(r => setTimeout(r, delayMs));
     const out: Record<string, unknown> = {};
-    for (const field of input.runtime.writes ?? []) {
+    for (const w of input.runtime.writes ?? []) {
+      const field = typeof w === "string" ? w : w.key;
       if (field === "worktreePath") out[field] = process.cwd();
       else if (field === "branch") out[field] = "mock-branch";
       else out[field] = { _mock: true };

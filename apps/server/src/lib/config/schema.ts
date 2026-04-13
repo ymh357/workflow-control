@@ -32,10 +32,18 @@ const RetrySchema = z.object({
 
 // --- Runtime configs (discriminated on `engine`) ---
 
+const WriteDeclarationSchema = z.union([
+  z.string(),
+  z.object({
+    key: z.string(),
+    strategy: z.enum(["replace", "append", "merge"]).optional(),
+  }),
+]);
+
 export const AgentRuntimeConfigSchema = z.object({
   engine: z.literal("llm"),
   system_prompt: z.string(),
-  writes: z.array(z.string()).optional(),
+  writes: z.array(WriteDeclarationSchema).optional(),
   reads: z.record(z.string(), z.string()).optional(),
   enabled_steps_path: z.string().optional(),
   available_steps: z
@@ -49,7 +57,7 @@ export const AgentRuntimeConfigSchema = z.object({
 export const ScriptRuntimeConfigSchema = z.object({
   engine: z.literal("script"),
   script_id: z.string(),
-  writes: z.array(z.string()).optional(),
+  writes: z.array(WriteDeclarationSchema).optional(),
   args: z.record(z.string(), z.unknown()).optional(),
   reads: z.record(z.string(), z.string()).optional(),
   timeout_sec: z.number().optional(),
@@ -92,7 +100,7 @@ export const PipelineCallRuntimeConfigSchema = z.object({
   engine: z.literal("pipeline"),
   pipeline_name: z.string().min(1),
   reads: z.record(z.string(), z.string()).optional(),
-  writes: z.array(z.string()).optional(),
+  writes: z.array(WriteDeclarationSchema).optional(),
   timeout_sec: z.number().optional(),
 });
 

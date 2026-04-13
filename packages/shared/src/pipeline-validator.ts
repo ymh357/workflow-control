@@ -7,10 +7,12 @@ export interface ValidationIssue {
   message: string;
 }
 
+type WriteDeclaration = string | { key: string; strategy?: "replace" | "append" | "merge" };
+
 interface StageRuntime {
   engine?: string;
   system_prompt?: string;
-  writes?: string[];
+  writes?: WriteDeclaration[];
   reads?: Record<string, string>;
   on_reject_to?: string;
   on_approve_to?: string;
@@ -18,6 +20,14 @@ interface StageRuntime {
   exclusive_write_group?: string;
   compensation?: { strategy: "git_reset" | "git_stash" | "none" };
   [key: string]: unknown;
+}
+
+function writeKey(w: WriteDeclaration): string {
+  return typeof w === "string" ? w : w.key;
+}
+
+function writeStrategy(w: WriteDeclaration): string {
+  return typeof w === "string" ? "replace" : (w.strategy ?? "replace");
 }
 
 interface StageConfig {
@@ -119,18 +129,25 @@ export function validatePipelineLogic(
         }
       }
 
-      // Writes overlap within group
-      const groupWrites = new Map<string, string>();
+      // Writes overlap within group (unless both sides use append/merge)
+      const groupWrites = new Map<string, { stage: string; strategy: string }>();
       for (const s of group.stages) {
-        for (const w of s.runtime?.writes ?? []) {
-          if (groupWrites.has(w)) {
-            issues.push({
-              severity: "error",
-              stageIndex: i,
-              message: `Parallel group "${group.name}": write key "${w}" overlaps between "${groupWrites.get(w)}" and "${s.name}"`,
-            });
+        const rawWrites = (s.runtime as Record<string, any> | undefined)?.writes as WriteDeclaration[] | undefined;
+        for (const w of rawWrites ?? []) {
+          const k = writeKey(w);
+          const strategy = writeStrategy(w);
+          const existing = groupWrites.get(k);
+          if (existing) {
+            if (existing.strategy === "replace" || strategy === "replace") {
+              issues.push({
+                severity: "error",
+                stageIndex: i,
+                field: "runtime.writes",
+                message: `Parallel group "${group.name}": write key "${k}" overlaps between "${existing.stage}" and "${s.name}". Use strategy "append" or "merge" on both stages to allow shared writes.`,
+              });
+            }
           }
-          groupWrites.set(w, s.name);
+          groupWrites.set(k, { stage: s.name, strategy });
         }
       }
 
@@ -150,13 +167,14 @@ export function validatePipelineLogic(
       // Child reads must not reference sibling writes
       const siblingWrites = new Set<string>();
       for (const s of group.stages) {
-        for (const w of s.runtime?.writes ?? []) siblingWrites.add(w);
+        for (const w of s.runtime?.writes ?? []) siblingWrites.add(writeKey(w));
       }
       for (const s of group.stages) {
         if (s.runtime?.reads) {
+          const ownWriteKeys = new Set((s.runtime?.writes ?? []).map(writeKey));
           for (const [, sourcePath] of Object.entries(s.runtime.reads)) {
             const rootKey = (sourcePath as string).split(".")[0];
-            if (siblingWrites.has(rootKey) && !(s.runtime?.writes ?? []).includes(rootKey)) {
+            if (siblingWrites.has(rootKey) && !ownWriteKeys.has(rootKey)) {
               issues.push({
                 severity: "error",
                 stageIndex: i,
@@ -175,8 +193,8 @@ export function validatePipelineLogic(
       // Track group writes
       for (const s of group.stages) {
         for (const w of s.runtime?.writes ?? []) {
-          allWrites.set(w, i);
-          writeOriginStage.set(w, s.name);
+          allWrites.set(writeKey(w), i);
+          writeOriginStage.set(writeKey(w), s.name);
         }
       }
 
@@ -201,8 +219,8 @@ export function validatePipelineLogic(
 
     if (stage.runtime?.writes) {
       for (const w of stage.runtime.writes) {
-        allWrites.set(w, i);
-        writeOriginStage.set(w, stage.name);
+        allWrites.set(writeKey(w), i);
+        writeOriginStage.set(writeKey(w), stage.name);
       }
     }
 
@@ -287,21 +305,22 @@ function validateStage(
   // Check writes duplicates (against non-sibling stages)
   if (runtime?.writes) {
     for (const w of runtime.writes) {
-      if (allWrites.has(w)) {
+      const k = writeKey(w);
+      if (allWrites.has(k)) {
         // Skip warning if both stages declare the same exclusive_write_group
-        const prevStageName = writeOriginStage?.get(w);
+        const prevStageName = writeOriginStage?.get(k);
         const prevEntry = prevStageName ? stageByName?.get(prevStageName) : undefined;
         const prevGroup = prevEntry?.runtime?.exclusive_write_group;
         const curGroup = runtime.exclusive_write_group;
         if (curGroup && prevGroup && curGroup === prevGroup) {
           continue;
         }
-        const prevEntryIndex = allWrites.get(w)!;
+        const prevEntryIndex = allWrites.get(k)!;
         issues.push({
           severity: "warning",
           stageIndex: entryIndex,
           field: "writes",
-          message: `"${w}" in "${stage.name}" also written by entry ${prevEntryIndex + 1}`,
+          message: `"${k}" in "${stage.name}" also written by entry ${prevEntryIndex + 1}`,
         });
       }
     }
@@ -434,18 +453,20 @@ function validateStage(
   // Check writes/outputs consistency for agent and script stages
   if ((stage.type === "agent" || stage.type === "script") && runtime?.writes && runtime.writes.length > 0) {
     const outputKeys = stage.outputs ? new Set(Object.keys(stage.outputs)) : new Set<string>();
+    const declaredWriteKeys = new Set(runtime.writes.map(writeKey));
     for (const w of runtime.writes) {
-      if (!outputKeys.has(w)) {
+      const k = writeKey(w);
+      if (!outputKeys.has(k)) {
         issues.push({
           severity: "warning",
           stageIndex: entryIndex,
           field: "outputs",
-          message: `"${stage.name}" writes "${w}" but has no matching outputs entry`,
+          message: `"${stage.name}" writes "${k}" but has no matching outputs entry`,
         });
       }
     }
     for (const k of outputKeys) {
-      if (!runtime.writes.includes(k)) {
+      if (!declaredWriteKeys.has(k)) {
         issues.push({
           severity: "warning",
           stageIndex: entryIndex,

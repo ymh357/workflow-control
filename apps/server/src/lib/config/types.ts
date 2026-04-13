@@ -19,10 +19,12 @@ export interface SubAgentDefinition {
   mcpServers?: (string | Record<string, unknown>)[];
 }
 
+export type WriteDeclaration = string | { key: string; strategy?: "replace" | "append" | "merge" };
+
 export interface AgentRuntimeConfig {
   engine: "llm";
   system_prompt: string;
-  writes?: string[];
+  writes?: WriteDeclaration[];
   reads?: Record<string, string>;
   enabled_steps_path?: string;
   available_steps?: { key: string; label: string }[];
@@ -37,7 +39,7 @@ export interface AgentRuntimeConfig {
 export interface ScriptRuntimeConfig {
   engine: "script";
   script_id: string;
-  writes?: string[];
+  writes?: WriteDeclaration[];
   args?: Record<string, unknown>;
   reads?: Record<string, string>;
   timeout_sec?: number;
@@ -74,7 +76,7 @@ export interface PipelineCallRuntimeConfig {
   engine: "pipeline";
   pipeline_name: string;
   reads?: Record<string, string>;
-  writes?: string[];
+  writes?: WriteDeclaration[];
   timeout_sec?: number;
 }
 

@@ -15,18 +15,27 @@ import { extractJSON } from "../lib/json-extractor.js";
 import { getStageBuilder } from "./stage-registry.js";
 import { formatVerifyFailures } from "../agent/verify-commands.js";
 
+type WriteDeclaration = string | { key: string; strategy?: string };
+
 /**
  * Filter store writes to only include keys declared in the stage's `writes` config.
  * Undeclared keys are logged as warnings and dropped.
  */
 function filterStoreWrites(
   parsed: Record<string, unknown>,
-  declaredWrites: string[] | undefined,
+  declaredWrites: WriteDeclaration[] | undefined,
   stageName: string,
   taskId: string,
 ): Record<string, unknown> {
   if (!declaredWrites || declaredWrites.length === 0) return parsed;
-  const allowed = new Set(declaredWrites);
+  const allowed = new Map<string, string>();
+  for (const w of declaredWrites) {
+    if (typeof w === "string") {
+      allowed.set(w, "replace");
+    } else {
+      allowed.set(w.key, w.strategy ?? "replace");
+    }
+  }
   const filtered: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(parsed)) {
     if (allowed.has(key)) {
@@ -36,6 +45,32 @@ function filterStoreWrites(
     }
   }
   return filtered;
+}
+
+function buildWriteStrategies(writes: WriteDeclaration[] | undefined): Map<string, string> {
+  const strategies = new Map<string, string>();
+  for (const w of writes ?? []) {
+    if (typeof w === "string") strategies.set(w, "replace");
+    else strategies.set(w.key, w.strategy ?? "replace");
+  }
+  return strategies;
+}
+
+function applyStoreUpdates(
+  store: Record<string, any>,
+  updates: Record<string, any>,
+  writeStrategies: Map<string, string>,
+): void {
+  for (const [key, value] of Object.entries(updates)) {
+    const strategy = writeStrategies.get(key) ?? "replace";
+    if (strategy === "append" && Array.isArray(store[key])) {
+      store[key] = [...store[key], ...(Array.isArray(value) ? value : [value])];
+    } else if (strategy === "merge" && typeof store[key] === "object" && store[key] !== null && typeof value === "object" && value !== null) {
+      store[key] = { ...store[key], ...value };
+    } else {
+      store[key] = value;
+    }
+  }
 }
 
 export type StateNode = Record<string, unknown>;
@@ -125,7 +160,8 @@ export function buildAgentState(
             if (!text) return true;
             try {
               const parsed = extractJSON(text);
-              return !runtime.writes!.every((field) => parsed[field] !== undefined);
+              const writeKeys = runtime.writes!.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
+              return !writeKeys.every((field: string) => parsed[field] !== undefined);
             } catch {
               return true;
             }
@@ -135,6 +171,7 @@ export function buildAgentState(
           actions: [
             assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
               const sessionId = event.output?.sessionId ?? context.stageSessionIds?.[stateName];
+              const writeKeys = runtime.writes!.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
               return {
                 retryCount: context.retryCount + 1,
                 stageRetryCount: incrementStageRetryCount(context, stateName),
@@ -144,7 +181,7 @@ export function buildAgentState(
                 stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
                 stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
                 resumeInfo: sessionId
-                  ? { sessionId, feedback: `Your previous output was missing the required JSON fields (expected: ${runtime.writes!.join(", ")}). You MUST output the required JSON object before finishing. Do NOT explain — just output the JSON now.` }
+                  ? { sessionId, feedback: `Your previous output was missing the required JSON fields (expected: ${writeKeys.join(", ")}). You MUST output the required JSON object before finishing. Do NOT explain — just output the JSON now.` }
                   : undefined,
               };
             }),
@@ -172,7 +209,8 @@ export function buildAgentState(
             if (!text) return true;
             try {
               const parsed = extractJSON(text);
-              return !runtime.writes!.every((field) => parsed[field] !== undefined);
+              const writeKeys = runtime.writes!.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
+              return !writeKeys.every((field: string) => parsed[field] !== undefined);
             } catch {
               return true;
             }
@@ -181,9 +219,10 @@ export function buildAgentState(
           actions: [
             assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
               const text = event.output?.resultText;
+              const writeKeys = runtime.writes!.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
               const msg = !text
                 ? `Stage "${stateName}" completed but produced no output. The agent may have failed silently.`
-                : `Stage "${stateName}" output could not be parsed or is missing required fields (expected: ${runtime.writes!.join(", ")}).`;
+                : `Stage "${stateName}" output could not be parsed or is missing required fields (expected: ${writeKeys.join(", ")}).`;
               return {
                 error: msg,
                 lastStage: stateName,
@@ -210,7 +249,8 @@ export function buildAgentState(
             if (loopCount >= (retryConf.max_retries ?? 2)) return false;
             try {
               const parsed = extractJSON(event.output.resultText);
-              return (runtime.writes ?? []).some((field: string) => {
+              return (runtime.writes ?? []).some((w: WriteDeclaration) => {
+                const field = typeof w === "string" ? w : w.key;
                 const val = parsed[field] as Record<string, unknown> | undefined;
                 return val && typeof val === "object" && (val as Record<string, unknown>).passed === false;
               });
@@ -223,9 +263,13 @@ export function buildAgentState(
               if (runtime.writes?.length && event.output?.resultText) {
                 try {
                   const parsed = extractJSON(event.output.resultText);
-                  for (const field of runtime.writes) {
-                    if (parsed[field] !== undefined) store = { ...store, [field]: parsed[field] };
+                  const writeStrategies = buildWriteStrategies(runtime.writes);
+                  const updates: Record<string, any> = {};
+                  for (const w of runtime.writes) {
+                    const field = typeof w === "string" ? w : w.key;
+                    if (parsed[field] !== undefined) updates[field] = parsed[field];
                   }
+                  applyStoreUpdates(store, updates, writeStrategies);
                 } catch { /* stored what we could */ }
               }
               const backTo = runtime.retry!.back_to!;
@@ -233,7 +277,8 @@ export function buildAgentState(
               let feedback = `Stage "${stateName}" found errors:\n\n`;
               try {
                 const parsed = extractJSON(event.output.resultText);
-                for (const field of runtime.writes ?? []) {
+                for (const w of runtime.writes ?? []) {
+                  const field = typeof w === "string" ? w : w.key;
                   const val = parsed[field] as Record<string, unknown> | undefined;
                   const blockers = val?.blockers as string[] | undefined;
                   if (blockers?.length) {
@@ -344,12 +389,14 @@ export function buildAgentState(
               if (runtime.writes?.length && event.output?.resultText) {
                 try {
                   const parsed = extractJSON(event.output.resultText);
+                  const writeStrategies = buildWriteStrategies(runtime.writes);
                   const updates: Record<string, any> = {};
-                  for (const field of runtime.writes) {
+                  for (const w of runtime.writes) {
+                    const field = typeof w === "string" ? w : w.key;
                     if (parsed[field] !== undefined) updates[field] = parsed[field];
                   }
                   if (Object.keys(updates).length) {
-                    store = { ...store, ...updates };
+                    applyStoreUpdates(store, updates, writeStrategies);
                     // Generate compact summary for large store values
                     for (const [field, value] of Object.entries(updates)) {
                       // Cheap heuristic: only compute summary for potentially large objects
@@ -447,14 +494,17 @@ export function buildScriptState(
             const output = event.output;
 
             if (runtime.writes?.length && output !== undefined) {
+              const writeStrategies = buildWriteStrategies(runtime.writes);
               if (typeof output === "object" && output !== null && !Array.isArray(output)) {
                 const updates: Record<string, any> = {};
-                for (const field of runtime.writes) {
-                  if (output[field] !== undefined) updates[field] = output[field];
+                for (const w of runtime.writes) {
+                  const field = typeof w === "string" ? w : w.key;
+                  if ((output as Record<string, any>)[field] !== undefined) updates[field] = (output as Record<string, any>)[field];
                 }
-                if (Object.keys(updates).length) store = { ...store, ...updates };
+                if (Object.keys(updates).length) applyStoreUpdates(store, updates, writeStrategies);
               } else if (runtime.writes.length === 1) {
-                store = { ...store, [runtime.writes[0]]: output };
+                const singleKey = typeof runtime.writes[0] === "string" ? runtime.writes[0] : runtime.writes[0].key;
+                applyStoreUpdates(store, { [singleKey]: output }, writeStrategies);
               }
             }
 
@@ -721,8 +771,11 @@ export function buildPipelineCallState(
           assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
             const raw = event.output ?? {};
             const updates = filterStoreWrites(raw, runtime.writes, stateName, context.taskId);
+            const store = { ...context.store };
+            const writeStrategies = buildWriteStrategies(runtime.writes);
+            applyStoreUpdates(store, updates, writeStrategies);
             return {
-              store: { ...context.store, ...updates },
+              store,
               retryCount: 0,
               stageRetryCount: resetStageRetryCount(context, stateName),
               completedStages: [...(context.completedStages ?? []), stateName],
