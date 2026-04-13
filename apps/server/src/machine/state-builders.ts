@@ -135,19 +135,24 @@ export function buildAgentState(
     invoke: {
       src: stage.execution_mode === "edge" || stage.execution_mode === "any" ? "runEdgeAgent" : "runAgent",
       input: ({ context }: { context: WorkflowContext }) => {
+        // For parallel children, merge own staged writes into store view
+        const effectiveStore = opts?.statePrefix
+          ? { ...context.store, ...(context.parallelStagedWrites?.[stateName] ?? {}) }
+          : context.store;
+        const effectiveContext = opts?.statePrefix ? { ...context, store: effectiveStore } : context;
         const stepsPath = runtime.enabled_steps_path;
-        const enabledSteps = stepsPath ? getNestedValue(context.store, stepsPath) : undefined;
+        const enabledSteps = stepsPath ? getNestedValue(effectiveContext.store, stepsPath) : undefined;
         return {
           taskId: context.taskId,
           stageName: stateName,
           worktreePath: context.worktreePath ?? "",
-          tier1Context: buildTier1Context(context),
+          tier1Context: buildTier1Context(effectiveContext),
           enabledSteps,
           attempt: context.retryCount,
           resumeInfo: context.resumeInfo,
           interactive: stage.interactive,
           runtime,
-          context,
+          context: effectiveContext,
         };
       },
       onDone: [
@@ -386,6 +391,7 @@ export function buildAgentState(
           actions: [
             assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
               let store = context.store ?? {};
+              let parallelStagedWrites = context.parallelStagedWrites;
               if (runtime.writes?.length && event.output?.resultText) {
                 try {
                   const parsed = extractJSON(event.output.resultText);
@@ -396,17 +402,24 @@ export function buildAgentState(
                     if (parsed[field] !== undefined) updates[field] = parsed[field];
                   }
                   if (Object.keys(updates).length) {
-                    applyStoreUpdates(store, updates, writeStrategies);
-                    // Generate compact summary for large store values
-                    for (const [field, value] of Object.entries(updates)) {
-                      // Cheap heuristic: only compute summary for potentially large objects
-                      if (typeof value !== "object" || value === null) continue;
-                      const keys = Object.keys(value);
-                      if (keys.length < 5) continue;
-                      const serialized = JSON.stringify(value);
-                      if (serialized.length > 8000) {
-                        const summaryFields = keys.slice(0, 10).join(", ");
-                        store[`${field}.__summary`] = `[${typeof value}] ${summaryFields} (${serialized.length} chars)`;
+                    if (opts?.statePrefix) {
+                      // Inside parallel group: buffer writes for atomic commit
+                      parallelStagedWrites = {
+                        ...context.parallelStagedWrites,
+                        [stateName]: { ...(context.parallelStagedWrites?.[stateName] ?? {}), ...updates },
+                      };
+                    } else {
+                      applyStoreUpdates(store, updates, writeStrategies);
+                      // Generate compact summary for large store values
+                      for (const [field, value] of Object.entries(updates)) {
+                        if (typeof value !== "object" || value === null) continue;
+                        const keys = Object.keys(value);
+                        if (keys.length < 5) continue;
+                        const serialized = JSON.stringify(value);
+                        if (serialized.length > 8000) {
+                          const summaryFields = keys.slice(0, 10).join(", ");
+                          store[`${field}.__summary`] = `[${typeof value}] ${summaryFields} (${serialized.length} chars)`;
+                        }
                       }
                     }
                   }
@@ -415,7 +428,7 @@ export function buildAgentState(
                 }
               }
               return {
-                store,
+                ...(opts?.statePrefix ? { parallelStagedWrites } : { store }),
                 retryCount: 0,
                 stageRetryCount: resetStageRetryCount(context, stateName),
                 ...(runtime.retry?.back_to ? { qaRetryCount: 0 } : {}),
@@ -987,11 +1000,36 @@ export function buildParallelGroupState(
       actions: [
         assign(({ context }: { context: WorkflowContext }) => {
           const { [groupName]: _, ...restParallelDone } = context.parallelDone ?? {};
+
+          // Commit all staged writes from child stages
+          const newStore = { ...context.store };
+          const staged = context.parallelStagedWrites ?? {};
+          const allChildWriteDecls = group.stages.flatMap(s => {
+            const rt = s.runtime as Record<string, any> | undefined;
+            return (rt?.writes ?? []) as WriteDeclaration[];
+          });
+          const writeStrategies = buildWriteStrategies(allChildWriteDecls);
+
+          for (const childStage of group.stages) {
+            const childUpdates = staged[childStage.name];
+            if (childUpdates) {
+              applyStoreUpdates(newStore, childUpdates, writeStrategies);
+            }
+          }
+
+          // Clean up staged writes for all children in this group
+          const newStaged = { ...staged };
+          for (const s of group.stages) {
+            delete newStaged[s.name];
+          }
+
           return {
+            store: newStore,
             retryCount: 0,
             stageRetryCount: {},
             resumeInfo: undefined,
             parallelDone: Object.keys(restParallelDone).length > 0 ? restParallelDone : undefined,
+            parallelStagedWrites: Object.keys(newStaged).length > 0 ? newStaged : undefined,
           };
         }),
         emitTaskListUpdate(),
