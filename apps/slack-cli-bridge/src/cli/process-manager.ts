@@ -11,6 +11,13 @@ interface MessageCallbacks {
   onError: (error: string) => void | Promise<void>;
 }
 
+interface QueuedMessage {
+  prompt: string;
+  sessionId: string | undefined;
+  cwd: string;
+  callbacks: MessageCallbacks;
+}
+
 interface ManagedProcess {
   proc: ChildProcess;
   sessionId: string | undefined;
@@ -20,6 +27,7 @@ interface ManagedProcess {
   callbacks: MessageCallbacks | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
   buffer: string;
+  queue: QueuedMessage[];
 }
 
 const buildEnv = (): NodeJS.ProcessEnv => {
@@ -82,7 +90,13 @@ export class ProcessManager {
     let managed = this.processes.get(threadTs);
 
     if (managed && managed.state === 'busy') {
-      await Promise.resolve(callbacks.onError('Previous request still processing'));
+      const MAX_QUEUE = 5;
+      if (managed.queue.length >= MAX_QUEUE) {
+        await Promise.resolve(callbacks.onError('Queue full, please wait for current requests to complete'));
+        return;
+      }
+      managed.queue.push({ prompt, sessionId, cwd, callbacks });
+      logger.info({ threadTs, queueSize: managed.queue.length }, 'Message queued');
       return;
     }
 
@@ -153,6 +167,7 @@ export class ProcessManager {
       callbacks: null,
       idleTimer: null,
       buffer: '',
+      queue: [],
     };
 
     proc.stdout!.on('data', (chunk: Buffer) => {
@@ -174,6 +189,11 @@ export class ProcessManager {
           Promise.resolve(cb.onEnd(managed.sessionId)).catch(() => {});
         }
       }
+      // Fail all queued messages
+      for (const queued of managed.queue) {
+        Promise.resolve(queued.callbacks.onError(`Claude process closed unexpectedly (code ${code})`)).catch(() => {});
+      }
+      managed.queue = [];
       this.cleanup(threadTs);
     });
 
@@ -184,6 +204,11 @@ export class ProcessManager {
         managed.callbacks = null;
         Promise.resolve(cb.onError(`Claude process error: ${err.message}`)).catch(() => {});
       }
+      // Fail all queued messages
+      for (const queued of managed.queue) {
+        Promise.resolve(queued.callbacks.onError(`Claude process error: ${err.message}`)).catch(() => {});
+      }
+      managed.queue = [];
       this.cleanup(threadTs);
     });
 
@@ -248,9 +273,14 @@ export class ProcessManager {
           managed.callbacks = null;
           managed.state = 'idle';
           this.resetIdleTimer(managed);
-          Promise.resolve(cb.onEnd(sid)).catch((err) => {
+          Promise.resolve(cb.onEnd(sid)).then(() => {
+            this.drainQueue(managed.threadTs);
+          }).catch((err) => {
             logger.error({ err }, 'onEnd callback failed');
+            this.drainQueue(managed.threadTs);
           });
+        } else {
+          this.drainQueue(managed.threadTs);
         }
         continue;
       }
@@ -274,6 +304,17 @@ export class ProcessManager {
 
       // Other events (rate_limit_event etc.) — ignore
     }
+  }
+
+  private drainQueue(threadTs: string): void {
+    const managed = this.processes.get(threadTs);
+    if (!managed || managed.queue.length === 0) return;
+
+    const next = managed.queue.shift()!;
+    logger.info({ threadTs, remaining: managed.queue.length }, 'Dequeuing next message');
+    this.sendMessage(threadTs, next.prompt, next.sessionId, next.cwd, next.callbacks).catch((err) => {
+      logger.error({ err, threadTs }, 'Failed to process queued message');
+    });
   }
 
   private resetIdleTimer(managed: ManagedProcess): void {
