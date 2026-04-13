@@ -7,7 +7,6 @@ import type { WorkflowContext } from "../machine/types.js";
 import type { PipelineCallRuntimeConfig } from "../lib/config-loader.js";
 import { getNestedValue } from "../lib/config-loader.js";
 
-const DEFAULT_POLL_INTERVAL_MS = 2000;
 const DEFAULT_TIMEOUT_SEC = 1800;
 
 export interface PipelineCallInput {
@@ -64,44 +63,57 @@ export async function runPipelineCall(
   );
   launchTask(childTaskId);
 
-  // Poll until completion or timeout
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, DEFAULT_POLL_INTERVAL_MS));
+  // Wait for child completion via subscription (replaces polling)
+  const storeUpdates = await new Promise<Record<string, any>>((resolve, reject) => {
+    let sub: { unsubscribe(): void } | undefined;
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      sub?.unsubscribe();
+      log.warn({ childTaskId }, "Sub-pipeline timed out, cancelling child task");
+      cancelChildTask(childTaskId, log);
+      reject(new Error(`Sub-pipeline ${childTaskId} timed out after ${runtime.timeout_sec ?? DEFAULT_TIMEOUT_SEC}s`));
+    }, timeoutMs);
 
     const childActor = getWorkflow(childTaskId);
     if (!childActor) {
-      throw new Error(`Sub-pipeline actor ${childTaskId} disappeared unexpectedly`);
+      clearTimeout(timeout);
+      reject(new Error(`Sub-pipeline actor ${childTaskId} disappeared unexpectedly`));
+      return;
     }
-    const snap = childActor.getSnapshot();
-    const status = snap.context.status;
 
-    if (status === "completed") {
-      log.info({ childTaskId }, "Sub-pipeline completed");
-      // Extract writes from child store
-      const storeUpdates: Record<string, any> = {};
-      if (runtime.writes?.length) {
-        for (const key of runtime.writes) {
-          if (snap.context.store[key] !== undefined) {
-            storeUpdates[key] = snap.context.store[key];
+    sub = childActor.subscribe((snap) => {
+      if (settled) return;
+      const status = snap.context.status;
+
+      if (status === "completed") {
+        settled = true;
+        clearTimeout(timeout);
+        sub?.unsubscribe();
+        log.info({ childTaskId }, "Sub-pipeline completed");
+        const updates: Record<string, any> = {};
+        if (runtime.writes?.length) {
+          for (const key of runtime.writes) {
+            if (snap.context.store[key] !== undefined) {
+              updates[key] = snap.context.store[key];
+            }
           }
         }
+        resolve(updates);
+      } else if (status === "error" || status === "cancelled") {
+        settled = true;
+        clearTimeout(timeout);
+        sub?.unsubscribe();
+        const errMsg = snap.context.error ?? `Sub-pipeline ${childTaskId} ended with status: ${status}`;
+        log.error({ childTaskId, status, error: errMsg }, "Sub-pipeline failed");
+        reject(new Error(errMsg));
       }
-      return storeUpdates;
-    }
+    });
+  });
 
-    if (status === "error" || status === "cancelled") {
-      const errMsg = snap.context.error ?? `Sub-pipeline ${childTaskId} ended with status: ${status}`;
-      log.error({ childTaskId, status, error: errMsg }, "Sub-pipeline failed");
-      throw new Error(errMsg);
-    }
-  }
-
-  // Cancel the timed-out sub-task before throwing
-  log.warn({ childTaskId }, "Sub-pipeline timed out, cancelling child task");
-  cancelChildTask(childTaskId, log);
-
-  throw new Error(`Sub-pipeline ${childTaskId} timed out after ${runtime.timeout_sec ?? DEFAULT_TIMEOUT_SEC}s`);
+  return storeUpdates;
 }
 
 /**

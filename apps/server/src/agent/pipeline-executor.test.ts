@@ -54,6 +54,39 @@ function makeRuntime(overrides: Partial<PipelineCallRuntimeConfig> = {}): Pipeli
   };
 }
 
+/**
+ * Creates a mock actor that supports subscribe().
+ * The subscribe callback fires immediately with initialSnap, then can be
+ * triggered again via the returned emit() helper.
+ */
+function makeMockActor(initialSnap: Record<string, any>) {
+  type Listener = (snap: Record<string, any>) => void;
+  const listeners: Listener[] = [];
+  let currentSnap = initialSnap;
+
+  const actor = {
+    getSnapshot: () => currentSnap,
+    subscribe: (cb: Listener) => {
+      listeners.push(cb);
+      // XState subscribe fires immediately with current state
+      cb(currentSnap);
+      return {
+        unsubscribe: () => {
+          const idx = listeners.indexOf(cb);
+          if (idx >= 0) listeners.splice(idx, 1);
+        },
+      };
+    },
+  };
+
+  const emit = (snap: Record<string, any>) => {
+    currentSnap = snap;
+    for (const cb of [...listeners]) cb(snap);
+  };
+
+  return { actor, emit };
+}
+
 describe("runPipelineCall", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -61,7 +94,8 @@ describe("runPipelineCall", () => {
 
   it("creates a child task with correct initialStore from reads mapping", async () => {
     const childSnap = { context: { status: "completed", store: { output: "result" }, error: undefined } };
-    mockGetWorkflow.mockReturnValue({ getSnapshot: () => childSnap });
+    const { actor } = makeMockActor(childSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
     const ctx = makeContext({ data: "hello" });
     const runtime = makeRuntime();
@@ -84,7 +118,8 @@ describe("runPipelineCall", () => {
     const childSnap = {
       context: { status: "completed", store: { output: "wanted", internal: "unwanted" }, error: undefined },
     };
-    mockGetWorkflow.mockReturnValue({ getSnapshot: () => childSnap });
+    const { actor } = makeMockActor(childSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
     const runtime = makeRuntime({ writes: ["output"] });
     const result = await runPipelineCall("", { taskId: "p", stageName: "s", context: makeContext(), runtime });
@@ -95,7 +130,8 @@ describe("runPipelineCall", () => {
 
   it("throws when child pipeline errors", async () => {
     const childSnap = { context: { status: "error", store: {}, error: "child exploded" } };
-    mockGetWorkflow.mockReturnValue({ getSnapshot: () => childSnap });
+    const { actor } = makeMockActor(childSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
     await expect(
       runPipelineCall("", { taskId: "p", stageName: "s", context: makeContext(), runtime: makeRuntime() }),
@@ -104,7 +140,8 @@ describe("runPipelineCall", () => {
 
   it("throws when child pipeline is cancelled", async () => {
     const childSnap = { context: { status: "cancelled", store: {}, error: undefined } };
-    mockGetWorkflow.mockReturnValue({ getSnapshot: () => childSnap });
+    const { actor } = makeMockActor(childSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
     await expect(
       runPipelineCall("", { taskId: "p", stageName: "s", context: makeContext(), runtime: makeRuntime() }),
@@ -121,7 +158,8 @@ describe("runPipelineCall", () => {
 
   it("returns empty object when no writes specified", async () => {
     const childSnap = { context: { status: "completed", store: { a: 1, b: 2 }, error: undefined } };
-    mockGetWorkflow.mockReturnValue({ getSnapshot: () => childSnap });
+    const { actor } = makeMockActor(childSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
     const runtime = makeRuntime({ writes: undefined });
     const result = await runPipelineCall("", { taskId: "p", stageName: "s", context: makeContext(), runtime });
@@ -131,7 +169,8 @@ describe("runPipelineCall", () => {
 
   it("strips store. prefix from reads values", async () => {
     const childSnap = { context: { status: "completed", store: { output: "result" }, error: undefined } };
-    mockGetWorkflow.mockReturnValue({ getSnapshot: () => childSnap });
+    const { actor } = makeMockActor(childSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
     const ctx = makeContext({ data: "hello" });
     const runtime = makeRuntime({ reads: { x: "store.data" } });
@@ -143,7 +182,8 @@ describe("runPipelineCall", () => {
 
   it("reads values without store. prefix work the same way", async () => {
     const childSnap = { context: { status: "completed", store: { output: "result" }, error: undefined } };
-    mockGetWorkflow.mockReturnValue({ getSnapshot: () => childSnap });
+    const { actor } = makeMockActor(childSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
     const ctx = makeContext({ data: "hello" });
     const runtime = makeRuntime({ reads: { x: "data" } });
@@ -155,7 +195,8 @@ describe("runPipelineCall", () => {
 
   it("builds empty initialStore when no reads specified", async () => {
     const childSnap = { context: { status: "completed", store: {}, error: undefined } };
-    mockGetWorkflow.mockReturnValue({ getSnapshot: () => childSnap });
+    const { actor } = makeMockActor(childSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
     const runtime = makeRuntime({ reads: undefined });
     await runPipelineCall("", { taskId: "p", stageName: "s", context: makeContext({ x: 1 }), runtime });
@@ -165,11 +206,10 @@ describe("runPipelineCall", () => {
   });
 
   it("throws timeout error when child pipeline stays running", async () => {
-    // Child never completes — always returns "running"
     const runningSnap = { context: { status: "running", store: {}, error: undefined } };
-    mockGetWorkflow.mockReturnValue({ getSnapshot: () => runningSnap });
+    const { actor } = makeMockActor(runningSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
-    // Use very short timeout to avoid slow test
     const runtime = makeRuntime({ timeout_sec: 1 });
 
     await expect(
@@ -179,7 +219,8 @@ describe("runPipelineCall", () => {
 
   it("cancels child task on timeout before throwing", async () => {
     const runningSnap = { context: { status: "running", store: {}, error: undefined } };
-    mockGetWorkflow.mockReturnValue({ getSnapshot: () => runningSnap });
+    const { actor } = makeMockActor(runningSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
     const runtime = makeRuntime({ timeout_sec: 1 });
 
@@ -197,67 +238,42 @@ describe("runPipelineCall", () => {
     );
   }, 10000);
 
-  it("polls multiple times before child completes", async () => {
-    let pollCount = 0;
+  it("resolves after state transitions from running to completed", async () => {
     const runningSnap = { context: { status: "running", store: {}, error: undefined } };
     const completedSnap = { context: { status: "completed", store: { output: "done" }, error: undefined } };
 
-    mockGetWorkflow.mockImplementation(() => {
-      pollCount++;
-      // Return running for first 2 polls, then completed
-      if (pollCount < 3) {
-        return { getSnapshot: () => runningSnap };
-      }
-      return { getSnapshot: () => completedSnap };
-    });
+    const { actor, emit } = makeMockActor(runningSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
     const runtime = makeRuntime({ timeout_sec: 30 });
-    const result = await runPipelineCall("", { taskId: "p", stageName: "s", context: makeContext(), runtime });
+    const promise = runPipelineCall("", { taskId: "p", stageName: "s", context: makeContext(), runtime });
 
+    // Simulate async state transition
+    emit(completedSnap);
+
+    const result = await promise;
     expect(result).toEqual({ output: "done" });
-    expect(pollCount).toBeGreaterThanOrEqual(3);
-  }, 15000);
+  });
 
-  it("child pipeline transitions from running to error mid-poll", async () => {
-    let pollCount = 0;
+  it("child pipeline transitions from running to error mid-subscription", async () => {
     const runningSnap = { context: { status: "running", store: {}, error: undefined } };
     const errorSnap = { context: { status: "error", store: {}, error: "child crashed mid-run" } };
 
-    mockGetWorkflow.mockImplementation(() => {
-      pollCount++;
-      if (pollCount < 2) {
-        return { getSnapshot: () => runningSnap };
-      }
-      return { getSnapshot: () => errorSnap };
-    });
+    const { actor, emit } = makeMockActor(runningSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
     const runtime = makeRuntime({ timeout_sec: 30 });
-    await expect(
-      runPipelineCall("", { taskId: "p", stageName: "s", context: makeContext(), runtime }),
-    ).rejects.toThrow("child crashed mid-run");
-  }, 15000);
+    const promise = runPipelineCall("", { taskId: "p", stageName: "s", context: makeContext(), runtime });
 
-  it("child actor disappears after initial polls", async () => {
-    let pollCount = 0;
-    const runningSnap = { context: { status: "running", store: {}, error: undefined } };
+    emit(errorSnap);
 
-    mockGetWorkflow.mockImplementation(() => {
-      pollCount++;
-      if (pollCount < 2) {
-        return { getSnapshot: () => runningSnap };
-      }
-      return undefined; // actor disappeared
-    });
-
-    const runtime = makeRuntime({ timeout_sec: 30 });
-    await expect(
-      runPipelineCall("", { taskId: "p", stageName: "s", context: makeContext(), runtime }),
-    ).rejects.toThrow(/disappeared unexpectedly/);
-  }, 15000);
+    await expect(promise).rejects.toThrow("child crashed mid-run");
+  });
 
   it("passes worktreePath and branch from parent context to child task", async () => {
     const childSnap = { context: { status: "completed", store: {}, error: undefined } };
-    mockGetWorkflow.mockReturnValue({ getSnapshot: () => childSnap });
+    const { actor } = makeMockActor(childSnap);
+    mockGetWorkflow.mockReturnValue(actor);
 
     const ctx = makeContext({});
     ctx.worktreePath = "/projects/repo-wt";
