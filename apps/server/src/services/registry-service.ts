@@ -86,15 +86,24 @@ export class RegistryService {
     const toInstall = new Map<string, PackageManifest>();
     for (const spec of packages) {
       const name = spec.split("@")[0];
-      await this.collectDeps(name, toInstall);
+      try {
+        await this.collectDeps(name, toInstall);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result.skipped.push({ name, reason: msg });
+      }
     }
 
     // Always include all fragments — they are global knowledge, any pipeline may need them
     const index = await fetchIndex();
     for (const pkg of index.packages) {
       if (pkg.type === "fragment" && !toInstall.has(pkg.name)) {
-        const manifest = await fetchManifest(pkg.name);
-        toInstall.set(pkg.name, manifest);
+        try {
+          const manifest = await fetchManifest(pkg.name);
+          toInstall.set(pkg.name, manifest);
+        } catch {
+          result.skipped.push({ name: pkg.name, reason: "Manifest not available" });
+        }
       }
     }
 

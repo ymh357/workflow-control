@@ -11,6 +11,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_DIR = path.resolve(__dirname, "../apps/server/config");
+const BUILTIN_DIR = path.resolve(__dirname, "../apps/server/src/builtin-pipelines");
 const PACKAGES_DIR = path.resolve(__dirname, "packages");
 
 const AUTHOR = "workflow-control";
@@ -65,13 +66,12 @@ function collectFiles(dir: string, _base: string): string[] {
 
 // --- Pipelines ---
 
-function generatePipelines(): void {
-  console.log("\nPipelines:");
-  const pipelinesDir = path.join(CONFIG_DIR, "pipelines");
+function generatePipelinesFromDir(pipelinesDir: string, seen: Set<string>): void {
   for (const dirName of listDir(pipelinesDir)) {
     const pipelineFile = path.join(pipelinesDir, dirName, "pipeline.yaml");
     if (!fs.existsSync(pipelineFile)) continue;
-
+    if (seen.has(dirName)) continue;
+    seen.add(dirName);
 
     const raw = fs.readFileSync(pipelineFile, "utf-8");
     const pipeline = parseYaml(raw) as PipelineYaml;
@@ -114,6 +114,15 @@ function generatePipelines(): void {
     }
     console.log(`  Copied ${files.length} files to ${dirName}/`);
   }
+}
+
+function generatePipelines(): void {
+  console.log("\nPipelines:");
+  const seen = new Set<string>();
+  // config/pipelines/ takes priority (user-installed)
+  generatePipelinesFromDir(path.join(CONFIG_DIR, "pipelines"), seen);
+  // builtin-pipelines/ as fallback source
+  generatePipelinesFromDir(BUILTIN_DIR, seen);
 }
 
 // --- Skills ---

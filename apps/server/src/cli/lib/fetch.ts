@@ -17,31 +17,52 @@ function registryUrl(relativePath: string): string {
 }
 
 export async function fetchIndex(): Promise<RegistryIndex> {
-  // Always prefer local index.json if it exists (committed to git)
+  // Load local index if it exists
   const localIndex = path.join(REGISTRY_DIR, "index.json");
+  let local: RegistryIndex | null = null;
   if (fs.existsSync(localIndex)) {
     const raw = fs.readFileSync(localIndex, "utf-8");
-    return JSON.parse(raw) as RegistryIndex;
+    local = JSON.parse(raw) as RegistryIndex;
   }
-  const url = registryUrl("index.json");
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch registry index: ${res.status} ${res.statusText}`);
+
+  // Fetch remote index and merge with local (local entries take priority)
+  try {
+    const url = registryUrl("index.json");
+    const res = await fetch(url);
+    if (res.ok) {
+      const remote = (await res.json()) as RegistryIndex;
+      if (!local) return remote;
+
+      // Merge: local packages win, remote fills the gaps
+      const merged = { ...local };
+      const localNames = new Set(local.packages.map((p) => p.name));
+      for (const pkg of remote.packages) {
+        if (!localNames.has(pkg.name)) {
+          merged.packages.push(pkg);
+        }
+      }
+      return merged;
+    }
+  } catch {
+    // Remote unavailable — use local only
   }
-  return (await res.json()) as RegistryIndex;
+
+  if (local) return local;
+  throw new Error("No registry index available (local or remote)");
 }
 
 export async function fetchManifest(packageName: string): Promise<PackageManifest> {
   if (packageName.includes("..") || packageName.includes("/") || packageName.includes("\\")) {
     throw new Error(`Invalid package name: ${packageName}`);
   }
+  // Try local first
   if (hasLocalPackages()) {
     const manifestPath = path.join(REGISTRY_DIR, "packages", packageName, "manifest.yaml");
-    if (!fs.existsSync(manifestPath)) {
-      throw new Error(`Manifest not found for "${packageName}" in local registry`);
+    if (fs.existsSync(manifestPath)) {
+      const text = fs.readFileSync(manifestPath, "utf-8");
+      return parseYaml(text) as PackageManifest;
     }
-    const text = fs.readFileSync(manifestPath, "utf-8");
-    return parseYaml(text) as PackageManifest;
+    // Not found locally — fall through to remote
   }
   const url = registryUrl(`packages/${packageName}/manifest.yaml`);
   const res = await fetch(url);
@@ -59,12 +80,13 @@ export async function fetchPackageFile(
   if (packageName.includes("..") || packageName.includes("/") || packageName.includes("\\")) {
     throw new Error(`Invalid package name: ${packageName}`);
   }
+  // Try local first
   if (hasLocalPackages()) {
     const sourceFile = path.join(REGISTRY_DIR, "packages", packageName, filePath);
-    if (!fs.existsSync(sourceFile)) {
-      throw new Error(`File "${filePath}" not found for "${packageName}" at ${sourceFile}`);
+    if (fs.existsSync(sourceFile)) {
+      return fs.readFileSync(sourceFile, "utf-8");
     }
-    return fs.readFileSync(sourceFile, "utf-8");
+    // Not found locally — fall through to remote
   }
   const url = registryUrl(`packages/${packageName}/${filePath}`);
   const res = await fetch(url);

@@ -1,11 +1,13 @@
 import { registryService } from "../../services/registry-service.js";
-
-const BOOTSTRAP_PACKAGES = ["test-mixed"];
+import { fetchIndex } from "../lib/fetch.js";
 
 export async function bootstrapCommand(): Promise<void> {
-  console.log("Bootstrapping: installing default packages + all fragments...\n");
+  console.log("Bootstrapping: installing all registry packages...\n");
 
-  const result = await registryService.bootstrap(BOOTSTRAP_PACKAGES);
+  const index = await fetchIndex();
+  const allPackages = index.packages.map((p) => p.name);
+
+  const result = await registryService.bootstrap(allPackages);
 
   if (result.installed.length > 0) {
     console.log(`Installed ${result.installed.length} package(s):`);

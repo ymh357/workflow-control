@@ -7,7 +7,7 @@
     "dev": "pnpm --filter server --filter web run --parallel dev",
     "build": "pnpm --filter shared build && pnpm --filter server build && pnpm --filter web build",
     "edge": "pnpm --filter server edge",
-    "setup": "pnpm --filter server setup",
+    "setup": "pnpm --filter server run setup",
     "registry": "pnpm --filter server registry",
     "registry:build": "pnpm --filter server registry:build",
     "test": "pnpm --filter shared --filter server --filter web run test",

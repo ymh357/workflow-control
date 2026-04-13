@@ -107,6 +107,7 @@ export async function publishCommand(directory: string | undefined): Promise<voi
       packageDir: dir,
       packageName: manifest.name,
       files: manifest.files,
+      manifest,
     });
     console.log(`\nSuccessfully published ${manifest.name}@${manifest.version} to registry.`);
   } catch (err) {

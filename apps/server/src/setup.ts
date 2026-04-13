@@ -291,6 +291,10 @@ async function main() {
   // Run preflight checks
   // ============================================================
 
+  // Install builtin pipelines before preflight (preflight checks for pipeline dirs)
+  const { installBuiltinPipelines } = await import("./lib/builtin-installer.js");
+  installBuiltinPipelines();
+
   console.log("\n  Running preflight checks...");
   const { loadEnv } = await import("./lib/env.js");
   loadEnv();

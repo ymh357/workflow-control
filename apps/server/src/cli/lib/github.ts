@@ -81,6 +81,7 @@ export interface PublishOptions {
   packageDir: string;
   packageName: string;
   files: string[];
+  manifest: import("./types.js").PackageManifest;
 }
 
 export async function publishToGitHub(opts: PublishOptions): Promise<void> {
@@ -118,4 +119,53 @@ export async function publishToGitHub(opts: PublishOptions): Promise<void> {
       `publish: ${packageName}/${file}`,
     );
   }
+
+  // Update remote index.json to include this package
+  await updateRemoteIndex(opts.manifest);
+}
+
+async function updateRemoteIndex(manifest: import("./types.js").PackageManifest): Promise<void> {
+  console.log("\n  Updating remote index.json...");
+
+  // Fetch current remote index
+  let index: { version: number; updated_at: string; packages: Record<string, unknown>[] };
+  try {
+    const raw = gh([
+      "api", `repos/${getRepoRef()}/contents/index.json`,
+      "--jq", ".content",
+    ]);
+    const decoded = Buffer.from(raw, "base64").toString("utf-8");
+    index = JSON.parse(decoded);
+  } catch {
+    index = { version: 1, updated_at: new Date().toISOString(), packages: [] };
+  }
+
+  // Upsert package entry
+  const entry = {
+    name: manifest.name,
+    version: manifest.version,
+    type: manifest.type,
+    description: manifest.description,
+    author: manifest.author,
+    tags: manifest.tags,
+    ...(manifest.engine_compat ? { engine_compat: manifest.engine_compat } : {}),
+  };
+
+  const existingIdx = index.packages.findIndex((p: any) => p.name === manifest.name);
+  if (existingIdx >= 0) {
+    index.packages[existingIdx] = entry;
+  } else {
+    index.packages.push(entry);
+  }
+
+  // Sort alphabetically
+  index.packages.sort((a: any, b: any) => (a.name as string).localeCompare(b.name as string));
+  index.updated_at = new Date().toISOString();
+
+  await uploadFile(
+    "index.json",
+    JSON.stringify(index, null, 2) + "\n",
+    `index: update for ${manifest.name}@${manifest.version}`,
+  );
+  console.log("  Remote index.json updated.");
 }

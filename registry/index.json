@@ -1,78 +1,25 @@
 {
   "version": 1,
-  "updated_at": "2026-04-10T14:47:50.631Z",
+  "updated_at": "2026-04-13T03:45:18.496Z",
   "packages": [
     {
       "name": "completion-anti-patterns",
       "version": "1.0.0",
       "type": "fragment",
-      "description": "Anti-patterns for task completion claims and verification requirements",
+      "description": "Knowledge fragment: completion-anti-patterns",
       "author": "workflow-control",
       "tags": [
-        "verification",
-        "completion",
-        "quality"
-      ]
-    },
-    {
-      "name": "constitution",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "Immutable project rules and coding principles",
-      "author": "workflow-control",
-      "tags": [
-        "rules",
-        "principles",
-        "immutable"
-      ]
-    },
-    {
-      "name": "finishing-branch",
-      "version": "1.0.0",
-      "type": "skill",
-      "description": "Final checks and cleanup before merging a feature branch",
-      "author": "workflow-control",
-      "tags": [
-        "git",
-        "cleanup",
-        "pr"
-      ]
-    },
-    {
-      "name": "format-on-write",
-      "version": "1.0.0",
-      "type": "hook",
-      "description": "Auto-format TypeScript/JS/CSS files after Write or Edit using Prettier and ESLint",
-      "author": "workflow-control",
-      "tags": [
-        "formatting",
-        "prettier",
-        "eslint",
-        "auto-format"
-      ]
-    },
-    {
-      "name": "frontend-philosophy",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "Frontend development philosophy and best practices",
-      "author": "workflow-control",
-      "tags": [
-        "frontend",
-        "philosophy",
-        "best-practices"
+        "completion-anti-patterns"
       ]
     },
     {
       "name": "invariants-library",
       "version": "1.0.0",
       "type": "fragment",
-      "description": "Reusable invariant templates for common pipeline patterns",
+      "description": "Knowledge fragment: invariants-library",
       "author": "workflow-control",
       "tags": [
-        "invariants",
-        "constraints",
-        "quality"
+        "invariants-library"
       ]
     },
     {
@@ -85,30 +32,6 @@
         "claude"
       ],
       "engine_compat": "claude"
-    },
-    {
-      "name": "nextjs-app-router",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "Next.js App Router patterns and conventions",
-      "author": "workflow-control",
-      "tags": [
-        "nextjs",
-        "app-router",
-        "react"
-      ]
-    },
-    {
-      "name": "performance-audit",
-      "version": "1.0.0",
-      "type": "skill",
-      "description": "Audit code for performance issues and optimization opportunities",
-      "author": "workflow-control",
-      "tags": [
-        "performance",
-        "optimization",
-        "audit"
-      ]
     },
     {
       "name": "pipeline-generator",
@@ -125,325 +48,33 @@
       "name": "plan-then-execute",
       "version": "1.0.0",
       "type": "pipeline",
-      "description": "Superpowers-inspired pipeline enforcing brainstorm -> plan -> execute -> verify flow. Ensures design is approved before implementation begins and all work is verified before completion.\n",
-      "author": "workflow-control",
-      "tags": [
-        "planning",
-        "execution",
-        "verification",
-        "superpowers"
-      ],
-      "engine_compat": "claude"
-    },
-    {
-      "name": "playwright-e2e-test-loop",
-      "version": "1.0.0",
-      "type": "pipeline",
-      "description": "Automated E2E test discovery, generation, execution, and fix loop for the workflow-control web dashboard (apps/web/) using Playwright Test Agents (Planner/Generator/Healer) via the playwright-test MCP server.",
+      "description": "Enforces brainstorm -> plan -> execute -> verify workflow. Design must be approved before implementation. All work verified before completion.\n",
       "author": "workflow-control",
       "tags": [
         "claude"
       ],
       "engine_compat": "claude"
-    },
-    {
-      "name": "pr-security-performance-review",
-      "version": "1.0.0",
-      "type": "pipeline",
-      "description": "Analyzes a pull request by running security scanning and performance testing in parallel, synthesizes findings into a review comment, and posts it to GitHub after human approval.",
-      "author": "workflow-control",
-      "tags": [
-        "gemini"
-      ],
-      "engine_compat": "gemini"
-    },
-    {
-      "name": "protect-files",
-      "version": "1.0.0",
-      "type": "hook",
-      "description": "Prevent modifications to protected files (lock files, generated code, etc.)",
-      "author": "workflow-control",
-      "tags": [
-        "protection",
-        "safety",
-        "lock-files"
-      ]
-    },
-    {
-      "name": "qa-testing",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "QA testing strategies (test pyramid, AAA pattern, component testing)",
-      "author": "workflow-control",
-      "tags": [
-        "testing",
-        "qa",
-        "tdd"
-      ]
-    },
-    {
-      "name": "react-patterns",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "React component patterns and best practices",
-      "author": "workflow-control",
-      "tags": [
-        "react",
-        "patterns",
-        "components"
-      ]
-    },
-    {
-      "name": "repo-init",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "Repository initialization guidelines and project structure",
-      "author": "workflow-control",
-      "tags": [
-        "git",
-        "initialization",
-        "project-structure"
-      ]
-    },
-    {
-      "name": "safety-guard",
-      "version": "1.0.0",
-      "type": "hook",
-      "description": "Safety guard hook to prevent dangerous operations",
-      "author": "workflow-control",
-      "tags": [
-        "safety",
-        "guard",
-        "protection"
-      ]
-    },
-    {
-      "name": "security-checklist",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "Security checklist for frontend applications",
-      "author": "workflow-control",
-      "tags": [
-        "security",
-        "checklist",
-        "frontend"
-      ]
-    },
-    {
-      "name": "security-review",
-      "version": "1.0.0",
-      "type": "skill",
-      "description": "Review code changes for security vulnerabilities (XSS, injection, secrets, auth)",
-      "author": "workflow-control",
-      "tags": [
-        "security",
-        "review",
-        "xss",
-        "injection"
-      ]
-    },
-    {
-      "name": "seo-metadata",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "SEO metadata best practices and implementation patterns",
-      "author": "workflow-control",
-      "tags": [
-        "seo",
-        "metadata",
-        "html"
-      ]
-    },
-    {
-      "name": "systematic-debugging",
-      "version": "1.0.0",
-      "type": "skill",
-      "description": "Systematic debugging methodology with reproduction and root cause analysis",
-      "author": "workflow-control",
-      "tags": [
-        "debugging",
-        "investigation",
-        "root-cause"
-      ]
     },
     {
       "name": "systematic-debugging-pipeline",
       "version": "1.0.0",
       "type": "pipeline",
-      "description": "Structured debugging pipeline enforcing reproduce -> root-cause -> fix -> verify flow. Prevents random fix attempts by requiring root cause identification before any code changes.\n",
+      "description": "Enforces reproduce -> root-cause analysis -> fix -> verify flow. No code changes allowed until root cause is identified.\n",
       "author": "workflow-control",
       "tags": [
-        "debugging",
-        "investigation",
-        "root-cause",
-        "superpowers"
-      ],
-      "engine_compat": "claude"
-    },
-    {
-      "name": "tailwind-patterns",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "Tailwind CSS patterns and utility conventions",
-      "author": "workflow-control",
-      "tags": [
-        "tailwind",
-        "css",
-        "utility"
-      ]
-    },
-    {
-      "name": "tdd-workflow",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "Test-driven development workflow and methodology",
-      "author": "workflow-control",
-      "tags": [
-        "tdd",
-        "testing",
-        "workflow"
-      ]
-    },
-    {
-      "name": "tech-debt-weekly-cleanup",
-      "version": "1.0.0",
-      "type": "pipeline",
-      "description": "Weekly pipeline that scans multiple GitHub repos for TODO/FIXME/HACK via a fast script, triages by severity with a human gate for critical items, then runs a per-item sub-pipeline in parallel (code fix + risk assessment). Failed validations auto-retry. Final report goes to Slack; high-risk changes require Tech Lead approval.",
-      "author": "workflow-control",
-      "tags": [
-        "mixed"
-      ],
-      "engine_compat": "mixed"
-    },
-    {
-      "name": "tech-research",
-      "version": "1.0.0",
-      "type": "pipeline",
-      "description": "General-purpose technology research pipeline. Supports Web3 protocols, open-source tools, commercial products, technical concepts, and architecture decisions. Dynamically adapts research strategy, information sources, and verification methods based on subject type classification.\n",
-      "author": "workflow-control",
-      "tags": [
-        "research",
-        "technology",
-        "analysis",
         "claude"
       ],
       "engine_compat": "claude"
-    },
-    {
-      "name": "tech-research-collector",
-      "version": "1.0.0",
-      "type": "pipeline",
-      "description": "Sub-pipeline for per-target primary source collection. Invoked by tech-research foreach.",
-      "author": "workflow-control",
-      "tags": [
-        "research",
-        "sub-pipeline"
-      ],
-      "engine_compat": "claude"
-    },
-    {
-      "name": "tech-research-writer",
-      "version": "1.0.0",
-      "type": "pipeline",
-      "description": "Sub-pipeline for writing individual tech research deliverables. Invoked by tech-research foreach.",
-      "author": "workflow-control",
-      "tags": [
-        "research",
-        "writing",
-        "sub-pipeline"
-      ],
-      "engine_compat": "claude"
-    },
-    {
-      "name": "test-integration",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "Knowledge fragment: test-integration",
-      "author": "workflow-control",
-      "tags": [
-        "test-integration"
-      ]
-    },
-    {
-      "name": "test-mixed",
-      "version": "1.0.0",
-      "type": "pipeline",
-      "description": "Test pipeline — Gemini for analysis (cheaper), Claude for implementation (stronger coding)",
-      "author": "workflow-control",
-      "tags": [
-        "mixed"
-      ],
-      "engine_compat": "mixed"
     },
     {
       "name": "testing-anti-patterns",
       "version": "1.0.0",
       "type": "fragment",
-      "description": "Testing anti-patterns and red flags to avoid when writing tests",
+      "description": "Knowledge fragment: testing-anti-patterns",
       "author": "workflow-control",
       "tags": [
-        "testing",
-        "anti-patterns",
-        "quality"
+        "testing-anti-patterns"
       ]
-    },
-    {
-      "name": "typescript-strict",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "TypeScript strict mode conventions and type safety patterns",
-      "author": "workflow-control",
-      "tags": [
-        "typescript",
-        "strict",
-        "types"
-      ]
-    },
-    {
-      "name": "web3-check",
-      "version": "1.0.0",
-      "type": "skill",
-      "description": "Web3-specific security and correctness checks for smart contract interactions",
-      "author": "workflow-control",
-      "tags": [
-        "web3",
-        "security",
-        "smart-contract"
-      ]
-    },
-    {
-      "name": "web3-frontend",
-      "version": "1.0.0",
-      "type": "fragment",
-      "description": "Web3 frontend integration patterns (wallet, contracts, chains)",
-      "author": "workflow-control",
-      "tags": [
-        "web3",
-        "wallet",
-        "blockchain"
-      ]
-    },
-    {
-      "name": "web3-research-writer",
-      "version": "2.0.0",
-      "type": "pipeline",
-      "description": "Sub-pipeline that writes a single research deliverable. Invoked per-item by web3-tech-research foreach.",
-      "author": "workflow-control",
-      "tags": [
-        "claude"
-      ],
-      "engine_compat": "claude"
-    },
-    {
-      "name": "web3-tech-research",
-      "version": "2.0.0",
-      "type": "pipeline",
-      "description": "Research-driven pipeline for Web3 protocol selection, competitive analysis, and technical feasibility assessment. Enforces primary-source-first research and independent fact-checking to prevent the \"echo chamber\" anti-pattern. On-chain verification runs BEFORE content production. Supports two modes: \"full\" (product optimization with benchmarks, pain points, solution design) and \"explore\" (greenfield research with lightweight landscape analysis).\n",
-      "author": "workflow-control",
-      "tags": [
-        "claude"
-      ],
-      "engine_compat": "claude"
     }
   ]
 }
