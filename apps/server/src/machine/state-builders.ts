@@ -442,6 +442,24 @@ export function buildAgentState(
                 executionHistory: [...(context.executionHistory ?? []), { stage: stateName, action: "completed" as const, timestamp: new Date().toISOString() }],
               };
             }),
+            // Fire-and-forget: generate semantic summaries for writes with summary_prompt
+            ({ context }: { context: WorkflowContext }) => {
+              const writes = runtime.writes ?? [];
+              for (const w of writes) {
+                if (typeof w === "object" && w.summary_prompt) {
+                  const key = w.key;
+                  const value = context.store[key];
+                  if (value === undefined) continue;
+                  import("../agent/semantic-summary.js").then(({ generateSemanticSummary }) => {
+                    generateSemanticSummary(context.taskId, key, value, w.summary_prompt!).then((summary) => {
+                      if (summary) {
+                        context.store[`${key}.__semantic_summary`] = summary;
+                      }
+                    }).catch(() => { /* non-blocking */ });
+                  }).catch(() => { /* non-blocking */ });
+                }
+              }
+            },
             emit(({ event, context }: { event: DoneEvent; context: WorkflowContext }): WorkflowEmittedEvent => ({
               type: "wf.costUpdate",
               taskId: context.taskId,

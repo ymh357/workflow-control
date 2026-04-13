@@ -20,6 +20,7 @@ export function buildTier1Context(
   context: WorkflowContext,
   runtime?: AgentRuntimeConfig,
   maxTokens: number = DEFAULT_TIER1_MAX_TOKENS,
+  currentStage?: string,
 ): string {
   const parts: string[] = [];
   const store = context.store ?? {};
@@ -51,6 +52,18 @@ export function buildTier1Context(
       const val = getNestedValue(store, storePath);
       if (val === undefined) continue;
 
+      // Diff detection on resume: skip unchanged reads to save tokens
+      if (currentStage && context.resumeInfo && context.stageCheckpoints?.[currentStage]?.readsSnapshot) {
+        const prevSnapshot = context.stageCheckpoints[currentStage].readsSnapshot!;
+        const rootKey = storePath.split(".")[0];
+        const prevVal = prevSnapshot[rootKey];
+        if (prevVal !== undefined && JSON.stringify(val) === JSON.stringify(prevVal)) {
+          addPart(`\n### ${label}\n> Unchanged since previous attempt. Use get_store_value("${storePath}") if needed.`);
+          renderedKeys.add(rootKey);
+          continue;
+        }
+      }
+
       const storeKey = storePath.split(".")[0];
       renderedKeys.add(storeKey);
 
@@ -67,10 +80,14 @@ export function buildTier1Context(
         }
         const fullBlock = `\n### ${label}\n${fieldParts.join("\n")}`;
 
-        // Prefer compact summary for large values when available (avoids expensive stringify)
-        const summaryKey = `${storePath.split(".")[0]}.__summary`;
-        if (store[summaryKey] !== undefined && fullBlock.length > MAX_INLINE_CHARS) {
-          addPart(`\n### ${label} (compact summary)\n${store[summaryKey]}\n> Full content: use get_store_value("${storePath}") for complete data`);
+        const semanticSummaryKey = `${storePath.split(".")[0]}.__semantic_summary`;
+        const mechanicalSummaryKey = `${storePath.split(".")[0]}.__summary`;
+
+        if (store[semanticSummaryKey] !== undefined && (fullBlock.length > MAX_INLINE_CHARS || !addPart(fullBlock))) {
+          // Best: LLM-generated semantic summary
+          parts.push(`\n### ${label} (semantic summary)\n${store[semanticSummaryKey]}\n> Full content: use get_store_value("${storePath}") for complete data`);
+        } else if (store[mechanicalSummaryKey] !== undefined && fullBlock.length > MAX_INLINE_CHARS) {
+          addPart(`\n### ${label} (compact summary)\n${store[mechanicalSummaryKey]}\n> Full content: use get_store_value("${storePath}") for complete data`);
         } else if (!addPart(fullBlock)) {
           if (fullBlock.length > MAX_INLINE_CHARS) {
             parts.push(`\n### ${label} (preview, ${fieldParts.length} fields)\n${fieldParts.slice(0, 5).join("\n")}\n...\n> Full content: use get_store_value("${storePath}") for all ${fieldParts.length} fields`);
@@ -91,7 +108,7 @@ export function buildTier1Context(
     }
 
     // List un-injected store keys as indices (Tier 2 references)
-    const otherKeys = Object.keys(store).filter(k => !renderedKeys.has(k) && !k.includes(".__summary"));
+    const otherKeys = Object.keys(store).filter(k => !renderedKeys.has(k) && !k.includes(".__summary") && !k.includes(".__semantic_summary"));
     if (otherKeys.length > 0) {
       parts.push("\n## Other Available Context (use get_store_value tool to read these)");
       parts.push(otherKeys.map(k => `- ${k}`).join("\n"));

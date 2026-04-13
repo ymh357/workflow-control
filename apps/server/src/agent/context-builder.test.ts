@@ -409,3 +409,31 @@ describe("buildTier1Context - compact summary preference", () => {
     expect(result).not.toContain("compact summary");
   });
 });
+
+describe("buildTier1Context - semantic summary preference", () => {
+  it("uses __semantic_summary when value exceeds MAX_INLINE_CHARS", () => {
+    const ctx = makeContext({
+      store: {
+        plan: { tasks: "x".repeat(5000), approach: "y".repeat(5000) },
+        "plan.__summary": "[object] tasks, approach (12345 chars)",
+        "plan.__semantic_summary": "5 tasks using TDD approach, starting with unit tests",
+      },
+    });
+    const runtime = { reads: { "Plan": "plan" } } as any;
+    const result = buildTier1Context(ctx, runtime);
+    expect(result).toContain("5 tasks using TDD approach");
+    expect(result).toContain("semantic summary");
+  });
+
+  it("falls back to __summary when __semantic_summary not available", () => {
+    const ctx = makeContext({
+      store: {
+        plan: { tasks: Array(100).fill("task"), approach: "TDD", details: "x".repeat(10000) },
+        "plan.__summary": "[object] tasks, approach, details (15000 chars)",
+      },
+    });
+    const runtime = { reads: { "Plan": "plan" } } as any;
+    const result = buildTier1Context(ctx, runtime, 50);
+    expect(result).toContain("[object] tasks, approach, details");
+  });
+});
