@@ -795,3 +795,176 @@ describe("buildPipelineStates — parallel groups", () => {
     expect(scriptChild.execution_mode).toBeUndefined();
   });
 });
+
+describe("DAG scheduling (depends_on)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("linear chain A -> B -> C produces sequential stages, no parallel groups", async () => {
+    const { buildAgentState, buildParallelGroupState } = await import("./state-builders.js");
+    const pipeline = makePipeline([
+      { name: "A", type: "agent", runtime: { engine: "llm", system_prompt: "test" } },
+      { name: "B", type: "agent", depends_on: ["A"], runtime: { engine: "llm", system_prompt: "test" } },
+      { name: "C", type: "agent", depends_on: ["B"], runtime: { engine: "llm", system_prompt: "test" } },
+    ]);
+    const states = buildPipelineStates(pipeline);
+
+    // All stages should be sequential (no parallel groups created)
+    expect(states).toHaveProperty("A");
+    expect(states).toHaveProperty("B");
+    expect(states).toHaveProperty("C");
+    expect(buildParallelGroupState).not.toHaveBeenCalled();
+
+    // Verify ordering: A -> B -> C -> completed
+    const callA = (buildAgentState as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) => (c[2] as { name: string }).name === "A"
+    );
+    const callB = (buildAgentState as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) => (c[2] as { name: string }).name === "B"
+    );
+    const callC = (buildAgentState as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) => (c[2] as { name: string }).name === "C"
+    );
+    expect(callA![0]).toBe("B");
+    expect(callB![0]).toBe("C");
+    expect(callC![0]).toBe("completed");
+  });
+
+  it("diamond dependency produces A sequential, B+C parallel group, D sequential", async () => {
+    const { buildAgentState, buildParallelGroupState } = await import("./state-builders.js");
+    const pipeline = makePipeline([
+      { name: "A", type: "agent", runtime: { engine: "llm", system_prompt: "test" } },
+      { name: "B", type: "agent", depends_on: ["A"], runtime: { engine: "llm", system_prompt: "test" } },
+      { name: "C", type: "agent", depends_on: ["A"], runtime: { engine: "llm", system_prompt: "test" } },
+      { name: "D", type: "agent", depends_on: ["B", "C"], runtime: { engine: "llm", system_prompt: "test" } },
+    ]);
+    const states = buildPipelineStates(pipeline);
+
+    // A is level 0 alone -> sequential
+    expect(states).toHaveProperty("A");
+    // B and C are level 1 together -> parallel group __dag_group_1
+    expect(states).toHaveProperty("__dag_group_1");
+    // D is level 2 alone -> sequential
+    expect(states).toHaveProperty("D");
+
+    expect(buildParallelGroupState).toHaveBeenCalledTimes(1);
+    const groupArg = (buildParallelGroupState as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(groupArg.name).toBe("__dag_group_1");
+    const childNames = groupArg.stages.map((s: any) => s.name);
+    expect(childNames).toContain("B");
+    expect(childNames).toContain("C");
+
+    // A -> __dag_group_1
+    const callA = (buildAgentState as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) => (c[2] as { name: string }).name === "A"
+    );
+    expect(callA![0]).toBe("__dag_group_1");
+
+    // __dag_group_1 -> D
+    expect((buildParallelGroupState as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe("D");
+
+    // D -> completed
+    const callD = (buildAgentState as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) => (c[2] as { name: string }).name === "D"
+    );
+    expect(callD![0]).toBe("completed");
+  });
+
+  it("pipeline with no depends_on passes through unchanged", async () => {
+    const { buildAgentState, buildParallelGroupState } = await import("./state-builders.js");
+    const pipeline = makePipeline([
+      { name: "X", type: "agent", runtime: { engine: "llm", system_prompt: "test" } },
+      { name: "Y", type: "agent", runtime: { engine: "llm", system_prompt: "test" } },
+    ]);
+    const states = buildPipelineStates(pipeline);
+
+    expect(states).toHaveProperty("X");
+    expect(states).toHaveProperty("Y");
+    expect(buildParallelGroupState).not.toHaveBeenCalled();
+
+    // Linear order preserved: X -> Y -> completed
+    const callX = (buildAgentState as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) => (c[2] as { name: string }).name === "X"
+    );
+    const callY = (buildAgentState as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) => (c[2] as { name: string }).name === "Y"
+    );
+    expect(callX![0]).toBe("Y");
+    expect(callY![0]).toBe("completed");
+  });
+
+  it("stages without depends_on are placed at level 0 alongside others with no deps", async () => {
+    const { buildAgentState, buildParallelGroupState } = await import("./state-builders.js");
+    // A has no deps, B has no deps, C depends on both
+    const pipeline = makePipeline([
+      { name: "A", type: "agent", runtime: { engine: "llm", system_prompt: "test" } },
+      { name: "B", type: "agent", depends_on: [], runtime: { engine: "llm", system_prompt: "test" } },
+      { name: "C", type: "agent", depends_on: ["A", "B"], runtime: { engine: "llm", system_prompt: "test" } },
+    ]);
+    const states = buildPipelineStates(pipeline);
+
+    // A and B both at level 0 -> parallel group __dag_group_0
+    expect(states).toHaveProperty("__dag_group_0");
+    // C at level 1 -> sequential
+    expect(states).toHaveProperty("C");
+
+    expect(buildParallelGroupState).toHaveBeenCalledTimes(1);
+    const groupArg = (buildParallelGroupState as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(groupArg.name).toBe("__dag_group_0");
+    const childNames = groupArg.stages.map((s: any) => s.name);
+    expect(childNames).toContain("A");
+    expect(childNames).toContain("B");
+
+    // __dag_group_0 -> C
+    expect((buildParallelGroupState as ReturnType<typeof vi.fn>).mock.calls[0][1]).toBe("C");
+
+    // C -> completed
+    const callC = (buildAgentState as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) => (c[2] as { name: string }).name === "C"
+    );
+    expect(callC![0]).toBe("completed");
+  });
+
+  it("throws when pipeline has both parallel_group and depends_on", () => {
+    const pipeline = makePipeline([
+      {
+        parallel: {
+          name: "par1",
+          stages: [
+            { name: "a1", type: "agent", runtime: { engine: "llm", system_prompt: "x" } },
+            { name: "a2", type: "agent", runtime: { engine: "llm", system_prompt: "y" } },
+          ],
+        },
+      } as any,
+      { name: "B", type: "agent", depends_on: ["a1"], runtime: { engine: "llm", system_prompt: "test" } },
+    ]);
+    expect(() => buildPipelineStates(pipeline)).toThrow(
+      "Pipeline cannot use both depends_on and parallel_group. They are mutually exclusive."
+    );
+  });
+
+  it("depends_on with empty arrays on all stages returns early (no DAG transform)", async () => {
+    const { buildAgentState, buildParallelGroupState } = await import("./state-builders.js");
+    const pipeline = makePipeline([
+      { name: "A", type: "agent", depends_on: [], runtime: { engine: "llm", system_prompt: "test" } },
+      { name: "B", type: "agent", depends_on: [], runtime: { engine: "llm", system_prompt: "test" } },
+    ]);
+    const states = buildPipelineStates(pipeline);
+
+    // Empty depends_on means hasDepends is false, so no DAG transform.
+    // Stages stay in original linear order.
+    expect(states).toHaveProperty("A");
+    expect(states).toHaveProperty("B");
+    expect(buildParallelGroupState).not.toHaveBeenCalled();
+
+    const callA = (buildAgentState as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) => (c[2] as { name: string }).name === "A"
+    );
+    const callB = (buildAgentState as ReturnType<typeof vi.fn>).mock.calls.find(
+      (c: unknown[]) => (c[2] as { name: string }).name === "B"
+    );
+    expect(callA![0]).toBe("B");
+    expect(callB![0]).toBe("completed");
+  });
+});

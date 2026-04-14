@@ -11,7 +11,8 @@ export function stableHash(value: unknown): string {
 }
 
 function stableStringify(value: unknown, seen: WeakSet<object> = new WeakSet()): string {
-  if (value === null || value === undefined) return JSON.stringify(value);
+  if (value === undefined) return '"undefined"';
+  if (value === null) return "null";
   if (typeof value !== "object") return JSON.stringify(value);
   if (seen.has(value as object)) return '"[Circular]"';
   seen.add(value as object);
