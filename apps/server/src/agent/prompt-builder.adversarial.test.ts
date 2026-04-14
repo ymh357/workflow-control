@@ -175,7 +175,7 @@ describe("adversarial: buildSystemAppendPrompt fragment handling", () => {
       { id: "b", content: "real content" },
     ]);
 
-    const result = await buildSystemAppendPrompt({
+    const { prompt: result } = await buildSystemAppendPrompt({
       taskId: "t",
       stageName: "coding",
       stageConfig: { engine: "claude", mcpServices: [] },
@@ -196,7 +196,7 @@ describe("adversarial: buildSystemAppendPrompt fragment handling", () => {
   });
 
   it("handles analyzing stage with no keywords gracefully", async () => {
-    const result = await buildSystemAppendPrompt({
+    const { prompt: result } = await buildSystemAppendPrompt({
       taskId: "t",
       stageName: "analyzing",
       stageConfig: { engine: "claude", mcpServices: [] },
@@ -218,7 +218,7 @@ describe("adversarial: buildSystemAppendPrompt fragment handling", () => {
   });
 
   it("uses runtime.system_prompt as fallback key for system prompt lookup", async () => {
-    const result = await buildSystemAppendPrompt({
+    const { prompt: result } = await buildSystemAppendPrompt({
       taskId: "t",
       stageName: "custom-stage",
       runtime: { system_prompt: "alias-stage" } as any,
@@ -239,7 +239,7 @@ describe("adversarial: buildSystemAppendPrompt fragment handling", () => {
 
 describe("adversarial: buildSystemAppendPrompt system prompt precedence", () => {
   it("stageName key takes precedence over runtime.system_prompt key", async () => {
-    const result = await buildSystemAppendPrompt({
+    const { prompt: result } = await buildSystemAppendPrompt({
       taskId: "t",
       stageName: "coding",
       runtime: { system_prompt: "fallback" } as any,

@@ -236,7 +236,7 @@ describe("buildSystemAppendPrompt", () => {
   });
 
   it("includes global constraints from privateConfig", async () => {
-    const result = await buildSystemAppendPrompt(baseParams as any);
+    const { prompt: result } = await buildSystemAppendPrompt(baseParams as any);
     expect(result).toContain("## Test Constraints");
   });
 
@@ -248,7 +248,7 @@ describe("buildSystemAppendPrompt", () => {
         prompts: { ...baseParams.privateConfig.prompts, globalConstraints: "" },
       },
     };
-    const result = await buildSystemAppendPrompt(params as any);
+    const { prompt: result } = await buildSystemAppendPrompt(params as any);
     // Falsy globalConstraints -> falls back to DEFAULT_GLOBAL_CONSTRAINTS
     expect(result).toContain("Global Constraints");
   });
@@ -257,7 +257,7 @@ describe("buildSystemAppendPrompt", () => {
     mockResolveFragmentsFromSnapshot.mockReturnValue([
       { id: "frag1", content: "Resolved fragment content" },
     ]);
-    const result = await buildSystemAppendPrompt({
+    const { prompt: result, fragmentIds } = await buildSystemAppendPrompt({
       ...baseParams,
       enabledSteps: ["lint"],
     } as any);
@@ -268,6 +268,7 @@ describe("buildSystemAppendPrompt", () => {
       baseParams.privateConfig.prompts.fragmentMeta,
     );
     expect(result).toContain("Resolved fragment content");
+    expect(fragmentIds).toEqual(["frag1"]);
   });
 
   it("uses fragment registry when no fragmentMeta in privateConfig", async () => {
@@ -281,7 +282,7 @@ describe("buildSystemAppendPrompt", () => {
       ...baseParams,
       privateConfig: null,
     };
-    const result = await buildSystemAppendPrompt(params as any);
+    const { prompt: result } = await buildSystemAppendPrompt(params as any);
     expect(mockResolve).toHaveBeenCalledWith("coding", undefined);
     expect(result).toContain("Registry fragment");
   });
@@ -298,12 +299,12 @@ describe("buildSystemAppendPrompt", () => {
         },
       },
     };
-    const result = await buildSystemAppendPrompt(params as any);
+    const { prompt: result } = await buildSystemAppendPrompt(params as any);
     expect(result).toContain("Inline fragment text");
   });
 
   it("includes stage-specific system prompt", async () => {
-    const result = await buildSystemAppendPrompt(baseParams as any);
+    const { prompt: result } = await buildSystemAppendPrompt(baseParams as any);
     expect(result).toContain("You are a coding assistant.");
   });
 
@@ -312,7 +313,7 @@ describe("buildSystemAppendPrompt", () => {
       ...baseParams,
       stageName: "unknown-stage",
     };
-    const result = await buildSystemAppendPrompt(params as any);
+    const { prompt: result } = await buildSystemAppendPrompt(params as any);
     expect(result).toContain("Execute the current task stage based on project context.");
   });
 
@@ -331,7 +332,7 @@ describe("buildSystemAppendPrompt", () => {
         },
       },
     };
-    const result = await buildSystemAppendPrompt(params as any);
+    const { prompt: result } = await buildSystemAppendPrompt(params as any);
     expect(result).toContain("### Available enabledSteps keywords");
     expect(result).toContain('"lint", "test"');
     expect(result).toContain("activates frag1");
@@ -350,7 +351,7 @@ describe("buildSystemAppendPrompt", () => {
       stageName: "analyzing",
       privateConfig: null,
     };
-    const result = await buildSystemAppendPrompt(params as any);
+    const { prompt: result } = await buildSystemAppendPrompt(params as any);
     expect(result).toContain('"lint"');
     expect(result).toContain("activates lint-frag");
   });
@@ -366,7 +367,7 @@ describe("buildSystemAppendPrompt", () => {
         },
       },
     };
-    const result = await buildSystemAppendPrompt(params as any);
+    const { prompt: result } = await buildSystemAppendPrompt(params as any);
     expect(result).not.toContain("# Project Instructions");
   });
 
@@ -382,12 +383,12 @@ describe("buildSystemAppendPrompt", () => {
         },
       },
     };
-    const result = await buildSystemAppendPrompt(params as any);
+    const { prompt: result } = await buildSystemAppendPrompt(params as any);
     expect(result).not.toContain("# Project Instructions");
   });
 
   it("includes codex project instructions when engine is codex", async () => {
-    const result = await buildSystemAppendPrompt({
+    const { prompt: result } = await buildSystemAppendPrompt({
       taskId: "t1",
       stageName: "test",
       runtime: { engine: "llm" as const, system_prompt: "test" },
@@ -420,7 +421,7 @@ describe("buildSystemAppendPrompt", () => {
         },
       },
     };
-    const result = await buildSystemAppendPrompt(params as any);
+    const { prompt: result } = await buildSystemAppendPrompt(params as any);
     expect(result).toContain("Private claude md");
   });
 
@@ -444,7 +445,7 @@ describe("buildSystemAppendPrompt", () => {
         },
       },
     };
-    const result = await buildSystemAppendPrompt(params as any);
+    const { prompt: result } = await buildSystemAppendPrompt(params as any);
     expect(result).toContain("## Required Output Format");
     expect(result).toContain('"summary": string');
   });
@@ -454,7 +455,7 @@ describe("buildSystemAppendPrompt", () => {
       { id: "a", content: "Same content" },
       { id: "b", content: "Same content" },
     ]);
-    const result = await buildSystemAppendPrompt(baseParams as any);
+    const { prompt: result } = await buildSystemAppendPrompt(baseParams as any);
     const occurrences = result.split("Same content").length - 1;
     expect(occurrences).toBe(1);
   });

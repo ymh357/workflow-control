@@ -14,7 +14,7 @@ vi.mock("../agent/context-builder.js", () => ({
 }));
 
 vi.mock("../agent/prompt-builder.js", () => ({
-  buildSystemAppendPrompt: vi.fn(async () => "system-prompt-text"),
+  buildSystemAppendPrompt: vi.fn(async () => ({ prompt: "system-prompt-text", fragmentIds: [] })),
 }));
 
 vi.mock("../lib/json-extractor.js", () => ({

@@ -8,7 +8,6 @@ import { taskLogger } from "../lib/logger.js";
 import { loadSystemSettings, type AgentRuntimeConfig, type SubAgentDefinition, flattenStages } from "../lib/config-loader.js";
 import type { WorkflowContext } from "../machine/types.js";
 import { loadMcpRegistry, buildMcpFromRegistry } from "../lib/config/mcp.js";
-import { buildTier1Context } from "./context-builder.js";
 import { queryGemini } from "./gemini-executor.js";
 import { queryCodex } from "./codex-executor.js";
 import { type AgentResult, type AgentQuery } from "./query-tracker.js";
@@ -18,7 +17,7 @@ import { processAgentStream } from "./stream-processor.js";
 import { outputSchemaToJsonSchema } from "./output-schema.js";
 import { createAskUserQuestionInterceptor, createSpecAuditHook, createPathRestrictionHook } from "./executor-hooks.js";
 
-const appendPromptCache = new Map<string, string>();
+const appendPromptCache = new Map<string, { prompt: string; fragmentIds: string[] }>();
 
 function resolveModelForEngine(engine: string, privateAgent?: Record<string, any>, settingsAgent?: Record<string, any>): string | undefined {
   const key = `${engine}_model`;
@@ -98,7 +97,8 @@ export async function executeStage(
     sseManager.pushMessage(taskId, createSSEMessage(taskId, "stage_change", { stage: stageName }));
   }
 
-  const effectiveTier1 = buildTier1Context(context, runtime, undefined, stageName);
+  // prompt (3rd arg) already contains runtime-aware tier1Context from state-builders
+  const effectiveTier1 = prompt;
 
   let absoluteTimer: ReturnType<typeof setTimeout> | undefined;
   let warningTimer: ReturnType<typeof setTimeout> | undefined;
@@ -125,16 +125,21 @@ export async function executeStage(
   }
   const appendCacheKey = `${taskId}:${stageName}`;
   let appendPrompt: string;
+  let resolvedFragmentIds: string[];
   if (isResume && appendPromptCache.has(appendCacheKey)) {
-    appendPrompt = appendPromptCache.get(appendCacheKey)!;
+    const cached = appendPromptCache.get(appendCacheKey)!;
+    appendPrompt = cached.prompt;
+    resolvedFragmentIds = cached.fragmentIds;
   } else {
-    appendPrompt = await buildSystemAppendPrompt({
+    const result = await buildSystemAppendPrompt({
       taskId, stageName, enabledSteps, runtime, privateConfig,
       stageConfig: { ...stageConfig, mcpServices }, cwd,
     });
-    appendPromptCache.set(appendCacheKey, appendPrompt);
+    appendPrompt = result.prompt;
+    resolvedFragmentIds = result.fragmentIds;
+    appendPromptCache.set(appendCacheKey, result);
   }
-  const staticPromptPrefix = buildStaticPromptPrefix(privateConfig, stageConfig.engine);
+  const staticPromptPrefix = buildStaticPromptPrefix(privateConfig, stageConfig.engine, resolvedFragmentIds);
 
   const canResume = !!resumeSessionId;
   const effectivePrompt = buildEffectivePrompt({

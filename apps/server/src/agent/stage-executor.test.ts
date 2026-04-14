@@ -76,7 +76,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 }));
 
 vi.mock("./prompt-builder.js", () => ({
-  buildSystemAppendPrompt: vi.fn(async () => "append-prompt"),
+  buildSystemAppendPrompt: vi.fn(async () => ({ prompt: "append-prompt", fragmentIds: [] })),
   buildEffectivePrompt: vi.fn(({ isResume, resumeSync, resumePrompt }) => {
     if (isResume && resumeSync) return "SYNC_RESUME_PROMPT";
     if (isResume && resumePrompt) return `RESUME: ${resumePrompt}`;
@@ -371,9 +371,11 @@ describe("executeStage - checkpoint injection", () => {
       injectedContext: ctx,
     });
 
+    // After O1, effectiveTier1 comes directly from the prompt arg (3rd param)
+    // instead of a redundant buildTier1Context call
     expect(buildEffectivePrompt).toHaveBeenCalledWith(
       expect.objectContaining({
-        tier1Context: "tier1-context",
+        tier1Context: "do stuff",
       }),
     );
   });

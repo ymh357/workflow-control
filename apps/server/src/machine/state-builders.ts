@@ -160,7 +160,7 @@ export function buildAgentState(
           taskId: context.taskId,
           stageName: stateName,
           worktreePath: context.worktreePath ?? "",
-          tier1Context: buildTier1Context(effectiveContext, undefined, undefined, stateName),
+          tier1Context: buildTier1Context(effectiveContext, runtime, undefined, stateName),
           enabledSteps,
           attempt: context.retryCount,
           resumeInfo: context.resumeInfo,

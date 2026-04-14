@@ -74,7 +74,7 @@ async function buildStageContext(taskId: string, stageName: string, compact = fa
 
   const tier1Context = buildTier1Context(context, runtime, undefined, stageName);
   const stageEngine = stageConfig.engine ?? context.config?.pipeline?.engine ?? "claude";
-  const systemPrompt = await buildSystemAppendPrompt({
+  const { prompt: systemPrompt } = await buildSystemAppendPrompt({
     taskId,
     stageName,
     runtime,

@@ -18,7 +18,7 @@ interface PromptBuilderParams {
   cwd?: string;
 }
 
-export async function buildSystemAppendPrompt(params: PromptBuilderParams): Promise<string> {
+export async function buildSystemAppendPrompt(params: PromptBuilderParams): Promise<{ prompt: string; fragmentIds: string[] }> {
   const { stageName, enabledSteps, runtime, privateConfig, stageConfig, cwd } = params;
   const appendParts: string[] = [];
 
@@ -51,6 +51,8 @@ export async function buildSystemAppendPrompt(params: PromptBuilderParams): Prom
   } else {
     resolvedFragments = getFragmentRegistry().resolve(stageName, enabledSteps);
   }
+
+  const fragmentIds = resolvedFragments.map(f => f.id);
 
   // 3. Add resolved fragments
   for (const { content } of resolvedFragments) {
@@ -127,7 +129,7 @@ Rules:
     if (projectClaudeMd) appendParts.push(`# Project Instructions\n${projectClaudeMd}`);
   }
 
-  return appendParts.join("\n\n");
+  return { prompt: appendParts.join("\n\n"), fragmentIds };
 }
 
 /**
@@ -135,18 +137,25 @@ Rules:
  * Used for prompt cache optimization — this prefix is identical across
  * all stages in the same pipeline and can be cached.
  */
-export function buildStaticPromptPrefix(privateConfig: any, engine: string): string {
+export function buildStaticPromptPrefix(privateConfig: any, engine: string, resolvedFragmentIds?: string[]): string {
   const parts: string[] = [];
 
   // Global constraints (same for all stages)
   const effectiveConstraints = privateConfig?.prompts.globalConstraints || DEFAULT_GLOBAL_CONSTRAINTS;
   parts.push(effectiveConstraints);
 
-  // All fragments included (intentional superset) — cache optimization requires
-  // byte-identical prefix across stages; per-stage filtering would bust the cache.
+  // When resolvedFragmentIds is provided, only include fragments this stage uses.
+  // Otherwise include all (backward compat for edge/mcp-server).
   if (privateConfig?.prompts.fragments) {
-    for (const content of Object.values(privateConfig.prompts.fragments as Record<string, string>)) {
-      if (content && !parts.includes(content)) parts.push(content);
+    if (resolvedFragmentIds) {
+      for (const id of resolvedFragmentIds) {
+        const content = (privateConfig.prompts.fragments as Record<string, string>)[id];
+        if (content && !parts.includes(content)) parts.push(content);
+      }
+    } else {
+      for (const content of Object.values(privateConfig.prompts.fragments as Record<string, string>)) {
+        if (content && !parts.includes(content)) parts.push(content);
+      }
     }
   }
 

@@ -79,7 +79,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 }));
 
 vi.mock("./prompt-builder.js", () => ({
-  buildSystemAppendPrompt: vi.fn(async () => "append-prompt"),
+  buildSystemAppendPrompt: vi.fn(async () => ({ prompt: "append-prompt", fragmentIds: [] })),
   buildEffectivePrompt: vi.fn(() => "effective-prompt"),
   buildStaticPromptPrefix: vi.fn(() => "static-prefix"),
 }));
