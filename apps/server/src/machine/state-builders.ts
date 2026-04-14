@@ -17,6 +17,20 @@ import { formatVerifyFailures } from "../agent/verify-commands.js";
 
 type WriteDeclaration = string | { key: string; strategy?: string };
 
+const parseCache = new WeakMap<object, Record<string, unknown> | null>();
+
+function getCachedParse(output: Record<string, any>): Record<string, unknown> | null {
+  if (parseCache.has(output)) return parseCache.get(output)!;
+  try {
+    const parsed = extractJSON(output.resultText);
+    parseCache.set(output, parsed);
+    return parsed;
+  } catch {
+    parseCache.set(output, null);
+    return null;
+  }
+}
+
 /**
  * Filter store writes to only include keys declared in the stage's `writes` config.
  * Undeclared keys are logged as warnings and dropped.
@@ -161,15 +175,11 @@ export function buildAgentState(
           guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
             if ((runtime.writes?.length ?? 0) === 0) return false;
             if (getStageRetryCount(context, stateName) >= 2) return false;
-            const text = event.output.resultText;
-            if (!text) return true;
-            try {
-              const parsed = extractJSON(text);
-              const writeKeys = runtime.writes!.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
-              return !writeKeys.every((field: string) => parsed[field] !== undefined);
-            } catch {
-              return true;
-            }
+            if (!event.output.resultText) return true;
+            const parsed = getCachedParse(event.output);
+            if (!parsed) return true;
+            const writeKeys = runtime.writes!.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
+            return !writeKeys.every((field: string) => parsed[field] !== undefined);
           },
           target: stateName,
           reenter: true,
@@ -210,15 +220,11 @@ export function buildAgentState(
               const loopCount = context.qaRetryCount ?? 0;
               if (loopCount < (runtime.retry.max_retries ?? 2)) return false;
             }
-            const text = event.output.resultText;
-            if (!text) return true;
-            try {
-              const parsed = extractJSON(text);
-              const writeKeys = runtime.writes!.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
-              return !writeKeys.every((field: string) => parsed[field] !== undefined);
-            } catch {
-              return true;
-            }
+            if (!event.output.resultText) return true;
+            const parsed = getCachedParse(event.output);
+            if (!parsed) return true;
+            const writeKeys = runtime.writes!.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
+            return !writeKeys.every((field: string) => parsed[field] !== undefined);
           },
           target: opts?.blockedTarget ?? "blocked",
           actions: [
@@ -252,22 +258,21 @@ export function buildAgentState(
             const retryConf = runtime.retry!;
             const loopCount = context.qaRetryCount ?? 0;
             if (loopCount >= (retryConf.max_retries ?? 2)) return false;
-            try {
-              const parsed = extractJSON(event.output.resultText);
-              return (runtime.writes ?? []).some((w: WriteDeclaration) => {
-                const field = typeof w === "string" ? w : w.key;
-                const val = parsed[field] as Record<string, unknown> | undefined;
-                return val && typeof val === "object" && (val as Record<string, unknown>).passed === false;
-              });
-            } catch { return false; }
+            const parsed = getCachedParse(event.output);
+            if (!parsed) return false;
+            return (runtime.writes ?? []).some((w: WriteDeclaration) => {
+              const field = typeof w === "string" ? w : w.key;
+              const val = parsed[field] as Record<string, unknown> | undefined;
+              return val && typeof val === "object" && (val as Record<string, unknown>).passed === false;
+            });
           },
           target: statePrefix ? `${statePrefix}.${runtime.retry.back_to}` : runtime.retry.back_to,
           actions: [
             assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
               let store = context.store ?? {};
               if (runtime.writes?.length && event.output?.resultText) {
-                try {
-                  const parsed = extractJSON(event.output.resultText);
+                const parsed = getCachedParse(event.output);
+                if (parsed) {
                   const writeStrategies = buildWriteStrategies(runtime.writes);
                   const updates: Record<string, any> = {};
                   for (const w of runtime.writes) {
@@ -275,22 +280,22 @@ export function buildAgentState(
                     if (parsed[field] !== undefined) updates[field] = parsed[field];
                   }
                   applyStoreUpdates(store, updates, writeStrategies);
-                } catch { /* stored what we could */ }
+                }
               }
               const backTo = runtime.retry!.back_to!;
               const targetSessionId = context.stageSessionIds?.[backTo];
               let feedback = `Stage "${stateName}" found errors:\n\n`;
-              try {
-                const parsed = extractJSON(event.output.resultText);
+              const parsedFeedback = event.output?.resultText ? getCachedParse(event.output) : null;
+              if (parsedFeedback) {
                 for (const w of runtime.writes ?? []) {
                   const field = typeof w === "string" ? w : w.key;
-                  const val = parsed[field] as Record<string, unknown> | undefined;
+                  const val = parsedFeedback[field] as Record<string, unknown> | undefined;
                   const blockers = val?.blockers as string[] | undefined;
                   if (blockers?.length) {
                     feedback += blockers.join("\n\n");
                   }
                 }
-              } catch { /* best-effort feedback */ }
+              }
               return {
                 store,
                 qaRetryCount: (context.qaRetryCount ?? 0) + 1,
@@ -393,8 +398,8 @@ export function buildAgentState(
               let store = context.store ?? {};
               let parallelStagedWrites = context.parallelStagedWrites;
               if (runtime.writes?.length && event.output?.resultText) {
-                try {
-                  const parsed = extractJSON(event.output.resultText);
+                const parsed = getCachedParse(event.output);
+                if (parsed) {
                   const writeStrategies = buildWriteStrategies(runtime.writes);
                   const updates: Record<string, any> = {};
                   for (const w of runtime.writes) {
@@ -423,8 +428,8 @@ export function buildAgentState(
                       }
                     }
                   }
-                } catch (err) {
-                  taskLogger(context.taskId).error({ err, stage: stateName }, "Failed to parse agent output for writes");
+                } else {
+                  taskLogger(context.taskId).error({ stage: stateName }, "Failed to parse agent output for writes");
                 }
               }
               return {
