@@ -1,5 +1,5 @@
 import { createActor } from "xstate";
-import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, unlinkSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowContext, WorkflowEvent } from "./types.js";
 import { createWorkflowMachine } from "./machine.js";
@@ -179,18 +179,8 @@ function readPipelineIndex(dataDir: string): Record<string, { taskId: string; co
   }
 }
 
-export function updatePipelineIndex(dataDir: string, pipelineName: string, taskId: string): void {
-  const indexPath = join(dataDir, "tasks", "_pipeline_index.json");
-  try {
-    const index = readPipelineIndex(dataDir);
-    index[pipelineName] = { taskId, completedAt: new Date().toISOString() };
-    const tmp = `${indexPath}.tmp.${Date.now()}`;
-    writeFileSync(tmp, JSON.stringify(index, null, 2));
-    renameSync(tmp, indexPath);
-  } catch (err) {
-    taskLogger("system").warn({ err }, "Failed to update pipeline index");
-  }
-}
+// Pipeline index is updated by side-effects.ts on task completion.
+// readPipelineIndex is used by resolveInheritedStore below.
 
 // --- Store Inheritance ---
 

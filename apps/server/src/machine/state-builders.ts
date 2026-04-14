@@ -15,7 +15,7 @@ import { extractJSON } from "../lib/json-extractor.js";
 import { getStageBuilder } from "./stage-registry.js";
 import { formatVerifyFailures } from "../agent/verify-commands.js";
 
-type WriteDeclaration = string | { key: string; strategy?: string };
+type WriteDeclaration = string | { key: string; strategy?: string; summary_prompt?: string };
 
 const parseCache = new WeakMap<object, Record<string, unknown> | null>();
 
@@ -448,7 +448,9 @@ export function buildAgentState(
               };
             }),
             // Fire-and-forget: generate semantic summaries for writes with summary_prompt
+            // Only for non-parallel paths (parallel children's writes are staged, not in store yet)
             ({ context }: { context: WorkflowContext }) => {
+              if (opts?.statePrefix) return;
               const writes = runtime.writes ?? [];
               for (const w of writes) {
                 if (typeof w === "object" && w.summary_prompt) {
@@ -462,7 +464,6 @@ export function buildAgentState(
                     generateSemanticSummary(context.taskId, key, value, w.summary_prompt!).then((summary) => {
                       if (summary) {
                         setCachedSummary(context.taskId, key, summary);
-                        context.store[`${key}.__semantic_summary`] = summary;
                       }
                     }).catch(() => {});
                   }).catch(() => {});

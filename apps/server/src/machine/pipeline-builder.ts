@@ -31,7 +31,7 @@ function transformDagToParallelGroups(pipeline: PipelineConfig): PipelineConfig 
   );
   if (!hasDepends) return pipeline;
 
-  const stages = pipeline.stages as PipelineStageConfig[];
+  const stages = pipeline.stages.filter(e => !isParallelGroup(e)) as PipelineStageConfig[];
   const depMap = new Map<string, Set<string>>();
   for (const s of stages) {
     depMap.set(s.name, new Set(s.depends_on ?? []));

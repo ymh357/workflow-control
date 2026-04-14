@@ -86,6 +86,14 @@ export function registerSideEffects(actor: EmittingActor): void {
     notifyTaskTerminated(event.taskId, "completed or error");
     clearEventCounter(event.taskId);
 
+    // Clean up per-task caches (I1, I2)
+    import("../agent/semantic-summary-cache.js").then(({ clearTaskSummaries }) => {
+      clearTaskSummaries(event.taskId);
+    }).catch(() => {});
+    import("../agent/stage-executor.js").then(({ clearAppendPromptCache }) => {
+      clearAppendPromptCache(event.taskId);
+    }).catch(() => {});
+
     // Update pipeline index for fast store inheritance (O7)
     import("./actor-registry.js").then(({ getWorkflow }) => {
       const wfActor = getWorkflow(event.taskId);

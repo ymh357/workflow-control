@@ -1,11 +1,7 @@
-import { createHash } from "node:crypto";
 import type { WorkflowContext } from "../machine/types.js";
 import { type AgentRuntimeConfig, getNestedValue, flattenStages } from "../lib/config-loader.js";
 import { getCachedSummary } from "./semantic-summary-cache.js";
-
-function stableHash(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
-}
+import { stableHash } from "../lib/stable-hash.js";
 
 // Compact Tier 1 context injected into systemPrompt for each stage.
 // Full Tier 2 context lives in .workflow/ files that the agent reads on demand.

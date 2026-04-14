@@ -19,6 +19,12 @@ import { createAskUserQuestionInterceptor, createSpecAuditHook, createPathRestri
 
 const appendPromptCache = new Map<string, { prompt: string; fragmentIds: string[] }>();
 
+export function clearAppendPromptCache(taskId: string): void {
+  for (const key of appendPromptCache.keys()) {
+    if (key.startsWith(`${taskId}:`)) appendPromptCache.delete(key);
+  }
+}
+
 function resolveModelForEngine(engine: string, privateAgent?: Record<string, any>, settingsAgent?: Record<string, any>): string | undefined {
   const key = `${engine}_model`;
   return (privateAgent as any)?.[key] ?? (settingsAgent as any)?.[key] ?? settingsAgent?.default_model;

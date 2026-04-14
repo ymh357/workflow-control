@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { fromPromise, assign, emit } from "xstate";
 import type { TaskStatus } from "../types/index.js";
 import type { WorkflowContext } from "./types.js";
@@ -7,10 +6,7 @@ import { getGitHead, runCompensation } from "./git-checkpoint.js";
 import { getNestedValue, flattenStages, isParallelGroup } from "../lib/config-loader.js";
 import { taskLogger } from "../lib/logger.js";
 import { AgentError } from "../agent/query-tracker.js";
-
-function stableHash(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
-}
+import { stableHash } from "../lib/stable-hash.js";
 
 // XState emit() returns an ActionFunction with 9 generic parameters that are only
 // correctly inferred inside setup().createMachine(). External factory functions cannot
