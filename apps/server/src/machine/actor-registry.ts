@@ -165,6 +165,13 @@ export function deleteWorkflow(taskId: string): boolean {
   sseManager.closeStream(taskId);
   questionManager.cancelForTask(taskId);
   taskListBroadcaster.broadcastTaskRemoval(taskId);
+  // Clean up per-task caches
+  import("../agent/semantic-summary-cache.js").then(({ clearTaskSummaries }) => {
+    clearTaskSummaries(taskId);
+  }).catch(() => {});
+  import("../agent/stage-executor.js").then(({ clearAppendPromptCache }) => {
+    clearAppendPromptCache(taskId);
+  }).catch(() => {});
   return true;
 }
 

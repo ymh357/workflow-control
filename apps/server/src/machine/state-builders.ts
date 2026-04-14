@@ -900,27 +900,39 @@ export function buildLlmDecisionState(
         context,
         runtime,
       }),
-      onDone: runtime.choices.map((choice) => ({
-        target: choice.goto,
-        guard: ({ event }: { event: { output: { choiceId: string; goto: string } } }) =>
-          event.output.choiceId === choice.id,
-        actions: [
-          assign(({ context }: { context: WorkflowContext }) => {
-            const skippedTargets = allGotoTargets.filter((t) => t !== choice.goto);
-            const existingSkipped = new Set(context.skippedStages ?? []);
-            const newSkipped = skippedTargets.filter((t) => !existingSkipped.has(t));
-            return {
-              completedStages: [...(context.completedStages ?? []), stateName],
-              skippedStages: [...(context.skippedStages ?? []), ...newSkipped],
-              executionHistory: [
-                ...(context.executionHistory ?? []),
-                { stage: stateName, action: "completed" as const, timestamp: new Date().toISOString() },
-                ...newSkipped.map((t) => ({ stage: t, action: "skipped" as const, timestamp: new Date().toISOString() })),
-              ],
-            };
-          }),
-        ],
-      })),
+      onDone: [
+        ...runtime.choices.map((choice) => ({
+          target: choice.goto,
+          guard: ({ event }: { event: { output: { choiceId: string; goto: string } } }) =>
+            event.output.choiceId === choice.id,
+          actions: [
+            assign(({ context }: { context: WorkflowContext }) => {
+              const skippedTargets = allGotoTargets.filter((t) => t !== choice.goto);
+              const existingSkipped = new Set(context.skippedStages ?? []);
+              const newSkipped = skippedTargets.filter((t) => !existingSkipped.has(t));
+              return {
+                completedStages: [...(context.completedStages ?? []), stateName],
+                skippedStages: [...(context.skippedStages ?? []), ...newSkipped],
+                executionHistory: [
+                  ...(context.executionHistory ?? []),
+                  { stage: stateName, action: "completed" as const, timestamp: new Date().toISOString() },
+                  ...newSkipped.map((t) => ({ stage: t, action: "skipped" as const, timestamp: new Date().toISOString() })),
+                ],
+              };
+            }),
+          ],
+        })),
+        // Fallback: LLM returned unknown choiceId
+        {
+          target: opts?.blockedTarget ?? "blocked",
+          actions: [
+            assign(({ event }: { event: DoneEvent }) => ({
+              error: `LLM decision "${stateName}" returned unknown choiceId: "${(event.output as Record<string, unknown>)?.choiceId ?? "undefined"}"`,
+              lastStage: stateName,
+            })),
+          ],
+        },
+      ],
       onError: {
         target: opts?.blockedTarget ?? "blocked",
         actions: [

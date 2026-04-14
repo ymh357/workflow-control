@@ -10,12 +10,16 @@ export function stableHash(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex").slice(0, 16);
 }
 
-function stableStringify(value: unknown): string {
+function stableStringify(value: unknown, seen: WeakSet<object> = new WeakSet()): string {
   if (value === null || value === undefined) return JSON.stringify(value);
   if (typeof value !== "object") return JSON.stringify(value);
+  if (seen.has(value as object)) return '"[Circular]"';
+  seen.add(value as object);
+  if (value instanceof Date) return JSON.stringify(value.toISOString());
+  if (value instanceof RegExp) return JSON.stringify(value.toString());
   if (Array.isArray(value)) {
-    return "[" + value.map(stableStringify).join(",") + "]";
+    return "[" + value.map(v => stableStringify(v, seen)).join(",") + "]";
   }
   const keys = Object.keys(value as Record<string, unknown>).sort();
-  return "{" + keys.map(k => JSON.stringify(k) + ":" + stableStringify((value as Record<string, unknown>)[k])).join(",") + "}";
+  return "{" + keys.map(k => JSON.stringify(k) + ":" + stableStringify((value as Record<string, unknown>)[k], seen)).join(",") + "}";
 }

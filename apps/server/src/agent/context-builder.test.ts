@@ -1,9 +1,5 @@
-import { createHash } from "node:crypto";
 import { describe, it, expect, vi } from "vitest";
-
-function stableHash(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
-}
+import { stableHash } from "../lib/stable-hash.js";
 
 vi.mock("../lib/logger.js", () => ({
   taskLogger: () => ({
