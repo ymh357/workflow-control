@@ -13,13 +13,29 @@ import { questionManager } from "../lib/question-manager.js";
 import { safeFire } from "../lib/safe-fire.js";
 import { taskLogger } from "../lib/logger.js";
 import { emitWorkflowEvent, clearEventCounter } from "./event-emitter.js";
-import path from "node:path";
+import { readFileSync, writeFileSync, renameSync } from "node:fs";
+import path, { join } from "node:path";
+import { loadSystemSettings } from "../lib/config-loader.js";
 
 interface EmittingActor {
   on: <T extends WorkflowEmittedEvent["type"]>(
     type: T,
     handler: (event: Extract<WorkflowEmittedEvent, { type: T }>) => void,
   ) => { unsubscribe(): void };
+}
+
+function updatePipelineIndex(taskId: string, pipelineName: string): void {
+  try {
+    const settings = loadSystemSettings();
+    const dataDir = settings.paths?.data_dir || "/tmp/workflow-control-data";
+    const indexPath = join(dataDir, "tasks", "_pipeline_index.json");
+    let index: Record<string, { taskId: string; completedAt: string }> = {};
+    try { index = JSON.parse(readFileSync(indexPath, "utf-8")); } catch { /* no index yet */ }
+    index[pipelineName] = { taskId, completedAt: new Date().toISOString() };
+    const tmp = `${indexPath}.tmp.${Date.now()}`;
+    writeFileSync(tmp, JSON.stringify(index, null, 2));
+    renameSync(tmp, indexPath);
+  } catch { /* non-blocking */ }
 }
 
 const registeredActors = new WeakSet<object>();
@@ -69,6 +85,15 @@ export function registerSideEffects(actor: EmittingActor): void {
     sseManager.closeStream(event.taskId);
     notifyTaskTerminated(event.taskId, "completed or error");
     clearEventCounter(event.taskId);
+
+    // Update pipeline index for fast store inheritance (O7)
+    import("./actor-registry.js").then(({ getWorkflow }) => {
+      const wfActor = getWorkflow(event.taskId);
+      const ctx = wfActor?.getSnapshot()?.context;
+      if (ctx?.status === "completed" && ctx.config?.pipelineName) {
+        updatePipelineIndex(event.taskId, ctx.config.pipelineName);
+      }
+    }).catch(() => { /* non-blocking */ });
   });
 
   actor.on("wf.notionSync", (event: Extract<WorkflowEmittedEvent, { type: "wf.notionSync" }>) => {

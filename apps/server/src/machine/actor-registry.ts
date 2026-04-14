@@ -1,5 +1,5 @@
 import { createActor } from "xstate";
-import { existsSync, unlinkSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, unlinkSync, readdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkflowContext, WorkflowEvent } from "./types.js";
 import { createWorkflowMachine } from "./machine.js";
@@ -168,7 +168,49 @@ export function deleteWorkflow(taskId: string): boolean {
   return true;
 }
 
+// --- Pipeline Index (O7: fast store inheritance lookup) ---
+
+function readPipelineIndex(dataDir: string): Record<string, { taskId: string; completedAt: string }> {
+  const indexPath = join(dataDir, "tasks", "_pipeline_index.json");
+  try {
+    return JSON.parse(readFileSync(indexPath, "utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+export function updatePipelineIndex(dataDir: string, pipelineName: string, taskId: string): void {
+  const indexPath = join(dataDir, "tasks", "_pipeline_index.json");
+  try {
+    const index = readPipelineIndex(dataDir);
+    index[pipelineName] = { taskId, completedAt: new Date().toISOString() };
+    const tmp = `${indexPath}.tmp.${Date.now()}`;
+    writeFileSync(tmp, JSON.stringify(index, null, 2));
+    renameSync(tmp, indexPath);
+  } catch (err) {
+    taskLogger("system").warn({ err }, "Failed to update pipeline index");
+  }
+}
+
 // --- Store Inheritance ---
+
+function extractInheritedKeys(
+  sourceStore: Record<string, any>,
+  inheritKeys: string[] | "*",
+): Record<string, any> {
+  if (inheritKeys === "*") return { ...sourceStore };
+  const inherited: Record<string, any> = {};
+  for (const key of inheritKeys) {
+    if (sourceStore[key] !== undefined) {
+      inherited[key] = sourceStore[key];
+      const summaryKey = `${key}.__semantic_summary`;
+      if (sourceStore[summaryKey] !== undefined) inherited[summaryKey] = sourceStore[summaryKey];
+      const mechanicalKey = `${key}.__summary`;
+      if (sourceStore[mechanicalKey] !== undefined) inherited[mechanicalKey] = sourceStore[mechanicalKey];
+    }
+  }
+  return inherited;
+}
 
 export function resolveInheritedStore(
   pipelineName: string | undefined,
@@ -179,11 +221,30 @@ export function resolveInheritedStore(
   try {
     const settings = loadSystemSettings();
     const dataDir = settings.paths?.data_dir || "/tmp/workflow-control-data";
-    const tasksDir = join(dataDir, "tasks");
 
+    // Fast path: use pipeline index
+    const index = readPipelineIndex(dataDir);
+    const entry = index[pipelineName];
+
+    if (entry) {
+      try {
+        const snapshotFile = join(dataDir, "tasks", `${entry.taskId}.json`);
+        const raw = JSON.parse(readFileSync(snapshotFile, "utf-8"));
+        const snap = raw?.persistedSnapshot ?? raw;
+        const ctx = snap?.context;
+        if (ctx?.status === "completed" && ctx.store) {
+          return extractInheritedKeys(ctx.store, storePersistence.inherit_keys);
+        }
+      } catch {
+        // Index entry stale, fall through to scan
+      }
+    }
+
+    // Fallback: directory scan (first run or stale index)
+    const tasksDir = join(dataDir, "tasks");
     let files: string[];
     try {
-      files = readdirSync(tasksDir).filter(f => f.endsWith(".json")).sort().reverse();
+      files = readdirSync(tasksDir).filter(f => f.endsWith(".json") && !f.startsWith("_")).sort().reverse();
     } catch {
       return {};
     }
@@ -195,25 +256,7 @@ export function resolveInheritedStore(
         const ctx = snap?.context;
         if (!ctx || ctx.status !== "completed") continue;
         if (ctx.config?.pipelineName !== pipelineName) continue;
-
-        const sourceStore = ctx.store ?? {};
-        if (storePersistence.inherit_keys === "*") return { ...sourceStore };
-
-        const inherited: Record<string, any> = {};
-        for (const key of storePersistence.inherit_keys) {
-          if (sourceStore[key] !== undefined) {
-            inherited[key] = sourceStore[key];
-            const summaryKey = `${key}.__semantic_summary`;
-            if (sourceStore[summaryKey] !== undefined) {
-              inherited[summaryKey] = sourceStore[summaryKey];
-            }
-            const mechanicalKey = `${key}.__summary`;
-            if (sourceStore[mechanicalKey] !== undefined) {
-              inherited[mechanicalKey] = sourceStore[mechanicalKey];
-            }
-          }
-        }
-        return inherited;
+        return extractInheritedKeys(ctx.store ?? {}, storePersistence.inherit_keys);
       } catch {
         continue;
       }
