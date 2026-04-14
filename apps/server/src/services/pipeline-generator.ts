@@ -11,8 +11,12 @@ import { buildCapabilitySummary, formatCapabilityPrompt } from "../lib/capabilit
 import { discoverExternalCapabilities, autoInstallSkill, type DiscoveryResult } from "../lib/capability-discovery.js";
 import { registryService } from "./registry-service.js";
 import { logger } from "../lib/logger.js";
-import type { PipelineConfig } from "../lib/config/types.js";
+import type { PipelineConfig, WriteDeclaration } from "../lib/config/types.js";
 import { flattenStages } from "../lib/config/types.js";
+
+function wKey(w: WriteDeclaration): string {
+  return typeof w === "string" ? w : w.key;
+}
 
 export interface GenerateRequest {
   description: string;
@@ -262,7 +266,7 @@ async function generateStagePrompt(
   engine: "claude" | "gemini" | "codex"
 ): Promise<GeneratedPromptFile> {
   const stageOverview = flattenStages(pipelineObj.stages ?? [])
-    .map((s: any) => `- ${s.name} (${s.type})${s.runtime?.writes ? `: writes [${(s.runtime.writes as any[]).map((w: any) => typeof w === "string" ? w : w.key).join(", ")}]` : ""}`)
+    .map((s: any) => `- ${s.name} (${s.type})${s.runtime?.writes ? `: writes [${(s.runtime.writes as WriteDeclaration[]).map(wKey).join(", ")}]` : ""}`)
     .join("\n");
 
   const readsLines = Object.entries(stage.runtime?.reads ?? {})
@@ -270,7 +274,7 @@ async function generateStagePrompt(
     .join("\n") || "  (none)";
 
   const writesLines = (stage.runtime?.writes ?? [])
-    .map((w: any) => `  ${typeof w === "string" ? w : w.key}`)
+    .map((w: WriteDeclaration) => `  ${wKey(w)}`)
     .join("\n") || "  (none)";
 
   const outputsStr = stage.outputs
@@ -340,14 +344,14 @@ async function generateScriptCode(
     .join("\n") || "  (none)";
 
   const writesLines = (stageForScript.runtime?.writes ?? [])
-    .map((w: any) => `  ${typeof w === "string" ? w : w.key}`)
+    .map((w: WriteDeclaration) => `  ${wKey(w)}`)
     .join("\n");
 
   const argsStr = stageForScript.runtime?.args
     ? JSON.stringify(stageForScript.runtime.args, null, 2)
     : "  (none)";
 
-  const writesReturn = (stageForScript.runtime?.writes ?? []).map((w: any) => typeof w === "string" ? w : w.key).join(", ");
+  const writesReturn = (stageForScript.runtime?.writes ?? [] as WriteDeclaration[]).map(wKey).join(", ");
 
   const prompt = `You are an expert TypeScript developer writing automation scripts for a workflow system.
 
@@ -404,7 +408,7 @@ Output ONLY the TypeScript code. No markdown code fences, no explanation.`;
 }
 
 function buildFallbackPrompt(stage: any, pipelineObj: any): GeneratedPromptFile {
-  const writes = (stage.runtime?.writes ?? []).map((w: any) => typeof w === "string" ? w : w.key);
+  const writes = (stage.runtime?.writes ?? [] as WriteDeclaration[]).map(wKey);
   const kebabName = stage.name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
   return {
     name: kebabName,
