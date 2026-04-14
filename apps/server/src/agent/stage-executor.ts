@@ -18,6 +18,7 @@ import { processAgentStream } from "./stream-processor.js";
 import { outputSchemaToJsonSchema } from "./output-schema.js";
 import { createAskUserQuestionInterceptor, createSpecAuditHook, createPathRestrictionHook } from "./executor-hooks.js";
 
+const appendPromptCache = new Map<string, string>();
 
 function resolveModelForEngine(engine: string, privateAgent?: Record<string, any>, settingsAgent?: Record<string, any>): string | undefined {
   const key = `${engine}_model`;
@@ -99,22 +100,8 @@ export async function executeStage(
 
   const effectiveTier1 = buildTier1Context(context, runtime, undefined, stageName);
 
-  // Absolute execution timeout for web mode
-  const stageTimeoutSec = privateStage?.stage_timeout_sec ?? 1800;
-  const abortController = new AbortController();
-  const absoluteTimer = setTimeout(() => {
-    taskLogger(taskId, stageName).error({ timeoutSec: stageTimeoutSec }, "Stage absolute execution timeout reached");
-    abortController.abort(new Error(`Stage execution timeout after ${stageTimeoutSec}s`));
-  }, stageTimeoutSec * 1000);
-
-  const warningTimer = setTimeout(() => {
-    const remainingSec = Math.floor(stageTimeoutSec * 0.2);
-    sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_progress", {
-      phase: "timeout_approaching",
-      remainingSeconds: remainingSec,
-      message: `Stage will timeout in ${remainingSec}s`,
-    }));
-  }, stageTimeoutSec * 0.8 * 1000);
+  let absoluteTimer: ReturnType<typeof setTimeout> | undefined;
+  let warningTimer: ReturnType<typeof setTimeout> | undefined;
 
   // Check for previous checkpoint from interrupted execution
   const checkpoint = context.stageCheckpoints?.[stageName];
@@ -136,10 +123,17 @@ export async function executeStage(
   if (context.store && Object.keys(context.store).length > 0) {
     localMcp["__store__"] = createStoreReaderMcp(context.store);
   }
-  const appendPrompt = await buildSystemAppendPrompt({
-    taskId, stageName, enabledSteps, runtime, privateConfig,
-    stageConfig: { ...stageConfig, mcpServices }, cwd,
-  });
+  const appendCacheKey = `${taskId}:${stageName}`;
+  let appendPrompt: string;
+  if (isResume && appendPromptCache.has(appendCacheKey)) {
+    appendPrompt = appendPromptCache.get(appendCacheKey)!;
+  } else {
+    appendPrompt = await buildSystemAppendPrompt({
+      taskId, stageName, enabledSteps, runtime, privateConfig,
+      stageConfig: { ...stageConfig, mcpServices }, cwd,
+    });
+    appendPromptCache.set(appendCacheKey, appendPrompt);
+  }
   const staticPromptPrefix = buildStaticPromptPrefix(privateConfig, stageConfig.engine);
 
   const canResume = !!resumeSessionId;
@@ -227,6 +221,22 @@ export async function executeStage(
     const agentDefs = runtime?.agents as Record<string, SubAgentDefinition> | undefined;
     const sandboxConfig = privateConfig?.sandbox ?? settings.sandbox;
 
+    // Absolute execution timeout for web mode (Claude path only)
+    const stageTimeoutSec = privateStage?.stage_timeout_sec ?? 1800;
+    const abortController = new AbortController();
+    absoluteTimer = setTimeout(() => {
+      taskLogger(taskId, stageName).error({ timeoutSec: stageTimeoutSec }, "Stage absolute execution timeout reached");
+      abortController.abort(new Error(`Stage execution timeout after ${stageTimeoutSec}s`));
+    }, stageTimeoutSec * 1000);
+    warningTimer = setTimeout(() => {
+      const remainingSec = Math.floor(stageTimeoutSec * 0.2);
+      sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_progress", {
+        phase: "timeout_approaching",
+        remainingSeconds: remainingSec,
+        message: `Stage will timeout in ${remainingSec}s`,
+      }));
+    }, stageTimeoutSec * 0.8 * 1000);
+
     const options = buildQueryOptions({
       taskId, stageName, appendPrompt, staticPromptPrefix, stageConfig, sandboxConfig,
       hooks, localMcp, claudePath, cwd, resumeSessionId, interactive,
@@ -258,8 +268,8 @@ export async function executeStage(
         }),
     });
   } finally {
-    clearTimeout(absoluteTimer);
-    clearTimeout(warningTimer);
+    if (absoluteTimer) clearTimeout(absoluteTimer);
+    if (warningTimer) clearTimeout(warningTimer);
   }
 
   return { ...result, cwd: effectiveCwd || cwd };
