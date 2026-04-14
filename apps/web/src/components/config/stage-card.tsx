@@ -4,23 +4,29 @@ import React from "react";
 import { useTranslations } from "next-intl";
 import type { ValidationIssue } from "@/lib/pipeline-validator";
 
+type WriteDeclaration = string | { key: string; strategy?: string; summary_prompt?: string };
+
+function writeKey(w: WriteDeclaration): string {
+  return typeof w === "string" ? w : w.key;
+}
+
 export interface Stage {
   name: string;
-  type: "agent" | "script" | "human_confirm" | "condition" | "pipeline" | "foreach";
+  type: "agent" | "script" | "human_confirm" | "condition" | "pipeline" | "foreach" | "llm_decision";
   model?: string;
   max_turns?: number;
   max_budget_usd?: number;
   effort?: "low" | "medium" | "high" | "max";
   mcps?: string[];
   runtime?: {
-    engine: "llm" | "script" | "human_gate" | "condition" | "pipeline" | "foreach";
+    engine: "llm" | "script" | "human_gate" | "condition" | "pipeline" | "foreach" | "llm_decision";
     system_prompt?: string;
-    writes?: string[];
+    writes?: WriteDeclaration[];
     reads?: Record<string, string>;
     script_id?: string;
     on_approve_to?: string;
     on_reject_to?: string;
-    retry?: { max_retries?: number; back_to?: string };
+    retry?: { max_retries?: number; max_attempts?: number; back_to?: string };
     [key: string]: unknown;
   };
   outputs?: Record<string, unknown>;
@@ -72,6 +78,7 @@ const TYPE_BADGE_COLOR: Record<string, string> = {
   condition: "text-yellow-400 bg-yellow-900/30 border-yellow-800/50",
   pipeline: "text-green-400 bg-green-900/30 border-green-800/50",
   foreach: "text-orange-400 bg-orange-900/30 border-orange-800/50",
+  llm_decision: "text-amber-400 bg-amber-900/30 border-amber-800/50",
 };
 
 const StageCard = ({
@@ -95,10 +102,11 @@ const StageCard = ({
     condition: t("condition"),
     pipeline: t("pipelineCall"),
     foreach: t("foreach"),
+    llm_decision: "Decision",
   };
   const badgeColor = TYPE_BADGE_COLOR[stage.type] ?? TYPE_BADGE_COLOR.script;
   const badgeLabel = TYPE_BADGE_LABEL[stage.type] ?? TYPE_BADGE_LABEL.script;
-  const writes = runtime?.writes ?? [];
+  const writeKeys = (runtime?.writes ?? []).map(writeKey);
   const reads = runtime?.reads ? Object.values(runtime.reads) : [];
   const errorCount = issues.filter((i) => i.severity === "error").length;
   const warnCount = issues.filter((i) => i.severity === "warning").length;
@@ -150,13 +158,13 @@ const StageCard = ({
                 <span className="text-zinc-700 mx-0.5">&rarr;</span>
               </>
             )}
-            {writes.length > 0 && (
+            {writeKeys.length > 0 && (
               <>
                 <span className="text-zinc-600">{t("writesLabel")}</span>
-                <span className="text-zinc-400 truncate max-w-[120px]">{writes.join(", ")}</span>
+                <span className="text-zinc-400 truncate max-w-[120px]">{writeKeys.join(", ")}</span>
               </>
             )}
-            {reads.length === 0 && writes.length === 0 && (
+            {reads.length === 0 && writeKeys.length === 0 && (
               <span className="italic text-zinc-600">{t("noDataFlow")}</span>
             )}
           </div>

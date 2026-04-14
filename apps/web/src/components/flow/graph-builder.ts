@@ -154,7 +154,9 @@ export function buildPipelineGraph(options: BuildGraphOptions): { nodes: Node[];
       const nodeId = `stage:${stage.name}`;
       const runtime = (stage as any).runtime;
 
-      const writes = runtime?.writes as string[] | undefined;
+      const writes = runtime?.writes
+        ? (runtime.writes as Array<string | { key: string }>).map((w: string | { key: string }) => typeof w === "string" ? w : w.key)
+        : undefined;
       const readsObj = runtime?.reads as Record<string, string> | undefined;
       const reads = readsObj ? Object.values(readsObj) : undefined;
 

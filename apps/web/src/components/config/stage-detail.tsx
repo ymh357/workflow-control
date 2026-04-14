@@ -49,20 +49,37 @@ function normalizePromptKey(key: string): string {
   return key.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
 }
 
+type WriteDeclaration = string | { key: string; strategy?: string; summary_prompt?: string };
+
+function writeKey(w: WriteDeclaration): string {
+  return typeof w === "string" ? w : w.key;
+}
+
+function writesToStrings(writes: WriteDeclaration[]): string[] {
+  return writes.map(writeKey);
+}
+
+function stringsToWrites(strings: string[], existing: WriteDeclaration[]): WriteDeclaration[] {
+  const byKey = new Map<string, WriteDeclaration>();
+  for (const w of existing) byKey.set(writeKey(w), w);
+  return strings.map((s) => byKey.get(s) ?? s);
+}
+
 // Compute available store paths from preceding stages
 function getAvailablePaths(stages: Stage[], currentIndex: number): string[] {
   const paths: string[] = [];
   for (let j = 0; j < currentIndex; j++) {
     const prev = stages[j];
     if (prev.runtime?.writes) {
-      for (const w of prev.runtime.writes) {
+      for (const w of prev.runtime.writes as WriteDeclaration[]) {
+        const k = writeKey(w);
         const outputs = prev.outputs as StageOutputSchema | undefined;
-        if (outputs?.[w]?.fields) {
-          for (const f of outputs[w].fields) {
-            paths.push(`${w}.${f.key}`);
+        if (outputs?.[k]?.fields) {
+          for (const f of outputs[k].fields) {
+            paths.push(`${k}.${f.key}`);
           }
         } else {
-          paths.push(w);
+          paths.push(k);
         }
       }
     }
@@ -308,8 +325,11 @@ const PipelineCallDetail = ({
 
       <Field label={t("pipelineCallWrites")}>
         <input
-          value={(runtime.writes as string[] | undefined)?.join(", ") ?? ""}
-          onChange={(e) => onChange({ writes: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
+          value={runtime.writes ? writesToStrings(runtime.writes as WriteDeclaration[]).join(", ") : ""}
+          onChange={(e) => {
+            const keys = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+            onChange({ writes: stringsToWrites(keys, (runtime.writes as WriteDeclaration[]) ?? []) });
+          }}
           readOnly={readOnly}
           className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-300 font-mono outline-none focus:border-blue-600"
           placeholder="review_summary, passed..."
@@ -854,9 +874,10 @@ const StageDetail = ({
 
                 <Field label={t("writes")} issues={fieldIssues("writes")}>
                   <input
-                    value={(runtime.writes as string[] | undefined)?.join(", ") ?? ""}
+                    value={runtime.writes ? writesToStrings(runtime.writes as WriteDeclaration[]).join(", ") : ""}
                     onChange={(e) => {
-                      const writes = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                      const keys = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                      const writes = stringsToWrites(keys, (runtime.writes as WriteDeclaration[]) ?? []);
                       onRuntimeUpdate({ writes });
                     }}
                     readOnly={readOnly}
@@ -1203,9 +1224,10 @@ const StageDetail = ({
 
                 <Field label={t("writes")}>
                   <input
-                    value={(runtime.writes as string[] | undefined)?.join(", ") ?? ""}
+                    value={runtime.writes ? writesToStrings(runtime.writes as WriteDeclaration[]).join(", ") : ""}
                     onChange={(e) => {
-                      const writes = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                      const keys = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                      const writes = stringsToWrites(keys, (runtime.writes as WriteDeclaration[]) ?? []);
                       onRuntimeUpdate({ writes });
                     }}
                     readOnly={readOnly}
@@ -1267,15 +1289,16 @@ const StageDetail = ({
             ) : (
               <div className="flex flex-col items-center justify-center py-12 gap-3 text-zinc-500">
                 <p className="text-sm">{t("noOutputSchema")}</p>
-                {!readOnly && runtime.writes && (runtime.writes as string[]).length > 0 && (
+                {!readOnly && runtime.writes && (runtime.writes as WriteDeclaration[]).length > 0 && (
                   <button
                     type="button"
                     onClick={() => {
                       const outputs: StageOutputSchema = {};
-                      for (const w of runtime.writes as string[]) {
-                        outputs[w] = {
+                      for (const w of runtime.writes as WriteDeclaration[]) {
+                        const k = writeKey(w);
+                        outputs[k] = {
                           type: "object",
-                          label: w,
+                          label: k,
                           fields: [{ key: "summary", type: "markdown", description: "Summary of results" }],
                         };
                       }

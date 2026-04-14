@@ -20,7 +20,7 @@ export interface StageOutputSchema {
 
 export interface PipelineStageSchema {
   name: string;
-  type: "agent" | "script" | "human_confirm" | "condition" | "pipeline" | "foreach";
+  type: "agent" | "script" | "human_confirm" | "condition" | "pipeline" | "foreach" | "llm_decision";
   engine?: string;
   outputs?: StageOutputSchema;
   runtime?: Record<string, any>;

@@ -7,7 +7,7 @@ export interface ValidationIssue {
   message: string;
 }
 
-type WriteDeclaration = string | { key: string; strategy?: "replace" | "append" | "merge" };
+type WriteDeclaration = string | { key: string; strategy?: "replace" | "append" | "merge"; summary_prompt?: string };
 
 interface StageRuntime {
   engine?: string;
@@ -448,6 +448,39 @@ function validateStage(
           issues.push({ severity: "error", stageIndex: entryIndex, field: "branches", message: `Condition "${stage.name}" branch.to "${b.to}" does not match any stage` });
         }
       }
+    }
+  }
+
+  // LLM Decision: validate choices and routing
+  if (stage.type === "llm_decision") {
+    const rt = runtime as Record<string, unknown> | undefined;
+    const choices = rt?.choices as Array<{ id?: string; description?: string; goto?: string }> | undefined;
+    const defaultChoice = rt?.default_choice as string | undefined;
+    if (!rt?.prompt) {
+      issues.push({ severity: "error", stageIndex: entryIndex, field: "prompt", message: `LLM decision "${stage.name}" must have runtime.prompt` });
+    }
+    if (!choices || !Array.isArray(choices) || choices.length < 2) {
+      issues.push({ severity: "error", stageIndex: entryIndex, field: "choices", message: `LLM decision "${stage.name}" must have at least 2 choices` });
+    } else {
+      const choiceIds = new Set<string>();
+      for (const c of choices) {
+        if (!c.id) {
+          issues.push({ severity: "error", stageIndex: entryIndex, field: "choices", message: `LLM decision "${stage.name}": each choice must have an id` });
+        } else if (choiceIds.has(c.id)) {
+          issues.push({ severity: "error", stageIndex: entryIndex, field: "choices", message: `LLM decision "${stage.name}": duplicate choice id "${c.id}"` });
+        } else {
+          choiceIds.add(c.id);
+        }
+        if (c.goto && !stageNames.has(c.goto) && !["completed", "error", "blocked"].includes(c.goto)) {
+          issues.push({ severity: "error", stageIndex: entryIndex, field: "choices", message: `LLM decision "${stage.name}": choice "${c.id}" goto "${c.goto}" does not match any stage` });
+        }
+      }
+      if (defaultChoice && !choiceIds.has(defaultChoice)) {
+        issues.push({ severity: "error", stageIndex: entryIndex, field: "default_choice", message: `LLM decision "${stage.name}": default_choice "${defaultChoice}" does not match any choice id` });
+      }
+    }
+    if (!defaultChoice) {
+      issues.push({ severity: "error", stageIndex: entryIndex, field: "default_choice", message: `LLM decision "${stage.name}" must have runtime.default_choice` });
     }
   }
 

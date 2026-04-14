@@ -8,7 +8,7 @@ export interface StageCostInfo {
 
 export interface StageNodeData extends Record<string, unknown> {
   label: string;
-  stageType: "agent" | "script" | "condition" | "human_confirm" | "pipeline" | "foreach";
+  stageType: "agent" | "script" | "condition" | "human_confirm" | "pipeline" | "foreach" | "llm_decision";
   stageName: string;
   entryIndex: number;
   // Edit mode

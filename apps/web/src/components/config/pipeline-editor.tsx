@@ -208,7 +208,7 @@ const ParallelGroupDetail = ({
               <span className="font-medium text-zinc-200">{s.name}</span>
               <span className="text-zinc-600">({s.type})</span>
               {s.runtime?.writes?.length ? (
-                <span className="text-zinc-600 ml-auto truncate max-w-[150px]">writes: {(s.runtime.writes as string[]).join(", ")}</span>
+                <span className="text-zinc-600 ml-auto truncate max-w-[150px]">writes: {(s.runtime.writes as Array<string | {key: string}>).map(w => typeof w === "string" ? w : w.key).join(", ")}</span>
               ) : null}
             </div>
           ))}

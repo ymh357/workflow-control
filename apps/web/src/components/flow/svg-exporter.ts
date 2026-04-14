@@ -3,10 +3,11 @@ import type { StageNodeData, TerminalNodeData, ParallelGroupData } from "./types
 
 // Color mapping that mirrors the React node components
 const TYPE_COLORS: Record<string, { border: string; fill: string; badge: string; badgeBg: string }> = {
-  agent:    { border: "#3b82f6", fill: "#1a1f35", badge: "#60a5fa", badgeBg: "#1e3a5f" },
-  script:   { border: "#71717a", fill: "#1c1c22", badge: "#a1a1aa", badgeBg: "#27272a" },
-  pipeline: { border: "#22c55e", fill: "#1a2e1a", badge: "#4ade80", badgeBg: "#14532d" },
-  foreach:  { border: "#f97316", fill: "#2a1a0e", badge: "#fb923c", badgeBg: "#431407" },
+  agent:        { border: "#3b82f6", fill: "#1a1f35", badge: "#60a5fa", badgeBg: "#1e3a5f" },
+  script:       { border: "#71717a", fill: "#1c1c22", badge: "#a1a1aa", badgeBg: "#27272a" },
+  pipeline:     { border: "#22c55e", fill: "#1a2e1a", badge: "#4ade80", badgeBg: "#14532d" },
+  foreach:      { border: "#f97316", fill: "#2a1a0e", badge: "#fb923c", badgeBg: "#431407" },
+  llm_decision: { border: "#ca8a04", fill: "#1f1a0a", badge: "#facc15", badgeBg: "#422006" },
 };
 
 const GATE_COLORS = { border: "#a855f7", fill: "#1e0a2e", badge: "#c084fc", badgeBg: "#3b0764" };
@@ -15,7 +16,7 @@ const TERMINAL_COLORS = { border: "#52525b", fill: "#18181b", text: "#a1a1aa" };
 const PARALLEL_COLORS = { border: "#059669", fill: "rgba(6,78,59,0.1)" };
 
 const TYPE_LABEL: Record<string, string> = {
-  agent: "Agent", script: "Script", pipeline: "Pipeline", foreach: "Foreach",
+  agent: "Agent", script: "Script", pipeline: "Pipeline", foreach: "Foreach", llm_decision: "Decision",
 };
 
 const EDGE_COLORS: Record<string, { stroke: string; dash?: string }> = {

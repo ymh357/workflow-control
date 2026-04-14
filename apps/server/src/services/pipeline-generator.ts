@@ -270,7 +270,7 @@ async function generateStagePrompt(
     .join("\n") || "  (none)";
 
   const writesLines = (stage.runtime?.writes ?? [])
-    .map((w: string) => `  ${w}`)
+    .map((w: any) => `  ${typeof w === "string" ? w : w.key}`)
     .join("\n") || "  (none)";
 
   const outputsStr = stage.outputs
@@ -340,14 +340,14 @@ async function generateScriptCode(
     .join("\n") || "  (none)";
 
   const writesLines = (stageForScript.runtime?.writes ?? [])
-    .map((w: string) => `  ${w}`)
+    .map((w: any) => `  ${typeof w === "string" ? w : w.key}`)
     .join("\n");
 
   const argsStr = stageForScript.runtime?.args
     ? JSON.stringify(stageForScript.runtime.args, null, 2)
     : "  (none)";
 
-  const writesReturn = (stageForScript.runtime?.writes ?? []).join(", ");
+  const writesReturn = (stageForScript.runtime?.writes ?? []).map((w: any) => typeof w === "string" ? w : w.key).join(", ");
 
   const prompt = `You are an expert TypeScript developer writing automation scripts for a workflow system.
 
@@ -404,7 +404,7 @@ Output ONLY the TypeScript code. No markdown code fences, no explanation.`;
 }
 
 function buildFallbackPrompt(stage: any, pipelineObj: any): GeneratedPromptFile {
-  const writes = stage.runtime?.writes ?? [];
+  const writes = (stage.runtime?.writes ?? []).map((w: any) => typeof w === "string" ? w : w.key);
   const kebabName = stage.name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
   return {
     name: kebabName,

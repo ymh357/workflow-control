@@ -11,6 +11,7 @@ const TYPE_COLORS: Record<string, { border: string; badge: string }> = {
   script: { border: "border-l-zinc-500", badge: "text-zinc-400 bg-zinc-800" },
   pipeline: { border: "border-l-green-500", badge: "text-green-400 bg-green-900/40" },
   foreach: { border: "border-l-orange-500", badge: "text-orange-400 bg-orange-900/40" },
+  llm_decision: { border: "border-l-yellow-500", badge: "text-yellow-400 bg-yellow-900/40" },
 };
 
 const statusBorder: Record<string, string> = {
@@ -24,6 +25,7 @@ const TYPE_LABEL: Record<string, string> = {
   script: "Script",
   pipeline: "Pipeline",
   foreach: "Foreach",
+  llm_decision: "Decision",
 };
 
 const StageNode = ({ data }: NodeProps<StageNodeType>) => {

@@ -422,7 +422,8 @@ const PipelineBuilder = ({ stages, pipelineMeta, onChange, onPipelineMetaChange,
           for (let j = 0; j < index; j++) {
             const prevStage = stages[j];
             if (prevStage.runtime?.writes) {
-              for (const w of (prevStage.runtime.writes as string[])) {
+              for (const raw of (prevStage.runtime.writes as Array<string | { key: string }>)) {
+                const w = typeof raw === "string" ? raw : raw.key;
                 // If the previous stage has specific output fields defined, list them too
                 if (prevStage.outputs?.[w]?.fields) {
                   for (const f of prevStage.outputs[w].fields) {
@@ -605,9 +606,12 @@ const PipelineBuilder = ({ stages, pipelineMeta, onChange, onPipelineMetaChange,
                       <div className="space-y-1">
                         <label className="text-[9px] font-bold uppercase text-zinc-500 tracking-widest block">Writes to Context</label>
                         <input
-                          value={runtime.writes?.join(", ") || ""}
+                          value={runtime.writes ? (runtime.writes as Array<string | { key: string }>).map((w: string | { key: string }) => typeof w === "string" ? w : w.key).join(", ") : ""}
                           onChange={(e) => {
-                            const writes = e.target.value.split(",").map((s: string) => s.trim()).filter(Boolean);
+                            const keys = e.target.value.split(",").map((s: string) => s.trim()).filter(Boolean);
+                            const existing = (runtime.writes ?? []) as Array<string | { key: string }>;
+                            const byKey = new Map(existing.map((w: string | { key: string }) => [typeof w === "string" ? w : w.key, w]));
+                            const writes = keys.map((k: string) => byKey.get(k) ?? k);
                             updateRuntime(index, { writes });
                           }}
                           className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-[11px] text-zinc-300 focus:outline-none"
@@ -689,9 +693,10 @@ const PipelineBuilder = ({ stages, pipelineMeta, onChange, onPipelineMetaChange,
                             <button
                               type="button"
                               onClick={() => {
-                                const writes = runtime.writes || [];
+                                const rawWrites = (runtime.writes || []) as Array<string | { key: string }>;
                                 const outputs: StageOutputSchema = {};
-                                for (const w of writes) {
+                                for (const raw of rawWrites) {
+                                  const w = typeof raw === "string" ? raw : raw.key;
                                   outputs[w] = { type: "object", label: w, fields: [{ key: "example", type: "string", description: "Description" }] };
                                 }
                                 updateStage(index, { outputs });
@@ -963,9 +968,12 @@ const PipelineBuilder = ({ stages, pipelineMeta, onChange, onPipelineMetaChange,
                       <div className="space-y-1">
                         <label className="text-[9px] font-bold uppercase text-zinc-500 tracking-widest block">Writes to Context</label>
                         <input
-                          value={runtime.writes?.join(", ") || ""}
+                          value={runtime.writes ? (runtime.writes as Array<string | { key: string }>).map((w: string | { key: string }) => typeof w === "string" ? w : w.key).join(", ") : ""}
                           onChange={(e) => {
-                            const writes = e.target.value.split(",").map((s: string) => s.trim()).filter(Boolean);
+                            const keys = e.target.value.split(",").map((s: string) => s.trim()).filter(Boolean);
+                            const existing = (runtime.writes ?? []) as Array<string | { key: string }>;
+                            const byKey = new Map(existing.map((w: string | { key: string }) => [typeof w === "string" ? w : w.key, w]));
+                            const writes = keys.map((k: string) => byKey.get(k) ?? k);
                             updateRuntime(index, { writes });
                           }}
                           className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-[11px] text-zinc-300 focus:outline-none"
