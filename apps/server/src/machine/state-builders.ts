@@ -455,13 +455,17 @@ export function buildAgentState(
                   const key = w.key;
                   const value = context.store[key];
                   if (value === undefined) continue;
-                  import("../agent/semantic-summary.js").then(({ generateSemanticSummary }) => {
+                  Promise.all([
+                    import("../agent/semantic-summary.js"),
+                    import("../agent/semantic-summary-cache.js"),
+                  ]).then(([{ generateSemanticSummary }, { setCachedSummary }]) => {
                     generateSemanticSummary(context.taskId, key, value, w.summary_prompt!).then((summary) => {
                       if (summary) {
+                        setCachedSummary(context.taskId, key, summary);
                         context.store[`${key}.__semantic_summary`] = summary;
                       }
-                    }).catch(() => { /* non-blocking */ });
-                  }).catch(() => { /* non-blocking */ });
+                    }).catch(() => {});
+                  }).catch(() => {});
                 }
               }
             },
