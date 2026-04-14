@@ -45,6 +45,7 @@ export function buildTier1Context(
   // 2. Selective Context Injection (Token Optimization)
   if (runtime?.reads) {
     const renderedKeys = new Set<string>();
+    const unchangedLabels: string[] = [];
     parts.push("\n## Required Context (Tier 1)");
 
     for (const [label, rawPath] of Object.entries(runtime.reads)) {
@@ -58,7 +59,7 @@ export function buildTier1Context(
         const rootKey = storePath.split(".")[0];
         const prevVal = prevSnapshot[rootKey];
         if (prevVal !== undefined && JSON.stringify(val) === JSON.stringify(prevVal)) {
-          addPart(`\n### ${label}\n> Unchanged since previous attempt. Use get_store_value("${storePath}") if needed.`);
+          unchangedLabels.push(label);
           renderedKeys.add(rootKey);
           continue;
         }
@@ -105,6 +106,10 @@ export function buildTier1Context(
       } else {
         addPart(`\n### ${label}\n${String(val)}`);
       }
+    }
+
+    if (unchangedLabels.length > 0) {
+      addPart(`\n> Context unchanged from previous attempt: ${unchangedLabels.join(", ")}. Use get_store_value() for details.`);
     }
 
     // List un-injected store keys as indices (Tier 2 references)

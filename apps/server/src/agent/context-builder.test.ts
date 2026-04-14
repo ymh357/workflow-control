@@ -460,7 +460,7 @@ describe("buildTier1Context - incremental diff on resume", () => {
       reads: { "Requirements": "requirements", "Design": "design" },
     } as any;
     const result = buildTier1Context(ctx, runtime, 8000, "execute");
-    expect(result).toContain("Unchanged since previous attempt");
+    expect(result).toContain("Context unchanged from previous attempt: Requirements, Design");
     expect(result).not.toContain("build a todo app");
   });
 
@@ -486,6 +486,7 @@ describe("buildTier1Context - incremental diff on resume", () => {
     } as any;
     const result = buildTier1Context(ctx, runtime, 8000, "execute");
     expect(result).toContain("build a todo app v2");
+    expect(result).toContain("Context unchanged from previous attempt: Design");
   });
 
   it("shows full value when no checkpoint exists", () => {
