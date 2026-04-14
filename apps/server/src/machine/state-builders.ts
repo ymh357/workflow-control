@@ -1057,6 +1057,22 @@ export function buildParallelGroupState(
             }
           }
 
+          // Generate mechanical summaries for large committed values
+          for (const childStage of group.stages) {
+            const childUpdates = staged[childStage.name];
+            if (!childUpdates) continue;
+            for (const [field, value] of Object.entries(childUpdates)) {
+              if (typeof value !== "object" || value === null) continue;
+              const keys = Object.keys(value);
+              if (keys.length < 5) continue;
+              const serialized = JSON.stringify(value);
+              if (serialized.length > 8000) {
+                const summaryFields = keys.slice(0, 10).join(", ");
+                newStore[`${field}.__summary`] = `[${typeof value}] ${summaryFields} (${serialized.length} chars)`;
+              }
+            }
+          }
+
           // Clean up staged writes for all children in this group
           const newStaged = { ...staged };
           for (const s of group.stages) {
@@ -1072,6 +1088,30 @@ export function buildParallelGroupState(
             parallelStagedWrites: Object.keys(newStaged).length > 0 ? newStaged : undefined,
           };
         }),
+        // Fire-and-forget: generate semantic summaries for parallel group committed writes
+        ({ context }: { context: WorkflowContext }) => {
+          for (const childStage of group.stages) {
+            const rt = childStage.runtime as Record<string, any> | undefined;
+            const writes = (rt?.writes ?? []) as WriteDeclaration[];
+            for (const w of writes) {
+              if (typeof w === "object" && w.summary_prompt) {
+                const key = w.key;
+                const value = context.store[key];
+                if (value === undefined) continue;
+                Promise.all([
+                  import("../agent/semantic-summary.js"),
+                  import("../agent/semantic-summary-cache.js"),
+                ]).then(([{ generateSemanticSummary }, { setCachedSummary }]) => {
+                  generateSemanticSummary(context.taskId, key, value, w.summary_prompt!).then((summary) => {
+                    if (summary) {
+                      setCachedSummary(context.taskId, key, summary);
+                    }
+                  }).catch(() => {});
+                }).catch(() => {});
+              }
+            }
+          }
+        },
         emitTaskListUpdate(),
         emitPersistSession(),
       ],

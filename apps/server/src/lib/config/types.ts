@@ -33,6 +33,7 @@ export interface AgentRuntimeConfig {
   compensation?: { strategy: "git_reset" | "git_stash" | "none" };
   retry?: {
     max_retries?: number;
+    max_attempts?: number;
     back_to?: string;
   };
 }
@@ -47,6 +48,7 @@ export interface ScriptRuntimeConfig {
   compensation?: { strategy: "git_reset" | "git_stash" | "none" };
   retry?: {
     max_retries?: number;
+    max_attempts?: number;
     back_to?: string;
   };
 }

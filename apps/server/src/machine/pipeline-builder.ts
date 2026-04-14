@@ -31,7 +31,10 @@ function transformDagToParallelGroups(pipeline: PipelineConfig): PipelineConfig 
   );
   if (!hasDepends) return pipeline;
 
-  const stages = pipeline.stages.filter(e => !isParallelGroup(e)) as PipelineStageConfig[];
+  if (pipeline.stages.some(e => isParallelGroup(e))) {
+    throw new Error("Pipeline cannot use both depends_on and parallel_group. They are mutually exclusive.");
+  }
+  const stages = pipeline.stages as PipelineStageConfig[];
   const depMap = new Map<string, Set<string>>();
   for (const s of stages) {
     depMap.set(s.name, new Set(s.depends_on ?? []));
