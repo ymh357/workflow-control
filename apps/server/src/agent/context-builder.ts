@@ -1,5 +1,11 @@
+import { createHash } from "node:crypto";
 import type { WorkflowContext } from "../machine/types.js";
 import { type AgentRuntimeConfig, getNestedValue, flattenStages } from "../lib/config-loader.js";
+import { getCachedSummary } from "./semantic-summary-cache.js";
+
+function stableHash(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
+}
 
 // Compact Tier 1 context injected into systemPrompt for each stage.
 // Full Tier 2 context lives in .workflow/ files that the agent reads on demand.
@@ -57,8 +63,8 @@ export function buildTier1Context(
       if (currentStage && context.resumeInfo && context.stageCheckpoints?.[currentStage]?.readsSnapshot) {
         const prevSnapshot = context.stageCheckpoints[currentStage].readsSnapshot!;
         const rootKey = storePath.split(".")[0];
-        const prevVal = prevSnapshot[rootKey];
-        if (prevVal !== undefined && JSON.stringify(val) === JSON.stringify(prevVal)) {
+        const prevHash = prevSnapshot[rootKey];
+        if (prevHash !== undefined && stableHash(val) === prevHash) {
           unchangedLabels.push(label);
           renderedKeys.add(rootKey);
           continue;
@@ -83,10 +89,11 @@ export function buildTier1Context(
 
         const semanticSummaryKey = `${storePath.split(".")[0]}.__semantic_summary`;
         const mechanicalSummaryKey = `${storePath.split(".")[0]}.__summary`;
+        const semanticSummary = getCachedSummary(context.taskId, storePath.split(".")[0]) ?? store[semanticSummaryKey];
 
-        if (store[semanticSummaryKey] !== undefined && (fullBlock.length > MAX_INLINE_CHARS || !addPart(fullBlock))) {
-          // Best: LLM-generated semantic summary
-          parts.push(`\n### ${label} (semantic summary)\n${store[semanticSummaryKey]}\n> Full content: use get_store_value("${storePath}") for complete data`);
+        if (semanticSummary !== undefined && (fullBlock.length > MAX_INLINE_CHARS || !addPart(fullBlock))) {
+          // Best: LLM-generated semantic summary (cache-first, then store fallback)
+          parts.push(`\n### ${label} (semantic summary)\n${semanticSummary}\n> Full content: use get_store_value("${storePath}") for complete data`);
         } else if (store[mechanicalSummaryKey] !== undefined && fullBlock.length > MAX_INLINE_CHARS) {
           addPart(`\n### ${label} (compact summary)\n${store[mechanicalSummaryKey]}\n> Full content: use get_store_value("${storePath}") for complete data`);
         } else if (!addPart(fullBlock)) {

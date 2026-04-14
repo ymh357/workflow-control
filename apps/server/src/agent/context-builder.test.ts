@@ -1,4 +1,9 @@
+import { createHash } from "node:crypto";
 import { describe, it, expect, vi } from "vitest";
+
+function stableHash(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
+}
 
 vi.mock("../lib/logger.js", () => ({
   taskLogger: () => ({
@@ -450,8 +455,8 @@ describe("buildTier1Context - incremental diff on resume", () => {
         execute: {
           startedAt: "2026-04-13T00:00:00Z",
           readsSnapshot: {
-            requirements: { summary: "build a todo app" },
-            design: { architecture: "React + Node" },
+            requirements: stableHash({ summary: "build a todo app" }),
+            design: stableHash({ architecture: "React + Node" }),
           },
         },
       },
@@ -475,8 +480,8 @@ describe("buildTier1Context - incremental diff on resume", () => {
         execute: {
           startedAt: "2026-04-13T00:00:00Z",
           readsSnapshot: {
-            requirements: { summary: "build a todo app" },
-            design: { architecture: "React + Node" },
+            requirements: stableHash({ summary: "build a todo app" }),
+            design: stableHash({ architecture: "React + Node" }),
           },
         },
       },
@@ -507,7 +512,7 @@ describe("buildTier1Context - incremental diff on resume", () => {
         execute: {
           startedAt: "2026-04-13T00:00:00Z",
           readsSnapshot: {
-            requirements: { summary: "build a todo app" },
+            requirements: stableHash({ summary: "build a todo app" }),
           },
         },
       },
@@ -525,7 +530,7 @@ describe("buildTier1Context - incremental diff on resume", () => {
         execute: {
           startedAt: "2026-04-13T00:00:00Z",
           readsSnapshot: {
-            requirements: { summary: "build a todo app" },
+            requirements: stableHash({ summary: "build a todo app" }),
           },
         },
       },

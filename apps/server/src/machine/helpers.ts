@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { fromPromise, assign, emit } from "xstate";
 import type { TaskStatus } from "../types/index.js";
 import type { WorkflowContext } from "./types.js";
@@ -6,6 +7,10 @@ import { getGitHead, runCompensation } from "./git-checkpoint.js";
 import { getNestedValue, flattenStages, isParallelGroup } from "../lib/config-loader.js";
 import { taskLogger } from "../lib/logger.js";
 import { AgentError } from "../agent/query-tracker.js";
+
+function stableHash(value: unknown): string {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 16);
+}
 
 // XState emit() returns an ActionFunction with 9 generic parameters that are only
 // correctly inferred inside setup().createMachine(). External factory functions cannot
@@ -114,14 +119,14 @@ export function statusEntry(stateName: string): EmitAction[] {
         ? flattenStages(context.config.pipeline.stages).find((s) => s.name === stateName)
         : undefined;
       const reads = (stageConfig?.runtime as { reads?: Record<string, string> } | undefined)?.reads;
-      let readsSnapshot: Record<string, unknown> | undefined;
+      let readsSnapshot: Record<string, string> | undefined;
       if (reads) {
         readsSnapshot = {};
         for (const [, rawPath] of Object.entries(reads)) {
           const storePath = rawPath.startsWith("store.") ? rawPath.slice(6) : rawPath;
           const rootKey = storePath.split(".")[0];
           if (context.store[rootKey] !== undefined) {
-            readsSnapshot[rootKey] = JSON.parse(JSON.stringify(context.store[rootKey]));
+            readsSnapshot[rootKey] = stableHash(context.store[rootKey]);
           }
         }
       }
