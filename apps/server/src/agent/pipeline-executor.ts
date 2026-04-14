@@ -8,6 +8,7 @@ import type { PipelineCallRuntimeConfig } from "../lib/config-loader.js";
 import { getNestedValue } from "../lib/config-loader.js";
 
 const DEFAULT_TIMEOUT_SEC = 1800;
+const MAX_PIPELINE_DEPTH = 3;
 
 export interface PipelineCallInput {
   taskId: string;
@@ -26,6 +27,12 @@ export async function runPipelineCall(
 ): Promise<Record<string, any>> {
   const { taskId: parentTaskId, stageName, context, runtime } = input;
   const log = taskLogger(parentTaskId);
+
+  // Guard against unbounded recursive pipeline calls
+  const depth = (parentTaskId.match(/-sub-/g) ?? []).length;
+  if (depth >= MAX_PIPELINE_DEPTH) {
+    throw new Error(`Pipeline call depth ${depth + 1} exceeds maximum (${MAX_PIPELINE_DEPTH}). Check for recursive pipeline references.`);
+  }
 
   // Build child initial store from reads mapping
   const childInitialStore: Record<string, any> = {};

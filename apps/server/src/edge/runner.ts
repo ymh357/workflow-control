@@ -444,7 +444,9 @@ function startTranscriptSync(taskId: string, serverUrl: string, cwd: string): No
           body: JSON.stringify(events),
         }).catch(() => {});
       }
-    } catch { /* non-critical */ }
+    } catch (err) {
+      console.error(`[transcript-sync] tick failed for task ${taskId}:`, err instanceof Error ? err.message : err);
+    }
   }, 2000);
 }
 
