@@ -169,13 +169,13 @@ describe("adversarial: buildEffectivePrompt priority and edge cases", () => {
 });
 
 describe("adversarial: buildSystemAppendPrompt fragment handling", () => {
-  it("filters out fragments with empty/null content", async () => {
+  it("fragment content is NOT in appendPrompt (lives in staticPromptPrefix)", async () => {
     mockResolveFragmentsFromSnapshot.mockReturnValue([
       { id: "a", content: "" },
       { id: "b", content: "real content" },
     ]);
 
-    const { prompt: result } = await buildSystemAppendPrompt({
+    const { prompt: result, fragmentIds } = await buildSystemAppendPrompt({
       taskId: "t",
       stageName: "coding",
       stageConfig: { engine: "claude", mcpServices: [] },
@@ -191,8 +191,10 @@ describe("adversarial: buildSystemAppendPrompt fragment handling", () => {
       cwd: "/p",
     } as any);
 
-    expect(result).toContain("real content");
-    // Empty content fragment should not add extra newlines
+    // Fragment content no longer in appendPrompt
+    expect(result).not.toContain("real content");
+    // But IDs are still resolved for staticPromptPrefix
+    expect(fragmentIds).toContain("b");
   });
 
   it("handles analyzing stage with no keywords gracefully", async () => {

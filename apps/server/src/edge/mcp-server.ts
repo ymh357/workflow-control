@@ -72,7 +72,7 @@ async function buildStageContext(taskId: string, stageName: string, compact = fa
   const runtime = stageConfig.runtime as AgentRuntimeConfig | undefined;
   if (!runtime || runtime.engine !== "llm") return null;
 
-  const tier1Context = buildTier1Context(context, runtime, undefined, stageName);
+  const tier1Context = buildTier1Context(context, runtime, runtime.tier1_max_tokens, stageName);
   const stageEngine = stageConfig.engine ?? context.config?.pipeline?.engine ?? "claude";
   const { prompt: systemPrompt } = await buildSystemAppendPrompt({
     taskId,

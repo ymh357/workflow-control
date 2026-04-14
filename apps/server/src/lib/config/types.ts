@@ -30,6 +30,7 @@ export interface AgentRuntimeConfig {
   available_steps?: { key: string; label: string }[];
   agents?: Record<string, SubAgentDefinition>;
   disallowed_tools?: string[];
+  tier1_max_tokens?: number;
   compensation?: { strategy: "git_reset" | "git_stash" | "none" };
   retry?: {
     max_retries?: number;

@@ -235,25 +235,12 @@ describe("buildSystemAppendPrompt", () => {
     mockResolveFragmentsFromSnapshot.mockReturnValue([]);
   });
 
-  it("includes global constraints from privateConfig", async () => {
+  it("does NOT include global constraints (they live in staticPromptPrefix)", async () => {
     const { prompt: result } = await buildSystemAppendPrompt(baseParams as any);
-    expect(result).toContain("## Test Constraints");
+    expect(result).not.toContain("## Test Constraints");
   });
 
-  it("uses DEFAULT_GLOBAL_CONSTRAINTS when privateConfig constraints are empty", async () => {
-    const params = {
-      ...baseParams,
-      privateConfig: {
-        ...baseParams.privateConfig,
-        prompts: { ...baseParams.privateConfig.prompts, globalConstraints: "" },
-      },
-    };
-    const { prompt: result } = await buildSystemAppendPrompt(params as any);
-    // Falsy globalConstraints -> falls back to DEFAULT_GLOBAL_CONSTRAINTS
-    expect(result).toContain("Global Constraints");
-  });
-
-  it("resolves fragments from snapshot when fragmentMeta is present", async () => {
+  it("resolves fragment IDs from snapshot (content lives in staticPromptPrefix)", async () => {
     mockResolveFragmentsFromSnapshot.mockReturnValue([
       { id: "frag1", content: "Resolved fragment content" },
     ]);
@@ -267,11 +254,12 @@ describe("buildSystemAppendPrompt", () => {
       baseParams.privateConfig.prompts.fragments,
       baseParams.privateConfig.prompts.fragmentMeta,
     );
-    expect(result).toContain("Resolved fragment content");
+    // Fragment content no longer in appendPrompt — only IDs returned for staticPromptPrefix
+    expect(result).not.toContain("Resolved fragment content");
     expect(fragmentIds).toEqual(["frag1"]);
   });
 
-  it("uses fragment registry when no fragmentMeta in privateConfig", async () => {
+  it("uses fragment registry when no fragmentMeta in privateConfig (IDs only)", async () => {
     const mockResolve = vi.fn(() => [{ id: "reg-frag", content: "Registry fragment" }]);
     mockGetFragmentRegistry.mockReturnValue({
       resolve: mockResolve,
@@ -282,12 +270,14 @@ describe("buildSystemAppendPrompt", () => {
       ...baseParams,
       privateConfig: null,
     };
-    const { prompt: result } = await buildSystemAppendPrompt(params as any);
+    const { prompt: result, fragmentIds } = await buildSystemAppendPrompt(params as any);
     expect(mockResolve).toHaveBeenCalledWith("coding", undefined);
-    expect(result).toContain("Registry fragment");
+    // Fragment content in staticPromptPrefix, not appendPrompt
+    expect(result).not.toContain("Registry fragment");
+    expect(fragmentIds).toEqual(["reg-frag"]);
   });
 
-  it("falls back to flat fragment entries when privateConfig has no fragmentMeta", async () => {
+  it("does NOT include flat fragment entries (they live in staticPromptPrefix)", async () => {
     const params = {
       ...baseParams,
       privateConfig: {
@@ -300,7 +290,7 @@ describe("buildSystemAppendPrompt", () => {
       },
     };
     const { prompt: result } = await buildSystemAppendPrompt(params as any);
-    expect(result).toContain("Inline fragment text");
+    expect(result).not.toContain("Inline fragment text");
   });
 
   it("includes stage-specific system prompt", async () => {
@@ -387,7 +377,7 @@ describe("buildSystemAppendPrompt", () => {
     expect(result).not.toContain("# Project Instructions");
   });
 
-  it("includes codex project instructions when engine is codex", async () => {
+  it("does NOT include project instructions (they live in staticPromptPrefix)", async () => {
     const { prompt: result } = await buildSystemAppendPrompt({
       taskId: "t1",
       stageName: "test",
@@ -405,24 +395,9 @@ describe("buildSystemAppendPrompt", () => {
       },
       stageConfig: { engine: "codex", mcpServices: [] },
     } as any);
-    expect(result).toContain("codex instructions");
+    expect(result).not.toContain("codex instructions");
     expect(result).not.toContain("claude instructions");
     expect(result).not.toContain("gemini instructions");
-  });
-
-  it("injects globalClaudeMd from privateConfig", async () => {
-    const params = {
-      ...baseParams,
-      privateConfig: {
-        ...baseParams.privateConfig,
-        prompts: {
-          ...baseParams.privateConfig.prompts,
-          globalClaudeMd: "Private claude md",
-        },
-      },
-    };
-    const { prompt: result } = await buildSystemAppendPrompt(params as any);
-    expect(result).toContain("Private claude md");
   });
 
   it("generates schema output section when stage has outputs", async () => {
@@ -450,14 +425,13 @@ describe("buildSystemAppendPrompt", () => {
     expect(result).toContain('"summary": string');
   });
 
-  it("does not duplicate fragment content", async () => {
+  it("does not include fragment content (dedup is in staticPromptPrefix)", async () => {
     mockResolveFragmentsFromSnapshot.mockReturnValue([
       { id: "a", content: "Same content" },
       { id: "b", content: "Same content" },
     ]);
     const { prompt: result } = await buildSystemAppendPrompt(baseParams as any);
-    const occurrences = result.split("Same content").length - 1;
-    expect(occurrences).toBe(1);
+    expect(result).not.toContain("Same content");
   });
 });
 

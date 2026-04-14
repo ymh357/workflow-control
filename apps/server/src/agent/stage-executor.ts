@@ -145,7 +145,7 @@ export async function executeStage(
     resolvedFragmentIds = result.fragmentIds;
     appendPromptCache.set(appendCacheKey, result);
   }
-  const staticPromptPrefix = buildStaticPromptPrefix(privateConfig, stageConfig.engine, resolvedFragmentIds);
+  const staticPromptPrefix = buildStaticPromptPrefix(privateConfig, stageConfig.engine);
 
   const canResume = !!resumeSessionId;
   const effectivePrompt = buildEffectivePrompt({

@@ -22,11 +22,11 @@ export async function buildSystemAppendPrompt(params: PromptBuilderParams): Prom
   const { stageName, enabledSteps, runtime, privateConfig, stageConfig, cwd } = params;
   const appendParts: string[] = [];
 
-  // 1. Global constraints
-  const effectiveConstraints = privateConfig?.prompts.globalConstraints || DEFAULT_GLOBAL_CONSTRAINTS;
-  appendParts.push(effectiveConstraints);
+  // NOTE: Global constraints, fragments, and project instructions (CLAUDE.md etc.)
+  // are NOT included here — they live in staticPromptPrefix to avoid double injection.
+  // This function only contains stage-specific content.
 
-  // Invariants (pipeline-level + stage-level)
+  // 1. Invariants (pipeline-level + stage-level)
   const pipelineInvariants = privateConfig?.pipeline?.invariants ?? [];
   const invariantStageConf = findStageConfig(privateConfig?.pipeline?.stages, stageName);
   const stageInvariants = invariantStageConf?.invariants ?? [];
@@ -39,7 +39,7 @@ export async function buildSystemAppendPrompt(params: PromptBuilderParams): Prom
     );
   }
 
-  // 2. Resolve active fragments
+  // 2. Resolve active fragments (IDs only — content lives in staticPromptPrefix)
   let resolvedFragments: { id: string; content: string }[];
   if (privateConfig?.prompts.fragmentMeta) {
     const meta = privateConfig.prompts.fragmentMeta as Record<string, FragmentMeta>;
@@ -54,12 +54,7 @@ export async function buildSystemAppendPrompt(params: PromptBuilderParams): Prom
 
   const fragmentIds = resolvedFragments.map(f => f.id);
 
-  // 3. Add resolved fragments
-  for (const { content } of resolvedFragments) {
-    if (content && !appendParts.includes(content)) appendParts.push(content);
-  }
-
-  // 4. Stage-specific system prompt
+  // 3. Stage-specific system prompt
   const systemMap = privateConfig?.prompts.system || {};
   const stagePromptName = runtime?.system_prompt ?? stageName;
   const toCamel = (s: string) => s.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
@@ -70,10 +65,10 @@ export async function buildSystemAppendPrompt(params: PromptBuilderParams): Prom
     "Execute the current task stage based on project context.";
   appendParts.push(effectiveStagePrompt);
 
-  // 5. Resolve pipeline stage config (needed by multiple sections below)
+  // 4. Resolve pipeline stage config (needed by multiple sections below)
   const pipelineStage = findStageConfig(privateConfig?.pipeline?.stages, stageName);
 
-  // 6. Dynamic keyword injection for analyzing stage
+  // 5. Dynamic keyword injection for analyzing stage
   if (stageName === "analyzing") {
     const metaEntries = privateConfig?.prompts.fragmentMeta as Record<string, { id: string; keywords: string[] }> | undefined;
     const kwDescriptions = metaEntries
@@ -106,56 +101,44 @@ Rules:
 - Omit these fields entirely if no suitable candidates found`);
   }
 
-  // 8. Step hints
+  // 7. Step hints
   if (enabledSteps?.length && (pipelineStage as any)?.runtime?.available_steps) {
     const { buildStepHints } = await import("./step-hints.js");
     appendParts.push(buildStepHints(enabledSteps, (pipelineStage as any).runtime.available_steps));
   }
 
-  // 9. Schema-driven output format
+  // 8. Schema-driven output format
   if (pipelineStage?.outputs) {
     appendParts.push(generateSchemaPrompt(pipelineStage.outputs));
   }
 
-  // 10. Project instructions (CLAUDE.md / GEMINI.md from pipeline config only — no fallback to cwd)
-  if (stageConfig.engine === "gemini") {
-    const projectGeminiMd = privateConfig?.prompts.globalGeminiMd;
-    if (projectGeminiMd) appendParts.push(`# Project Instructions\n${projectGeminiMd}`);
-  } else if (stageConfig.engine === "codex") {
-    const projectCodexMd = privateConfig?.prompts.globalCodexMd;
-    if (projectCodexMd) appendParts.push(`# Project Instructions\n${projectCodexMd}`);
-  } else {
-    const projectClaudeMd = privateConfig?.prompts.globalClaudeMd;
-    if (projectClaudeMd) appendParts.push(`# Project Instructions\n${projectClaudeMd}`);
-  }
+  // NOTE: Project instructions (CLAUDE.md / GEMINI.md / CODEX.md) are in staticPromptPrefix only.
 
   return { prompt: appendParts.join("\n\n"), fragmentIds };
 }
 
 /**
- * Extract the static (cross-stage invariant) portion of the system prompt.
- * Used for prompt cache optimization — this prefix is identical across
- * all stages in the same pipeline and can be cached.
+ * Build the static (cross-stage invariant) portion of the system prompt.
+ * This prefix is identical across ALL stages in the same pipeline, enabling
+ * prompt cache reuse. Contains: global constraints, all fragments, and
+ * project instructions (CLAUDE.md / GEMINI.md / CODEX.md).
+ *
+ * Stage-specific content (invariants, stage prompt, output schema) lives
+ * in appendPrompt only — never duplicated here.
  */
-export function buildStaticPromptPrefix(privateConfig: any, engine: string, resolvedFragmentIds?: string[]): string {
+export function buildStaticPromptPrefix(privateConfig: any, engine: string): string {
   const parts: string[] = [];
 
   // Global constraints (same for all stages)
   const effectiveConstraints = privateConfig?.prompts.globalConstraints || DEFAULT_GLOBAL_CONSTRAINTS;
   parts.push(effectiveConstraints);
 
-  // When resolvedFragmentIds is provided, only include fragments this stage uses.
-  // Otherwise include all (backward compat for edge/mcp-server).
+  // All fragments — included unconditionally so the prefix is identical across stages.
+  // Stage-specific fragment relevance is handled by the stage prompt context, not by
+  // filtering the prefix. This maximizes prompt cache hit rate.
   if (privateConfig?.prompts.fragments) {
-    if (resolvedFragmentIds) {
-      for (const id of resolvedFragmentIds) {
-        const content = (privateConfig.prompts.fragments as Record<string, string>)[id];
-        if (content && !parts.includes(content)) parts.push(content);
-      }
-    } else {
-      for (const content of Object.values(privateConfig.prompts.fragments as Record<string, string>)) {
-        if (content && !parts.includes(content)) parts.push(content);
-      }
+    for (const content of Object.values(privateConfig.prompts.fragments as Record<string, string>)) {
+      if (content && !parts.includes(content)) parts.push(content);
     }
   }
 
