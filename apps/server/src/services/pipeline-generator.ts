@@ -604,25 +604,11 @@ A parallel group is a single entry in the stages array with ONLY a \`parallel\` 
 - retry.back_to inside a parallel child can ONLY reference sibling stages within the same group, NOT stages outside the group
 - Use parallel groups when 2+ stages share the same upstream data and produce independent outputs
 
-### Data Flow: writes, reads, outputs
+### Data Flow
 
-**runtime.writes** is the ONLY way to save data into the store:
-- After a stage completes, the system extracts these keys from the JSON output and saves them
-- If a writes key is MISSING from the output, the stage auto-retries (up to 2 times with feedback)
-- After 2 retries, the task transitions to \`blocked\` state
-- Keys written by stage N are available to ALL subsequent stages
-
-**runtime.reads** maps store paths to local names for the current stage:
-- For AGENT stages: the values are **injected into the agent's system prompt as "Required Context"**
-  so the LLM directly sees the data. Without reads, the agent has NO access to upstream data.
-- For SCRIPT stages: the values are passed as the \`inputs\` parameter to the handler function
-- Dot notation: \`"worktreePath.worktreePath"\` → \`store["worktreePath"]["worktreePath"]\`
-
-**outputs** (stage-level field, not inside runtime) serves TWO purposes:
-1. **Injected as a JSON schema into the agent's system prompt** — telling the LLM exactly what JSON structure to return
-2. Rendered in the UI to display stage results
-For agent stages that produce data: declare BOTH \`runtime.writes\` AND \`outputs\` with matching top-level keys.
-\`outputs\` alone does NOT save data to the store.
+Each stage can declare what store keys it **reads** (input) and **produces** (output).
+Use \`store_schema\` (see below) for production pipelines — it handles writes and outputs automatically.
+\`runtime.reads\` maps store paths to local names: for agent stages, values are injected into the prompt as context.
 
 ### human_confirm gate: pausing and feedback loops
 
@@ -695,8 +681,8 @@ interface StageConfig {
   max_turns?: number;
   max_budget_usd?: number;
   mcps?: string[];                 // MCP server names from registry
-  runtime: AgentRuntime | ScriptRuntime | GateRuntime | ConditionRuntime | PipelineCallRuntime | ForeachRuntime;
-  outputs?: Record<string, OutputSchema>;
+  runtime: AgentRuntime | ScriptRuntime | GateRuntime | Record<string, unknown>;
+  outputs?: Record<string, unknown>;  // auto-derived from store_schema; only for legacy pipelines
   on_complete?: { notify?: string };
 }
 
@@ -708,7 +694,6 @@ interface AgentRuntime {
   reads?: Record<string, string>;  // input mapping: localName -> "stageOutputKey" or "stageOutputKey.field"
   disallowed_tools?: string[];     // block specific tools (e.g. ["Edit", "Write", "Bash"] for read-only)
   retry?: { max_retries?: number; back_to?: string };
-  agents?: Record<string, SubAgentDef>;  // optional sub-agents
 }
 
 // For type: "script"
@@ -731,55 +716,10 @@ interface GateRuntime {
   notify?: { type: "slack"; template: string };
 }
 
-// For type: "condition"
-interface ConditionRuntime {
-  engine: "condition";
-  branches: Array<{ when?: string; default?: true; to: string }>;
-}
-
-// For type: "pipeline"
-interface PipelineCallRuntime {
-  engine: "pipeline";
-  pipeline_name: string;
-  reads?: Record<string, string>;
-  writes?: string[];
-  timeout_sec?: number;
-}
-
-// For type: "foreach"
-interface ForeachRuntime {
-  engine: "foreach";
-  items: string;
-  item_var: string;
-  max_concurrency?: number;
-  pipeline_name: string;
-  collect_to?: string;
-  item_writes?: string[];
-  on_item_error?: "fail_fast" | "continue";
-}
-
-interface SubAgentDef {
-  description: string;
-  prompt: string;
-  tools?: string[];
-  disallowedTools?: string[];
-  model?: "sonnet" | "opus" | "haiku" | "inherit";
-  maxTurns?: number;
-  skills?: string[];
-  mcpServers?: (string | Record<string, unknown>)[];
-}
-
-interface OutputSchema {
-  type: "object";
-  label?: string;
-  hidden?: boolean;
-  fields: Array<{
-    key: string;
-    type: "string" | "number" | "boolean" | "string[]" | "object" | "object[]" | "markdown";
-    description: string;
-    display_hint?: "link" | "badge" | "code";
-  }>;
-}
+// Advanced stage runtimes (use only when explicitly needed):
+// condition: { engine: "condition", branches: [{when?: string, default?: true, to: string}] }
+// pipeline:  { engine: "pipeline", pipeline_name: string, reads?: {...}, writes?: string[], timeout_sec?: number }
+// foreach:   { engine: "foreach", items: string, item_var: string, pipeline_name: string, max_concurrency?: number, collect_to?: string, item_writes?: string[], on_item_error?: "fail_fast"|"continue" }
 \`\`\`
 
 ## Stage Quality Settings
@@ -896,40 +836,9 @@ For system_prompt fields in agent stages: use the placeholder "__GENERATED__" �
     If the pipeline ends with a script that produces a URL or key result, also set
     display.completion_summary_path to the store key path (e.g. "prUrl.prUrl" if the script writes
     an object { prUrl: "..." } under key "prUrl", or just "prUrl" if the script writes a bare string).
-15. For automated QA loops (retry.back_to), the QA stage's outputs MUST include \`passed\` (boolean)
-    and \`blockers\` (string[]) fields, and writes must include the key containing these fields.
-    The system triggers back_to automatically when it finds { passed: false } in any writes field value.
-16. For outputs.hidden: set hidden: true on script stage outputs that are internal plumbing
-    (e.g. worktreePath, buildGateResult) — these clutter the UI. Agent stage outputs (analysis,
-    implementation summaries, QA reports) should NOT be hidden.
-17. **Parallel groups**: Use a \`parallel\` wrapper when 2+ stages can run concurrently.
-    CRITICAL: The parallel group object has ONLY a "parallel" key at top level — no "name" or "type" next to it:
-    \`\`\`json
-    { "parallel": { "name": "research", "stages": [ ... ] } }
-    \`\`\`
-    Do NOT put human_confirm stages inside parallel groups. Do NOT nest parallel groups.
-18. **Condition stages**: Use \`type: "condition"\` with \`engine: "condition"\` for multi-way routing based on store values.
-    Branches use \`expr-eval\` expressions (safe, no eval). Access store via \`store.xxx\`.
-    MUST have exactly 1 default branch and at least 1 non-default branch. Example:
-    \`\`\`json
-    { "name": "route", "type": "condition", "runtime": { "engine": "condition", "branches": [
-      { "when": "store.score > 80", "to": "fast-track" },
-      { "default": true, "to": "normal-track" }
-    ]}}
-    \`\`\`
-19. **Pipeline Call stages**: Use \`type: "pipeline"\` with \`engine: "pipeline"\` to invoke another existing pipeline as a sub-task.
-    The child pipeline inherits the parent worktree. Use \`reads\` to map parent store → child initial store,
-    \`writes\` to extract child results back. Use when you have a reusable pipeline to call.
-    \`\`\`json
-    { "name": "review", "type": "pipeline", "runtime": { "engine": "pipeline", "pipeline_name": "code-review", "reads": { "pr": "store.pr_url" }, "writes": ["review_result"], "timeout_sec": 600 }}
-    \`\`\`
-20. **Foreach stages**: Use \`type: "foreach"\` with \`engine: "foreach"\` to iterate over a store array, running a sub-pipeline per item.
-    Supports concurrency via \`max_concurrency\`. Results collected into \`collect_to\` array.
-    \`\`\`json
-    { "name": "review-prs", "type": "foreach", "runtime": { "engine": "foreach", "items": "store.pr_list", "item_var": "current_pr", "pipeline_name": "pr-review", "max_concurrency": 3, "collect_to": "reviews", "item_writes": ["result"], "on_item_error": "continue" }}
-    \`\`\`
-    Note: condition, pipeline, and foreach stages are advanced features. Only use them when the user's description
-    clearly requires conditional routing, sub-pipeline reuse, or batch iteration. Most pipelines only need agent/script/human_confirm.
+15. For automated QA (retry.back_to): the QA stage must output \`{ passed: boolean, blockers: string[] }\` in its writes. The system routes back_to automatically when \`passed: false\`.
+16. **Parallel groups**: Wrap concurrent stages in \`{ "parallel": { "name": "...", "stages": [...] } }\`. No human_confirm inside. No nested parallels. Children cannot read sibling writes.
+17. **Advanced stages** (condition, pipeline, foreach): Only use when the user's description clearly requires conditional routing, sub-pipeline reuse, or batch iteration. See TypeScript interfaces above for syntax. Most pipelines only need agent/script/human_confirm.
 
 ## User Description
 
