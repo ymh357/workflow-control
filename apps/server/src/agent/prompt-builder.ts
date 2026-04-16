@@ -23,7 +23,7 @@ export async function buildSystemAppendPrompt(params: PromptBuilderParams): Prom
   const appendParts: string[] = [];
 
   // NOTE: Global constraints, fragments, and project instructions (CLAUDE.md etc.)
-  // are NOT included here — they live in staticPromptPrefix to avoid double injection.
+  // are NOT included here — they are prepended to appendPrompt as a static prefix to avoid double injection.
   // This function only contains stage-specific content.
 
   // 1. Invariants (pipeline-level + stage-level)
@@ -39,7 +39,7 @@ export async function buildSystemAppendPrompt(params: PromptBuilderParams): Prom
     );
   }
 
-  // 2. Resolve active fragments (IDs only — content lives in staticPromptPrefix)
+  // 2. Resolve active fragments (IDs only — content is prepended to appendPrompt)
   let resolvedFragments: { id: string; content: string }[];
   if (privateConfig?.prompts.fragmentMeta) {
     const meta = privateConfig.prompts.fragmentMeta as Record<string, FragmentMeta>;
@@ -112,7 +112,7 @@ Rules:
     appendParts.push(generateSchemaPrompt(pipelineStage.outputs));
   }
 
-  // NOTE: Project instructions (CLAUDE.md / GEMINI.md / CODEX.md) are in staticPromptPrefix only.
+  // NOTE: Project instructions (CLAUDE.md / GEMINI.md / CODEX.md) are prepended to appendPrompt as a static prefix.
 
   return { prompt: appendParts.join("\n\n"), fragmentIds };
 }

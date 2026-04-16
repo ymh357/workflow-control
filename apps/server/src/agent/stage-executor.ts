@@ -151,7 +151,8 @@ export async function executeStage(
     resolvedFragmentIds = result.fragmentIds;
     appendPromptCache.set(appendCacheKey, result);
   }
-  const staticPromptPrefix = buildStaticPromptPrefix(privateConfig, stageConfig.engine);
+  const staticPrefix = buildStaticPromptPrefix(privateConfig, stageConfig.engine, resolvedFragmentIds);
+  const fullAppendPrompt = staticPrefix ? `${staticPrefix}\n\n${appendPrompt}` : appendPrompt;
 
   const canResume = !!resumeSessionId;
   const effectivePrompt = buildEffectivePrompt({
@@ -170,7 +171,7 @@ export async function executeStage(
     };
     const geminiApprovalMode = approvalMap[stageConfig.permissionMode] ?? "yolo";
 
-    const fullPrompt = `${appendPrompt}\n\n---\n\n${effectivePrompt}`;
+    const fullPrompt = `${fullAppendPrompt}\n\n---\n\n${effectivePrompt}`;
     const geminiResume = resumeSessionId ?? undefined;
     const geminiQuery = queryGemini({
       prompt: fullPrompt,
@@ -200,7 +201,7 @@ export async function executeStage(
     const codexSandbox = sandboxMap[stageConfig.permissionMode] ?? "workspace-write";
 
     const codexPath = settings.paths?.codex_executable || "codex";
-    const fullPrompt = `${appendPrompt}\n\n---\n\n${effectivePrompt}`;
+    const fullPrompt = `${fullAppendPrompt}\n\n---\n\n${effectivePrompt}`;
     const codexQuery = queryCodex({
       prompt: fullPrompt,
       options: {
@@ -255,7 +256,7 @@ export async function executeStage(
     }, stageTimeoutSec * 0.8 * 1000);
 
     const options = buildQueryOptions({
-      taskId, stageName, appendPrompt, staticPromptPrefix, stageConfig, sandboxConfig,
+      taskId, stageName, appendPrompt: fullAppendPrompt, stageConfig, sandboxConfig,
       hooks, localMcp, claudePath, cwd, resumeSessionId, interactive,
       canUseTool: interactive ? createAskUserQuestionInterceptor(taskId) : undefined,
       outputFormat,
