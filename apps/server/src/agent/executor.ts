@@ -14,6 +14,8 @@ import { type AgentResult } from "./query-tracker.js";
 import { scriptRegistry } from "../scripts/index.js";
 import { executeStage } from "./stage-executor.js";
 import { runVerifyCommands, formatVerifyFailures } from "./verify-commands.js";
+import { getOrCreateSessionManager } from "./session-manager-registry.js";
+import { flattenStages } from "../lib/config/types.js";
 
 // ── Mock executor (MOCK_EXECUTOR=true only, never runs in production) ──
 const _mockCallCounts = new Map<string, number>(); // key: taskId:stageName
@@ -128,6 +130,99 @@ export async function runAgent(
     }
     // Attach verify results to output regardless of policy
     return { ...result, verifyResults };
+  }
+
+  return result;
+}
+
+export async function runAgentSingleSession(
+  taskId: string,
+  input: {
+    stageName: string;
+    worktreePath: string;
+    tier1Context: string;
+    enabledSteps?: string[];
+    attempt: number;
+    resumeInfo?: { sessionId: string; feedback?: string; sync?: boolean };
+    interactive?: boolean;
+    runtime: AgentRuntimeConfig;
+    context?: WorkflowContext;
+    parallelGroup?: { name: string; stages: any[] };
+  }
+): Promise<AgentResult> {
+  // Mock executor path (same pattern as runAgent)
+  if (process.env.MOCK_EXECUTOR === "true") {
+    const delayMs = Number(process.env.MOCK_EXECUTOR_DELAY_MS ?? 300);
+    await new Promise(r => setTimeout(r, delayMs));
+    const writes = (input.runtime.writes ?? []).map(w => typeof w === "string" ? w : w.key);
+    const mockData = _buildMockWrites(writes);
+    return {
+      resultText: JSON.stringify(mockData),
+      costUsd: 0.001,
+      durationMs: delayMs,
+      sessionId: `mock-single-${taskId}-${input.stageName}-${Date.now()}`,
+      tokenUsage: undefined,
+    };
+  }
+
+  const { stageName, worktreePath, tier1Context, resumeInfo, interactive, runtime, context: inputContext } = input;
+  if (!inputContext) throw new Error(`No workflow context for task ${taskId}`);
+
+  const settings = loadSystemSettings();
+  const claudePath = settings.paths?.claude_executable || "claude";
+  const pipeline = inputContext.config?.pipeline;
+  const idleTimeoutMs = (pipeline?.session_idle_timeout_sec ?? 7200) * 1000;
+
+  const mgr = getOrCreateSessionManager(taskId, {
+    taskId,
+    claudePath,
+    idleTimeoutMs,
+    cwd: worktreePath,
+  });
+
+  const privateStage = pipeline?.stages
+    ? flattenStages(pipeline.stages).find((s) => s.name === stageName)
+    : undefined;
+
+  const stageConfig = {
+    model: privateStage?.model || settings.agent?.claude_model,
+    mcpServices: (privateStage?.mcps ?? []) as string[],
+    permissionMode: (privateStage?.permission_mode ?? "bypassPermissions"),
+    maxTurns: privateStage?.max_turns ?? 30,
+    maxBudgetUsd: privateStage?.max_budget_usd ?? 2,
+    thinking: privateStage?.thinking
+      ? { type: privateStage.thinking.type as "enabled" | "disabled" | "adaptive" }
+      : { type: "disabled" as const },
+  };
+
+  const result = await mgr.executeStage({
+    taskId,
+    stageName,
+    tier1Context,
+    stagePrompt: runtime.system_prompt,
+    stageConfig,
+    resumeInfo: resumeInfo?.feedback ? { feedback: resumeInfo.feedback } : undefined,
+    worktreePath,
+    interactive: interactive ?? false,
+    runtime,
+    context: inputContext,
+    parallelGroup: input.parallelGroup,
+  });
+
+  // Run verify commands if configured (same pattern as runAgent)
+  const stageConf = findStageConfig(inputContext.config?.pipeline?.stages, stageName);
+  const verifyCommands = stageConf?.verify_commands as string[] | undefined;
+  const verifyPolicy = (stageConf?.verify_policy ?? "must_pass") as string;
+
+  if (verifyCommands?.length && verifyPolicy !== "skip") {
+    const { allPassed, results: verifyResults } = await runVerifyCommands(taskId, stageName, verifyCommands, worktreePath);
+    if (!allPassed) {
+      if (verifyPolicy === "must_pass") {
+        return { ...result, verifyFailed: true, verifyResults } as any;
+      }
+      taskLogger(taskId, stageName).warn({ failures: formatVerifyFailures(verifyResults).slice(0, 1000) }, "Verify commands failed (warn policy, continuing)");
+    }
+    return { ...result, verifyResults } as any;
   }
 
   return result;
