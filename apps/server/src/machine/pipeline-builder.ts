@@ -5,6 +5,7 @@ import { taskLogger } from "../lib/logger.js";
 import type { StateNode } from "./state-builders.js";
 import { buildParallelGroupState } from "./state-builders.js";
 import { getStageBuilder } from "./stage-registry.js";
+import { deriveStageWrites, deriveStageOutputs } from "../lib/config/store-schema.js";
 
 // --- Helpers ---
 
@@ -98,6 +99,30 @@ function findPrevAgentTarget(entries: PipelineStageEntry[], currentIndex: number
 
 export function buildPipelineStates(pipeline: PipelineConfig): Record<string, StateNode> {
   const transformed = transformDagToParallelGroups(pipeline);
+
+  // When store_schema is present, auto-populate runtime.writes and stage.outputs
+  // from the schema. This is a one-time derivation at build time — runtime code
+  // continues to read runtime.writes and stage.outputs as before.
+  if (pipeline.store_schema) {
+    for (const entry of transformed.stages) {
+      const stages = isParallelGroup(entry) ? entry.parallel.stages : [entry as PipelineStageConfig];
+      for (const stage of stages) {
+        const derivedWrites = deriveStageWrites(pipeline.store_schema, stage.name);
+        if (derivedWrites.length > 0 && stage.runtime) {
+          const rt = stage.runtime as any;
+          // Only set if not already explicitly declared
+          if (!rt.writes || rt.writes.length === 0) {
+            rt.writes = derivedWrites;
+          }
+        }
+        const derivedOutputs = deriveStageOutputs(pipeline.store_schema, stage.name);
+        if (derivedOutputs && !stage.outputs) {
+          stage.outputs = derivedOutputs;
+        }
+      }
+    }
+  }
+
   const states: Record<string, StateNode> = {};
   const errors: string[] = [];
   const validTargets = new Set(collectAllNames(transformed.stages));
