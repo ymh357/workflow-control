@@ -118,27 +118,33 @@ Rules:
 }
 
 /**
- * Build the static (cross-stage invariant) portion of the system prompt.
- * This prefix is identical across ALL stages in the same pipeline, enabling
- * prompt cache reuse. Contains: global constraints, all fragments, and
- * project instructions (CLAUDE.md / GEMINI.md / CODEX.md).
+ * Build the static (cross-stage) portion of the system prompt.
+ * Contains: global constraints, resolved fragments, and project instructions.
  *
- * Stage-specific content (invariants, stage prompt, output schema) lives
- * in appendPrompt only — never duplicated here.
+ * When resolvedFragmentIds is provided, only matching fragments are included.
+ * When omitted, all fragments are included (backward compatibility).
  */
-export function buildStaticPromptPrefix(privateConfig: any, engine: string): string {
+export function buildStaticPromptPrefix(privateConfig: any, engine: string, resolvedFragmentIds?: string[]): string {
   const parts: string[] = [];
 
   // Global constraints (same for all stages)
   const effectiveConstraints = privateConfig?.prompts.globalConstraints || DEFAULT_GLOBAL_CONSTRAINTS;
   parts.push(effectiveConstraints);
 
-  // All fragments — included unconditionally so the prefix is identical across stages.
-  // Stage-specific fragment relevance is handled by the stage prompt context, not by
-  // filtering the prefix. This maximizes prompt cache hit rate.
+  // Fragments — filtered by resolved IDs when available
   if (privateConfig?.prompts.fragments) {
-    for (const content of Object.values(privateConfig.prompts.fragments as Record<string, string>)) {
-      if (content && !parts.includes(content)) parts.push(content);
+    const fragments = privateConfig.prompts.fragments as Record<string, string>;
+    if (resolvedFragmentIds) {
+      // Only include fragments that were resolved for this stage
+      for (const id of resolvedFragmentIds) {
+        const content = fragments[id];
+        if (content && !parts.includes(content)) parts.push(content);
+      }
+    } else {
+      // Backward compat: include all fragments when no IDs provided
+      for (const content of Object.values(fragments)) {
+        if (content && !parts.includes(content)) parts.push(content);
+      }
     }
   }
 

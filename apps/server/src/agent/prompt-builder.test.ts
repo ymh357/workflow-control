@@ -445,22 +445,47 @@ describe("buildStaticPromptPrefix", () => {
         globalGeminiMd: "",
       },
     };
-    const result = buildStaticPromptPrefix(config, "claude");
+    const result = buildStaticPromptPrefix(config, "claude", []);
     expect(result).toContain("Always be careful");
   });
 
-  it("includes all fragments", () => {
+  it("includes only fragments matching resolved IDs", () => {
     const config = {
       prompts: {
         globalConstraints: "",
         fragments: { "frag-1": "Fragment one content", "frag-2": "Fragment two content" },
         globalClaudeMd: "",
-        globalGeminiMd: "",
+      },
+    };
+    const result = buildStaticPromptPrefix(config, "claude", ["frag-1"]);
+    expect(result).toContain("Fragment one content");
+    expect(result).not.toContain("Fragment two content");
+  });
+
+  it("includes all fragments when no IDs provided (backward compat)", () => {
+    const config = {
+      prompts: {
+        globalConstraints: "",
+        fragments: { "frag-1": "Fragment one content", "frag-2": "Fragment two content" },
+        globalClaudeMd: "",
       },
     };
     const result = buildStaticPromptPrefix(config, "claude");
     expect(result).toContain("Fragment one content");
     expect(result).toContain("Fragment two content");
+  });
+
+  it("excludes all fragments when empty IDs array provided", () => {
+    const config = {
+      prompts: {
+        globalConstraints: "",
+        fragments: { "frag-1": "Fragment one content", "frag-2": "Fragment two content" },
+        globalClaudeMd: "",
+      },
+    };
+    const result = buildStaticPromptPrefix(config, "claude", []);
+    expect(result).not.toContain("Fragment one content");
+    expect(result).not.toContain("Fragment two content");
   });
 
   it("includes CLAUDE.md for claude engine", () => {
@@ -472,7 +497,7 @@ describe("buildStaticPromptPrefix", () => {
         globalGeminiMd: "Gemini specific instructions",
       },
     };
-    const result = buildStaticPromptPrefix(config, "claude");
+    const result = buildStaticPromptPrefix(config, "claude", []);
     expect(result).toContain("Claude specific instructions");
     expect(result).not.toContain("Gemini specific instructions");
   });
@@ -486,7 +511,7 @@ describe("buildStaticPromptPrefix", () => {
         globalGeminiMd: "Gemini specific",
       },
     };
-    const result = buildStaticPromptPrefix(config, "gemini");
+    const result = buildStaticPromptPrefix(config, "gemini", []);
     expect(result).toContain("Gemini specific");
     expect(result).not.toContain("Claude specific");
   });
@@ -501,14 +526,14 @@ describe("buildStaticPromptPrefix", () => {
         globalCodexMd: "Codex specific",
       },
     };
-    const result = buildStaticPromptPrefix(config, "codex");
+    const result = buildStaticPromptPrefix(config, "codex", []);
     expect(result).toContain("Codex specific");
     expect(result).not.toContain("Claude specific");
     expect(result).not.toContain("Gemini specific");
   });
 
   it("returns empty constraints when config is undefined", () => {
-    const result = buildStaticPromptPrefix(undefined, "claude");
+    const result = buildStaticPromptPrefix(undefined, "claude", []);
     expect(result).toBeDefined();
     expect(typeof result).toBe("string");
   });
