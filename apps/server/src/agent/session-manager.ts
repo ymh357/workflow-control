@@ -2,6 +2,8 @@ import { query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import type {
   Query,
   Options as SdkOptions,
+  HookInput,
+  HookJSONOutput,
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -14,6 +16,7 @@ import type { SSEMessage } from "../types/index.js";
 import type { AgentRuntimeConfig } from "../lib/config-loader.js";
 import type { WorkflowContext } from "../machine/types.js";
 import { buildMcpServers } from "../lib/mcp-config.js";
+import { createStoreReaderMcp } from "../lib/store-reader-mcp.js";
 import { buildChildEnv } from "../lib/child-env.js";
 import {
   createAskUserQuestionInterceptor,
@@ -44,11 +47,13 @@ export interface ExecuteStageParams {
   stagePrompt: string;
   stageConfig: {
     model?: string;
+    effort?: SdkOptions["effort"];
     mcpServices: string[];
     permissionMode: string;
     maxTurns: number;
     maxBudgetUsd: number;
     thinking: SdkOptions["thinking"];
+    stageTimeoutSec?: number;
   };
   resumeInfo?: { feedback: string };
   worktreePath: string;
@@ -90,6 +95,10 @@ export function buildUserMessage(text: string): SDKUserMessage {
 
 const MAX_RESULT_TEXT = 5 * 1024 * 1024;
 
+function mcpServiceKey(services: string[]): string {
+  return [...services].sort().join(",");
+}
+
 // ---------------------------------------------------------------------------
 // SessionManager
 // ---------------------------------------------------------------------------
@@ -104,10 +113,11 @@ export class SessionManager {
   private cumulativeInputTokens = 0;
   private cumulativeOutputTokens = 0;
   private cumulativeCacheReadTokens = 0;
+  private cumulativeCacheCreationTokens = 0;
   private stageTurnCount = 0;
-  private knownStoreKeys = new Set<string>();
   private prevModel: string | undefined;
   private prevPermissionMode: string | undefined;
+  private prevMcpKey: string | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly config: SessionManagerConfig;
   private readonly log;
@@ -128,10 +138,8 @@ export class SessionManager {
 
     const isFirstStage = this.query === null && !this.queryClosed;
     const isRetry = !!params.resumeInfo?.feedback;
-    const needsNewQuery =
-      this.query === null || (this.queryClosed && this.sessionId);
 
-    if (needsNewQuery) {
+    if (this.query === null) {
       await this.createQuery(params);
     } else if (!isRetry) {
       await this.switchStageConfig(params);
@@ -140,7 +148,7 @@ export class SessionManager {
     // Build the user message for this stage
     const promptText = isRetry
       ? params.resumeInfo!.feedback
-      : this.buildStagePrompt(params, isFirstStage && !this.queryClosed);
+      : this.buildStagePrompt(params, isFirstStage);
 
     this.inputQueue!.enqueue(buildUserMessage(promptText));
 
@@ -176,6 +184,33 @@ export class SessionManager {
 
     const appendPrompt = await this.buildSystemAppend(params);
 
+    // Build hooks: path restriction (always) from sandbox config
+    const settings = loadSystemSettings();
+    const sandboxFs = (params.context.config?.sandbox ?? settings.sandbox)?.filesystem;
+    const pathHook = createPathRestrictionHook(
+      sandboxFs?.allow_write,
+      sandboxFs?.deny_write,
+    );
+    const hooks: Record<string, Array<{ hooks: Array<(input: HookInput, toolUseId: string | undefined, options: { signal: AbortSignal }) => Promise<HookJSONOutput>> }>> = {
+      PreToolUse: [{ hooks: [pathHook] }],
+    };
+
+    // Build MCP servers with store-reader
+    const mcpServers: Record<string, unknown> = buildMcpServers(params.stageConfig.mcpServices, "claude");
+    if (params.context.store && Object.keys(params.context.store).length > 0) {
+      mcpServers["__store__"] = createStoreReaderMcp(
+        params.context.store,
+        params.context.scratchPad ?? [],
+        params.stageName,
+      );
+    } else if (params.context.scratchPad && params.context.scratchPad.length > 0) {
+      mcpServers["__store__"] = createStoreReaderMcp(
+        {},
+        params.context.scratchPad,
+        params.stageName,
+      );
+    }
+
     const options: SdkOptions = {
       systemPrompt: {
         type: "preset",
@@ -185,6 +220,7 @@ export class SessionManager {
       pathToClaudeCodeExecutable: this.config.claudePath,
       settingSources: [],
       thinking: params.stageConfig.thinking,
+      ...(params.stageConfig.effort ? { effort: params.stageConfig.effort } : {}),
       includePartialMessages: true,
       maxTurns: 500,
       maxBudgetUsd: 50,
@@ -207,13 +243,9 @@ export class SessionManager {
         CLAUDECODE: "",
         CI: "true",
       },
+      hooks,
+      ...(Object.keys(mcpServers).length > 0 ? { mcpServers: mcpServers as SdkOptions["mcpServers"] } : {}),
     };
-
-    // MCP servers
-    const mcpServers = buildMcpServers(params.stageConfig.mcpServices);
-    if (Object.keys(mcpServers).length > 0) {
-      options.mcpServers = mcpServers as SdkOptions["mcpServers"];
-    }
 
     // Interactive mode: AskUserQuestion interceptor
     if (params.interactive) {
@@ -240,6 +272,7 @@ export class SessionManager {
 
     this.prevModel = params.stageConfig.model;
     this.prevPermissionMode = params.stageConfig.permissionMode;
+    this.prevMcpKey = mcpServiceKey(params.stageConfig.mcpServices);
   }
 
   // -----------------------------------------------------------------------
@@ -276,11 +309,19 @@ export class SessionManager {
       this.prevPermissionMode = params.stageConfig.permissionMode;
     }
 
-    // Update MCP servers if service list changed
-    const mcpServers = buildMcpServers(params.stageConfig.mcpServices);
-    await this.query.setMcpServers(
-      mcpServers as Parameters<Query["setMcpServers"]>[0],
-    );
+    // Update MCP servers only if service list changed
+    const newMcpKey = mcpServiceKey(params.stageConfig.mcpServices);
+    if (newMcpKey !== this.prevMcpKey) {
+      this.log.info(
+        { from: this.prevMcpKey, to: newMcpKey },
+        "Switching MCP servers between stages",
+      );
+      const mcpServers = buildMcpServers(params.stageConfig.mcpServices, "claude");
+      await this.query.setMcpServers(
+        mcpServers as Parameters<Query["setMcpServers"]>[0],
+      );
+      this.prevMcpKey = newMcpKey;
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -319,6 +360,20 @@ export class SessionManager {
     const startTime = Date.now();
     const redFlagAccumulator = new RedFlagAccumulator();
 
+    // Per-stage timeout
+    const stageTimeoutSec = params.stageConfig.stageTimeoutSec ?? 1800;
+    let stageTimedOut = false;
+    const stageTimer = setTimeout(() => {
+      stageTimedOut = true;
+      this.log.error({ timeoutSec: stageTimeoutSec, stage: params.stageName }, "Stage execution timeout reached");
+      // Inject urgent stop message — the agent should wrap up
+      this.inputQueue?.enqueue(
+        buildUserMessage(
+          "URGENT: Stage execution timeout reached. Stop ALL work immediately and output your current progress as the required JSON NOW.",
+        ),
+      );
+    }, stageTimeoutSec * 1000);
+
     // Emit stage_change SSE
     sseManager.pushMessage(
       params.taskId,
@@ -327,179 +382,190 @@ export class SessionManager {
       }),
     );
 
-    while (true) {
-      const { value: message, done } = await this.queryIterator.next();
-      if (done) {
-        throw new Error(
-          `Single-session query ended unexpectedly during stage "${params.stageName}"`,
-        );
-      }
+    try {
+      while (true) {
+        const { value: message, done } = await this.queryIterator.next();
+        if (done) {
+          throw new Error(
+            `Single-session query ended unexpectedly during stage "${params.stageName}"`,
+          );
+        }
 
-      this.clearIdleTimer();
+        this.clearIdleTimer();
 
-      const msg = message as Record<string, unknown>;
+        const msg = message as Record<string, unknown>;
 
-      // Capture session ID
-      if (msg.session_id && !this.sessionId) {
-        this.sessionId = msg.session_id as string;
-        await persistSessionId(
-          params.taskId,
-          params.stageName,
-          this.sessionId,
-        );
-      }
+        // Capture session ID
+        if (msg.session_id && !this.sessionId) {
+          this.sessionId = msg.session_id as string;
+          await persistSessionId(
+            params.taskId,
+            params.stageName,
+            this.sessionId,
+          );
+        }
 
-      switch ((message as any).type) {
-        case "assistant": {
-          const content = (msg.message as any)?.content;
-          if (Array.isArray(content)) {
-            for (const block of content) {
-              if (block.type === "text" && block.text) {
-                sseManager.pushMessage(
-                  params.taskId,
-                  createSSEMessage(params.taskId, "agent_text", {
-                    text: block.text,
-                  }),
-                );
-                if (resultText.length < MAX_RESULT_TEXT) {
-                  resultText += block.text;
-                }
-                const newFlags = redFlagAccumulator.append(block.text);
-                if (newFlags.length > 0) {
+        switch ((message as any).type) {
+          case "assistant": {
+            const content = (msg.message as any)?.content;
+            if (Array.isArray(content)) {
+              for (const block of content) {
+                if (block.type === "text" && block.text) {
                   sseManager.pushMessage(
                     params.taskId,
-                    createSSEMessage(params.taskId, "agent_red_flag", {
-                      flags: newFlags.map((f) => ({
-                        category: f.category,
-                        description: f.description,
-                        matched: f.matchedText,
-                      })),
+                    createSSEMessage(params.taskId, "agent_text", {
+                      text: block.text,
+                    }),
+                  );
+                  if (resultText.length < MAX_RESULT_TEXT) {
+                    resultText += block.text;
+                  }
+                  const newFlags = redFlagAccumulator.append(block.text);
+                  if (newFlags.length > 0) {
+                    sseManager.pushMessage(
+                      params.taskId,
+                      createSSEMessage(params.taskId, "agent_red_flag", {
+                        flags: newFlags.map((f) => ({
+                          category: f.category,
+                          description: f.description,
+                          matched: f.matchedText,
+                        })),
+                      }),
+                    );
+                  }
+                }
+                if (block.type === "thinking" && (block as any).thinking) {
+                  sseManager.pushMessage(
+                    params.taskId,
+                    createSSEMessage(params.taskId, "agent_thinking", {
+                      text: (block as any).thinking as string,
+                    }),
+                  );
+                }
+                if (block.type === "tool_use") {
+                  sseManager.pushMessage(
+                    params.taskId,
+                    createSSEMessage(params.taskId, "agent_tool_use", {
+                      toolName: block.name,
+                      input: block.input as Record<string, unknown>,
+                    }),
+                  );
+                  this.stageTurnCount++;
+                  sseManager.pushMessage(
+                    params.taskId,
+                    createSSEMessage(params.taskId, "agent_progress", {
+                      toolCallCount: this.stageTurnCount,
+                      phase: "working",
                     }),
                   );
                 }
               }
-              if (block.type === "thinking" && (block as any).thinking) {
-                sseManager.pushMessage(
-                  params.taskId,
-                  createSSEMessage(params.taskId, "agent_thinking", {
-                    text: (block as any).thinking as string,
-                  }),
-                );
-              }
-              if (block.type === "tool_use") {
-                sseManager.pushMessage(
-                  params.taskId,
-                  createSSEMessage(params.taskId, "agent_tool_use", {
-                    toolName: block.name,
-                    input: block.input as Record<string, unknown>,
-                  }),
-                );
-                this.stageTurnCount++;
-                sseManager.pushMessage(
-                  params.taskId,
-                  createSSEMessage(params.taskId, "agent_progress", {
-                    toolCallCount: this.stageTurnCount,
-                    phase: "working",
-                  }),
-                );
-              }
             }
+            break;
           }
-          break;
-        }
 
-        case "result": {
-          // Differential cost
-          const totalCost = (msg.total_cost_usd as number) ?? 0;
-          const stageCost = totalCost - this.cumulativeCostUsd;
-          this.cumulativeCostUsd = totalCost;
+          case "result": {
+            // Differential cost
+            const totalCost = (msg.total_cost_usd as number) ?? 0;
+            const stageCost = totalCost - this.cumulativeCostUsd;
+            this.cumulativeCostUsd = totalCost;
 
-          // Differential token usage
-          const usage = msg.usage as Record<string, number> | undefined;
-          let tokenUsage: StageTokenUsage | undefined;
-          if (usage) {
-            const inputTokens =
-              (usage.input_tokens ?? 0) - this.cumulativeInputTokens;
-            const outputTokens =
-              (usage.output_tokens ?? 0) - this.cumulativeOutputTokens;
-            const cacheReadTokens =
-              (usage.cache_read_input_tokens ?? 0) -
-              this.cumulativeCacheReadTokens;
-            this.cumulativeInputTokens = usage.input_tokens ?? 0;
-            this.cumulativeOutputTokens = usage.output_tokens ?? 0;
-            this.cumulativeCacheReadTokens =
-              usage.cache_read_input_tokens ?? 0;
-            tokenUsage = {
-              inputTokens,
-              outputTokens,
-              cacheReadTokens,
-              totalTokens: inputTokens + outputTokens,
+            // Differential token usage
+            const usage = msg.usage as Record<string, number> | undefined;
+            let tokenUsage: StageTokenUsage | undefined;
+            if (usage) {
+              const inputTokens =
+                (usage.input_tokens ?? 0) - this.cumulativeInputTokens;
+              const outputTokens =
+                (usage.output_tokens ?? 0) - this.cumulativeOutputTokens;
+              const cacheReadTokens =
+                (usage.cache_read_input_tokens ?? 0) -
+                this.cumulativeCacheReadTokens;
+              const cacheCreationTokens =
+                (usage.cache_creation_input_tokens ?? 0) -
+                this.cumulativeCacheCreationTokens;
+              this.cumulativeInputTokens = usage.input_tokens ?? 0;
+              this.cumulativeOutputTokens = usage.output_tokens ?? 0;
+              this.cumulativeCacheReadTokens =
+                usage.cache_read_input_tokens ?? 0;
+              this.cumulativeCacheCreationTokens =
+                usage.cache_creation_input_tokens ?? 0;
+              tokenUsage = {
+                inputTokens,
+                outputTokens,
+                cacheReadTokens,
+                cacheCreationTokens: cacheCreationTokens || undefined,
+                totalTokens: inputTokens + outputTokens,
+              };
+            }
+
+            // Handle result text
+            const subtype = msg.subtype as string | undefined;
+            if (subtype === "success") {
+              if (msg.structured_output) {
+                resultText = JSON.stringify(msg.structured_output);
+              } else if (msg.result) {
+                resultText = msg.result as string;
+              }
+            } else if (subtype && subtype.startsWith("error_")) {
+              throw new Error(
+                String(
+                  msg.error_message ?? msg.result ?? "Agent error",
+                ),
+              );
+            }
+
+            // Update session ID from result if present
+            if (msg.session_id) {
+              this.sessionId = msg.session_id as string;
+            }
+
+            // Start idle timer
+            this.startIdleTimer();
+
+            this.log.info(
+              {
+                stage: params.stageName,
+                costUsd: stageCost.toFixed(4),
+                durationMs: Date.now() - startTime,
+                sessionId: this.sessionId,
+                timedOut: stageTimedOut,
+              },
+              "Stage result received",
+            );
+
+            return {
+              resultText,
+              sessionId: this.sessionId,
+              costUsd: stageCost,
+              durationMs: Date.now() - startTime,
+              tokenUsage,
+              cwd: params.worktreePath,
             };
           }
 
-          // Handle result text
-          const subtype = msg.subtype as string | undefined;
-          if (subtype === "success") {
-            if (msg.structured_output) {
-              resultText = JSON.stringify(msg.structured_output);
-            } else if (msg.result) {
-              resultText = msg.result as string;
-            }
-          } else if (subtype && subtype.startsWith("error_")) {
-            throw new Error(
-              String(
-                msg.error_message ?? msg.result ?? "Agent error",
-              ),
-            );
-          }
+          case "system":
+            break;
 
-          // Update session ID from result if present
-          if (msg.session_id) {
-            this.sessionId = msg.session_id as string;
-          }
-
-          // Start idle timer
-          this.startIdleTimer();
-
-          this.log.info(
-            {
-              stage: params.stageName,
-              costUsd: stageCost.toFixed(4),
-              durationMs: Date.now() - startTime,
-              sessionId: this.sessionId,
-            },
-            "Stage result received",
-          );
-
-          return {
-            resultText,
-            sessionId: this.sessionId,
-            costUsd: stageCost,
-            durationMs: Date.now() - startTime,
-            tokenUsage,
-            cwd: params.worktreePath,
-          };
+          default:
+            break;
         }
 
-        case "system":
-          break;
-
-        default:
-          break;
+        // Soft turn limit
+        if (
+          this.stageTurnCount > 0 &&
+          this.stageTurnCount >= params.stageConfig.maxTurns
+        ) {
+          this.inputQueue!.enqueue(
+            buildUserMessage(
+              "You have exceeded the turn limit for this stage. Stop working and output your current progress as the required JSON immediately.",
+            ),
+          );
+          this.stageTurnCount = -999; // prevent re-sending
+        }
       }
-
-      // Soft turn limit
-      if (
-        this.stageTurnCount > 0 &&
-        this.stageTurnCount >= params.stageConfig.maxTurns
-      ) {
-        this.inputQueue!.enqueue(
-          buildUserMessage(
-            "You have exceeded the turn limit for this stage. Stop working and output your current progress as the required JSON immediately.",
-          ),
-        );
-        this.stageTurnCount = -999; // prevent re-sending
-      }
+    } finally {
+      clearTimeout(stageTimer);
     }
   }
 
@@ -515,14 +581,37 @@ export class SessionManager {
     // Build union of MCP services from all stages
     const allMcpServices = new Set<string>();
     for (const stage of group.stages) {
-      const services: string[] = stage.stageConfig?.mcpServices ?? [];
-      for (const svc of services) allMcpServices.add(svc);
+      const mcps: string[] = (stage as any).mcps ?? [];
+      for (const svc of mcps) allMcpServices.add(svc);
     }
     for (const svc of params.stageConfig.mcpServices) allMcpServices.add(svc);
+
+    // Build dispatch prompt that instructs the agent to run child stages via Agent tool
+    const childDescriptions = group.stages.map((stage: any) => {
+      const runtime = stage.runtime as AgentRuntimeConfig | undefined;
+      const writes = (runtime?.writes ?? []).map((w: any) => typeof w === "string" ? w : w.key);
+      return `### ${stage.name}\n**Prompt:** ${runtime?.system_prompt ?? "(no prompt)"}\n**Required output keys:** ${writes.join(", ") || "(none)"}`;
+    }).join("\n\n");
+
+    const dispatchPrompt = [
+      `You are now executing parallel group "${group.name}".`,
+      `This group contains ${group.stages.length} independent stages that should be dispatched in parallel using the Agent tool.`,
+      "",
+      "## Child Stages",
+      "",
+      childDescriptions,
+      "",
+      "## Instructions",
+      "1. Launch ALL child stages simultaneously using the Agent tool (one Agent call per stage)",
+      "2. Each agent should complete its assigned task and output a JSON object with its required output keys",
+      "3. After all agents complete, combine their outputs into a single JSON object and output it",
+      "4. The final output MUST contain ALL required output keys from ALL child stages",
+    ].join("\n");
 
     const mergedParams: ExecuteStageParams = {
       ...params,
       stageName: group.name,
+      stagePrompt: dispatchPrompt,
       stageConfig: {
         ...params.stageConfig,
         mcpServices: [...allMcpServices],

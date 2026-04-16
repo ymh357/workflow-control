@@ -186,6 +186,7 @@ export async function runAgentSingleSession(
 
   const stageConfig = {
     model: privateStage?.model || settings.agent?.claude_model,
+    effort: privateStage?.effort,
     mcpServices: (privateStage?.mcps ?? []) as string[],
     permissionMode: (privateStage?.permission_mode ?? "bypassPermissions"),
     maxTurns: privateStage?.max_turns ?? 30,
@@ -193,6 +194,7 @@ export async function runAgentSingleSession(
     thinking: privateStage?.thinking
       ? { type: privateStage.thinking.type as "enabled" | "disabled" | "adaptive" }
       : { type: "disabled" as const },
+    stageTimeoutSec: privateStage?.stage_timeout_sec,
   };
 
   const result = await mgr.executeStage({
@@ -218,11 +220,11 @@ export async function runAgentSingleSession(
     const { allPassed, results: verifyResults } = await runVerifyCommands(taskId, stageName, verifyCommands, worktreePath);
     if (!allPassed) {
       if (verifyPolicy === "must_pass") {
-        return { ...result, verifyFailed: true, verifyResults } as any;
+        return { ...result, verifyFailed: true, verifyResults };
       }
       taskLogger(taskId, stageName).warn({ failures: formatVerifyFailures(verifyResults).slice(0, 1000) }, "Verify commands failed (warn policy, continuing)");
     }
-    return { ...result, verifyResults } as any;
+    return { ...result, verifyResults };
   }
 
   return result;
