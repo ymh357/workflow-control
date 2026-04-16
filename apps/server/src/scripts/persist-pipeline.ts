@@ -73,7 +73,7 @@ If validation fails, an error is thrown and nothing is written.
     const parsedObj = parsed as { stages?: unknown[] };
     if (parsedObj.stages) {
       const injected = Array.isArray((parsed as any).injected_context) ? new Set((parsed as any).injected_context as string[]) : undefined;
-      const logicIssues = validatePipelineLogic(parsedObj.stages as any, undefined, undefined, injected);
+      const logicIssues = validatePipelineLogic(parsedObj.stages as any, undefined, undefined, injected, (parsed as any).store_schema);
       const errors = getValidationErrors(logicIssues);
       if (errors.length > 0) {
         const details = errors.map((e) => `${e.field ? `[${e.field}] ` : ""}${e.message}`);

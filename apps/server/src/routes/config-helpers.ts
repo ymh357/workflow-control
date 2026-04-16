@@ -153,7 +153,7 @@ export function validatePipelinePayload(
   const promptKeys = collectPromptKeys(pipelineDir, options);
   const injected = Array.isArray((parsed as any).injected_context) ? new Set((parsed as any).injected_context as string[]) : undefined;
 
-  const issues = validatePipelineLogic(parsed.stages as any[], promptKeys, undefined, injected);
+  const issues = validatePipelineLogic(parsed.stages as any[], promptKeys, undefined, injected, (parsed as any).store_schema);
   return {
     errors: getValidationErrors(issues).map((e) => e.message),
     warnings: issues.filter((i) => i.severity === "warning").map((i) => i.message),
