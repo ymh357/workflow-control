@@ -126,6 +126,52 @@ describe("validatePipelineConfig", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it("accepts pipeline without session_mode", () => {
+    const result = PipelineConfigSchema.safeParse({
+      name: "Test",
+      stages: [{ name: "s1", type: "agent" }],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts session_mode: 'multi'", () => {
+    const result = PipelineConfigSchema.safeParse({
+      name: "Test",
+      stages: [{ name: "s1", type: "agent" }],
+      session_mode: "multi",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts session_mode: 'single' with engine: 'claude'", () => {
+    const result = PipelineConfigSchema.safeParse({
+      name: "Test",
+      engine: "claude",
+      stages: [{ name: "s1", type: "agent" }],
+      session_mode: "single",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects session_mode: 'single' with engine: 'gemini'", () => {
+    const result = PipelineConfigSchema.safeParse({
+      name: "Test",
+      engine: "gemini",
+      stages: [{ name: "s1", type: "agent" }],
+      session_mode: "single",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts session_idle_timeout_sec", () => {
+    const result = PipelineConfigSchema.safeParse({
+      name: "Test",
+      stages: [{ name: "s1", type: "agent" }],
+      session_idle_timeout_sec: 7200,
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 // ---------- PipelineStageConfigSchema ----------

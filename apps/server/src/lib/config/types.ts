@@ -262,6 +262,8 @@ export interface PipelineConfig {
   // Pipeline-level invariants applied to ALL agent stages
   invariants?: string[];
   inline_prompts?: Record<string, string>;
+  session_mode?: "multi" | "single";
+  session_idle_timeout_sec?: number;
 }
 
 export interface PipelineManifest {

@@ -307,7 +307,17 @@ export const PipelineConfigSchema = z.object({
   store_persistence: StorePersistenceSchema.optional(),
   store_schema: StoreSchemaSchema.optional(),
   inline_prompts: z.record(z.string(), z.string()).optional(),
-});
+  session_mode: z.enum(["multi", "single"]).optional(),
+  session_idle_timeout_sec: z.number().positive().optional(),
+}).refine(
+  (data) => {
+    if (data.session_mode === "single" && data.engine && data.engine !== "claude") {
+      return false;
+    }
+    return true;
+  },
+  { message: "session_mode: 'single' requires engine: 'claude' (or omitted)" },
+);
 
 // --- Pipeline Manifest ---
 
