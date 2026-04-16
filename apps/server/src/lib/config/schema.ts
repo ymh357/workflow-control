@@ -39,6 +39,7 @@ const WriteDeclarationSchema = z.union([
     key: z.string(),
     strategy: z.enum(["replace", "append", "merge"]).optional(),
     summary_prompt: z.string().optional(),
+    assertions: z.array(z.string()).optional(),
   }),
 ]);
 

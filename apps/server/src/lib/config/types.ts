@@ -19,7 +19,7 @@ export interface SubAgentDefinition {
   mcpServers?: (string | Record<string, unknown>)[];
 }
 
-export type WriteDeclaration = string | { key: string; strategy?: "replace" | "append" | "merge"; summary_prompt?: string };
+export type WriteDeclaration = string | { key: string; strategy?: "replace" | "append" | "merge"; summary_prompt?: string; assertions?: string[] };
 
 export interface AgentRuntimeConfig {
   engine: "llm";
