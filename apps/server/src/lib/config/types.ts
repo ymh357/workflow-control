@@ -142,6 +142,27 @@ export interface StageOutputSchema {
   };
 }
 
+export interface StoreSchemaField {
+  type: "string" | "number" | "boolean" | "string[]" | "object" | "object[]" | "markdown";
+  description?: string;
+  required?: boolean;
+  fields?: Record<string, StoreSchemaField>;
+  display_hint?: "link" | "badge" | "code";
+  hidden?: boolean;
+}
+
+export interface StoreSchemaEntry {
+  produced_by: string;
+  type?: "object";
+  description?: string;
+  required?: boolean;
+  fields?: Record<string, StoreSchemaField>;
+  additional_properties?: boolean;
+  assertions?: string[];
+}
+
+export type StoreSchema = Record<string, StoreSchemaEntry>;
+
 export interface PipelineStageConfig {
   name: string;
   type: "agent" | "script" | "human_confirm" | "condition" | "pipeline" | "foreach" | "llm_decision";
@@ -229,6 +250,7 @@ export interface PipelineConfig {
     inherit_from: "last_completed" | "none";
     inherit_keys: string[] | "*";
   };
+  store_schema?: StoreSchema;
   // Pipeline-level invariants applied to ALL agent stages
   invariants?: string[];
 }
