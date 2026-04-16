@@ -275,10 +275,10 @@ describe("Guard-by-guard analysis with back_to + all retries exhausted", () => {
     expect(retryGuard({ event, context })).toBe(false);
   });
 
-  it("blocked guard (index 1) returns true when back_to QA loop is also exhausted", () => {
+  it("blocked guard (index 2) returns true when back_to QA loop is also exhausted", () => {
     const state = buildAgentState("nextStage", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const blockedGuard = handlers[1].guard!;
+    const blockedGuard = handlers[2].guard!;
 
     // qaRetryCount >= max_retries (1), so back_to loop is exhausted — blocked guard should fire
     const context = makeContext({ retryCount: 2, qaRetryCount: 1 });
@@ -287,10 +287,10 @@ describe("Guard-by-guard analysis with back_to + all retries exhausted", () => {
     expect(blockedGuard({ event, context })).toBe(true);
   });
 
-  it("blocked guard (index 1) defers to QA loop when it still has retries left", () => {
+  it("blocked guard (index 2) defers to QA loop when it still has retries left", () => {
     const state = buildAgentState("nextStage", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const blockedGuard = handlers[1].guard!;
+    const blockedGuard = handlers[2].guard!;
 
     // qaRetryCount < max_retries (1), so back_to loop still has capacity — blocked guard defers
     const context = makeContext({ retryCount: 2, qaRetryCount: 0 });
@@ -299,10 +299,10 @@ describe("Guard-by-guard analysis with back_to + all retries exhausted", () => {
     expect(blockedGuard({ event, context })).toBe(false);
   });
 
-  it("QA guard (index 2) returns false when qaRetryCount >= max_retries", () => {
+  it("QA guard (index 3) returns false when qaRetryCount >= max_retries", () => {
     const state = buildAgentState("nextStage", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const qaGuard = handlers[2].guard!;
+    const qaGuard = handlers[3].guard!;
 
     const context = makeContext({ retryCount: 2, qaRetryCount: 1 });
     // Empty output — not a QA failure shape anyway

@@ -14,8 +14,9 @@ import { getNestedValue } from "../lib/config-loader.js";
 import { extractJSON } from "../lib/json-extractor.js";
 import { getStageBuilder } from "./stage-registry.js";
 import { formatVerifyFailures } from "../agent/verify-commands.js";
+import { evaluateAssertions, formatAssertionFeedback } from "./assertion-evaluator.js";
 
-type WriteDeclaration = string | { key: string; strategy?: string; summary_prompt?: string };
+type WriteDeclaration = string | { key: string; strategy?: string; summary_prompt?: string; assertions?: string[] };
 
 const parseCache = new WeakMap<object, Record<string, unknown> | null>();
 
@@ -68,6 +69,16 @@ function buildWriteStrategies(writes: WriteDeclaration[] | undefined): Map<strin
     else strategies.set(w.key, w.strategy ?? "replace");
   }
   return strategies;
+}
+
+function collectAssertions(writes: WriteDeclaration[] | undefined): Map<string, string[]> {
+  const assertions = new Map<string, string[]>();
+  for (const w of writes ?? []) {
+    if (typeof w !== "string" && w.assertions?.length) {
+      assertions.set(w.key, w.assertions);
+    }
+  }
+  return assertions;
 }
 
 function applyStoreUpdates(
@@ -208,6 +219,55 @@ export function buildAgentState(
               taskId: context.taskId,
               status: context.status,
               message: `${stateName}: output missing required fields, retrying (attempt ${context.retryCount})`,
+            })),
+          ],
+        },
+        // Guard: retry if assertions fail
+        {
+          guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
+            const assertionMap = collectAssertions(runtime.writes);
+            if (assertionMap.size === 0) return false;
+            if (getStageRetryCount(context, stateName) >= 2) return false;
+            const parsed = getCachedParse(event.output);
+            if (!parsed) return false;
+            for (const [key, assertions] of assertionMap) {
+              const failures = evaluateAssertions(key, parsed[key], assertions);
+              if (failures.length > 0) return true;
+            }
+            return false;
+          },
+          target: stateName,
+          reenter: true,
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const sessionId = event.output?.sessionId ?? context.stageSessionIds?.[stateName];
+              const parsed = getCachedParse(event.output);
+              const assertionMap = collectAssertions(runtime.writes);
+              const allFailures: { key: string; assertion: string; passed: boolean }[] = [];
+              for (const [key, assertions] of assertionMap) {
+                allFailures.push(...evaluateAssertions(key, parsed?.[key], assertions));
+              }
+              return {
+                retryCount: context.retryCount + 1,
+                stageRetryCount: incrementStageRetryCount(context, stateName),
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
+                stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
+                stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
+                resumeInfo: sessionId
+                  ? { sessionId, feedback: formatAssertionFeedback(allFailures) }
+                  : undefined,
+              };
+            }),
+            ({ context }: { context: WorkflowContext }) => {
+              taskLogger(context.taskId).warn({ stage: stateName, retryCount: context.retryCount }, "Output failed quality assertions, retrying");
+            },
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.status",
+              taskId: context.taskId,
+              status: context.status,
+              message: `${stateName}: output failed quality assertions, retrying (attempt ${context.retryCount})`,
             })),
           ],
         },

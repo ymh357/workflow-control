@@ -112,9 +112,9 @@ describe("Bug 1: blocked guard must not shadow QA feedback loop", () => {
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
 
-    // Handler[0] = retry guard, Handler[1] = blocked guard
-    const blockedGuard = handlers[1].guard!;
-    expect(handlers[1].target).toBe("blocked");
+    // Handler[0] = retry guard, Handler[1] = assertion guard, Handler[2] = blocked guard
+    const blockedGuard = handlers[2].guard!;
+    expect(handlers[2].target).toBe("blocked");
 
     // Output is missing the required "result" field
     const event = { output: { resultText: "{}" } };
@@ -136,7 +136,7 @@ describe("Bug 1: blocked guard must not shadow QA feedback loop", () => {
     });
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const blockedGuard = handlers[1].guard!;
+    const blockedGuard = handlers[2].guard!;
 
     // Output missing required field, no back_to => should block
     const event = { output: { resultText: "{}" } };
@@ -158,10 +158,10 @@ describe("Bug 1: blocked guard must not shadow QA feedback loop", () => {
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
 
-    // The QA feedback loop guard should be present (handler index 2)
-    expect(handlers.length).toBeGreaterThanOrEqual(3);
-    const qaGuard = handlers[2].guard!;
-    expect(handlers[2].target).toBe("prevStage");
+    // The QA feedback loop guard should be present (handler index 3, after assertion guard at 1)
+    expect(handlers.length).toBeGreaterThanOrEqual(4);
+    const qaGuard = handlers[3].guard!;
+    expect(handlers[3].target).toBe("prevStage");
 
     // Simulate output where result.passed === false (QA failure)
     const failedResult = JSON.stringify({ result: { passed: false, blockers: ["lint errors"] } });
@@ -169,7 +169,7 @@ describe("Bug 1: blocked guard must not shadow QA feedback loop", () => {
     const context = makeContext({ retryCount: 5, qaRetryCount: 0 });
 
     // Blocked guard should NOT fire (tested above), and QA guard should fire
-    const blockedResult = handlers[1].guard!({ event, context });
+    const blockedResult = handlers[2].guard!({ event, context });
     expect(blockedResult).toBe(false);
 
     const qaResult = qaGuard({ event, context });
@@ -204,8 +204,8 @@ describe("Bug 2: stageSessionIds must not be polluted with undefined", () => {
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
 
-    // QA feedback loop handler (index 2)
-    const qaHandler = handlers[2];
+    // QA feedback loop handler (index 3, after assertion guard at 1)
+    const qaHandler = handlers[3];
     expect(qaHandler.target).toBe("prevStage");
 
     const assignFn = findAssignAction(qaHandler);
@@ -442,7 +442,7 @@ describe("Bug 1 extended — blocked guard edge cases", () => {
     });
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const blockedGuard = handlers[1].guard!;
+    const blockedGuard = handlers[2].guard!;
 
     const event = { output: { resultText: "{}" } };
     const context = makeContext({ retryCount: 5 });
@@ -462,7 +462,7 @@ describe("Bug 1 extended — blocked guard edge cases", () => {
     });
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const blockedGuard = handlers[1].guard!;
+    const blockedGuard = handlers[2].guard!;
 
     // Only fieldA present, fieldB missing
     const event = { output: { resultText: JSON.stringify({ fieldA: "ok" }) } };
@@ -483,7 +483,7 @@ describe("Bug 1 extended — blocked guard edge cases", () => {
     });
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const blockedGuard = handlers[1].guard!;
+    const blockedGuard = handlers[2].guard!;
 
     // extractJSON will throw on invalid JSON
     const event = { output: { resultText: "not json at all {{{" } };
@@ -503,7 +503,7 @@ describe("Bug 1 extended — blocked guard edge cases", () => {
     });
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const blockedGuard = handlers[1].guard!;
+    const blockedGuard = handlers[2].guard!;
 
     const event = { output: { resultText: null } };
     const context = makeContext({ retryCount: 5 });
@@ -522,7 +522,7 @@ describe("Bug 1 extended — blocked guard edge cases", () => {
     });
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const blockedGuard = handlers[1].guard!;
+    const blockedGuard = handlers[2].guard!;
 
     const event = { output: { resultText: "" } };
     const context = makeContext({ retryCount: 5 });
@@ -541,7 +541,7 @@ describe("Bug 1 extended — blocked guard edge cases", () => {
     });
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const blockedGuard = handlers[1].guard!;
+    const blockedGuard = handlers[2].guard!;
 
     const event = { output: { resultText: "{}" } };
     const context = makeContext({ retryCount: 5 });
@@ -560,7 +560,7 @@ describe("Bug 1 extended — blocked guard edge cases", () => {
     });
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const blockedGuard = handlers[1].guard!;
+    const blockedGuard = handlers[2].guard!;
 
     const event = { output: { resultText: JSON.stringify({ result: "ok", summary: "done" }) } };
     const context = makeContext({ retryCount: 5 });
@@ -623,7 +623,7 @@ describe("Bug 1 extended — retry guard interactions", () => {
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
     const retryGuard = handlers[0].guard!;
-    const blockedGuard = handlers[1].guard!;
+    const blockedGuard = handlers[2].guard!;
 
     const event = { output: { resultText: "{}" } };
     const context = makeContext({ retryCount: 2 });
@@ -645,7 +645,7 @@ describe("Bug 1 extended — retry guard interactions", () => {
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
     const retryGuard = handlers[0].guard!;
-    const blockedGuard = handlers[1].guard!;
+    const blockedGuard = handlers[2].guard!;
 
     const event = { output: { resultText: JSON.stringify({ result: "present" }) } };
     const context = makeContext({ retryCount: 0 });
@@ -718,7 +718,7 @@ describe("Bug 2 extended — stageSessionIds across all paths", () => {
     });
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const qaHandler = handlers[2];
+    const qaHandler = handlers[3];
     const assignFn = findAssignAction(qaHandler)!;
 
     const context = makeContext({
@@ -885,7 +885,7 @@ describe("Bug 2 extended — store merge behavior", () => {
     });
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const qaHandler = handlers[2];
+    const qaHandler = handlers[3];
     const assignFn = findAssignAction(qaHandler)!;
 
     const context = makeContext({
@@ -916,7 +916,7 @@ describe("Bug 2 extended — store merge behavior", () => {
     });
     const state = buildAgentState("next", "prev", stage);
     const handlers = getOnDoneHandlers(state);
-    const qaHandler = handlers[2];
+    const qaHandler = handlers[3];
     const assignFn = findAssignAction(qaHandler)!;
 
     const context = makeContext({
