@@ -2,7 +2,7 @@ import type { StateNode } from "./state-builders.js";
 import type { PipelineStageConfig, AgentStageConfig, ScriptStageConfig, HumanGateRuntimeConfig, ConditionStageConfig, PipelineCallStageConfig, ForeachStageConfig, LlmDecisionStageConfig } from "../lib/config-loader.js";
 import { buildAgentState, buildScriptState, buildHumanGateState, buildConditionState, buildPipelineCallState, buildForeachState, buildLlmDecisionState } from "./state-builders.js";
 
-export type StageBuilderOpts = { blockedTarget?: string; statePrefix?: string; childToGroup?: Map<string, string> };
+export type StageBuilderOpts = { blockedTarget?: string; statePrefix?: string; childToGroup?: Map<string, string>; sessionMode?: "multi" | "single" };
 
 export function getStageBuilder(stage: PipelineStageConfig): ((nextTarget: string, prevAgentTarget: string, stageConfig: PipelineStageConfig, opts?: StageBuilderOpts) => StateNode) | null {
   if (stage.type === "agent" && stage.runtime?.engine === "llm") {

@@ -149,7 +149,7 @@ export function buildAgentState(
   nextTarget: string,
   _prevAgentTarget: string,
   stage: AgentStageConfig,
-  opts?: { blockedTarget?: string; statePrefix?: string },
+  opts?: { blockedTarget?: string; statePrefix?: string; sessionMode?: "multi" | "single" },
 ): StateNode {
   const stateName = stage.name;
   const { runtime } = stage;
@@ -158,7 +158,9 @@ export function buildAgentState(
   return {
     entry: statusEntry(stateName),
     invoke: {
-      src: stage.execution_mode === "edge" || stage.execution_mode === "any" ? "runEdgeAgent" : "runAgent",
+      src: (stage.execution_mode === "edge" || stage.execution_mode === "any")
+        ? "runEdgeAgent"
+        : (opts?.sessionMode === "single" ? "runAgentSingleSession" : "runAgent"),
       input: ({ context }: { context: WorkflowContext }) => {
         // For parallel children, merge own staged writes into store view
         const effectiveStore = opts?.statePrefix
@@ -1233,6 +1235,112 @@ export function buildParallelGroupState(
         emitTaskListUpdate(),
         emitPersistSession(),
       ],
+    },
+  };
+}
+
+/**
+ * Single-Session Parallel Group: Runs all child stages within a single
+ * persistent session instead of spawning parallel XState regions.
+ * The agent receives the full group definition and executes children sequentially
+ * inside one conversation.
+ */
+export function buildSingleSessionParallelState(
+  group: { name: string; stages: PipelineStageConfig[] },
+  nextTarget: string,
+  _prevAgentTarget: string,
+): StateNode {
+  const groupName = group.name;
+
+  // Combine writes from all child stages
+  const combinedWrites: WriteDeclaration[] = [];
+  for (const stage of group.stages) {
+    const runtime = stage.runtime as AgentRuntimeConfig | undefined;
+    if (runtime?.writes) combinedWrites.push(...runtime.writes);
+  }
+
+  const combinedRuntime: AgentRuntimeConfig = {
+    engine: "llm",
+    system_prompt: "",
+    writes: combinedWrites as AgentRuntimeConfig["writes"],
+  };
+
+  return {
+    entry: statusEntry(groupName),
+    invoke: {
+      src: "runAgentSingleSession",
+      input: ({ context }: { context: WorkflowContext }) => ({
+        taskId: context.taskId,
+        stageName: groupName,
+        worktreePath: context.worktreePath ?? "",
+        tier1Context: buildTier1Context(context, combinedRuntime),
+        attempt: context.retryCount,
+        resumeInfo: context.resumeInfo,
+        runtime: combinedRuntime,
+        context,
+        parallelGroup: group,
+      }),
+      onDone: [
+        // Writes validation: retry on missing keys
+        {
+          guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
+            if (combinedWrites.length === 0) return false;
+            if (getStageRetryCount(context, groupName) >= 2) return false;
+            if (!event.output.resultText) return true;
+            const parsed = getCachedParse(event.output);
+            if (!parsed) return true;
+            const writeKeys = combinedWrites.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
+            return !writeKeys.every((field: string) => parsed[field] !== undefined);
+          },
+          target: groupName,
+          reenter: true,
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => ({
+              retryCount: context.retryCount + 1,
+              stageRetryCount: incrementStageRetryCount(context, groupName),
+              totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+              totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+              stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [groupName]: event.output.tokenUsage } : context.stageTokenUsages,
+              stageSessionIds: { ...context.stageSessionIds, [groupName]: event.output?.sessionId ?? context.stageSessionIds?.[groupName] },
+              resumeInfo: event.output?.sessionId
+                ? { sessionId: event.output.sessionId, feedback: `Your previous output was missing required JSON fields. Output ALL keys: ${combinedWrites.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key).join(", ")}` }
+                : undefined,
+            })),
+          ],
+        },
+        // Success path
+        {
+          target: nextTarget,
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              let store = { ...context.store };
+              if (event.output?.resultText) {
+                const parsed = getCachedParse(event.output);
+                if (parsed) {
+                  const writeStrategies = buildWriteStrategies(combinedWrites);
+                  const filtered = filterStoreWrites(parsed, combinedWrites, groupName, context.taskId);
+                  applyStoreUpdates(store, filtered, writeStrategies);
+                }
+              }
+              return {
+                store,
+                retryCount: 0,
+                stageRetryCount: resetStageRetryCount(context, groupName),
+                resumeInfo: undefined,
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [groupName]: event.output.tokenUsage } : context.stageTokenUsages,
+                stageSessionIds: { ...context.stageSessionIds, [groupName]: event.output?.sessionId ?? context.stageSessionIds?.[groupName] },
+                completedStages: [...(context.completedStages ?? []), groupName],
+                executionHistory: [...(context.executionHistory ?? []), { stage: groupName, action: "completed" as const, timestamp: new Date().toISOString() }],
+                parallelDone: { ...context.parallelDone, [groupName]: group.stages.map(s => s.name) },
+              };
+            }),
+            emitTaskListUpdate(),
+          ],
+        },
+      ],
+      onError: handleStageError(groupName),
     },
   };
 }

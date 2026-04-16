@@ -3,7 +3,7 @@ import type { PipelineConfig, PipelineStageEntry, PipelineStageConfig } from "..
 import { isParallelGroup } from "../lib/config-loader.js";
 import { taskLogger } from "../lib/logger.js";
 import type { StateNode } from "./state-builders.js";
-import { buildParallelGroupState } from "./state-builders.js";
+import { buildParallelGroupState, buildSingleSessionParallelState } from "./state-builders.js";
 import { getStageBuilder } from "./stage-registry.js";
 import { deriveStageWrites, deriveStageOutputs } from "../lib/config/store-schema.js";
 
@@ -280,10 +280,17 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
         }
       }
 
-      states[entry.parallel.name] = buildParallelGroupState(
-        entry.parallel, nextStateName, prevAgentState
-      );
-      taskLogger("pipeline").info({ group: entry.parallel.name, children: entry.parallel.stages.map(s => s.name), next: nextStateName }, "Parallel group built");
+      if (pipeline.session_mode === "single") {
+        states[entry.parallel.name] = buildSingleSessionParallelState(
+          entry.parallel, nextStateName, prevAgentState
+        );
+        taskLogger("pipeline").info({ group: entry.parallel.name, next: nextStateName, mode: "single-session" }, "Single-session parallel group built");
+      } else {
+        states[entry.parallel.name] = buildParallelGroupState(
+          entry.parallel, nextStateName, prevAgentState
+        );
+        taskLogger("pipeline").info({ group: entry.parallel.name, children: entry.parallel.stages.map(s => s.name), next: nextStateName }, "Parallel group built");
+      }
     } else {
       const stage = { ...entry as PipelineStageConfig };
 
@@ -404,7 +411,7 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
 
       const builder = getStageBuilder(stage);
       if (builder) {
-        states[stateName] = builder(nextStateName, prevAgentStateForGate, stage, { childToGroup });
+        states[stateName] = builder(nextStateName, prevAgentStateForGate, stage, { childToGroup, sessionMode: pipeline.session_mode });
         taskLogger("pipeline").info({ stage: stage.name, type: stage.type, next: nextStateName }, "State built");
       } else {
         errors.push(`Stage "${stage.name}": no builder found for type "${stage.type}" (engine: ${runtime?.engine ?? "none"})`);

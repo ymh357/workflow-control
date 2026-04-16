@@ -93,6 +93,9 @@ export function registerSideEffects(actor: EmittingActor): void {
     import("../agent/stage-executor.js").then(({ clearAppendPromptCache }) => {
       clearAppendPromptCache(event.taskId);
     }).catch(() => {});
+    import("../agent/session-manager-registry.js").then(({ closeSessionManager }) => {
+      closeSessionManager(event.taskId);
+    }).catch(() => {});
 
     // Update pipeline index for fast store inheritance (O7)
     import("./actor-registry.js").then(({ getWorkflow }) => {
@@ -158,6 +161,9 @@ export function registerSideEffects(actor: EmittingActor): void {
     clearTaskSlots(event.taskId);
     notifyTaskTerminated(event.taskId, "cancelled");
     emitWorkflowEvent(event.taskId, "task_cancelled");
+    import("../agent/session-manager-registry.js").then(({ closeSessionManager }) => {
+      closeSessionManager(event.taskId);
+    }).catch(() => {});
   });
 
   actor.on("wf.cancelQuestions", (event: Extract<WorkflowEmittedEvent, { type: "wf.cancelQuestions" }>) => {

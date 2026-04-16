@@ -1,7 +1,7 @@
 import { setup, assign, emit } from "xstate";
 import type { WorkflowContext, WorkflowEvent } from "./types.js";
 import type { WorkflowEmittedEvent } from "./events.js";
-import { runAgent, runScript } from "../agent/executor.js";
+import { runAgent, runScript, runAgentSingleSession } from "../agent/executor.js";
 import { runEdgeAgent } from "../edge/actor.js";
 import { runPipelineCall } from "../agent/pipeline-executor.js";
 import { runForeach } from "../agent/foreach-executor.js";
@@ -27,6 +27,8 @@ export const workflowSetup = setup({
       runScript(input.taskId, input)),
     runEdgeAgent: loggedActor("edge-agent", (input: { taskId: string; stageName: string; worktreePath: string; tier1Context: string; enabledSteps?: string[]; attempt: number; resumeInfo?: { sessionId: string; feedback?: string; sync?: boolean }; runtime: AgentRuntimeConfig; context?: WorkflowContext }) =>
       runEdgeAgent(input.taskId, input)),
+    runAgentSingleSession: loggedActor("agent-single", (input: { taskId: string; stageName: string; worktreePath: string; tier1Context: string; enabledSteps?: string[]; attempt: number; resumeInfo?: { sessionId: string; feedback?: string; sync?: boolean }; interactive?: boolean; runtime: AgentRuntimeConfig; context?: WorkflowContext; parallelGroup?: { name: string; stages: any[] } }) =>
+      runAgentSingleSession(input.taskId, input)),
     runPipelineCall: loggedActor("pipeline-call", (input: { taskId: string; stageName: string; context: WorkflowContext; runtime: PipelineCallRuntimeConfig }) =>
       runPipelineCall(input.taskId, input)),
     runForeach: loggedActor("foreach", (input: { taskId: string; stageName: string; context: WorkflowContext; runtime: ForeachRuntimeConfig }) =>
