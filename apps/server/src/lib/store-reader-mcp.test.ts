@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import type { ScratchPadEntry } from "../machine/types.js";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   createSdkMcpServer: vi.fn(({ tools }) => {
@@ -22,6 +23,18 @@ import { createStoreReaderMcp } from "./store-reader-mcp.js";
 function getHandler(store: Record<string, unknown>) {
   const result = createStoreReaderMcp(store) as any;
   return result._tools[0].handler;
+}
+
+function getToolByName(
+  store: Record<string, unknown>,
+  scratchPad: ScratchPadEntry[],
+  currentStage: string,
+  toolName: string,
+) {
+  const result = createStoreReaderMcp(store, scratchPad, currentStage) as any;
+  const tool = result._tools.find((t: any) => t.name === toolName);
+  if (!tool) throw new Error(`Tool "${toolName}" not found`);
+  return tool.handler;
 }
 
 describe("store-reader-mcp", () => {
@@ -115,5 +128,96 @@ describe("store-reader-mcp", () => {
     const result = await handler({ path: "" });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("path is required");
+  });
+});
+
+describe("scratch pad tools", () => {
+  it("append_scratch_pad adds an entry to the array", async () => {
+    const pad: ScratchPadEntry[] = [];
+    const handler = getToolByName({}, pad, "stage_a", "append_scratch_pad");
+
+    const result = await handler({ category: "discovery", content: "Found something interesting" });
+    expect(result.content[0].text).toContain("1 total entries");
+    expect(pad).toHaveLength(1);
+    expect(pad[0].stage).toBe("stage_a");
+    expect(pad[0].category).toBe("discovery");
+    expect(pad[0].content).toBe("Found something interesting");
+    expect(pad[0].timestamp).toBeTruthy();
+  });
+
+  it("read_scratch_pad returns all entries when no filter", async () => {
+    const pad: ScratchPadEntry[] = [
+      { stage: "stage_a", timestamp: "2026-01-01T00:00:00.000Z", category: "discovery", content: "First note" },
+      { stage: "stage_b", timestamp: "2026-01-01T00:01:00.000Z", category: "caveat", content: "Second note" },
+    ];
+    const handler = getToolByName({}, pad, "stage_c", "read_scratch_pad");
+
+    const result = await handler({});
+    expect(result.content[0].text).toContain("[stage_a]");
+    expect(result.content[0].text).toContain("First note");
+    expect(result.content[0].text).toContain("[stage_b]");
+    expect(result.content[0].text).toContain("Second note");
+  });
+
+  it("read_scratch_pad filters by category", async () => {
+    const pad: ScratchPadEntry[] = [
+      { stage: "stage_a", timestamp: "2026-01-01T00:00:00.000Z", category: "discovery", content: "Discovery note" },
+      { stage: "stage_a", timestamp: "2026-01-01T00:01:00.000Z", category: "caveat", content: "Caveat note" },
+    ];
+    const handler = getToolByName({}, pad, "stage_b", "read_scratch_pad");
+
+    const result = await handler({ category: "caveat" });
+    expect(result.content[0].text).toContain("Caveat note");
+    expect(result.content[0].text).not.toContain("Discovery note");
+  });
+
+  it("read_scratch_pad filters by stage", async () => {
+    const pad: ScratchPadEntry[] = [
+      { stage: "stage_a", timestamp: "2026-01-01T00:00:00.000Z", category: "discovery", content: "Stage A note" },
+      { stage: "stage_b", timestamp: "2026-01-01T00:01:00.000Z", category: "discovery", content: "Stage B note" },
+    ];
+    const handler = getToolByName({}, pad, "stage_c", "read_scratch_pad");
+
+    const result = await handler({ stage: "stage_a" });
+    expect(result.content[0].text).toContain("Stage A note");
+    expect(result.content[0].text).not.toContain("Stage B note");
+  });
+
+  it("read_scratch_pad returns empty message when pad has no entries", async () => {
+    const pad: ScratchPadEntry[] = [];
+    const handler = getToolByName({}, pad, "stage_a", "read_scratch_pad");
+
+    const result = await handler({});
+    expect(result.content[0].text).toContain("empty");
+  });
+
+  it("get_store_value still works when scratchPad is provided (backward compat)", async () => {
+    const pad: ScratchPadEntry[] = [];
+    const store = { myKey: { value: 42 } };
+    const result = createStoreReaderMcp(store, pad, "stage_a") as any;
+    const getStoreHandler = result._tools.find((t: any) => t.name === "get_store_value")?.handler;
+    expect(getStoreHandler).toBeDefined();
+
+    const r = await getStoreHandler({ path: "myKey" });
+    expect(r.isError).toBeUndefined();
+    expect(JSON.parse(r.content[0].text)).toEqual({ value: 42 });
+  });
+
+  it("scratch pad tools are absent when scratchPad is not provided", () => {
+    const result = createStoreReaderMcp({ key: "value" }) as any;
+    const toolNames: string[] = result._tools.map((t: any) => t.name);
+    expect(toolNames).not.toContain("append_scratch_pad");
+    expect(toolNames).not.toContain("read_scratch_pad");
+    expect(toolNames).toContain("get_store_value");
+  });
+
+  it("read_scratch_pad returns no-match message when filters yield no entries", async () => {
+    const pad: ScratchPadEntry[] = [
+      { stage: "stage_a", timestamp: "2026-01-01T00:00:00.000Z", category: "discovery", content: "Some note" },
+    ];
+    const handler = getToolByName({}, pad, "stage_b", "read_scratch_pad");
+
+    const result = await handler({ stage: "nonexistent_stage" });
+    expect(result.content[0].text).toContain("No scratch pad entries matching filters");
   });
 });

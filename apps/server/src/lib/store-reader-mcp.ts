@@ -1,10 +1,15 @@
 import { createSdkMcpServer } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { getNestedValue } from "./config-loader.js";
+import type { ScratchPadEntry } from "../machine/types.js";
 
 const MAX_VALUE_BYTES = 50 * 1024; // 50KB
 
-export function createStoreReaderMcp(store: Record<string, unknown>) {
+export function createStoreReaderMcp(
+  store: Record<string, unknown>,
+  scratchPad?: ScratchPadEntry[],
+  currentStage?: string,
+) {
   return createSdkMcpServer({
     name: "__store__",
     version: "1.0.0",
@@ -93,6 +98,58 @@ export function createStoreReaderMcp(store: Record<string, unknown>) {
           };
         },
       },
+      ...(scratchPad
+        ? [
+            {
+              name: "append_scratch_pad",
+              description:
+                "Append a note to the task scratch pad. Use for observations, caveats, discoveries, " +
+                "or any context that downstream stages should know about but doesn't fit your formal output schema. " +
+                "Categories: caveat, discovery, concern, reference, decision.",
+              inputSchema: {
+                category: z.enum(["caveat", "discovery", "concern", "reference", "decision"]).describe("Type of note"),
+                content: z.string().describe("The note content (be specific and actionable)"),
+              },
+              handler: async (args: any) => {
+                const entry: ScratchPadEntry = {
+                  stage: currentStage ?? "unknown",
+                  timestamp: new Date().toISOString(),
+                  category: args.category as string,
+                  content: args.content as string,
+                };
+                scratchPad.push(entry);
+                return {
+                  content: [{ type: "text" as const, text: `Scratch pad entry appended (${scratchPad.length} total entries).` }],
+                };
+              },
+            },
+            {
+              name: "read_scratch_pad",
+              description:
+                "Read notes from the task scratch pad. Returns notes left by previous stages. " +
+                "Filter by stage name or category to narrow results.",
+              inputSchema: {
+                stage: z.string().optional().describe("Filter by stage name"),
+                category: z.enum(["caveat", "discovery", "concern", "reference", "decision"]).optional().describe("Filter by category"),
+              },
+              handler: async (args: any) => {
+                if (scratchPad.length === 0) {
+                  return { content: [{ type: "text" as const, text: "Scratch pad is empty — no notes from previous stages." }] };
+                }
+                let entries = scratchPad;
+                if (args.stage) entries = entries.filter((e) => e.stage === args.stage);
+                if (args.category) entries = entries.filter((e) => e.category === args.category);
+                if (entries.length === 0) {
+                  return { content: [{ type: "text" as const, text: `No scratch pad entries matching filters (stage=${args.stage ?? "any"}, category=${args.category ?? "any"}).` }] };
+                }
+                const text = entries
+                  .map((e) => `[${e.stage}] (${e.category}) ${e.timestamp}\n${e.content}`)
+                  .join("\n\n---\n\n");
+                return { content: [{ type: "text" as const, text }] };
+              },
+            },
+          ]
+        : []),
     ],
   });
 }
