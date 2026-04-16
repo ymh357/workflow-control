@@ -79,7 +79,9 @@ export interface ConditionRuntimeConfig {
 
 export interface PipelineCallRuntimeConfig {
   engine: "pipeline";
-  pipeline_name: string;
+  pipeline_name?: string;
+  pipeline_source?: "config" | "store";
+  pipeline_key?: string;
   reads?: Record<string, string>;
   writes?: WriteDeclaration[];
   timeout_sec?: number;
@@ -259,6 +261,7 @@ export interface PipelineConfig {
   store_schema?: StoreSchema;
   // Pipeline-level invariants applied to ALL agent stages
   invariants?: string[];
+  inline_prompts?: Record<string, string>;
 }
 
 export interface PipelineManifest {

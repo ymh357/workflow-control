@@ -272,7 +272,13 @@ export function createTaskDraft(
   repoName?: string,
   pipelineName?: string,
   taskText?: string,
-  options?: { edge?: boolean; initialStore?: Record<string, any>; worktreePath?: string; branch?: string },
+  options?: {
+    edge?: boolean;
+    initialStore?: Record<string, any>;
+    worktreePath?: string;
+    branch?: string;
+    inlineConfig?: NonNullable<WorkflowContext["config"]>;
+  },
 ): WorkflowActor {
   if (actors.size >= MAX_ACTORS) {
     // Evict oldest terminal actors first
@@ -282,7 +288,7 @@ export function createTaskDraft(
     }
   }
 
-  const config = snapshotGlobalConfig(pipelineName);
+  const config = options?.inlineConfig ?? snapshotGlobalConfig(pipelineName);
 
   if (options?.edge) {
     config.pipeline.default_execution_mode = "edge";

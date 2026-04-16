@@ -107,7 +107,9 @@ export const ConditionRuntimeConfigSchema = z.object({
 
 export const PipelineCallRuntimeConfigSchema = z.object({
   engine: z.literal("pipeline"),
-  pipeline_name: z.string().min(1),
+  pipeline_name: z.string().min(1).optional(),
+  pipeline_source: z.enum(["config", "store"]).optional(),
+  pipeline_key: z.string().min(1).optional(),
   reads: z.record(z.string(), z.string()).optional(),
   writes: z.array(WriteDeclarationSchema).optional(),
   timeout_sec: z.number().optional(),
@@ -304,6 +306,7 @@ export const PipelineConfigSchema = z.object({
     .optional(),
   store_persistence: StorePersistenceSchema.optional(),
   store_schema: StoreSchemaSchema.optional(),
+  inline_prompts: z.record(z.string(), z.string()).optional(),
 });
 
 // --- Pipeline Manifest ---
