@@ -174,6 +174,12 @@ export interface PipelineStageConfig {
   debug?: boolean;
   max_turns?: number;
   max_budget_usd?: number;
+  budget_flex?: {
+    allow_extension: boolean;
+    max_extensions: number;       // hard ceiling on number of extensions
+    extension_turns: number;      // additional turns per extension
+    extension_budget_usd: number; // additional budget per extension
+  };
   mcps?: string[];
   notion_label?: string;
   interactive?: boolean;

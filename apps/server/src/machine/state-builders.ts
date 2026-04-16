@@ -462,6 +462,51 @@ export function buildAgentState(
             })),
           ],
         },
+        // Guard: auto-extend budget if agent requests extension
+        ...(stage.budget_flex?.allow_extension ? [{
+          guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
+            if (!stage.budget_flex?.allow_extension) return false;
+            const parsed = getCachedParse(event.output);
+            if (!parsed) return false;
+            // Check if any write value contains _needs_extension
+            const needsExt = Object.values(parsed).some(
+              (v) => typeof v === "object" && v !== null && (v as any)._needs_extension === true
+            );
+            if (!needsExt) return false;
+            const extCount = context.extensionCount?.[stateName] ?? 0;
+            return extCount < stage.budget_flex.max_extensions;
+          },
+          target: stateName,
+          reenter: true,
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const sessionId = event.output?.sessionId ?? context.stageSessionIds?.[stateName];
+              const extCount = (context.extensionCount?.[stateName] ?? 0) + 1;
+              const flex = stage.budget_flex!;
+              taskLogger(context.taskId).info(
+                { stage: stateName, extension: extCount, maxExtensions: flex.max_extensions },
+                "Budget extension auto-approved"
+              );
+              return {
+                extensionCount: { ...context.extensionCount, [stateName]: extCount },
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
+                stageSessionIds: { ...context.stageSessionIds, [stateName]: sessionId ?? context.stageSessionIds?.[stateName] },
+                stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
+                resumeInfo: sessionId
+                  ? { sessionId, feedback: `Budget extension #${extCount} approved. You now have ${flex.extension_turns} additional turns and $${flex.extension_budget_usd} additional budget. Continue your work.` }
+                  : undefined,
+              };
+            }),
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.status",
+              taskId: context.taskId,
+              status: context.status,
+              message: `${stateName}: budget extension auto-approved (#${context.extensionCount?.[stateName] ?? 1})`,
+            })),
+          ],
+        }] : []),
         // Normal path: process output and advance
         {
           target: nextTarget,

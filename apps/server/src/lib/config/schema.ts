@@ -198,6 +198,12 @@ export const PipelineStageConfigSchema = z.object({
   debug: z.boolean().optional(),
   max_turns: z.number().optional(),
   max_budget_usd: z.number().optional(),
+  budget_flex: z.object({
+    allow_extension: z.boolean(),
+    max_extensions: z.number().int().min(1).max(5),
+    extension_turns: z.number().int().min(5),
+    extension_budget_usd: z.number().min(0.1),
+  }).optional(),
   mcps: z.array(z.string()).optional(),
   notion_label: z.string().optional(),
   interactive: z.boolean().optional(),

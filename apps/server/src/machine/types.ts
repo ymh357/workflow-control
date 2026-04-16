@@ -24,6 +24,7 @@ export interface WorkflowContext {
   qaRetryCount: number;
   stageRetryCount?: Record<string, number>;
   verifyRetryCount?: Record<string, number>;
+  extensionCount?: Record<string, number>;
   taskToken?: string;
   lastStage?: string;
   error?: string;
