@@ -58,9 +58,8 @@ describe("adversarial: null and undefined store handling", () => {
     });
     const runtime = { reads: { "Data": "data" } } as any;
     const result = buildTier1Context(ctx, runtime);
-    // null is typeof "object" but also === null — the code checks `val !== null`
-    // so it falls through to the else branch: parts.push(`${k}: ${v}`)
-    expect(result).toContain("val: null");
+    // The object { val: null } is rendered as JSON code fence
+    expect(result).toContain('"val": null');
   });
 });
 
@@ -90,23 +89,25 @@ describe("adversarial: string value exactly 300 chars is not truncated", () => {
 });
 
 describe("adversarial: array exactly 5 elements has no ellipsis", () => {
-  it("renders exactly 5 items without ellipsis", () => {
+  it("renders exactly 5 items in JSON format", () => {
     const ctx = makeContext({
       store: { data: { items: ["1", "2", "3", "4", "5"] } },
     });
     const runtime = { reads: { "Data": "data" } } as any;
     const result = buildTier1Context(ctx, runtime);
-    expect(result).toContain("items: 1; 2; 3; 4; 5");
-    expect(result).not.toContain("...");
+    expect(result).toContain("```json");
+    expect(result).toContain('"1"');
+    expect(result).toContain('"5"');
   });
 
-  it("renders 6 items without ellipsis (limit is 20)", () => {
+  it("renders 6 items in JSON format", () => {
     const ctx = makeContext({
       store: { data: { items: ["1", "2", "3", "4", "5", "6"] } },
     });
     const runtime = { reads: { "Data": "data" } } as any;
     const result = buildTier1Context(ctx, runtime);
-    expect(result).toContain("1; 2; 3; 4; 5; 6");
+    expect(result).toContain('"1"');
+    expect(result).toContain('"6"');
   });
 });
 
@@ -163,21 +164,21 @@ describe("adversarial: legacy fallback with array store values", () => {
 });
 
 describe("adversarial: number and boolean values in reads path", () => {
-  it("renders number values directly", () => {
+  it("renders number values in JSON format", () => {
     const ctx = makeContext({
       store: { data: { count: 42 } },
     });
     const runtime = { reads: { "Data": "data" } } as any;
     const result = buildTier1Context(ctx, runtime);
-    expect(result).toContain("count: 42");
+    expect(result).toContain('"count": 42');
   });
 
-  it("renders boolean values directly", () => {
+  it("renders boolean values in JSON format", () => {
     const ctx = makeContext({
       store: { data: { active: false } },
     });
     const runtime = { reads: { "Data": "data" } } as any;
     const result = buildTier1Context(ctx, runtime);
-    expect(result).toContain("active: false");
+    expect(result).toContain('"active": false');
   });
 });
