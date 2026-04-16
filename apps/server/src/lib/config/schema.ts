@@ -238,6 +238,38 @@ const StorePersistenceSchema = z.object({
   inherit_keys: z.union([z.array(z.string()), z.literal("*")]),
 });
 
+// --- Store Schema ---
+
+const StoreSchemaFieldSchema: z.ZodType<{
+  type: string;
+  description?: string;
+  required?: boolean;
+  fields?: Record<string, unknown>;
+  display_hint?: string;
+  hidden?: boolean;
+}> = z.lazy(() =>
+  z.object({
+    type: z.enum(["string", "number", "boolean", "string[]", "object", "object[]", "markdown"]),
+    description: z.string().optional(),
+    required: z.boolean().optional(),
+    fields: z.record(z.string(), StoreSchemaFieldSchema).optional(),
+    display_hint: z.enum(["link", "badge", "code"]).optional(),
+    hidden: z.boolean().optional(),
+  })
+);
+
+const StoreSchemaEntrySchema = z.object({
+  produced_by: z.string().min(1),
+  type: z.literal("object").optional(),
+  description: z.string().optional(),
+  required: z.boolean().optional(),
+  fields: z.record(z.string(), StoreSchemaFieldSchema).optional(),
+  additional_properties: z.boolean().optional(),
+  assertions: z.array(z.string()).optional(),
+});
+
+const StoreSchemaSchema = z.record(z.string(), StoreSchemaEntrySchema);
+
 // --- Pipeline Config ---
 
 export const PipelineConfigSchema = z.object({
@@ -265,6 +297,7 @@ export const PipelineConfigSchema = z.object({
     })
     .optional(),
   store_persistence: StorePersistenceSchema.optional(),
+  store_schema: StoreSchemaSchema.optional(),
 });
 
 // --- Pipeline Manifest ---
