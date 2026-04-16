@@ -122,6 +122,16 @@ export function buildTier1Context(
       parts.push(otherKeys.map(k => `- ${k}`).join("\n"));
     }
 
+    // Scratch pad index (if any entries exist)
+    const pad = context.scratchPad ?? [];
+    if (pad.length > 0) {
+      parts.push("\n## Scratch Pad Notes (use read_scratch_pad tool for full content)");
+      const indexLines = pad.map(
+        (e) => `- [${e.stage}] (${e.category}) ${e.content.slice(0, 60)}${e.content.length > 60 ? "..." : ""}`,
+      );
+      parts.push(indexLines.join("\n"));
+    }
+
     return parts.join("\n");
   }
 
