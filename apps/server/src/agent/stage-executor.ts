@@ -127,7 +127,13 @@ export async function executeStage(
   }
   const localMcp: Record<string, unknown> = buildMcpServers(mcpServices, stageConfig.engine as "claude" | "gemini");
   if (context.store && Object.keys(context.store).length > 0) {
-    localMcp["__store__"] = createStoreReaderMcp(context.store);
+    localMcp["__store__"] = createStoreReaderMcp(
+      context.store,
+      context.scratchPad ?? [],
+      stageName,
+    );
+  } else if (context.scratchPad && context.scratchPad.length > 0) {
+    localMcp["__store__"] = createStoreReaderMcp({}, context.scratchPad, stageName);
   }
   const appendCacheKey = `${taskId}:${stageName}`;
   let appendPrompt: string;
