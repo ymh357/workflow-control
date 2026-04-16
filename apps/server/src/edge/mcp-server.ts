@@ -74,7 +74,7 @@ async function buildStageContext(taskId: string, stageName: string, compact = fa
 
   const tier1Context = buildTier1Context(context, runtime, runtime.tier1_max_tokens, stageName);
   const stageEngine = stageConfig.engine ?? context.config?.pipeline?.engine ?? "claude";
-  const { prompt: systemPrompt } = await buildSystemAppendPrompt({
+  const { prompt: systemPrompt, fragmentIds } = await buildSystemAppendPrompt({
     taskId,
     stageName,
     runtime,
@@ -83,7 +83,7 @@ async function buildStageContext(taskId: string, stageName: string, compact = fa
     cwd: context.worktreePath,
   });
 
-  const staticPrefix = compact ? undefined : buildStaticPromptPrefix(context.config, stageEngine);
+  const staticPrefix = compact ? undefined : buildStaticPromptPrefix(context.config, stageEngine, fragmentIds);
 
   const storeReads: Record<string, unknown> = {};
   if (runtime.reads) {

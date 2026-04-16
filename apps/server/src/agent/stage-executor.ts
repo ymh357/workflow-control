@@ -78,10 +78,10 @@ export async function executeStage(
     engine,
     model: privateStage?.model || resolveModelForEngine(engine, privateConfig?.agent, settings.agent),
     thinking: privateStage?.thinking
-      ? { type: privateStage.thinking.type }
-      : { type: "disabled" },
+      ? { type: privateStage.thinking.type as "enabled" | "disabled" | "adaptive" }
+      : { type: "disabled" as const },
     effort: privateStage?.effort,
-    permissionMode: privateStage?.permission_mode ?? "bypassPermissions",
+    permissionMode: (privateStage?.permission_mode ?? "bypassPermissions") as "default" | "plan" | "acceptEdits" | "bypassPermissions" | "dontAsk",
     debug: privateStage?.debug ?? false,
     maxTurns: privateStage?.max_turns ?? 30,
     maxBudgetUsd: privateStage?.max_budget_usd ?? 2,
@@ -262,10 +262,10 @@ export async function executeStage(
       outputFormat,
       agents: agentDefs,
       runtime,
-      abortSignal: abortController.signal,
+      abortController,
     });
 
-    agentQuery = query({ prompt: effectivePrompt, options: options as Parameters<typeof query>[0]["options"] }) as AgentQuery;
+    agentQuery = query({ prompt: effectivePrompt, options }) as AgentQuery;
   }
 
   // Track effective cwd for resume commands (gemini uses temp dirs)

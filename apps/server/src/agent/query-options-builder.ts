@@ -1,4 +1,4 @@
-import type { HookInput, HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
+import type { HookInput, HookJSONOutput, Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
 import type { SandboxConfig, AgentRuntimeConfig, SubAgentDefinition } from "../lib/config-loader.js";
 import { taskLogger } from "../lib/logger.js";
 import { buildChildEnv } from "../lib/child-env.js";
@@ -31,9 +31,9 @@ export function buildQueryOptions(params: {
   appendPrompt: string;
   stageConfig: {
     model?: string;
-    thinking: { type: string };
-    effort?: string;
-    permissionMode: string;
+    thinking: SdkOptions["thinking"];
+    effort?: SdkOptions["effort"];
+    permissionMode: NonNullable<SdkOptions["permissionMode"]>;
     debug: boolean;
     maxTurns: number;
     maxBudgetUsd: number;
@@ -50,8 +50,8 @@ export function buildQueryOptions(params: {
   outputFormat?: { type: "json_schema"; schema: Record<string, unknown> };
   agents?: Record<string, SubAgentDefinition>;
   runtime?: AgentRuntimeConfig;
-  abortSignal?: AbortSignal;
-}): Record<string, unknown> {
+  abortController?: AbortController;
+}): SdkOptions {
   const {
     taskId, stageName, appendPrompt, stageConfig, sandboxConfig,
     hooks, localMcp, claudePath, cwd, resumeSessionId, interactive, canUseTool,
@@ -65,15 +65,15 @@ export function buildQueryOptions(params: {
     taskLogger(taskId, stageName).info({ sandboxOptions }, "Sandbox mode enabled — options passed to SDK");
   }
 
-  const options: Record<string, unknown> = {
+  const options: SdkOptions = {
     systemPrompt: { type: "preset", preset: "claude_code", append: appendPrompt },
     pathToClaudeCodeExecutable: claudePath,
     settingSources: [],
     thinking: stageConfig.thinking,
     ...(stageConfig.effort ? { effort: stageConfig.effort } : {}),
-    ...(hasMcp ? { mcpServers: localMcp } : {}),
+    ...(hasMcp ? { mcpServers: localMcp as SdkOptions["mcpServers"] } : {}),
     ...(outputFormat ? { outputFormat } : {}),
-    ...(agents ? { agents } : {}),
+    ...(agents ? { agents: agents as SdkOptions["agents"] } : {}),
     includePartialMessages: true,
     maxTurns: stageConfig.maxTurns,
     maxBudgetUsd: stageConfig.maxBudgetUsd,
@@ -91,7 +91,7 @@ export function buildQueryOptions(params: {
     ...(cwd ? { cwd } : {}),
     ...(resumeSessionId ? { resume: resumeSessionId } : {}),
     env: { ...buildChildEnv({ ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY }), CLAUDECODE: "", CI: "true" },
-    ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
+    ...(params.abortController ? { abortController: params.abortController } : {}),
     ...sandboxOptions,
   };
 
