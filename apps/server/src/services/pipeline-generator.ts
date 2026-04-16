@@ -649,10 +649,24 @@ interface PipelineConfig {
   engine?: "claude" | "gemini" | "mixed";  // "mixed" when stages use different engines
   use_cases?: string[];
   default_execution_mode?: "auto" | "edge";
+  store_schema?: Record<string, StoreSchemaEntry>;  // unified data contract for all store keys
   stages: (StageConfig | ParallelGroupConfig)[];  // mix of sequential stages and parallel groups
   hooks?: string[];
   skills?: string[];
   display?: { title_path?: string; completion_summary_path?: string };
+}
+
+// Unified data contract — declares all store keys, their producers, and field types
+interface StoreSchemaEntry {
+  produced_by: string;           // stage name that writes this key
+  description?: string;
+  fields?: Record<string, {
+    type: "string" | "number" | "boolean" | "string[]" | "object" | "object[]" | "markdown";
+    description?: string;
+    required?: boolean;
+  }>;
+  additional_properties?: boolean;  // allow extra fields not in schema
+  assertions?: string[];           // expr-eval quality assertions on the output value
 }
 
 // Wraps multiple stages to run concurrently
@@ -683,7 +697,7 @@ interface StageConfig {
 interface AgentRuntime {
   engine: "llm";
   system_prompt: string;           // references a .md file in prompts/system/
-  writes?: string[];               // output keys this stage produces
+  writes?: string[];               // output keys (optional when store_schema is used)
   reads?: Record<string, string>;  // input mapping: localName -> "stageOutputKey" or "stageOutputKey.field"
   disallowed_tools?: string[];     // block specific tools (e.g. ["Edit", "Write", "Bash"] for read-only)
   retry?: { max_retries?: number; back_to?: string };
@@ -694,7 +708,7 @@ interface AgentRuntime {
 interface ScriptRuntime {
   engine: "script";
   script_id: string;               // built-in or custom script ID
-  writes?: string[];
+  writes?: string[];               // (optional when store_schema is used)
   reads?: Record<string, string>;
   args?: Record<string, unknown>;
   timeout_sec?: number;
@@ -796,6 +810,47 @@ ${testMixedJson}
 ${claudeTextJson}
 \`\`\`
 
+## store_schema (RECOMMENDED)
+
+Declare a top-level \`store_schema\` to define all data flowing between stages in one place:
+- Each entry declares: store key name, which stage produces it (\`produced_by\`), and its field types
+- The engine automatically derives \`runtime.writes\` and stage \`outputs\` from store_schema
+- When \`store_schema\` is present: do NOT put \`writes\` in runtime, do NOT put \`outputs\` on stages
+- Still declare \`reads\` on each stage (which keys and sub-paths it needs)
+
+Example:
+\`\`\`json
+{
+  "store_schema": {
+    "analysis": {
+      "produced_by": "analyze",
+      "description": "Structured task analysis",
+      "fields": {
+        "title": { "type": "string", "description": "Short title", "required": true },
+        "modules": { "type": "string[]", "description": "Affected modules" },
+        "risk": { "type": "string", "description": "Risk assessment" }
+      },
+      "assertions": ["value.title && value.title.length > 0"]
+    },
+    "plan": {
+      "produced_by": "planImplementation",
+      "description": "Implementation plan",
+      "fields": {
+        "tasks": { "type": "object[]", "description": "Task breakdown", "required": true },
+        "estimatedHours": { "type": "number", "description": "Estimated hours" }
+      }
+    }
+  },
+  "stages": [
+    { "name": "analyze", "type": "agent", "runtime": { "engine": "llm", "system_prompt": "__GENERATED__", "reads": {} } },
+    { "name": "reviewAnalysis", "type": "human_confirm", "runtime": { "engine": "human_gate", "on_reject_to": "analyze" } },
+    { "name": "planImplementation", "type": "agent", "runtime": { "engine": "llm", "system_prompt": "__GENERATED__", "reads": { "analysis": "analysis" } } }
+  ]
+}
+\`\`\`
+
+Benefits: single source of truth for data contracts, eliminates writes/outputs mismatch errors, cleaner stage definitions.
+
 ## Generation Rules
 
 1. Output MUST be a JSON object with this structure:
@@ -817,10 +872,9 @@ For system_prompt fields in agent stages: use the placeholder "__GENERATED__" �
 
 4. reads/writes must form a valid data flow: a stage can only read keys written by earlier stages
 
-5. CRITICAL: Every stage that produces output MUST declare runtime.writes.
-   For agent stages: ALSO declare outputs with matching top-level keys — outputs is injected as a JSON schema
-   into the agent's system prompt (telling it what JSON to return) AND shown in the UI.
-   outputs does NOT save data — writes and outputs serve different purposes and BOTH are required.
+5. RECOMMENDED: Use store_schema (see above) to declare all data contracts in one place.
+   When store_schema is present, do NOT declare runtime.writes or stage outputs — the engine derives both automatically.
+   If NOT using store_schema: every stage that produces output MUST declare runtime.writes AND outputs with matching top-level keys.
 
 6. The engine field should match the user's preference: "${engine}"
 7. **Mixed engine**: When pipeline engine is "mixed", EVERY agent stage MUST have an explicit \`engine\` field ("claude" or "gemini"). Omitting it causes fallback to system default, defeating mixed mode. Cheap/fast stages → "gemini", quality-critical stages → "claude".
