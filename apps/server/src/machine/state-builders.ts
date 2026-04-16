@@ -498,6 +498,7 @@ export function buildAgentState(
                 stageRetryCount: resetStageRetryCount(context, stateName),
                 ...(runtime.retry?.back_to ? { qaRetryCount: 0 } : {}),
                 resumeInfo: undefined,
+                scratchPad: context.scratchPad ?? [],
                 totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
                 totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
