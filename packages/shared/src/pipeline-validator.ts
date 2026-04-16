@@ -68,6 +68,7 @@ export function validatePipelineLogic(
   promptKeys?: Set<string>,
   knownMcps?: Set<string>,
   injectedStoreKeys?: Set<string>,
+  storeSchema?: Record<string, { produced_by: string; [key: string]: unknown }>,
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const allWrites = new Map<string, number>();
@@ -80,6 +81,17 @@ export function validatePipelineLogic(
       writeOriginStage.set(key, "__injected__");
     }
   }
+
+  // Pre-populate writes from store_schema when available
+  if (storeSchema) {
+    for (const [key, entry] of Object.entries(storeSchema)) {
+      if (!allWrites.has(key)) {
+        allWrites.set(key, -1);
+        writeOriginStage.set(key, entry.produced_by);
+      }
+    }
+  }
+
   const allStageNames = new Set<string>();
 
   // Build stage-by-name map for cross-referencing (includes parallel group children)
@@ -243,7 +255,7 @@ export function validatePipelineLogic(
 
       // Validate individual child stages
       for (const s of group.stages) {
-        validateStage(s, i, allWrites, allStageNames, promptKeysNormalized, knownMcps, issues, stageByName, writeOriginStage);
+        validateStage(s, i, allWrites, allStageNames, promptKeysNormalized, knownMcps, issues, stageByName, writeOriginStage, storeSchema);
       }
 
       // Track group writes
@@ -271,7 +283,7 @@ export function validatePipelineLogic(
       }
     }
 
-    validateStage(stage, i, allWrites, allStageNames, promptKeysNormalized, knownMcps, issues, stageByName, writeOriginStage);
+    validateStage(stage, i, allWrites, allStageNames, promptKeysNormalized, knownMcps, issues, stageByName, writeOriginStage, storeSchema);
 
     if (stage.runtime?.writes) {
       for (const w of stage.runtime.writes) {
@@ -307,6 +319,7 @@ function validateStage(
   issues: ValidationIssue[],
   stageByName?: Map<string, StageConfig>,
   writeOriginStage?: Map<string, string>,
+  storeSchema?: Record<string, { produced_by: string; [key: string]: unknown }>,
 ): void {
   const runtime = stage.runtime;
 
@@ -540,7 +553,7 @@ function validateStage(
   }
 
   // Check writes/outputs consistency for agent and script stages
-  if ((stage.type === "agent" || stage.type === "script") && runtime?.writes && runtime.writes.length > 0) {
+  if (!storeSchema && (stage.type === "agent" || stage.type === "script") && runtime?.writes && runtime.writes.length > 0) {
     const outputKeys = stage.outputs ? new Set(Object.keys(stage.outputs)) : new Set<string>();
     const declaredWriteKeys = new Set(runtime.writes.map(writeKey));
     for (const w of runtime.writes) {
