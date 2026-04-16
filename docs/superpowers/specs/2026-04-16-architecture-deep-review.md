@@ -1,7 +1,7 @@
 # Workflow-Control Architecture Deep Review
 
 > Date: 2026-04-16
-> Status: Phase 1-5 implemented (except A1). A1 Phased Pipeline is the remaining architectural work.
+> Status: ALL optimization points implemented including A1 Phased Pipeline infrastructure. Ready for real-world validation.
 
 ---
 
@@ -434,21 +434,34 @@ Reduces LLM retry frequency for mechanical issues.
 | P2-Fix | Validator store_schema | **DONE** | 1 | pipeline-generator.ts, persist-pipeline.ts, config-helpers.ts |
 | C2 | 2-Pass Generation | **NOT DONE** | — | Deferred: A3 enables it but needs real-world validation first |
 | D2 | Prompt Alignment | **NOT DONE** | — | Low priority, minor improvement |
-| A1 | Phased Pipeline | **NOT STARTED** | — | The remaining architectural work — see Section 10 |
+| A1 | Phased Pipeline | **DONE** (infra) | 3 | inline-pipeline-config.ts, pipeline-executor.ts, actor-registry.ts, types.ts, schema.ts |
 
-**Total: 21 commits, 14 new/modified source files, 38 new tests, 0 regressions (3460 passed / 15 pre-existing failures)**
+**Total: 25 commits, 18 new/modified source files, 49 new tests, 0 regressions (3471 passed / 15 pre-existing failures)**
 
 ---
 
-## 10. Remaining Work: A1 Phased Pipeline
+## 10. A1 Phased Pipeline — Infrastructure Complete
 
 ### Problem it solves
 
 Pipeline generation and execution are completely decoupled. Generator AI at t=0 predicts all stages from a one-sentence description. By stage 10 of a 27-stage pipeline, the plan no longer fits reality. No mechanism feeds runtime knowledge back into pipeline structure.
 
-### Technical approach (validated via feasibility study)
+### What was built (3 commits)
 
-XState machines are immutable after creation — cannot inject states mid-execution. But `pipeline-executor.ts` already supports sub-pipeline calls (creates independent child task, passes store data, waits for completion).
+- `PipelineCallRuntimeConfig`: `pipeline_source?: "config" | "store"`, `pipeline_key?: string`
+- `PipelineConfig`: `inline_prompts?: Record<string, string>` for dynamically generated pipelines
+- `inline-pipeline-config.ts`: builds WorkflowContext config from inline definition + parent config
+- `createTaskDraft`: accepts `inlineConfig` to bypass filesystem loading
+- `pipeline-executor.ts`: reads pipeline from store, validates (schema + logical), builds inline config, executes as sub-task
+- 10 tests (6 unit + 4 integration)
+
+### What remains (domain-specific, not infrastructure)
+
+- Planning-stage prompt template (teaches an agent to generate valid pipeline YAML)
+- Proof-of-concept: convert tech-research pipeline to phased model
+- Real-world validation of the full plan-execute-replan loop
+
+### Design
 
 **Design: Meta-pipeline orchestrates phases via sub-pipeline calls.**
 
