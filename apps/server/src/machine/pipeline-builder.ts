@@ -100,6 +100,13 @@ function findPrevAgentTarget(entries: PipelineStageEntry[], currentIndex: number
 export function buildPipelineStates(pipeline: PipelineConfig): Record<string, StateNode> {
   const transformed = transformDagToParallelGroups(pipeline);
 
+  // Validate session_mode constraints
+  if (pipeline.session_mode === "single") {
+    if (pipeline.engine && pipeline.engine !== "claude") {
+      throw new Error(`Pipeline validation failed:\nsession_mode: 'single' requires engine: 'claude' (or omitted). Got: '${pipeline.engine}'`);
+    }
+  }
+
   // When store_schema is present, auto-populate runtime.writes and stage.outputs
   // from the schema. This is a one-time derivation at build time — runtime code
   // continues to read runtime.writes and stage.outputs as before.

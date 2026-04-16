@@ -968,3 +968,25 @@ describe("DAG scheduling (depends_on)", () => {
     expect(callB![0]).toBe("completed");
   });
 });
+
+describe("session_mode validation", () => {
+  it("rejects session_mode: single with engine: gemini", () => {
+    const pipeline = {
+      name: "test",
+      session_mode: "single" as const,
+      engine: "gemini" as const,
+      stages: [{ name: "s1", type: "agent" as const, runtime: { engine: "llm" as const, system_prompt: "test" } }],
+    };
+    expect(() => buildPipelineStates(pipeline as any)).toThrow("session_mode: 'single' requires engine: 'claude'");
+  });
+
+  it("accepts session_mode: single with engine: claude", () => {
+    const pipeline = {
+      name: "test",
+      session_mode: "single" as const,
+      engine: "claude" as const,
+      stages: [{ name: "s1", type: "agent" as const, runtime: { engine: "llm" as const, system_prompt: "test", writes: ["out"] } }],
+    };
+    expect(() => buildPipelineStates(pipeline as any)).not.toThrow();
+  });
+});
