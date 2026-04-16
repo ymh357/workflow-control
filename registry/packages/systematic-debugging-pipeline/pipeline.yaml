@@ -17,6 +17,77 @@ invariants:
   - "NO fix attempt WITHOUT a documented root cause hypothesis"
   - "NO completion claim WITHOUT the original reproduction steps passing"
 
+store_schema:
+  reproduction:
+    produced_by: reproduce
+    description: Reproduction
+    fields:
+      bugTitle:
+        type: string
+        description: Short bug title
+      reproductionSteps:
+        type: string[]
+        description: Exact steps to reproduce the bug
+      reproductionCommand:
+        type: string
+        description: Single command that triggers the bug
+      errorOutput:
+        type: markdown
+        description: Full error output (stack trace, console, etc.)
+      affectedFiles:
+        type: string[]
+        description: Files involved in the error path
+      recentChanges:
+        type: markdown
+        description: Relevant recent git changes
+  rootCause:
+    produced_by: rootCause
+    description: Root Cause Analysis
+    fields:
+      bugTitle:
+        type: string
+        description: Bug title (may be refined from reproduction)
+      hypothesis:
+        type: string
+        description: "Root cause hypothesis: The bug occurs because X"
+      evidence:
+        type: string[]
+        description: Evidence supporting the hypothesis
+      rootCauseFile:
+        type: string
+        description: Primary file containing the root cause
+      rootCauseLine:
+        type: string
+        description: Approximate line range of the root cause
+      fixStrategy:
+        type: markdown
+        description: Proposed minimal fix approach
+      similarPatterns:
+        type: string[]
+        description: Other files with the same pattern that may also need fixing
+  fixResult:
+    produced_by: fixAndVerify
+    description: Fix Result
+    fields:
+      passed:
+        type: boolean
+        description: Whether the fix resolves the bug and all tests pass
+      filesChanged:
+        type: string[]
+        description: Files modified in the fix
+      testOutput:
+        type: markdown
+        description: Full test output showing the fix works
+      regressionCheck:
+        type: markdown
+        description: Full test suite output confirming no regressions
+      summary:
+        type: markdown
+        description: Fix summary
+      blockers:
+        type: string[]
+        description: Any remaining issues
+
 stages:
   - name: reproduce
     type: agent
@@ -29,34 +100,9 @@ stages:
     runtime:
       engine: llm
       system_prompt: reproduce
-      writes:
-        - reproduction
       disallowed_tools:
         - Edit
         - Write
-    outputs:
-      reproduction:
-        type: object
-        label: Reproduction
-        fields:
-          - key: bugTitle
-            type: string
-            description: Short bug title
-          - key: reproductionSteps
-            type: string[]
-            description: Exact steps to reproduce the bug
-          - key: reproductionCommand
-            type: string
-            description: Single command that triggers the bug
-          - key: errorOutput
-            type: markdown
-            description: Full error output (stack trace, console, etc.)
-          - key: affectedFiles
-            type: string[]
-            description: Files involved in the error path
-          - key: recentChanges
-            type: markdown
-            description: Relevant recent git changes
 
   - name: rootCause
     type: agent
@@ -71,40 +117,12 @@ stages:
       system_prompt: root-cause
       reads:
         reproduction: reproduction
-      writes:
-        - rootCause
       disallowed_tools:
         - Edit
         - Write
       retry:
         max_retries: 2
         back_to: rootCause
-    outputs:
-      rootCause:
-        type: object
-        label: Root Cause Analysis
-        fields:
-          - key: bugTitle
-            type: string
-            description: Bug title (may be refined from reproduction)
-          - key: hypothesis
-            type: string
-            description: "Root cause hypothesis: The bug occurs because X"
-          - key: evidence
-            type: string[]
-            description: Evidence supporting the hypothesis
-          - key: rootCauseFile
-            type: string
-            description: Primary file containing the root cause
-          - key: rootCauseLine
-            type: string
-            description: Approximate line range of the root cause
-          - key: fixStrategy
-            type: markdown
-            description: Proposed minimal fix approach
-          - key: similarPatterns
-            type: string[]
-            description: Other files with the same pattern that may also need fixing
 
   - name: reviewRootCause
     type: human_confirm
@@ -125,31 +143,6 @@ stages:
       reads:
         reproduction: reproduction
         rootCause: rootCause
-      writes:
-        - fixResult
       retry:
         max_retries: 2
         back_to: fixAndVerify
-    outputs:
-      fixResult:
-        type: object
-        label: Fix Result
-        fields:
-          - key: passed
-            type: boolean
-            description: Whether the fix resolves the bug and all tests pass
-          - key: filesChanged
-            type: string[]
-            description: Files modified in the fix
-          - key: testOutput
-            type: markdown
-            description: Full test output showing the fix works
-          - key: regressionCheck
-            type: markdown
-            description: Full test suite output confirming no regressions
-          - key: summary
-            type: markdown
-            description: Fix summary
-          - key: blockers
-            type: string[]
-            description: Any remaining issues

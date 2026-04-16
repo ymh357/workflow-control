@@ -15,6 +15,246 @@ display:
 skills:
   - finishing-branch
   - security-review
+
+store_schema:
+  ticketContext:
+    produced_by: fetchTicket
+    description: Ticket Context
+    fields:
+      ticketId:
+        type: string
+        description: Linear ticket identifier
+      ticketTitle:
+        type: string
+        description: Title of the Linear ticket
+      ticketDescription:
+        type: string
+        description: Full description of the ticket
+      priority:
+        type: string
+        description: Ticket priority level
+        display_hint: badge
+      labels:
+        type: string[]
+        description: Labels assigned to the ticket
+      notionUrl:
+        type: string
+        description: URL to related Notion document
+      figmaUrl:
+        type: string
+        description: URL to related Figma design
+      gitlabRepoUrl:
+        type: string
+        description: GitLab repository URL for the project
+      repoName:
+        type: string
+        description: Short repository name extracted from GitLab URL (e.g. my-app)
+      ticketSlug:
+        type: string
+        description: URL-friendly slug derived from ticket
+      summary:
+        type: string
+        description: Brief summary of the ticket for downstream stages
+  notionDoc:
+    produced_by: gatherNotion
+    description: Notion Document
+    fields:
+      hasDoc:
+        type: boolean
+        description: Whether a Notion document was found
+        display_hint: badge
+      requirements:
+        type: string
+        description: Extracted requirements from the Notion doc
+      acceptanceCriteria:
+        type: string
+        description: Acceptance criteria from the Notion doc
+      technicalNotes:
+        type: string
+        description: Technical notes and implementation hints
+      embeddedFigmaUrl:
+        type: string
+        description: Figma URL embedded within the Notion document
+      summary:
+        type: string
+        description: Brief summary of the Notion document content
+  figmaDesign:
+    produced_by: extractFigma
+    description: Figma Design
+    fields:
+      hasDesign:
+        type: boolean
+        description: Whether a Figma design was found
+        display_hint: badge
+      componentStructure:
+        type: string
+        description: Component hierarchy and structure from the design
+      layoutDescription:
+        type: string
+        description: Layout and spacing description
+      styles:
+        type: string
+        description: Colors, typography, and styling tokens
+      interactionStates:
+        type: string
+        description: Interactive states (hover, active, disabled, etc.)
+      summary:
+        type: string
+        description: Brief summary of the Figma design
+  figmaDesignFromNotion:
+    produced_by: extractFigmaFromNotion
+    description: Figma Design (from Notion)
+    fields:
+      hasDesign:
+        type: boolean
+        description: Whether a Figma design was found via Notion embed
+        display_hint: badge
+      componentStructure:
+        type: string
+        description: Component hierarchy and structure from the design
+      layoutDescription:
+        type: string
+        description: Layout and spacing description
+      styles:
+        type: string
+        description: Colors, typography, and styling tokens
+      interactionStates:
+        type: string
+        description: Interactive states (hover, active, disabled, etc.)
+      summary:
+        type: string
+        description: Brief summary of the Figma design extracted from Notion
+  implementationPlan:
+    produced_by: planImplementation
+    description: Implementation Plan
+    fields:
+      filesToChange:
+        type: string[]
+        description: List of files that will be created or modified
+      approach:
+        type: string
+        description: High-level implementation approach
+      testStrategy:
+        type: string
+        description: Testing strategy and scope
+      testCommand:
+        type: string
+        description: Command to run tests
+      lintCommand:
+        type: string
+        description: Command to run linter
+      typeCheckCommand:
+        type: string
+        description: Command to run type checking
+      risks:
+        type: string[]
+        description: Identified risks and concerns
+      detectedStack:
+        type: string
+        description: Detected technology stack
+      summary:
+        type: string
+        description: Brief summary of the implementation plan
+  branchInfo:
+    produced_by: createBranch
+    description: Branch Info
+    hidden: true
+    fields:
+      branchName:
+        type: string
+        description: Name of the created Git branch
+      gitlabProjectId:
+        type: string
+        description: GitLab project ID
+      summary:
+        type: string
+        description: Brief summary of branch creation
+  worktreePath:
+    produced_by: setupWorktree
+    description: Worktree Path
+    hidden: true
+    fields:
+      worktreePath:
+        type: string
+        description: Absolute path to the isolated git worktree
+  implementationResult:
+    produced_by: implement
+    description: Implementation Result
+    fields:
+      filesChanged:
+        type: string[]
+        description: List of files that were changed
+      linesAdded:
+        type: number
+        description: Total lines added
+      linesRemoved:
+        type: number
+        description: Total lines removed
+      summary:
+        type: string
+        description: Brief summary of the implementation
+  testResult:
+    produced_by: testAndFix
+    description: Test Result
+    fields:
+      passed:
+        type: boolean
+        description: Whether all tests passed
+        display_hint: badge
+      blockers:
+        type: string[]
+        description: Blocking issues if tests failed
+      testsPassed:
+        type: number
+        description: Number of tests that passed
+      testsFailed:
+        type: number
+        description: Number of tests that failed
+      roundsUsed:
+        type: number
+        description: Number of test-fix rounds used
+      summary:
+        type: string
+        description: Brief summary of test results
+  ciResult:
+    produced_by: verifyCI
+    description: CI Result
+    fields:
+      ciPassed:
+        type: boolean
+        description: Whether CI pipeline passed
+        display_hint: badge
+      pipelineUrl:
+        type: string
+        description: URL to the CI pipeline run
+        display_hint: link
+      createdCiConfig:
+        type: boolean
+        description: Whether a CI config was created if missing
+      summary:
+        type: string
+        description: Brief summary of CI verification
+  mergeRequestResult:
+    produced_by: submitMergeRequest
+    description: Merge Request Result
+    fields:
+      mrUrl:
+        type: string
+        description: URL to the created merge request
+        display_hint: link
+      mrDescription:
+        type: string
+        description: Description body of the merge request
+      ticketUpdated:
+        type: boolean
+        description: Whether the Linear ticket was updated
+      slackNotified:
+        type: boolean
+        description: Whether Slack notification was sent
+      summary:
+        type: string
+        description: Brief summary of the merge request submission
+
 stages:
   - name: fetchTicket
     type: agent
@@ -29,51 +269,10 @@ stages:
     runtime:
       engine: llm
       system_prompt: fetch-ticket
-      writes:
-        - ticketContext
       disallowed_tools:
         - Edit
         - Write
         - Bash
-    outputs:
-      ticketContext:
-        type: object
-        label: Ticket Context
-        fields:
-          - key: ticketId
-            type: string
-            description: Linear ticket identifier
-          - key: ticketTitle
-            type: string
-            description: Title of the Linear ticket
-          - key: ticketDescription
-            type: string
-            description: Full description of the ticket
-          - key: priority
-            type: string
-            description: Ticket priority level
-            display_hint: badge
-          - key: labels
-            type: string[]
-            description: Labels assigned to the ticket
-          - key: notionUrl
-            type: string
-            description: URL to related Notion document
-          - key: figmaUrl
-            type: string
-            description: URL to related Figma design
-          - key: gitlabRepoUrl
-            type: string
-            description: GitLab repository URL for the project
-          - key: repoName
-            type: string
-            description: Short repository name extracted from GitLab URL (e.g. my-app)
-          - key: ticketSlug
-            type: string
-            description: URL-friendly slug derived from ticket
-          - key: summary
-            type: string
-            description: Brief summary of the ticket for downstream stages
   - name: awaitingTicketConfirm
     type: human_confirm
     runtime:
@@ -93,8 +292,6 @@ stages:
           runtime:
             engine: llm
             system_prompt: gather-notion
-            writes:
-              - notionDoc
             reads:
               notionUrl: ticketContext.notionUrl
               ticketTitle: ticketContext.ticketTitle
@@ -102,30 +299,6 @@ stages:
               - Edit
               - Write
               - Bash
-          outputs:
-            notionDoc:
-              type: object
-              label: Notion Document
-              fields:
-                - key: hasDoc
-                  type: boolean
-                  description: Whether a Notion document was found
-                  display_hint: badge
-                - key: requirements
-                  type: string
-                  description: Extracted requirements from the Notion doc
-                - key: acceptanceCriteria
-                  type: string
-                  description: Acceptance criteria from the Notion doc
-                - key: technicalNotes
-                  type: string
-                  description: Technical notes and implementation hints
-                - key: embeddedFigmaUrl
-                  type: string
-                  description: Figma URL embedded within the Notion document
-                - key: summary
-                  type: string
-                  description: Brief summary of the Notion document content
         - name: extractFigma
           type: agent
           effort: medium
@@ -136,38 +309,12 @@ stages:
           runtime:
             engine: llm
             system_prompt: extract-figma
-            writes:
-              - figmaDesign
             reads:
               figmaUrl: ticketContext.figmaUrl
             disallowed_tools:
               - Edit
               - Write
               - Bash
-          outputs:
-            figmaDesign:
-              type: object
-              label: Figma Design
-              fields:
-                - key: hasDesign
-                  type: boolean
-                  description: Whether a Figma design was found
-                  display_hint: badge
-                - key: componentStructure
-                  type: string
-                  description: Component hierarchy and structure from the design
-                - key: layoutDescription
-                  type: string
-                  description: Layout and spacing description
-                - key: styles
-                  type: string
-                  description: Colors, typography, and styling tokens
-                - key: interactionStates
-                  type: string
-                  description: Interactive states (hover, active, disabled, etc.)
-                - key: summary
-                  type: string
-                  description: Brief summary of the Figma design
   - name: resolveFigma
     type: condition
     runtime:
@@ -188,38 +335,12 @@ stages:
     runtime:
       engine: llm
       system_prompt: extract-figma-from-notion
-      writes:
-        - figmaDesignFromNotion
       reads:
         figmaUrl: notionDoc.embeddedFigmaUrl
       disallowed_tools:
         - Edit
         - Write
         - Bash
-    outputs:
-      figmaDesignFromNotion:
-        type: object
-        label: Figma Design (from Notion)
-        fields:
-          - key: hasDesign
-            type: boolean
-            description: Whether a Figma design was found via Notion embed
-            display_hint: badge
-          - key: componentStructure
-            type: string
-            description: Component hierarchy and structure from the design
-          - key: layoutDescription
-            type: string
-            description: Layout and spacing description
-          - key: styles
-            type: string
-            description: Colors, typography, and styling tokens
-          - key: interactionStates
-            type: string
-            description: Interactive states (hover, active, disabled, etc.)
-          - key: summary
-            type: string
-            description: Brief summary of the Figma design extracted from Notion
   - name: planImplementation
     type: agent
     effort: high
@@ -230,8 +351,6 @@ stages:
     runtime:
       engine: llm
       system_prompt: plan-implementation
-      writes:
-        - implementationPlan
       reads:
         ticket: ticketContext
         notionDoc: notionDoc.summary
@@ -241,38 +360,6 @@ stages:
         - Edit
         - Write
         - Bash
-    outputs:
-      implementationPlan:
-        type: object
-        label: Implementation Plan
-        fields:
-          - key: filesToChange
-            type: string[]
-            description: List of files that will be created or modified
-          - key: approach
-            type: string
-            description: High-level implementation approach
-          - key: testStrategy
-            type: string
-            description: Testing strategy and scope
-          - key: testCommand
-            type: string
-            description: Command to run tests
-          - key: lintCommand
-            type: string
-            description: Command to run linter
-          - key: typeCheckCommand
-            type: string
-            description: Command to run type checking
-          - key: risks
-            type: string[]
-            description: Identified risks and concerns
-          - key: detectedStack
-            type: string
-            description: Detected technology stack
-          - key: summary
-            type: string
-            description: Brief summary of the implementation plan
   - name: confirmPlan
     type: human_confirm
     runtime:
@@ -293,27 +380,10 @@ stages:
     runtime:
       engine: llm
       system_prompt: create-branch
-      writes:
-        - branchInfo
       reads:
         ticketId: ticketContext.ticketId
         ticketSlug: ticketContext.ticketSlug
         gitlabRepoUrl: ticketContext.gitlabRepoUrl
-    outputs:
-      branchInfo:
-        type: object
-        label: Branch Info
-        hidden: true
-        fields:
-          - key: branchName
-            type: string
-            description: Name of the created Git branch
-          - key: gitlabProjectId
-            type: string
-            description: GitLab project ID
-          - key: summary
-            type: string
-            description: Brief summary of branch creation
   - name: setupWorktree
     type: script
     runtime:
@@ -321,17 +391,6 @@ stages:
       script_id: git_worktree
       reads:
         repoName: ticketContext.repoName
-      writes:
-        - worktreePath
-    outputs:
-      worktreePath:
-        type: object
-        label: Worktree Path
-        hidden: true
-        fields:
-          - key: worktreePath
-            type: string
-            description: Absolute path to the isolated git worktree
   - name: implement
     type: agent
     effort: high
@@ -344,31 +403,12 @@ stages:
     runtime:
       engine: llm
       system_prompt: implement
-      writes:
-        - implementationResult
       reads:
         plan: implementationPlan
         branchInfo: branchInfo
         ticketTitle: ticketContext.ticketTitle
     on_complete:
       notify: slack
-    outputs:
-      implementationResult:
-        type: object
-        label: Implementation Result
-        fields:
-          - key: filesChanged
-            type: string[]
-            description: List of files that were changed
-          - key: linesAdded
-            type: number
-            description: Total lines added
-          - key: linesRemoved
-            type: number
-            description: Total lines removed
-          - key: summary
-            type: string
-            description: Brief summary of the implementation
   - name: testAndFix
     type: agent
     effort: high
@@ -379,38 +419,12 @@ stages:
     runtime:
       engine: llm
       system_prompt: test-and-fix
-      writes:
-        - testResult
       reads:
         plan: implementationPlan
         implementation: implementationResult
       retry:
         max_retries: 2
         back_to: implement
-    outputs:
-      testResult:
-        type: object
-        label: Test Result
-        fields:
-          - key: passed
-            type: boolean
-            description: Whether all tests passed
-            display_hint: badge
-          - key: blockers
-            type: string[]
-            description: Blocking issues if tests failed
-          - key: testsPassed
-            type: number
-            description: Number of tests that passed
-          - key: testsFailed
-            type: number
-            description: Number of tests that failed
-          - key: roundsUsed
-            type: number
-            description: Number of test-fix rounds used
-          - key: summary
-            type: string
-            description: Brief summary of test results
   - name: verifyCI
     type: agent
     effort: medium
@@ -421,30 +435,9 @@ stages:
     runtime:
       engine: llm
       system_prompt: verify-ci
-      writes:
-        - ciResult
       reads:
         branchInfo: branchInfo
         gitlabRepoUrl: ticketContext.gitlabRepoUrl
-    outputs:
-      ciResult:
-        type: object
-        label: CI Result
-        fields:
-          - key: ciPassed
-            type: boolean
-            description: Whether CI pipeline passed
-            display_hint: badge
-          - key: pipelineUrl
-            type: string
-            description: URL to the CI pipeline run
-            display_hint: link
-          - key: createdCiConfig
-            type: boolean
-            description: Whether a CI config was created if missing
-          - key: summary
-            type: string
-            description: Brief summary of CI verification
   - name: confirmBeforeMR
     type: human_confirm
     runtime:
@@ -465,8 +458,6 @@ stages:
     runtime:
       engine: llm
       system_prompt: submit-merge-request
-      writes:
-        - mergeRequestResult
       reads:
         ticket: ticketContext
         plan: implementationPlan
@@ -476,24 +467,3 @@ stages:
         implementation: implementationResult
     on_complete:
       notify: slack
-    outputs:
-      mergeRequestResult:
-        type: object
-        label: Merge Request Result
-        fields:
-          - key: mrUrl
-            type: string
-            description: URL to the created merge request
-            display_hint: link
-          - key: mrDescription
-            type: string
-            description: Description body of the merge request
-          - key: ticketUpdated
-            type: boolean
-            description: Whether the Linear ticket was updated
-          - key: slackNotified
-            type: boolean
-            description: Whether Slack notification was sent
-          - key: summary
-            type: string
-            description: Brief summary of the merge request submission

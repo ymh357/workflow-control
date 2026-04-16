@@ -11,6 +11,112 @@ display:
   title_path: pipelineDesign.pipelineName
   completion_summary_path: persistResult.pipelineId
 
+store_schema:
+  pipelineDesign:
+    produced_by: analyzing
+    description: Pipeline Design
+    fields:
+      pipelineName:
+        type: string
+        description: Human-readable pipeline name
+      pipelineId:
+        type: string
+        description: Directory-safe pipeline ID (kebab-case)
+      description:
+        type: string
+        description: Pipeline description
+      engine:
+        type: string
+        description: Default engine (claude/gemini/mixed)
+      stageDesign:
+        type: markdown
+        description: Detailed stage-by-stage design with data flow
+      dataFlowSummary:
+        type: markdown
+        description: Store key flow diagram
+      useCases:
+        type: string[]
+        description: Target use cases
+      estimatedStageCount:
+        type: number
+        description: Total stage count
+      usesParallelGroups:
+        type: boolean
+        description: Whether parallel groups are used
+      recommendedMcps:
+        type: string[]
+        description: MCP server names discovered via PulseMCP that should be used in the pipeline
+      recommendedSkills:
+        type: string[]
+        description: Skill names discovered externally that should be used in the pipeline
+      targetRepoName:
+        type: string
+        description: Repository name extracted from task description (empty if not specified)
+      assumptions:
+        type: string[]
+        description: Assumptions made when user input was ambiguous (shown to user at confirmation gate)
+      stageContracts:
+        type: object[]
+        description: >
+          Structured naming contracts for each stage (including parallel group children).
+          Each entry: { name: string, type: string, systemPrompt?: string, writes?: string[] }.
+          This is the authoritative naming source consumed by both downstream generators.
+      summary:
+        type: markdown
+        description: Design summary for user review
+  pipelineYaml:
+    produced_by: genSkeleton
+    description: Pipeline Configuration
+    fields:
+      pipeline:
+        type: object
+        description: Complete pipeline configuration object (PipelineConfig)
+      warnings:
+        type: string[]
+        description: Any warnings about the generated pipeline
+  promptFiles:
+    produced_by: genPrompts
+    description: Generated Prompts
+    fields:
+      outputDir:
+        type: string
+        description: Absolute path to temp directory containing generated prompt .md files
+      generatedFiles:
+        type: string[]
+        description: List of prompt file names written (kebab-case, no .md extension)
+      hasGlobalConstraints:
+        type: boolean
+        description: Whether global-constraints.md was generated
+  refinedPromptFiles:
+    produced_by: refinePrompts
+    description: Refined Prompts
+    fields:
+      outputDir:
+        type: string
+        description: Absolute path to the temp directory containing enhanced prompt files
+      refinedFiles:
+        type: string[]
+        description: List of prompt file names that were enhanced (kebab-case, no .md)
+      summary:
+        type: string
+        description: Summary of refinements applied
+  persistResult:
+    produced_by: persisting
+    description: Saved Pipeline
+    fields:
+      pipelineId:
+        type: string
+        description: Pipeline directory name
+      savedFiles:
+        type: string[]
+        description: Files written to disk
+      validationPassed:
+        type: boolean
+        description: Whether the YAML passed schema validation
+      mcpSetupNeeded:
+        type: object[]
+        description: MCPs that were auto-registered but need API keys configured (each has name and envVars fields)
+
 stages:
   - name: analyzing
     type: agent
@@ -22,61 +128,7 @@ stages:
     runtime:
       engine: llm
       system_prompt: analysis
-      writes:
-        - pipelineDesign
-    outputs:
-      pipelineDesign:
-        type: object
-        label: Pipeline Design
-        fields:
-          - key: pipelineName
-            type: string
-            description: Human-readable pipeline name
-          - key: pipelineId
-            type: string
-            description: Directory-safe pipeline ID (kebab-case)
-          - key: description
-            type: string
-            description: Pipeline description
-          - key: engine
-            type: string
-            description: Default engine (claude/gemini/mixed)
-          - key: stageDesign
-            type: markdown
-            description: Detailed stage-by-stage design with data flow
-          - key: dataFlowSummary
-            type: markdown
-            description: Store key flow diagram
-          - key: useCases
-            type: string[]
-            description: Target use cases
-          - key: estimatedStageCount
-            type: number
-            description: Total stage count
-          - key: usesParallelGroups
-            type: boolean
-            description: Whether parallel groups are used
-          - key: recommendedMcps
-            type: string[]
-            description: MCP server names discovered via PulseMCP that should be used in the pipeline
-          - key: recommendedSkills
-            type: string[]
-            description: Skill names discovered externally that should be used in the pipeline
-          - key: targetRepoName
-            type: string
-            description: Repository name extracted from task description (empty if not specified)
-          - key: assumptions
-            type: string[]
-            description: Assumptions made when user input was ambiguous (shown to user at confirmation gate)
-          - key: stageContracts
-            type: object[]
-            description: >
-              Structured naming contracts for each stage (including parallel group children).
-              Each entry: { name: string, type: string, systemPrompt?: string, writes?: string[] }.
-              This is the authoritative naming source consumed by both downstream generators.
-          - key: summary
-            type: markdown
-            description: Design summary for user review
+      reads: {}
     effort: high
     max_turns: 50
     max_budget_usd: 4
@@ -97,22 +149,9 @@ stages:
           runtime:
             engine: llm
             system_prompt: gen-skeleton
-            writes:
-              - pipelineYaml
             reads:
               design: pipelineDesign
               contracts: pipelineDesign.stageContracts
-          outputs:
-            pipelineYaml:
-              type: object
-              label: Pipeline Configuration
-              fields:
-                - key: pipeline
-                  type: object
-                  description: Complete pipeline configuration object (PipelineConfig)
-                - key: warnings
-                  type: string[]
-                  description: Any warnings about the generated pipeline
           effort: high
           max_turns: 60
           max_budget_usd: 5
@@ -122,8 +161,6 @@ stages:
           runtime:
             engine: llm
             system_prompt: gen-prompts
-            writes:
-              - promptFiles
             reads:
               design: pipelineDesign
               contracts: pipelineDesign.stageContracts
@@ -161,20 +198,6 @@ stages:
                   - Write
                 model: sonnet
                 maxTurns: 20
-          outputs:
-            promptFiles:
-              type: object
-              label: Generated Prompts
-              fields:
-                - key: outputDir
-                  type: string
-                  description: Absolute path to temp directory containing generated prompt .md files
-                - key: generatedFiles
-                  type: string[]
-                  description: List of prompt file names written (kebab-case, no .md extension)
-                - key: hasGlobalConstraints
-                  type: boolean
-                  description: Whether global-constraints.md was generated
           effort: high
           max_turns: 80
           max_budget_usd: 8
@@ -191,30 +214,12 @@ stages:
         promptFiles: promptFiles
         pipelineYaml: pipelineYaml.pipeline
         pipelineDesign: pipelineDesign
-      writes:
-        - refinedPromptFiles
-    outputs:
-      refinedPromptFiles:
-        type: object
-        label: Refined Prompts
-        fields:
-          - key: outputDir
-            type: string
-            description: Absolute path to the temp directory containing enhanced prompt files
-          - key: refinedFiles
-            type: string[]
-            description: List of prompt file names that were enhanced (kebab-case, no .md)
-          - key: summary
-            type: string
-            description: Summary of refinements applied
 
   - name: persisting
     type: script
     runtime:
       engine: script
       script_id: persist_pipeline
-      writes:
-        - persistResult
       retry:
         max_retries: 1
         back_to: generating
@@ -225,20 +230,3 @@ stages:
         rawPromptDir: promptFiles.outputDir
         pipelineId: pipelineDesign.pipelineId
         pipelineName: pipelineDesign.pipelineName
-    outputs:
-      persistResult:
-        type: object
-        label: Saved Pipeline
-        fields:
-          - key: pipelineId
-            type: string
-            description: Pipeline directory name
-          - key: savedFiles
-            type: string[]
-            description: Files written to disk
-          - key: validationPassed
-            type: boolean
-            description: Whether the YAML passed schema validation
-          - key: mcpSetupNeeded
-            type: object[]
-            description: MCPs that were auto-registered but need API keys configured (each has name and envVars fields)

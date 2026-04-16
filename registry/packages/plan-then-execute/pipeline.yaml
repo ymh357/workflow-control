@@ -16,6 +16,85 @@ invariants:
   - "NO implementation code WITHOUT an approved design document"
   - "NO completion claim WITHOUT fresh verification evidence"
 
+store_schema:
+  design:
+    produced_by: brainstorm
+    description: Design Document
+    fields:
+      title:
+        type: string
+        description: Feature/task title
+      approach:
+        type: markdown
+        description: Chosen approach with rationale
+      alternatives:
+        type: markdown
+        description: Alternatives considered and why they were rejected
+      fileMap:
+        type: markdown
+        description: Files to create or modify with responsibilities
+      risks:
+        type: string[]
+        description: Identified risks and mitigations
+      summary:
+        type: markdown
+        description: Design summary for human review
+  plan:
+    produced_by: writePlan
+    description: Implementation Plan
+    fields:
+      tasks:
+        type: object[]
+        description: Ordered list of implementation tasks with steps
+        fields:
+          id:
+            type: string
+            description: Task identifier (task-1, task-2, etc.)
+          title:
+            type: string
+            description: Task title
+          files:
+            type: string[]
+            description: Files this task touches
+          steps:
+            type: string[]
+            description: Ordered implementation steps
+      taskCount:
+        type: number
+        description: Total number of tasks
+  implementation:
+    produced_by: execute
+    description: Implementation Result
+    fields:
+      completedTasks:
+        type: string[]
+        description: List of completed task IDs
+      filesChanged:
+        type: string[]
+        description: All files created or modified
+      passed:
+        type: boolean
+        description: Whether all tasks completed successfully
+      blockers:
+        type: string[]
+        description: Any blocking issues encountered
+  verification:
+    produced_by: verify
+    description: Verification
+    fields:
+      passed:
+        type: boolean
+        description: Whether all checks passed
+      checksRun:
+        type: string[]
+        description: Verification commands executed
+      summary:
+        type: markdown
+        description: Verification summary
+      blockers:
+        type: string[]
+        description: Remaining issues (empty if passed)
+
 stages:
   - name: brainstorm
     type: agent
@@ -28,31 +107,6 @@ stages:
     runtime:
       engine: llm
       system_prompt: brainstorm
-      writes:
-        - design
-    outputs:
-      design:
-        type: object
-        label: Design Document
-        fields:
-          - key: title
-            type: string
-            description: Feature/task title
-          - key: approach
-            type: markdown
-            description: Chosen approach with rationale
-          - key: alternatives
-            type: markdown
-            description: Alternatives considered and why they were rejected
-          - key: fileMap
-            type: markdown
-            description: Files to create or modify with responsibilities
-          - key: risks
-            type: string[]
-            description: Identified risks and mitigations
-          - key: summary
-            type: markdown
-            description: Design summary for human review
 
   - name: reviewDesign
     type: human_confirm
@@ -73,32 +127,6 @@ stages:
       system_prompt: write-plan
       reads:
         design: design
-      writes:
-        - plan
-    outputs:
-      plan:
-        type: object
-        label: Implementation Plan
-        fields:
-          - key: tasks
-            type: object[]
-            description: Ordered list of implementation tasks with steps
-            fields:
-              - key: id
-                type: string
-                description: Task identifier (task-1, task-2, etc.)
-              - key: title
-                type: string
-                description: Task title
-              - key: files
-                type: string[]
-                description: Files this task touches
-              - key: steps
-                type: string[]
-                description: Ordered implementation steps
-          - key: taskCount
-            type: number
-            description: Total number of tasks
 
   - name: reviewPlan
     type: human_confirm
@@ -122,28 +150,9 @@ stages:
       reads:
         design: design
         plan: plan
-      writes:
-        - implementation
       retry:
         max_retries: 2
         back_to: execute
-    outputs:
-      implementation:
-        type: object
-        label: Implementation Result
-        fields:
-          - key: completedTasks
-            type: string[]
-            description: List of completed task IDs
-          - key: filesChanged
-            type: string[]
-            description: All files created or modified
-          - key: passed
-            type: boolean
-            description: Whether all tasks completed successfully
-          - key: blockers
-            type: string[]
-            description: Any blocking issues encountered
 
   - name: verify
     type: agent
@@ -161,25 +170,6 @@ stages:
         design: design
         plan: plan
         implementation: implementation
-      writes:
-        - verification
       retry:
         max_retries: 1
         back_to: execute
-    outputs:
-      verification:
-        type: object
-        label: Verification
-        fields:
-          - key: passed
-            type: boolean
-            description: Whether all checks passed
-          - key: checksRun
-            type: string[]
-            description: Verification commands executed
-          - key: summary
-            type: markdown
-            description: Verification summary
-          - key: blockers
-            type: string[]
-            description: Remaining issues (empty if passed)
