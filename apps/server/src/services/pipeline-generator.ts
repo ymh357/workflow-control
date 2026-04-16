@@ -13,6 +13,7 @@ import { registryService } from "./registry-service.js";
 import { logger } from "../lib/logger.js";
 import type { PipelineConfig, WriteDeclaration } from "../lib/config/types.js";
 import { flattenStages } from "../lib/config/types.js";
+import { autofixPipeline } from "./pipeline-autofix.js";
 
 function wKey(w: WriteDeclaration): string {
   return typeof w === "string" ? w : w.key;
@@ -217,6 +218,12 @@ async function generateSkeleton(description: string, engine: "claude" | "gemini"
         if (stage.type === "agent" && (stage as any).runtime?.system_prompt === "__GENERATED__") {
           (stage as any).runtime.system_prompt = stage.name.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
         }
+      }
+
+      // Auto-fix known mechanical issues before validation
+      const autoFixes = autofixPipeline(pipelineObj);
+      if (autoFixes.length > 0) {
+        logger.info({ fixes: autoFixes }, "pipeline-generator: auto-fixed pipeline issues");
       }
 
       const validation = validatePipelineConfig(pipelineObj);
