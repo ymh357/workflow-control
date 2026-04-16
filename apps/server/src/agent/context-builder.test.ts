@@ -79,8 +79,9 @@ describe("buildTier1Context - selective reads (runtime.reads)", () => {
     const runtime = { reads: { "Analysis Result": "analysis" } } as any;
     const result = buildTier1Context(ctx, runtime);
     expect(result).toContain("### Analysis Result");
-    expect(result).toContain("summary: looks good");
-    expect(result).toContain("score: 95");
+    expect(result).toContain("```json");
+    expect(result).toContain('"summary": "looks good"');
+    expect(result).toContain('"score": 95');
   });
 
   it("strips store. prefix from reads paths", () => {
@@ -92,8 +93,8 @@ describe("buildTier1Context - selective reads (runtime.reads)", () => {
     const runtime = { reads: { "Analysis Result": "store.analysis" } } as any;
     const result = buildTier1Context(ctx, runtime);
     expect(result).toContain("### Analysis Result");
-    expect(result).toContain("summary: looks good");
-    expect(result).toContain("score: 95");
+    expect(result).toContain('"summary": "looks good"');
+    expect(result).toContain('"score": 95');
   });
 
   it("strips store. prefix for nested paths", () => {
@@ -105,7 +106,7 @@ describe("buildTier1Context - selective reads (runtime.reads)", () => {
     const runtime = { reads: { "Detail": "store.analysis.detail" } } as any;
     const result = buildTier1Context(ctx, runtime);
     expect(result).toContain("### Detail");
-    expect(result).toContain("summary: nested value");
+    expect(result).toContain('"summary": "nested value"');
   });
 
   it("skips undefined store paths", () => {
@@ -125,32 +126,35 @@ describe("buildTier1Context - selective reads (runtime.reads)", () => {
     expect(result).toContain("x".repeat(500));
   });
 
-  it("shows arrays up to 20 elements", () => {
+  it("renders arrays within JSON objects", () => {
     const ctx = makeContext({
       store: { data: { items: ["a", "b", "c", "d", "e", "f", "g"] } },
     });
     const runtime = { reads: { "Data": "data" } } as any;
     const result = buildTier1Context(ctx, runtime);
-    expect(result).toContain("a; b; c; d; e; f; g");
+    expect(result).toContain("```json");
+    expect(result).toContain('"a"');
+    expect(result).toContain('"g"');
   });
 
-  it("renders arrays with 5 or fewer elements without ellipsis", () => {
+  it("renders small arrays within JSON objects", () => {
     const ctx = makeContext({
       store: { data: { items: ["a", "b"] } },
     });
     const runtime = { reads: { "Data": "data" } } as any;
     const result = buildTier1Context(ctx, runtime);
-    expect(result).toContain("items: a; b");
-    expect(result).not.toContain("...");
+    expect(result).toContain('"a"');
+    expect(result).toContain('"b"');
   });
 
-  it("JSON.stringifies nested objects", () => {
+  it("preserves nested object structure in JSON", () => {
     const ctx = makeContext({
       store: { data: { nested: { foo: "bar" } } },
     });
     const runtime = { reads: { "Data": "data" } } as any;
     const result = buildTier1Context(ctx, runtime);
-    expect(result).toContain('nested: {"foo":"bar"}');
+    expect(result).toContain("```json");
+    expect(result).toContain('"foo": "bar"');
   });
 
   it("renders non-object values as strings", () => {
@@ -162,7 +166,7 @@ describe("buildTier1Context - selective reads (runtime.reads)", () => {
     expect(result).toContain("plain string value");
   });
 
-  it("truncates large reads values into preview when token budget is exceeded", () => {
+  it("summarizes large reads values when token budget exceeded", () => {
     const hugeObj: Record<string, string> = {};
     for (let i = 0; i < 100; i++) hugeObj[`field_${i}`] = "x".repeat(200);
     const ctx = makeContext({
@@ -170,11 +174,10 @@ describe("buildTier1Context - selective reads (runtime.reads)", () => {
     });
     const runtime = { reads: { "Huge": "huge", "Small": "small" } } as any;
     const result = buildTier1Context(ctx, runtime, 500);
-    expect(result).toContain("preview");
+    expect(result).toContain("summarized");
     expect(result).toContain('get_store_value("huge")');
-    // Small should still be rendered fully
     expect(result).toContain("### Small");
-    expect(result).toContain("ok: yes");
+    expect(result).toContain('"ok": "yes"');
   });
 
   it("lists un-injected store keys as Tier 2 references", () => {
@@ -323,13 +326,13 @@ describe("estimateTokens (CJK-aware)", () => {
 });
 
 describe("buildTier1Context - large value preview", () => {
-  it("shows preview with Tier 2 reference for very large store values", () => {
+  it("shows summary with MCP reference for very large store values", () => {
     const hugeObj: Record<string, string> = {};
     for (let i = 0; i < 200; i++) hugeObj[`field_${i}`] = "x".repeat(100);
     const ctx = makeContext({ store: { huge: hugeObj } });
     const runtime = { reads: { "Huge Data": "huge" } } as any;
     const result = buildTier1Context(ctx, runtime, 500);
-    expect(result).toContain("preview");
+    expect(result).toContain("summarized");
     expect(result).toContain('get_store_value("huge")');
   });
 });
@@ -374,11 +377,11 @@ describe("buildTier1Context - parallel group stages", () => {
     });
     const result = buildTier1Context(ctx);
     expect(result).toContain("## Design Review");
-    expect(result).toContain("feedback: needs contrast fix");
-    expect(result).toContain("severity: medium");
+    expect(result).toContain("needs contrast fix");
+    expect(result).toContain("medium");
     expect(result).toContain("## Code Review");
-    expect(result).toContain("issues: lint error; missing type");
-    expect(result).toContain("passed: false");
+    expect(result).toContain("lint error");
+    expect(result).toContain("false");
   });
 });
 

@@ -71,40 +71,23 @@ export function buildTier1Context(
       renderedKeys.add(storeKey);
 
       if (typeof val === "object" && val !== null) {
-        const fieldParts: string[] = [];
-        for (const [k, v] of Object.entries(val)) {
-          if (Array.isArray(v)) {
-            fieldParts.push(`${k}: ${v.slice(0, 20).join("; ")}${v.length > 20 ? ` ... (${v.length} total)` : ""}`);
-          } else if (typeof v === "object" && v !== null) {
-            fieldParts.push(`${k}: ${JSON.stringify(v)}`);
-          } else {
-            fieldParts.push(`${k}: ${v}`);
-          }
-        }
-        const fullBlock = `\n### ${label}\n${fieldParts.join("\n")}`;
+        const jsonStr = JSON.stringify(val, null, 2);
+        const fullBlock = `\n### ${label}\n\`\`\`json\n${jsonStr}\n\`\`\``;
 
         const semanticSummaryKey = `${storePath.split(".")[0]}.__semantic_summary`;
         const mechanicalSummaryKey = `${storePath.split(".")[0]}.__summary`;
         const semanticSummary = getCachedSummary(context.taskId, storePath.split(".")[0]) ?? store[semanticSummaryKey];
 
         if (semanticSummary !== undefined && (fullBlock.length > MAX_INLINE_CHARS || !addPart(fullBlock))) {
-          // Best: LLM-generated semantic summary (cache-first, then store fallback)
           parts.push(`\n### ${label} (semantic summary)\n${semanticSummary}\n> Full content: use get_store_value("${storePath}") for complete data`);
         } else if (store[mechanicalSummaryKey] !== undefined && fullBlock.length > MAX_INLINE_CHARS) {
           addPart(`\n### ${label} (compact summary)\n${store[mechanicalSummaryKey]}\n> Full content: use get_store_value("${storePath}") for complete data`);
         } else if (!addPart(fullBlock)) {
-          if (fullBlock.length > MAX_INLINE_CHARS) {
-            parts.push(`\n### ${label} (preview, ${fieldParts.length} fields)\n${fieldParts.slice(0, 5).join("\n")}\n...\n> Full content: use get_store_value("${storePath}") for all ${fieldParts.length} fields`);
-          } else {
-            const entries = Object.entries(val);
-            const summaryParts: string[] = [];
-            for (const [k, v] of entries.slice(0, 20)) {
-              const s = typeof v === "string" ? v : JSON.stringify(v);
-              summaryParts.push(`${k}: ${s.slice(0, 80)}${s.length > 80 ? "..." : ""}`);
-            }
-            if (entries.length > 20) summaryParts.push(`... and ${entries.length - 20} more fields`);
-            parts.push(`\n### ${label} (summarized)\n${summaryParts.join("\n")}`);
-          }
+          const keys = Object.keys(val);
+          const preview = keys.length <= 10
+            ? `Object with keys: ${keys.join(", ")}`
+            : `Object with ${keys.length} keys: ${keys.slice(0, 10).join(", ")}, ...`;
+          parts.push(`\n### ${label} (summarized)\n${preview}\n> Full content: use get_store_value("${storePath}") for all fields`);
         }
       } else {
         addPart(`\n### ${label}\n${String(val)}`);
