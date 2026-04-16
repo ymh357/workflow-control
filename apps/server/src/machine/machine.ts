@@ -67,6 +67,7 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
       stageRetryCount: {},
       stageSessionIds: {},
       store: {},
+      scratchPad: [],
     },
     on: {
       CANCEL: {

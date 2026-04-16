@@ -7,6 +7,13 @@ export interface StageCheckpoint {
   readsSnapshot?: Record<string, string>;
 }
 
+export interface ScratchPadEntry {
+  stage: string;
+  timestamp: string;
+  category: string;
+  content: string;
+}
+
 export interface WorkflowContext {
   taskId: string;
   taskText?: string;
@@ -24,6 +31,7 @@ export interface WorkflowContext {
   branch?: string;
   worktreePath?: string;
   store: Record<string, any>;
+  scratchPad?: ScratchPadEntry[];
   totalCostUsd?: number;
   totalTokenUsage?: TokenUsage;
   stageTokenUsages?: Record<string, StageTokenUsage>;
