@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { AgentResult } from "../agent/query-tracker.js";
 import { taskLogger } from "../lib/logger.js";
 import { getDb } from "../lib/db.js";
+import { sseManager } from "../sse/manager.js";
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+const HEARTBEAT_WARN_MS = 5 * 60 * 1000; // 5 minutes — warn if no progress
 
 export interface EdgeSlotInfo {
   taskId: string;
@@ -17,6 +19,8 @@ interface EdgeSlot extends EdgeSlotInfo {
   reject: (error: Error) => void;
   timeoutTimer: ReturnType<typeof setTimeout>;
   timeoutMs: number;
+  lastProgressAt: number;
+  heartbeatTimer?: ReturnType<typeof setTimeout>;
 }
 
 const slots = new Map<string, EdgeSlot>();
@@ -82,6 +86,7 @@ export function createSlot(taskId: string, stageName: string, timeoutMs = DEFAUL
   if (existing) {
     taskLogger(taskId).warn({ stageName }, "Replacing existing edge slot — previous invocation will error");
     clearTimeout(existing.timeoutTimer);
+    if (existing.heartbeatTimer) clearInterval(existing.heartbeatTimer);
     existing.reject(new Error(`Edge slot for "${stageName}" replaced by new invocation — previous caller should retry or abort`));
     slots.delete(key);
   }
@@ -90,6 +95,8 @@ export function createSlot(taskId: string, stageName: string, timeoutMs = DEFAUL
 
   return new Promise<AgentResult>((resolve, reject) => {
     const timeoutTimer = setTimeout(() => {
+      const dying = slots.get(key);
+      if (dying?.heartbeatTimer) clearInterval(dying.heartbeatTimer);
       slots.delete(key);
       try {
         getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
@@ -99,13 +106,31 @@ export function createSlot(taskId: string, stageName: string, timeoutMs = DEFAUL
 
     const info: EdgeSlotInfo = { taskId, stageName, createdAt: Date.now(), nonce };
 
-    slots.set(key, {
+    const slot: EdgeSlot = {
       ...info,
       resolve,
       reject,
       timeoutTimer,
       timeoutMs,
-    });
+      lastProgressAt: Date.now(),
+    };
+    slots.set(key, slot);
+
+    const heartbeat = setInterval(() => {
+      if (Date.now() - slot.lastProgressAt > HEARTBEAT_WARN_MS) {
+        sseManager.pushMessage(taskId, {
+          type: "agent_progress",
+          taskId,
+          timestamp: new Date().toISOString(),
+          data: { phase: "heartbeat_warning", stage: stageName, silentSeconds: Math.floor((Date.now() - slot.lastProgressAt) / 1000) },
+        });
+        taskLogger(taskId, stageName).warn(
+          { silentMs: Date.now() - slot.lastProgressAt },
+          "Edge agent has not reported progress — possible crash"
+        );
+      }
+    }, HEARTBEAT_WARN_MS);
+    slot.heartbeatTimer = heartbeat;
 
     try {
       getDb().prepare(
@@ -122,6 +147,7 @@ export function createSlot(taskId: string, stageName: string, timeoutMs = DEFAUL
       pendingRecovery.delete(recoveryKey);
       taskLogger(taskId).info({ stageName }, "Auto-resolving slot from pending recovery result");
       clearTimeout(timeoutTimer);
+      if (slot.heartbeatTimer) clearInterval(slot.heartbeatTimer);
       slots.delete(key);
       try {
         getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
@@ -144,6 +170,7 @@ export function resolveSlot(taskId: string, stageName: string, result: AgentResu
     }
 
     clearTimeout(slot.timeoutTimer);
+    if (slot.heartbeatTimer) clearInterval(slot.heartbeatTimer);
     slots.delete(key);
     slot.resolve(result);
     try {
@@ -183,6 +210,7 @@ export function rejectSlot(taskId: string, stageName: string, error: Error): boo
   if (!slot) return false;
 
   clearTimeout(slot.timeoutTimer);
+  if (slot.heartbeatTimer) clearInterval(slot.heartbeatTimer);
   slots.delete(key);
   slot.reject(error);
   try {
@@ -200,6 +228,7 @@ export function renewSlot(taskId: string, stageName: string): boolean {
   if (!slot) return false;
 
   if (Date.now() - slot.createdAt > MAX_ABSOLUTE_LIFETIME_MS) {
+    if (slot.heartbeatTimer) clearInterval(slot.heartbeatTimer);
     slots.delete(key);
     try {
       getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
@@ -209,7 +238,9 @@ export function renewSlot(taskId: string, stageName: string): boolean {
   }
 
   clearTimeout(slot.timeoutTimer);
+  slot.lastProgressAt = Date.now();
   slot.timeoutTimer = setTimeout(() => {
+    if (slot.heartbeatTimer) clearInterval(slot.heartbeatTimer);
     slots.delete(key);
     try {
       getDb().prepare("DELETE FROM edge_slots WHERE task_id = ? AND stage_name = ?").run(taskId, stageName);
@@ -255,6 +286,7 @@ export function clearTaskSlots(taskId: string): void {
   for (const key of toDelete) {
     const slot = slots.get(key)!;
     clearTimeout(slot.timeoutTimer);
+    if (slot.heartbeatTimer) clearInterval(slot.heartbeatTimer);
     slot.reject(new Error("Task cancelled"));
     slots.delete(key);
     taskLogger(taskId).info({ stageName: slot.stageName }, "Edge slot cleared on cancel");
