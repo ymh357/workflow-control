@@ -209,10 +209,13 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
         assign(({ context, event }: ErrorActionArgs) => {
           const errorMsg = event.error instanceof Error ? event.error.message : String(event.error);
           const sessionId = context.stageSessionIds?.[stateName];
+          const priorFeedback = context.resumeInfo?.feedback
+            ? `[Prior attempt failed: ${context.resumeInfo.feedback.slice(0, 300)}]\n\n`
+            : "";
           return {
             retryCount: context.retryCount + 1,
             resumeInfo: sessionId
-              ? { sessionId, feedback: `Previous attempt failed with error: ${errorMsg.slice(0, 500)}. Please inspect the current state and fix the issue.` }
+              ? { sessionId, feedback: `${priorFeedback}Previous attempt failed with error: ${errorMsg.slice(0, 500)}. Please inspect the current state and fix the issue.` }
               : undefined,
           };
         }),

@@ -198,6 +198,9 @@ export function buildAgentState(
             assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
               const sessionId = event.output?.sessionId ?? context.stageSessionIds?.[stateName];
               const writeKeys = runtime.writes!.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
+              const priorFeedback = context.resumeInfo?.feedback
+                ? `[Prior attempt failed: ${context.resumeInfo.feedback.slice(0, 300)}]\n\n`
+                : "";
               return {
                 retryCount: context.retryCount + 1,
                 stageRetryCount: incrementStageRetryCount(context, stateName),
@@ -207,7 +210,7 @@ export function buildAgentState(
                 stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
                 stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
                 resumeInfo: sessionId
-                  ? { sessionId, feedback: `Your previous output was missing the required JSON fields (expected: ${writeKeys.join(", ")}). You MUST output the required JSON object before finishing. Do NOT explain — just output the JSON now.` }
+                  ? { sessionId, feedback: `${priorFeedback}Your previous output was missing the required JSON fields (expected: ${writeKeys.join(", ")}). You MUST output the required JSON object before finishing. Do NOT explain — just output the JSON now.` }
                   : undefined,
               };
             }),
@@ -247,6 +250,9 @@ export function buildAgentState(
               for (const [key, assertions] of assertionMap) {
                 allFailures.push(...evaluateAssertions(key, parsed?.[key], assertions));
               }
+              const priorFeedback = context.resumeInfo?.feedback
+                ? `[Prior attempt failed: ${context.resumeInfo.feedback.slice(0, 300)}]\n\n`
+                : "";
               return {
                 retryCount: context.retryCount + 1,
                 stageRetryCount: incrementStageRetryCount(context, stateName),
@@ -256,7 +262,7 @@ export function buildAgentState(
                 stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
                 stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
                 resumeInfo: sessionId
-                  ? { sessionId, feedback: formatAssertionFeedback(allFailures) }
+                  ? { sessionId, feedback: `${priorFeedback}${formatAssertionFeedback(allFailures)}` }
                   : undefined,
               };
             }),
@@ -356,11 +362,14 @@ export function buildAgentState(
                   }
                 }
               }
+              const priorFeedbackQa = context.resumeInfo?.feedback
+                ? `[Prior attempt failed: ${context.resumeInfo.feedback.slice(0, 300)}]\n\n`
+                : "";
               return {
                 store,
                 qaRetryCount: (context.qaRetryCount ?? 0) + 1,
                 retryCount: 0,
-                resumeInfo: targetSessionId ? { sessionId: targetSessionId, feedback } : undefined,
+                resumeInfo: targetSessionId ? { sessionId: targetSessionId, feedback: priorFeedbackQa + feedback } : undefined,
                 totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
                 totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
@@ -424,6 +433,9 @@ export function buildAgentState(
             assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
               const output = event.output as any;
               const failureDetail = formatVerifyFailures(output.verifyResults ?? []);
+              const priorFeedback = context.resumeInfo?.feedback
+                ? `[Prior attempt failed: ${context.resumeInfo.feedback.slice(0, 300)}]\n\n`
+                : "";
               return {
                 verifyRetryCount: incrementVerifyRetryCount(context, stateName),
                 totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
@@ -434,7 +446,7 @@ export function buildAgentState(
                 resumeInfo: output.sessionId
                   ? {
                       sessionId: output.sessionId,
-                      feedback: `VERIFICATION FAILED. Your changes did not pass the required verification commands. Fix the issues and try again.\n\nFailures:\n${failureDetail}`,
+                      feedback: `${priorFeedback}VERIFICATION FAILED. Your changes did not pass the required verification commands. Fix the issues and try again.\n\nFailures:\n${failureDetail}`,
                     }
                   : undefined,
               };
