@@ -115,13 +115,13 @@ describe("schema adversarial: StageRuntimeConfigSchema discriminated union", () 
     expect(result.success).toBe(false);
   });
 
-  it("accepts negative max_retries in retry (no min constraint)", () => {
+  it("rejects negative max_retries in retry", () => {
     const result = AgentRuntimeConfigSchema.safeParse({
       engine: "llm",
       system_prompt: "x",
       retry: { max_retries: -1 },
     });
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   it("rejects non-number max_retries", () => {
@@ -258,14 +258,13 @@ describe("schema adversarial: SubAgentDefinitionSchema", () => {
 });
 
 describe("schema adversarial: PipelineStageConfigSchema edge cases", () => {
-  it("rejects negative max_budget_usd (no min constraint present - passes)", () => {
+  it("rejects negative max_budget_usd", () => {
     const result = PipelineStageConfigSchema.safeParse({
       name: "s",
       type: "agent",
       max_budget_usd: -5,
     });
-    // z.number() has no min constraint
-    expect(result.success).toBe(true);
+    expect(result.success).toBe(false);
   });
 
   it("accepts mixed engine on pipeline stage", () => {

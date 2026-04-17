@@ -917,7 +917,7 @@ describe("Condition — invalid expression falls back to default", () => {
   beforeEach(() => { vi.clearAllMocks(); });
   afterEach(() => { actor?.stop(); });
 
-  it("malformed when expression silently falls through to default branch", async () => {
+  it("malformed when expression is rejected at build time", () => {
     const pipeline: PipelineConfig = {
       name: "bad-expr-rt",
       stages: [
@@ -935,13 +935,7 @@ describe("Condition — invalid expression falls back to default", () => {
       ],
     };
 
-    mockRunAgent.mockResolvedValueOnce(agentResult({ data: "hello" }));
-
-    actor = startMachine(pipeline);
-    await waitFor(actor, (snap) => snap.status === "done", { timeout: 5000 });
-
-    expect(actor.getSnapshot().context.status).toBe("completed");
-    expect(mockRunAgent).toHaveBeenCalledTimes(1);
+    expect(() => startMachine(pipeline)).toThrow(/invalid when expression/);
   });
 });
 
