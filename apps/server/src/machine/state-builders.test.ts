@@ -681,7 +681,7 @@ describe("buildParallelGroupState basic structure", () => {
 });
 
 describe("buildAgentState compact summary generation", () => {
-  it("generates __summary for large store values on normal completion", () => {
+  it("replaces large store values in-place with summary string", () => {
     const stage = makeAgentStage({
       runtime: { engine: "llm" as const, system_prompt: "x", writes: ["bigResult"] } as any,
     });
@@ -699,13 +699,13 @@ describe("buildAgentState compact summary generation", () => {
     };
     const result = (assignFn as Function)({ event, context: ctx });
 
-    expect(result.store.bigResult).toEqual(largeValue);
-    expect(result.store["bigResult.__summary"]).toBeDefined();
-    expect(result.store["bigResult.__summary"]).toContain("[object]");
-    expect(result.store["bigResult.__summary"]).toContain("field_0");
+    expect(typeof result.store.bigResult).toBe("string");
+    expect(result.store.bigResult).toContain("summarized object");
+    expect(result.store.bigResult).toContain("field_0");
+    expect(result.store["bigResult.__summary"]).toBeUndefined();
   });
 
-  it("does not generate __summary for small store values", () => {
+  it("preserves small store values unchanged", () => {
     const stage = makeAgentStage({
       runtime: { engine: "llm" as const, system_prompt: "x", writes: ["smallResult"] } as any,
     });
@@ -723,6 +723,5 @@ describe("buildAgentState compact summary generation", () => {
     const result = (assignFn as Function)({ event, context: ctx });
 
     expect(result.store.smallResult).toEqual(smallValue);
-    expect(result.store["smallResult.__summary"]).toBeUndefined();
   });
 });

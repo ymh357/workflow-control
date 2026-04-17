@@ -591,7 +591,7 @@ export function buildAgentState(
                       };
                     } else {
                       applyStoreUpdates(store, updates, writeStrategies);
-                      // Generate compact summary for large store values
+                      // Replace large store values with compact summaries to bound memory
                       for (const [field, value] of Object.entries(updates)) {
                         if (typeof value !== "object" || value === null) continue;
                         const keys = Object.keys(value);
@@ -599,7 +599,7 @@ export function buildAgentState(
                         const serialized = JSON.stringify(value);
                         if (serialized.length > 8000) {
                           const summaryFields = keys.slice(0, 10).join(", ");
-                          store[`${field}.__summary`] = `[${typeof value}] ${summaryFields} (${serialized.length} chars)`;
+                          store[field] = `[summarized ${typeof value}: ${summaryFields}] (${serialized.length} chars original)`;
                         }
                       }
                     }
@@ -1311,7 +1311,7 @@ export function buildParallelGroupState(
             }
           }
 
-          // Generate mechanical summaries for large committed values
+          // Replace large committed values with compact summaries to bound memory
           for (const childStage of group.stages) {
             const childUpdates = staged[childStage.name];
             if (!childUpdates) continue;
@@ -1322,7 +1322,7 @@ export function buildParallelGroupState(
               const serialized = JSON.stringify(value);
               if (serialized.length > 8000) {
                 const summaryFields = keys.slice(0, 10).join(", ");
-                newStore[`${field}.__summary`] = `[${typeof value}] ${summaryFields} (${serialized.length} chars)`;
+                newStore[field] = `[summarized ${typeof value}: ${summaryFields}] (${serialized.length} chars original)`;
               }
             }
           }

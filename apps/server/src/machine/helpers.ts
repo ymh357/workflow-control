@@ -220,7 +220,7 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
             retryCount: context.retryCount + 1,
             scratchPad: [...(context.scratchPad ?? [])],
             resumeInfo: sessionId
-              ? { sessionId, feedback: `${priorFeedback}Previous attempt failed with error: ${errorMsg.slice(0, 500)}. Please inspect the current state and fix the issue.` }
+              ? { sessionId, feedback: `${priorFeedback}Previous attempt failed with error: ${errorMsg.slice(0, 1500)}. Please inspect the current state and fix the issue.` }
               : undefined,
           };
         }),
@@ -257,7 +257,7 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
             qaRetryCount: (context.qaRetryCount ?? 0) + 1,
             scratchPad: [...(context.scratchPad ?? [])],
             resumeInfo: targetSessionId
-              ? { sessionId: targetSessionId, feedback: `Stage "${stateName}" failed after retries: ${errorMsg.slice(0, 500)}. Please fix the underlying issue.` }
+              ? { sessionId: targetSessionId, feedback: `Stage "${stateName}" failed after retries: ${errorMsg.slice(0, 1500)}. Please fix the underlying issue.` }
               : undefined,
           };
         }),
@@ -275,6 +275,9 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
     {
       target: blockedTarget,
       actions: [
+        // Compensation runs inside assign() because failure records must be written to context.
+        // runCompensation() is sync with a 5s timeout — acceptable here since this only
+        // executes on the terminal blocked path after all retries are exhausted.
         assign(({ event, context }: ErrorActionArgs) => {
           const errorMsg = event.error instanceof Error ? event.error.message : String(event.error);
 
