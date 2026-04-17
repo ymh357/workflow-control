@@ -3,11 +3,17 @@ import { SessionManager, type SessionManagerConfig } from "./session-manager.js"
 const managers = new Map<string, SessionManager>();
 
 export function getOrCreateSessionManager(taskId: string, config: SessionManagerConfig): SessionManager {
-  let mgr = managers.get(taskId);
-  if (!mgr) {
-    mgr = new SessionManager(config);
-    managers.set(taskId, mgr);
+  const existing = managers.get(taskId);
+  if (existing) return existing;
+
+  const mgr = new SessionManager(config);
+  // Double-check: another sync path may have raced (defensive, not currently possible in single-threaded Node)
+  const raced = managers.get(taskId);
+  if (raced) {
+    mgr.close();
+    return raced;
   }
+  managers.set(taskId, mgr);
   return mgr;
 }
 

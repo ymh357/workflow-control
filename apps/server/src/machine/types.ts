@@ -46,6 +46,7 @@ export interface WorkflowContext {
   foreachMeta?: { itemVar: string; parentTaskId: string; itemIndex: number };
   rejectIntoGroup?: { group: string; stage: string };
   parallelStagedWrites?: Record<string, Record<string, unknown>>;
+  compensationFailures?: Array<{ stage: string; strategy: string; error: string; timestamp: string }>;
   resumeInfo?: { sessionId: string; feedback?: string; sync?: boolean };
   config?: {
     pipelineName: string;

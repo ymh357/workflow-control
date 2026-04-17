@@ -912,10 +912,7 @@ describe("Condition routing into Foreach stage", () => {
 // ---------------------------------------------------------------------------
 
 describe("Condition — invalid expression falls back to default", () => {
-  let actor: AnyActor;
-
   beforeEach(() => { vi.clearAllMocks(); });
-  afterEach(() => { actor?.stop(); });
 
   it("malformed when expression is rejected at build time", () => {
     const pipeline: PipelineConfig = {

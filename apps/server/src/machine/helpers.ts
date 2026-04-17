@@ -290,6 +290,10 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
               taskLogger(context.taskId).info({ stage: stateName, strategy: compensation.strategy }, "compensation executed");
             } else {
               taskLogger(context.taskId).warn({ stage: stateName, error: result.error }, "compensation failed (non-blocking)");
+              context.compensationFailures = [
+                ...(context.compensationFailures ?? []),
+                { stage: stateName, strategy: compensation.strategy, error: result.error ?? "unknown", timestamp: new Date().toISOString() },
+              ];
             }
           }
         },
