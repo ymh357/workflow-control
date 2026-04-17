@@ -695,14 +695,19 @@ Full audit across error handling (A), concurrency (B), security (C), and validat
 | B5 | Concurrency | Duplicate CONFIRM causes idempotency failure | XState sendEvent is serialized; second CONFIRM hits non-matching state and is correctly ignored | Dismissed |
 | B3 (original) | Concurrency | Async DB insert loses messages on crash | `.run()` is synchronous in node:sqlite + WAL mode; no async data loss risk | Reclassified to observability (silent catch) |
 
-#### Deferred to Batch 2
+#### Resolved in Batch 2
 
-| ID | Category | Description |
-|----|----------|-------------|
-| B2 | Concurrency | SessionManager registry double-check locking |
-| B4 | Concurrency | Parallel stage merge atomicity |
-| A1 | Error Handling | Compensation failure strategy |
-| P4 L2 | Validation | Fragment ID-based dedup (requires schema + generator changes) |
+| ID | Category | Finding | Resolution | Commit |
+|----|----------|---------|------------|--------|
+| B2 | Concurrency | SessionManager registry TOCTOU race | Added defensive double-check after construction; currently safe in sync Node.js but guards future async | `1f53425` |
+| A1 | Error Handling | Compensation failure not surfaced to context/UI | Record failures in `context.compensationFailures` array for retry logic and frontend visibility | `1f53425` |
+
+#### Reviewed and Closed in Batch 2
+
+| ID | Category | Original Concern | Actual Finding | Verdict |
+|----|----------|-----------------|----------------|---------|
+| B4 | Concurrency | Parallel stage merge not atomic | XState `assign()` + `parallelStagedWrites` staging buffer provides atomic merge; children never write to store directly | No fix needed |
+| P4 L2 | Validation | Fragment ID-based dedup | L1 whitespace normalization already covers assembly-side dedup; generator-side fragment_id is feature work beyond hardening scope | Deferred to feature backlog |
 
 #### Deferred to Batch 3
 
