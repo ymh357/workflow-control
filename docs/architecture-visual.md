@@ -709,13 +709,18 @@ Full audit across error handling (A), concurrency (B), security (C), and validat
 | B4 | Concurrency | Parallel stage merge not atomic | XState `assign()` + `parallelStagedWrites` staging buffer provides atomic merge; children never write to store directly | No fix needed |
 | P4 L2 | Validation | Fragment ID-based dedup | L1 whitespace normalization already covers assembly-side dedup; generator-side fragment_id is feature work beyond hardening scope | Deferred to feature backlog |
 
-#### Deferred to Batch 3
+#### Resolved in Batch 3
 
-| ID | Category | Description |
-|----|----------|-------------|
-| A2 | Error Handling | Store/sessionId consistency |
-| A4 | Error Handling | Verify retry — should it re-run the stage? |
-| C5 | Security | SSE sensitive content filtering |
+| ID | Category | Finding | Resolution | Commit |
+|----|----------|---------|------------|--------|
+| C5 | Security | SSE broadcasts raw tool inputs and store data with no filtering | Added `redactSensitive()` utility covering key patterns (api_key, token, secret) and value patterns (sk-, ghp_, xox-, AKIA, eyJ); applied to agent_tool_use, task list, and task detail endpoints | `9d2c55f` |
+
+#### Reviewed and Closed in Batch 3
+
+| ID | Category | Original Concern | Actual Finding | Verdict |
+|----|----------|-----------------|----------------|---------|
+| A2 | Error Handling | Store/sessionId consistency gap | Already covered by existing "Bug 2" tests and defensive guards in state-builders.ts | No fix needed |
+| A4 | Error Handling | Verify retry re-runs entire stage instead of just verification | Intentional design — verify failure means agent output is flawed, re-running only verification would be pointless | Correct behavior, documented |
 
 ---
 
