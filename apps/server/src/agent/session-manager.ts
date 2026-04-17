@@ -222,8 +222,10 @@ export class SessionManager {
       thinking: params.stageConfig.thinking,
       ...(params.stageConfig.effort ? { effort: params.stageConfig.effort } : {}),
       includePartialMessages: true,
-      maxTurns: 500,
-      maxBudgetUsd: 50,
+      // Hard ceiling at SDK level: 3x the per-stage limit as safety net for multi-stage sessions.
+      // Per-stage soft limits are enforced in consumeUntilResult via turn counting + timeout.
+      maxTurns: params.stageConfig.maxTurns * 3,
+      maxBudgetUsd: params.stageConfig.maxBudgetUsd * 3,
       permissionMode: params.stageConfig
         .permissionMode as SdkOptions["permissionMode"],
       ...(params.stageConfig.permissionMode === "bypassPermissions"
@@ -309,14 +311,28 @@ export class SessionManager {
       this.prevPermissionMode = params.stageConfig.permissionMode;
     }
 
-    // Update MCP servers only if service list changed
+    // Update MCP servers if service list changed — always re-include __store__
     const newMcpKey = mcpServiceKey(params.stageConfig.mcpServices);
     if (newMcpKey !== this.prevMcpKey) {
       this.log.info(
         { from: this.prevMcpKey, to: newMcpKey },
         "Switching MCP servers between stages",
       );
-      const mcpServers = buildMcpServers(params.stageConfig.mcpServices, "claude");
+      const mcpServers: Record<string, unknown> = buildMcpServers(params.stageConfig.mcpServices, "claude");
+      // Re-attach __store__ MCP so it persists across MCP service changes
+      if (params.context.store && Object.keys(params.context.store).length > 0) {
+        mcpServers["__store__"] = createStoreReaderMcp(
+          params.context.store,
+          params.context.scratchPad ?? [],
+          params.stageName,
+        );
+      } else if (params.context.scratchPad && params.context.scratchPad.length > 0) {
+        mcpServers["__store__"] = createStoreReaderMcp(
+          {},
+          params.context.scratchPad,
+          params.stageName,
+        );
+      }
       await this.query.setMcpServers(
         mcpServers as Parameters<Query["setMcpServers"]>[0],
       );

@@ -557,7 +557,9 @@ export function buildAgentState(
                 stageRetryCount: resetStageRetryCount(context, stateName),
                 ...(runtime.retry?.back_to ? { qaRetryCount: 0 } : {}),
                 resumeInfo: undefined,
-                scratchPad: context.scratchPad ?? [],
+                // Spread to create a new array reference so XState detects the change
+                // (MCP handler mutates the original array in-place during stage execution)
+                scratchPad: [...(context.scratchPad ?? [])],
                 totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
                 totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,

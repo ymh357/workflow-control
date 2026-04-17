@@ -8,6 +8,7 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
   private waiting: ((result: IteratorResult<T>) => void) | null = null;
   private isDone = false;
   private started = false;
+  private static readonly MAX_BUFFERED = 100;
 
   enqueue(item: T): void {
     if (this.isDone) return;
@@ -16,6 +17,10 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
       this.waiting = null;
       resolve({ value: item, done: false });
     } else {
+      if (this.queue.length >= AsyncQueue.MAX_BUFFERED) {
+        // Drop oldest to prevent unbounded growth
+        this.queue.shift();
+      }
       this.queue.push(item);
     }
   }

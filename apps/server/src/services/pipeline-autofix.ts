@@ -67,24 +67,39 @@ export function autofixPipeline(pipeline: {
 
   // Fix 2: Auto-populate reads from store_schema for agent stages with empty reads
   if (pipeline.store_schema) {
-    const allStages = flatStages(pipeline.stages);
-    // Build a map of which stage index produces which store keys
-    const producerOrder = new Map<string, number>();
-    for (const [idx, stage] of allStages.entries()) {
-      for (const [key, entry] of Object.entries(pipeline.store_schema)) {
-        if (entry.produced_by === stage.name) {
-          producerOrder.set(key, idx);
+    // Build ordered list preserving parallel group boundaries.
+    // Stages within a parallel group share the same "order" — they cannot read
+    // from siblings within the same group (since they execute concurrently).
+    const stageOrder = new Map<string, number>();
+    let orderIdx = 0;
+    for (const entry of pipeline.stages) {
+      if (isParallel(entry)) {
+        for (const s of entry.parallel.stages) {
+          stageOrder.set(s.name, orderIdx);
         }
+        orderIdx++; // entire group shares one order slot
+      } else {
+        stageOrder.set(entry.name, orderIdx);
+        orderIdx++;
       }
     }
 
-    for (const [idx, stage] of allStages.entries()) {
+    // Map store keys to the order index of their producer
+    const producerOrder = new Map<string, number>();
+    for (const [key, entry] of Object.entries(pipeline.store_schema)) {
+      const order = stageOrder.get(entry.produced_by);
+      if (order !== undefined) producerOrder.set(key, order);
+    }
+
+    for (const stage of flatStages(pipeline.stages)) {
       if (stage.type !== "agent" || !stage.runtime) continue;
       if (stage.runtime.reads && Object.keys(stage.runtime.reads).length > 0) continue;
-      // Find all store keys produced BEFORE this stage
+      const myOrder = stageOrder.get(stage.name);
+      if (myOrder === undefined) continue;
+      // Only include keys produced by stages with strictly earlier order
       const availableReads: Record<string, string> = {};
-      for (const [key, prodIdx] of producerOrder) {
-        if (prodIdx < idx) {
+      for (const [key, prodOrder] of producerOrder) {
+        if (prodOrder < myOrder) {
           availableReads[key] = key;
         }
       }

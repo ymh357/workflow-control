@@ -13,7 +13,9 @@ export function buildInlinePipelineConfig(
 ): NonNullable<WorkflowContext["config"]> {
   const systemPrompts: Record<string, string> = {};
   if (pipeline.inline_prompts) {
-    const toCamel = (s: string) => s.replace(/-([a-z])/g, (_, c: string) => c.toUpperCase());
+    const toCamel = (s: string) => s
+      .replace(/-([a-z])/g, (_, c: string) => c.toUpperCase())
+      .replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
     for (const [key, content] of Object.entries(pipeline.inline_prompts)) {
       systemPrompts[toCamel(key)] = content;
     }

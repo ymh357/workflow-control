@@ -15,10 +15,11 @@ const BUILTIN_DIR = path.resolve(__dirname, "../apps/server/src/builtin-pipeline
 const PACKAGES_DIR = path.resolve(__dirname, "packages");
 
 const AUTHOR = "workflow-control";
-const VERSION = "1.0.0";
+const DEFAULT_VERSION = "1.0.0";
 
 interface PipelineYaml {
   name: string;
+  version?: string;
   description: string;
   engine: string;
   hooks?: string[];
@@ -95,7 +96,7 @@ function generatePipelinesFromDir(pipelinesDir: string, seen: Set<string>): void
 
     writeManifest(dirName, {
       name: dirName,
-      version: VERSION,
+      version: pipeline.version || DEFAULT_VERSION,
       type: "pipeline",
       description: pipeline.description || pipeline.name,
       author: AUTHOR,
@@ -137,7 +138,7 @@ function generateSkills(): void {
 
     writeManifest(name, {
       name,
-      version: VERSION,
+      version: DEFAULT_VERSION,
       type: "skill",
       description,
       author: AUTHOR,
@@ -188,7 +189,7 @@ function generateHooks(): void {
 
     writeManifest(name, {
       name,
-      version: VERSION,
+      version: DEFAULT_VERSION,
       type: "hook",
       description: getHookDescription(name),
       author: AUTHOR,
@@ -235,7 +236,7 @@ function generateFragments(): void {
 
     writeManifest(name, {
       name,
-      version: VERSION,
+      version: DEFAULT_VERSION,
       type: "fragment",
       description: getFragmentDescription(name),
       author: AUTHOR,

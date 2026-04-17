@@ -10,8 +10,8 @@ describe("evaluateAssertions", () => {
   it("passes when all assertions are true", () => {
     const value = { summary: "A long enough summary with details", solutions: { a: 1, b: 2, c: 3 } };
     const assertions = [
-      "value.summary && value.summary.length > 10",
-      "Object.keys(value.solutions || {}).length >= 3",
+      "len(value.summary) > 10",
+      "len(keys(value.solutions)) >= 3",
     ];
     const result = evaluateAssertions("analysis", value, assertions);
     expect(result).toEqual([]);
@@ -20,14 +20,14 @@ describe("evaluateAssertions", () => {
   it("returns failures for false assertions", () => {
     const value = { summary: "short", solutions: {} };
     const assertions = [
-      "value.summary && value.summary.length > 200",
-      "Object.keys(value.solutions || {}).length >= 3",
+      "len(value.summary) > 200",
+      "len(keys(value.solutions)) >= 3",
     ];
     const result = evaluateAssertions("analysis", value, assertions);
     expect(result).toHaveLength(2);
     expect(result[0]).toEqual({
       key: "analysis",
-      assertion: "value.summary && value.summary.length > 200",
+      assertion: "len(value.summary) > 200",
       passed: false,
     });
   });
@@ -38,18 +38,30 @@ describe("evaluateAssertions", () => {
     expect(result[0].passed).toBe(false);
   });
 
-  it("handles string-contains check", () => {
+  it("handles includes check on strings", () => {
     const value = { summary: "I was unable to complete this task" };
     const result = evaluateAssertions("x", value, [
-      "!value.summary.includes('I was unable')",
+      "not(includes(value.summary, 'unable'))",
     ]);
     expect(result).toHaveLength(1);
     expect(result[0].passed).toBe(false);
   });
 
   it("handles undefined value gracefully", () => {
-    const result = evaluateAssertions("x", undefined, ["value.length > 0"]);
+    const result = evaluateAssertions("x", undefined, ["len(value) > 0"]);
     expect(result).toHaveLength(1);
     expect(result[0].passed).toBe(false);
+  });
+
+  it("handles array length checks via len()", () => {
+    const value = { items: [1, 2, 3] };
+    expect(evaluateAssertions("x", value, ["len(value.items) >= 3"])).toEqual([]);
+    expect(evaluateAssertions("x", value, ["len(value.items) > 5"])).toHaveLength(1);
+  });
+
+  it("handles includes check on arrays", () => {
+    const value = { tags: ["typescript", "react", "node"] };
+    expect(evaluateAssertions("x", value, ["includes(value.tags, 'react')"])).toEqual([]);
+    expect(evaluateAssertions("x", value, ["includes(value.tags, 'python')"])).toHaveLength(1);
   });
 });

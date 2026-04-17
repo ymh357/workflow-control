@@ -71,7 +71,11 @@ export function buildTier1Context(
       renderedKeys.add(storeKey);
 
       if (typeof val === "object" && val !== null) {
-        const jsonStr = JSON.stringify(val, null, 2);
+        // Compact JSON: truncate arrays beyond 20 elements to save tokens
+        const truncated = Array.isArray(val) && val.length > 20
+          ? [...val.slice(0, 20), `... (${val.length} total items)`]
+          : val;
+        const jsonStr = JSON.stringify(truncated, null, 2);
         const fullBlock = `\n### ${label}\n\`\`\`json\n${jsonStr}\n\`\`\``;
 
         const semanticSummaryKey = `${storePath.split(".")[0]}.__semantic_summary`;

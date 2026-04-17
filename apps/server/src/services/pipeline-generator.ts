@@ -777,7 +777,7 @@ Example:
         "modules": { "type": "string[]", "description": "Affected modules" },
         "risk": { "type": "string", "description": "Risk assessment" }
       },
-      "assertions": ["value.title && value.title.length > 0"]
+      "assertions": ["value.title and len(value.title) > 0"]
     },
     "plan": {
       "produced_by": "planImplementation",

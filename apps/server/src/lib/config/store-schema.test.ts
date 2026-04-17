@@ -10,7 +10,7 @@ const schema: StoreSchema = {
       title: { type: "string", description: "Title", required: true },
       modules: { type: "string[]", description: "Modules" },
     },
-    assertions: ["value.title && value.title.length > 0"],
+    assertions: ["value.title and len(value.title) > 0"],
   },
   plan: {
     produced_by: "plan-implementation",
@@ -27,7 +27,7 @@ describe("deriveStageWrites", () => {
     expect(writes).toHaveLength(1);
     expect(writes[0]).toEqual({
       key: "analysis",
-      assertions: ["value.title && value.title.length > 0"],
+      assertions: ["value.title and len(value.title) > 0"],
     });
   });
 

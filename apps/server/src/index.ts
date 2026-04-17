@@ -170,6 +170,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
   try { stopSweepTimer(); } catch { /* best-effort */ }
   try { await stopSlackApp(); } catch { /* best-effort */ }
   try {
+    const { closeAllSessionManagers } = await import("./agent/session-manager-registry.js");
+    closeAllSessionManagers();
+  } catch { /* best-effort */ }
+  try {
     const { closeDb } = await import("./lib/db.js");
     closeDb();
   } catch { /* best-effort */ }

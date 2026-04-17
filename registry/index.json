@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-04-13T13:32:41.696Z",
+  "updated_at": "2026-04-14T05:02:07.378Z",
   "packages": [
     {
       "name": "completion-anti-patterns",
@@ -112,7 +112,7 @@
     },
     {
       "name": "pipeline-generator",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "type": "pipeline",
       "description": "Generate high-quality pipelines from natural language descriptions. Analyzes requirements, designs architecture, generates YAML skeleton and system prompts in parallel, validates, and persists to disk.",
       "author": "workflow-control",
@@ -317,7 +317,7 @@
     },
     {
       "name": "tech-research",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "type": "pipeline",
       "description": "General-purpose technology research pipeline. Supports Web3 protocols, open-source tools, commercial products, technical concepts, and architecture decisions. Dynamically adapts research strategy, information sources, and verification methods based on subject type classification.\n",
       "author": "workflow-control",
@@ -436,7 +436,7 @@
     },
     {
       "name": "web3-tech-research",
-      "version": "2.0.0",
+      "version": "2.1.0",
       "type": "pipeline",
       "description": "Research-driven pipeline for Web3 protocol selection, competitive analysis, and technical feasibility assessment. Enforces primary-source-first research and independent fact-checking to prevent the \"echo chamber\" anti-pattern. On-chain verification runs BEFORE content production. Supports two modes: \"full\" (product optimization with benchmarks, pain points, solution design) and \"explore\" (greenfield research with lightweight landscape analysis).\n",
       "author": "workflow-control",

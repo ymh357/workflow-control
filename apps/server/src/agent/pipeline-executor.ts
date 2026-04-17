@@ -42,6 +42,10 @@ export async function runPipelineCall(
   let resolvedPipelineName: string | undefined = runtime.pipeline_name;
   let inlineConfig: NonNullable<WorkflowContext["config"]> | undefined;
 
+  if (runtime.pipeline_source !== "store" && !runtime.pipeline_name) {
+    throw new Error(`Pipeline call in "${stageName}" requires pipeline_name (or pipeline_source: "store" with pipeline_key)`);
+  }
+
   if (runtime.pipeline_source === "store") {
     const pipelineKey = runtime.pipeline_key;
     if (!pipelineKey) {

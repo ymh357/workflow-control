@@ -367,8 +367,11 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
       // But we validate that pipeline/foreach stages have the required fields
       if (stage.type === "pipeline") {
         const pipelineRuntime = stage.runtime as Record<string, any> | undefined;
-        if (!pipelineRuntime?.pipeline_name) {
-          errors.push(`Stage "${stage.name}": pipeline stage must have runtime.pipeline_name`);
+        if (!pipelineRuntime?.pipeline_name && pipelineRuntime?.pipeline_source !== "store") {
+          errors.push(`Stage "${stage.name}": pipeline stage must have runtime.pipeline_name (or pipeline_source: "store" with pipeline_key)`);
+        }
+        if (pipelineRuntime?.pipeline_source === "store" && !pipelineRuntime?.pipeline_key) {
+          errors.push(`Stage "${stage.name}": pipeline_source "store" requires pipeline_key`);
         }
       }
 
