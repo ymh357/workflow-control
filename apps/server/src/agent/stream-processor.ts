@@ -13,6 +13,7 @@ import {
 } from "./query-tracker.js";
 import { persistSessionId } from "./session-persister.js";
 import { RedFlagAccumulator } from "./red-flag-detector.js";
+import { redactSensitive } from "../lib/redact.js";
 
 function createSSEMessage(taskId: string, type: SSEMessage["type"], data: unknown): SSEMessage {
   return { type, taskId, timestamp: new Date().toISOString(), data };
@@ -106,7 +107,7 @@ export async function processAgentStream(params: {
             }
             if (block.type === "tool_use") {
               lastToolUse = { name: block.name, timestamp: new Date().toISOString() };
-              sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_tool_use", { toolName: block.name, input: block.input as Record<string, unknown> }));
+              sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_tool_use", { toolName: block.name, input: redactSensitive(block.input) as Record<string, unknown> }));
               toolCallCount++;
               sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_progress", {
                 toolCallCount, phase: "working"

@@ -4,6 +4,7 @@ import { getLatestSessionId } from "../machine/helpers.js";
 import { getNestedValue } from "../lib/config-loader.js";
 import { questionManager } from "../lib/question-manager.js";
 import { deriveCurrentStage, deriveUpdatedAt } from "../lib/task-view-helpers.js";
+import { redactSensitive } from "../lib/redact.js";
 import type { TaskSummary, TaskListSSEEvent, FailedRestoreSummary } from "@workflow-control/shared";
 
 interface GlobalSSEConnection {
@@ -117,7 +118,7 @@ class TaskListBroadcaster {
         branch: ctx.branch,
         error: ctx.error,
         totalCostUsd: ctx.totalCostUsd ?? 0,
-        store: ctx.store ?? {},
+        store: redactSensitive(ctx.store ?? {}) as Record<string, unknown>,
         displayTitle: titlePath ? getNestedValue(ctx.store, titlePath) ?? taskId : taskId,
         updatedAt: deriveUpdatedAt(ctx, pendingQuestion),
         pendingQuestion: !!pendingQuestion,

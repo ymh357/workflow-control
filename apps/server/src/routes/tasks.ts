@@ -11,6 +11,7 @@ import { sendMessage, interruptTask } from "../actions/task-actions.js";
 import { actionToResponse } from "./action-helpers.js";
 import { deriveCurrentStage, deriveUpdatedAt, isConfigEditable } from "../lib/task-view-helpers.js";
 import { loadEvents } from "../machine/workflow-events.js";
+import { redactSensitive } from "../lib/redact.js";
 
 export const tasksRoute = new Hono();
 
@@ -57,7 +58,7 @@ tasksRoute.get("/tasks", (c) => {
           branch: ctx.branch,
           error: ctx.error,
           totalCostUsd: ctx.totalCostUsd ?? 0,
-          store: ctx.store ?? {},
+          store: redactSensitive(ctx.store ?? {}) as Record<string, unknown>,
           displayTitle: titlePath ? getNestedValue(ctx.store, titlePath) ?? id : id,
           updatedAt: deriveUpdatedAt(ctx, pendingQuestion),
           pendingQuestion: !!pendingQuestion,
@@ -150,7 +151,7 @@ tasksRoute.get("/tasks/:taskId", async (c) => {
     totalTokenUsage: ctx.totalTokenUsage,
     stageTokenUsages: ctx.stageTokenUsages,
     config: ctx.config,
-    store: ctx.store ?? {},
+    store: redactSensitive(ctx.store ?? {}) as Record<string, unknown>,
     pipelineSchema: ctx.config?.pipeline?.stages,
     displayTitle: titlePath ? getNestedValue(ctx.store, titlePath) ?? taskId : taskId,
     completionSummary: summaryPath ? getNestedValue(ctx.store, summaryPath) : undefined,
