@@ -1,3 +1,4 @@
+import { Parser } from "expr-eval";
 import type { TaskStatus } from "../types/index.js";
 import type { PipelineConfig, PipelineStageEntry, PipelineStageConfig } from "../lib/config-loader.js";
 import { isParallelGroup } from "../lib/config-loader.js";
@@ -6,6 +7,8 @@ import type { StateNode } from "./state-builders.js";
 import { buildParallelGroupState, buildSingleSessionParallelState } from "./state-builders.js";
 import { getStageBuilder } from "./stage-registry.js";
 import { deriveStageWrites, deriveStageOutputs } from "../lib/config/store-schema.js";
+
+const exprParser = new Parser();
 
 // --- Helpers ---
 
@@ -294,14 +297,18 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
       }
 
       // Validate: no overlapping writes keys within group
-      const groupWrites = new Map<string, string>();
+      const groupWrites = new Map<string, { stage: string; strategy: string }>();
       for (const s of entry.parallel.stages) {
-        const writes = (s.runtime as Record<string, any> | undefined)?.writes as string[] | undefined;
+        const writes = (s.runtime as Record<string, any> | undefined)?.writes as Array<string | { key: string; strategy?: string }> | undefined;
         for (const w of writes ?? []) {
-          if (groupWrites.has(w)) {
-            errors.push(`Parallel group "${entry.parallel.name}": write key "${w}" overlaps between "${groupWrites.get(w)}" and "${s.name}"`);
+          const key = typeof w === "string" ? w : w.key;
+          const strategy = typeof w === "string" ? "replace" : (w.strategy ?? "replace");
+          const existing = groupWrites.get(key);
+          if (existing) {
+            if (existing.strategy === "append" && strategy === "append") continue;
+            errors.push(`Parallel group "${entry.parallel.name}": write key "${key}" overlaps between "${existing.stage}" and "${s.name}"`);
           }
-          groupWrites.set(w, s.name);
+          groupWrites.set(key, { stage: s.name, strategy });
         }
       }
 
@@ -390,6 +397,13 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
           for (const branch of branches) {
             if (branch.to && !validTargets.has(branch.to)) {
               errors.push(`Stage "${stage.name}": condition branch.to "${branch.to}" references non-existent state`);
+            }
+            if (branch.when) {
+              try {
+                exprParser.parse(branch.when);
+              } catch (err) {
+                errors.push(`Stage "${stage.name}": invalid when expression "${branch.when}": ${err instanceof Error ? err.message : String(err)}`);
+              }
             }
           }
           if (condRuntime?.converge_to && !validTargets.has(condRuntime.converge_to)) {

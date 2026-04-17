@@ -134,16 +134,22 @@ export function buildStaticPromptPrefix(privateConfig: any, engine: string, reso
   // Fragments — filtered by resolved IDs when available
   if (privateConfig?.prompts.fragments) {
     const fragments = privateConfig.prompts.fragments as Record<string, string>;
+    const seen = new Set<string>();
+    const addFragment = (content: string) => {
+      const normalized = content.replace(/\s+/g, " ").trim();
+      if (normalized && !seen.has(normalized)) {
+        seen.add(normalized);
+        parts.push(content);
+      }
+    };
     if (resolvedFragmentIds) {
-      // Only include fragments that were resolved for this stage
       for (const id of resolvedFragmentIds) {
         const content = fragments[id];
-        if (content && !parts.includes(content)) parts.push(content);
+        if (content) addFragment(content);
       }
     } else {
-      // Backward compat: include all fragments when no IDs provided
       for (const content of Object.values(fragments)) {
-        if (content && !parts.includes(content)) parts.push(content);
+        if (content) addFragment(content);
       }
     }
   }

@@ -16,7 +16,7 @@ export const SubAgentDefinitionSchema = z.object({
   tools: z.array(z.string()).optional(),
   disallowedTools: z.array(z.string()).optional(),
   model: z.enum(["sonnet", "opus", "haiku", "inherit"]).optional(),
-  maxTurns: z.number().optional(),
+  maxTurns: z.number().int().min(1).optional(),
   skills: z.array(z.string()).optional(),
   mcpServers: z
     .array(z.union([z.string(), z.record(z.string(), z.unknown())]))
@@ -26,8 +26,8 @@ export const SubAgentDefinitionSchema = z.object({
 // --- Retry ---
 
 const RetrySchema = z.object({
-  max_retries: z.number().optional(),
-  max_attempts: z.number().optional(),
+  max_retries: z.number().int().min(0).optional(),
+  max_attempts: z.number().int().min(1).optional(),
   back_to: z.string().optional(),
 });
 
@@ -210,8 +210,8 @@ export const PipelineStageConfigSchema = z.object({
     .enum(["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"])
     .optional(),
   debug: z.boolean().optional(),
-  max_turns: z.number().optional(),
-  max_budget_usd: z.number().optional(),
+  max_turns: z.number().int().min(1).optional(),
+  max_budget_usd: z.number().min(0).optional(),
   budget_flex: z.object({
     allow_extension: z.boolean(),
     max_extensions: z.number().int().min(1).max(5),

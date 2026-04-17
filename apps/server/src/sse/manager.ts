@@ -1,6 +1,7 @@
 import type { SSEMessage } from "../types/index.js";
 import type { StatementSync } from "node:sqlite";
 import { getDb } from "../lib/db.js";
+import { taskLogger } from "../lib/logger.js";
 
 interface SSEConnection {
   controller: ReadableStreamDefaultController<Uint8Array>;
@@ -146,8 +147,8 @@ class SSEManager {
     // Persist to DB
     try {
       this.getInsertStmt().run(taskId, message.type, message.timestamp, JSON.stringify(message.data));
-    } catch {
-      // Non-critical: DB write failure should not block SSE delivery
+    } catch (err) {
+      taskLogger(taskId).warn({ err, type: message.type }, "SSE DB write failed — event delivered but not persisted");
     }
 
     // Notify programmatic listeners
