@@ -6,6 +6,18 @@ vi.mock("../../services/registry-service.js", () => ({
   },
 }));
 
+// Mock fetchIndex so tests don't hit the real local/remote registry.
+// The previous implementation hard-coded a default package list in
+// bootstrapCommand; the current one reads the index and bootstraps every
+// package found. We provide a small fake index here.
+vi.mock("../lib/fetch.js", () => ({
+  fetchIndex: vi.fn(async () => ({
+    version: 1,
+    updated_at: "2025-01-01",
+    packages: [{ name: "test-mixed", version: "1.0.0", type: "pipeline" }],
+  })),
+}));
+
 import { bootstrapCommand } from "./bootstrap.js";
 import { registryService } from "../../services/registry-service.js";
 
@@ -85,6 +97,9 @@ describe("bootstrapCommand", () => {
   });
 
   it("always prints the bootstrapping banner first", async () => {
+    // bootstrapCommand was changed from "install a hard-coded default set +
+    // all fragments" to "install everything in the registry index". The
+    // banner message tracks that — kept in sync here.
     vi.mocked(registryService.bootstrap).mockResolvedValue({
       installed: [],
       skipped: [],
@@ -94,7 +109,7 @@ describe("bootstrapCommand", () => {
     await bootstrapCommand();
 
     expect(logSpy.mock.calls[0][0]).toBe(
-      "Bootstrapping: installing default packages + all fragments...\n",
+      "Bootstrapping: installing all registry packages...\n",
     );
   });
 });

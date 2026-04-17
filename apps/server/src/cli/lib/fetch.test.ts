@@ -32,16 +32,47 @@ beforeEach(() => {
 });
 
 describe("fetchIndex", () => {
-  it("returns parsed local index.json when file exists", async () => {
+  it("returns local index when remote is unavailable", async () => {
+    // fetchIndex now always attempts to merge remote into local (local wins);
+    // when the remote call fails (mocked here by throwing), it falls back to
+    // local-only. Previous behaviour returned local without ever contacting
+    // the remote at all, but merging gives CI builds a way to pick up new
+    // remote packages even when a stale local index is checked in.
     const index = { version: 1, updated_at: "2025-01-01", packages: [] };
     vi.mocked(fs.existsSync).mockReturnValue(true);
     vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(index));
+    globalFetch.mockRejectedValue(new TypeError("fetch failed"));
 
     const result = await fetchIndex();
 
     expect(result).toEqual(index);
     expect(fs.existsSync).toHaveBeenCalledWith("/fake/registry/index.json");
-    expect(globalFetch).not.toHaveBeenCalled();
+  });
+
+  it("merges remote packages into local (local wins on name collision)", async () => {
+    const local = {
+      version: 1,
+      updated_at: "local",
+      packages: [{ name: "shared", version: "local-v" }, { name: "local-only", version: "1.0.0" }],
+    };
+    const remote = {
+      version: 1,
+      updated_at: "remote",
+      packages: [{ name: "shared", version: "remote-v" }, { name: "remote-only", version: "2.0.0" }],
+    };
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify(local));
+    globalFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve(remote) });
+
+    const result = await fetchIndex();
+
+    // Local wins on shared; remote fills in remote-only; local-only preserved.
+    expect(result.packages).toEqual(expect.arrayContaining([
+      { name: "shared", version: "local-v" },
+      { name: "local-only", version: "1.0.0" },
+      { name: "remote-only", version: "2.0.0" },
+    ]));
+    expect(result.packages).toHaveLength(3);
   });
 
   it("falls back to remote fetch when local index does not exist", async () => {
@@ -58,22 +89,23 @@ describe("fetchIndex", () => {
     expect(globalFetch).toHaveBeenCalledWith("https://example.com/registry/index.json");
   });
 
-  it("throws on HTTP error from remote", async () => {
+  it("throws a unified error when remote HTTP fails and no local index exists", async () => {
+    // Remote errors (non-OK status OR thrown network error) are swallowed
+    // and converted to the unified "No registry index available" error if
+    // there's also no local copy. Tests that used to assert specific HTTP /
+    // network error messages were written for an earlier, strict-remote
+    // implementation.
     vi.mocked(fs.existsSync).mockReturnValue(false);
-    globalFetch.mockResolvedValue({
-      ok: false,
-      status: 404,
-      statusText: "Not Found",
-    });
+    globalFetch.mockResolvedValue({ ok: false, status: 404, statusText: "Not Found" });
 
-    await expect(fetchIndex()).rejects.toThrow("Failed to fetch registry index: 404 Not Found");
+    await expect(fetchIndex()).rejects.toThrow("No registry index available");
   });
 
-  it("throws on network failure", async () => {
+  it("throws the unified error on network failure with no local index", async () => {
     vi.mocked(fs.existsSync).mockReturnValue(false);
     globalFetch.mockRejectedValue(new TypeError("fetch failed"));
 
-    await expect(fetchIndex()).rejects.toThrow("fetch failed");
+    await expect(fetchIndex()).rejects.toThrow("No registry index available");
   });
 
   it("throws when local index.json contains invalid JSON", async () => {
@@ -111,16 +143,26 @@ describe("fetchManifest", () => {
     expect(globalFetch).not.toHaveBeenCalled();
   });
 
-  it("throws when local packages dir exists but manifest is missing", async () => {
+  it("falls through to remote when local packages dir exists but manifest is missing", async () => {
+    // Previous behaviour was strict-local: missing manifest in local dir threw
+    // "Manifest not found in local registry". The implementation switched to
+    // fall-through: local-miss tries remote, so a half-built local index (e.g.
+    // dev environment with some packages cached, others not) still works. The
+    // test now verifies the remote fetch is attempted; an HTTP error surfaces
+    // the network-layer message.
     vi.mocked(fs.existsSync).mockImplementation((p) => {
       const s = String(p);
       if (s.endsWith("packages")) return true;
       if (s.includes("manifest.yaml")) return false;
       return false;
     });
+    globalFetch.mockResolvedValue({ ok: false, status: 404, statusText: "Not Found" });
 
     await expect(fetchManifest("missing-pkg")).rejects.toThrow(
-      'Manifest not found for "missing-pkg" in local registry',
+      'Failed to fetch manifest for "missing-pkg": 404 Not Found',
+    );
+    expect(globalFetch).toHaveBeenCalledWith(
+      "https://example.com/registry/packages/missing-pkg/manifest.yaml",
     );
   });
 
@@ -166,15 +208,17 @@ describe("fetchPackageFile", () => {
     expect(globalFetch).not.toHaveBeenCalled();
   });
 
-  it("throws when local file is missing", async () => {
+  it("falls through to remote when local file is missing", async () => {
+    // Same strict-local → fall-through change as fetchManifest above.
     vi.mocked(fs.existsSync).mockImplementation((p) => {
       const s = String(p);
       if (s.endsWith("packages")) return true;
       return false;
     });
+    globalFetch.mockResolvedValue({ ok: false, status: 500, statusText: "Internal Server Error" });
 
     await expect(fetchPackageFile("pkg", "missing.yaml")).rejects.toThrow(
-      'File "missing.yaml" not found for "pkg"',
+      'Failed to fetch file "missing.yaml" from "pkg": 500 Internal Server Error',
     );
   });
 

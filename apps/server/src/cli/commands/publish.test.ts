@@ -212,10 +212,20 @@ describe("publishCommand", () => {
     expect(logSpy).toHaveBeenCalledWith(
       "\nPublishing to registry via GitHub API...\n",
     );
+    // publishCommand now forwards the parsed manifest so updateRemoteIndex
+    // can upsert the index.json entry.
     expect(publishToGitHub).toHaveBeenCalledWith({
       packageDir: "/abs/my-pkg",
       packageName: "my-pipeline",
       files: ["pipeline.yaml"],
+      manifest: expect.objectContaining({
+        name: "my-pipeline",
+        version: "1.0.0",
+        type: "pipeline",
+        description: "A cool pipeline",
+        author: "alice",
+        tags: ["ml", "data"],
+      }),
     });
     expect(logSpy).toHaveBeenCalledWith(
       "\nSuccessfully published my-pipeline@1.0.0 to registry.",

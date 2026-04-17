@@ -32,10 +32,25 @@ beforeEach(() => {
 });
 
 describe("publishToGitHub", () => {
+  // Minimal manifest fields required by updateRemoteIndex — it dereferences
+  // manifest.name/version/type/description/author/tags when upserting the
+  // registry index entry. Undefined manifest throws early inside that fn.
+  const makeManifest = (overrides: Partial<PublishOptions["manifest"]> = {}): PublishOptions["manifest"] => ({
+    name: "my-pkg",
+    version: "1.0.0",
+    type: "pipeline" as const,
+    description: "test",
+    author: "tester",
+    tags: [],
+    files: [],
+    ...overrides,
+  });
+
   const baseOpts: PublishOptions = {
     packageDir: "/tmp/my-pkg",
     packageName: "my-pkg",
     files: ["pipelines/main.yaml"],
+    manifest: makeManifest(),
   };
 
   it("throws when gh auth fails", async () => {
@@ -76,6 +91,7 @@ describe("publishToGitHub", () => {
       packageDir: "/pkg",
       packageName: "test-pkg",
       files: ["a.yaml", "b.yaml"],
+      manifest: makeManifest({ name: "test-pkg" }),
     });
 
     expect(fs.readFileSync).toHaveBeenCalledTimes(3);
@@ -105,7 +121,7 @@ describe("publishToGitHub", () => {
   it("handles empty files array", async () => {
     vi.mocked(fs.readFileSync).mockReturnValue("manifest-only");
 
-    await publishToGitHub({ packageDir: "/pkg", packageName: "minimal", files: [] });
+    await publishToGitHub({ packageDir: "/pkg", packageName: "minimal", files: [], manifest: makeManifest({ name: "minimal" }) });
 
     expect(fs.readFileSync).toHaveBeenCalledTimes(1);
   });
@@ -122,7 +138,7 @@ describe("publishToGitHub", () => {
     const content = "name: test";
     vi.mocked(fs.readFileSync).mockReturnValue(content);
 
-    await publishToGitHub({ packageDir: "/p", packageName: "enc", files: [] });
+    await publishToGitHub({ packageDir: "/p", packageName: "enc", files: [], manifest: makeManifest({ name: "enc" }) });
 
     const expected = Buffer.from(content, "utf-8").toString("base64");
     const putCalls = mockExecFileSync.mock.calls.filter(

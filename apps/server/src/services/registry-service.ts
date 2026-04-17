@@ -477,10 +477,10 @@ export class RegistryService {
 
     try {
       // Generate manifest
-      const manifest: Record<string, unknown> = {
+      const manifest: PackageManifest = {
         name,
         version: "1.0.0",
-        type,
+        type: type as PackageManifest["type"],
         description: `${type}: ${name}`,
         author: "workflow-control",
         tags: [type],
@@ -502,11 +502,13 @@ export class RegistryService {
         fs.copyFileSync(src, dest);
       }
 
-      // Push to GitHub
+      // Push to GitHub — manifest goes along so updateRemoteIndex can upsert
+      // the registry index.json entry without re-parsing from disk.
       await publishToGitHub({
         packageDir: tmpDir,
         packageName: name,
         files,
+        manifest,
       });
 
       return { success: true, message: `Published ${name} to registry` };
@@ -532,7 +534,7 @@ export class RegistryService {
 
     try {
       const mcpEntry = entry as Record<string, unknown>;
-      const manifest: Record<string, unknown> = {
+      const manifest: PackageManifest = {
         name,
         version: "1.0.0",
         type: "mcp",
@@ -540,7 +542,7 @@ export class RegistryService {
         author: "workflow-control",
         tags: ["mcp"],
         files: [],
-        mcp_entry: entry,
+        mcp_entry: entry as PackageManifest["mcp_entry"],
       };
       fs.writeFileSync(
         path.join(tmpDir, "manifest.yaml"),
@@ -552,6 +554,7 @@ export class RegistryService {
         packageDir: tmpDir,
         packageName: name,
         files: [],
+        manifest,
       });
 
       return { success: true, message: `Published MCP ${name} to registry` };
