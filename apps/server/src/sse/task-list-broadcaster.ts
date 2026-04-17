@@ -108,6 +108,7 @@ class TaskListBroadcaster {
       const pipeline = ctx.config?.pipeline;
       const titlePath = pipeline?.display?.title_path;
       const pendingQuestion = questionManager.getPersistedPending(taskId);
+      const redactedStore = redactSensitive(ctx.store ?? {}) as Record<string, unknown>;
 
       return {
         id: taskId,
@@ -118,8 +119,8 @@ class TaskListBroadcaster {
         branch: ctx.branch,
         error: ctx.error,
         totalCostUsd: ctx.totalCostUsd ?? 0,
-        store: redactSensitive(ctx.store ?? {}) as Record<string, unknown>,
-        displayTitle: titlePath ? getNestedValue(ctx.store, titlePath) ?? taskId : taskId,
+        store: redactedStore,
+        displayTitle: titlePath ? getNestedValue(redactedStore, titlePath) ?? taskId : taskId,
         updatedAt: deriveUpdatedAt(ctx, pendingQuestion),
         pendingQuestion: !!pendingQuestion,
       };

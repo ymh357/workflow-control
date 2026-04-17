@@ -275,34 +275,37 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
     {
       target: blockedTarget,
       actions: [
-        ({ context }: { context: WorkflowContext }) => {
-          const pipeline = context.config?.pipeline;
-          if (!pipeline) return;
-          const allStages = pipeline.stages.flatMap((entry: any) =>
-            entry.parallel ? entry.parallel.stages : [entry]
-          );
-          const stageConfig = allStages.find((s: any) => s.name === stateName);
-          const compensation = stageConfig?.runtime?.compensation;
-          if (compensation?.strategy && compensation.strategy !== "none") {
-            const meta = context.stageCheckpoints?.[stateName];
-            const result = runCompensation(compensation.strategy, meta?.gitHead, context.worktreePath);
-            if (result.success) {
-              taskLogger(context.taskId).info({ stage: stateName, strategy: compensation.strategy }, "compensation executed");
-            } else {
-              taskLogger(context.taskId).warn({ stage: stateName, error: result.error }, "compensation failed (non-blocking)");
-              context.compensationFailures = [
-                ...(context.compensationFailures ?? []),
-                { stage: stateName, strategy: compensation.strategy, error: result.error ?? "unknown", timestamp: new Date().toISOString() },
-              ];
-            }
-          }
-        },
         assign(({ event, context }: ErrorActionArgs) => {
           const errorMsg = event.error instanceof Error ? event.error.message : String(event.error);
+
+          let compensationFailures = context.compensationFailures;
+          const pipeline = context.config?.pipeline;
+          if (pipeline) {
+            const allStages = pipeline.stages.flatMap((entry: any) =>
+              entry.parallel ? entry.parallel.stages : [entry]
+            );
+            const stageConfig = allStages.find((s: any) => s.name === stateName);
+            const compensation = stageConfig?.runtime?.compensation;
+            if (compensation?.strategy && compensation.strategy !== "none") {
+              const meta = context.stageCheckpoints?.[stateName];
+              const result = runCompensation(compensation.strategy, meta?.gitHead, context.worktreePath);
+              if (result.success) {
+                taskLogger(context.taskId).info({ stage: stateName, strategy: compensation.strategy }, "compensation executed");
+              } else {
+                taskLogger(context.taskId).warn({ stage: stateName, error: result.error }, "compensation failed (non-blocking)");
+                compensationFailures = [
+                  ...(context.compensationFailures ?? []),
+                  { stage: stateName, strategy: compensation.strategy, error: result.error ?? "unknown", timestamp: new Date().toISOString() },
+                ];
+              }
+            }
+          }
+
           return {
             error: errorMsg,
             lastStage: stateName,
             scratchPad: [...(context.scratchPad ?? [])],
+            compensationFailures,
           };
         }),
         emit(({ event, context }: ErrorActionArgs): WorkflowEmittedEvent => {

@@ -104,13 +104,13 @@ export function registerSideEffects(actor: EmittingActor): void {
     // Clean up per-task caches (I1, I2)
     import("../agent/semantic-summary-cache.js").then(({ clearTaskSummaries }) => {
       clearTaskSummaries(event.taskId);
-    }).catch(() => {});
+    }).catch((err) => { taskLogger(event.taskId).warn({ err }, "Failed to clear summary cache on stream close"); });
     import("../agent/stage-executor.js").then(({ clearAppendPromptCache }) => {
       clearAppendPromptCache(event.taskId);
-    }).catch(() => {});
+    }).catch((err) => { taskLogger(event.taskId).warn({ err }, "Failed to clear prompt cache on stream close"); });
     import("../agent/session-manager-registry.js").then(({ closeSessionManager }) => {
       closeSessionManager(event.taskId);
-    }).catch(() => {});
+    }).catch((err) => { taskLogger(event.taskId).warn({ err }, "Failed to close session manager on stream close"); });
 
     // Update pipeline index for fast store inheritance (O7)
     import("./actor-registry.js").then(({ getWorkflow }) => {
@@ -178,7 +178,7 @@ export function registerSideEffects(actor: EmittingActor): void {
     emitWorkflowEvent(event.taskId, "task_cancelled");
     import("../agent/session-manager-registry.js").then(({ closeSessionManager }) => {
       closeSessionManager(event.taskId);
-    }).catch(() => {});
+    }).catch((err) => { taskLogger(event.taskId).warn({ err }, "Failed to close session manager on cancel"); });
   });
 
   actor.on("wf.cancelQuestions", (event: Extract<WorkflowEmittedEvent, { type: "wf.cancelQuestions" }>) => {

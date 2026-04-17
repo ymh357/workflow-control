@@ -1113,7 +1113,7 @@ async function main(): Promise<void> {
     if (cancelRequested) return;
     cancelRequested = true;
     console.log("\nCancelling task...");
-    fetch(`${serverUrl}/api/tasks/${taskId}/cancel`, { method: "POST" }).catch(() => {});
+    fetch(`${serverUrl}/api/tasks/${taskId}/cancel`, { method: "POST" }).catch((err) => { console.error("Cancel request failed:", err); });
     setTimeout(() => {
       cleanup();
       process.exit(1);

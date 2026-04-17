@@ -343,7 +343,7 @@ export async function sendMessage(
   } else {
     log.info("No sessionId available, falling back to INTERRUPT event");
     actor.send({ type: "INTERRUPT", reason: message });
-    await interruptActiveQuery(taskId).catch(() => {});
+    await interruptActiveQuery(taskId).catch((err) => { taskLogger(taskId).warn({ err }, "interruptActiveQuery failed during message send fallback"); });
     const statusAfter = actor.getSnapshot().context.status;
     if (statusAfter === statusBefore) {
       return fail("INVALID_STATE", `Message interrupt had no effect from status: ${statusBefore}`);

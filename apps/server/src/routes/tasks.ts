@@ -49,6 +49,7 @@ tasksRoute.get("/tasks", (c) => {
         const pipeline = ctx.config?.pipeline;
         const titlePath = pipeline?.display?.title_path;
         const pendingQuestion = questionManager.getPersistedPending(id);
+        const redactedStore = redactSensitive(ctx.store ?? {}) as Record<string, unknown>;
         tasks.push({
           id,
           taskText: ctx.taskText,
@@ -58,8 +59,8 @@ tasksRoute.get("/tasks", (c) => {
           branch: ctx.branch,
           error: ctx.error,
           totalCostUsd: ctx.totalCostUsd ?? 0,
-          store: redactSensitive(ctx.store ?? {}) as Record<string, unknown>,
-          displayTitle: titlePath ? getNestedValue(ctx.store, titlePath) ?? id : id,
+          store: redactedStore,
+          displayTitle: titlePath ? getNestedValue(redactedStore, titlePath) ?? id : id,
           updatedAt: deriveUpdatedAt(ctx, pendingQuestion),
           pendingQuestion: !!pendingQuestion,
         });
@@ -133,6 +134,7 @@ tasksRoute.get("/tasks/:taskId", async (c) => {
   const titlePath = pipeline?.display?.title_path;
   const summaryPath = pipeline?.display?.completion_summary_path;
   const pendingQuestion = questionManager.getPersistedPending(taskId);
+  const redactedStore = redactSensitive(ctx.store ?? {}) as Record<string, unknown>;
 
   return c.json({
     id: taskId,
@@ -151,10 +153,11 @@ tasksRoute.get("/tasks/:taskId", async (c) => {
     totalTokenUsage: ctx.totalTokenUsage,
     stageTokenUsages: ctx.stageTokenUsages,
     config: ctx.config,
-    store: redactSensitive(ctx.store ?? {}) as Record<string, unknown>,
+    compensationFailures: ctx.compensationFailures,
+    store: redactedStore,
     pipelineSchema: ctx.config?.pipeline?.stages,
-    displayTitle: titlePath ? getNestedValue(ctx.store, titlePath) ?? taskId : taskId,
-    completionSummary: summaryPath ? getNestedValue(ctx.store, summaryPath) : undefined,
+    displayTitle: titlePath ? getNestedValue(redactedStore, titlePath) ?? taskId : taskId,
+    completionSummary: summaryPath ? getNestedValue(redactedStore, summaryPath) : undefined,
     updatedAt: deriveUpdatedAt(ctx, pendingQuestion),
   });
 });

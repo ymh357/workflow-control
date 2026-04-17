@@ -54,7 +54,7 @@ export async function persistSnapshot(taskId: string, actor: { getPersistedSnaps
   // taskId, drop it so the map stays bounded.
   next.finally(() => {
     if (persistChains.get(taskId) === next) persistChains.delete(taskId);
-  }).catch(() => {});
+  }).catch((err) => { taskLogger(taskId).warn({ err }, "Snapshot persist chain cleanup failed"); });
   await next;
 }
 

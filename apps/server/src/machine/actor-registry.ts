@@ -177,10 +177,10 @@ export function deleteWorkflow(taskId: string): boolean {
   // Clean up per-task caches
   import("../agent/semantic-summary-cache.js").then(({ clearTaskSummaries }) => {
     clearTaskSummaries(taskId);
-  }).catch(() => {});
+  }).catch((err) => { taskLogger(taskId).warn({ err }, "Failed to clear summary cache on delete"); });
   import("../agent/stage-executor.js").then(({ clearAppendPromptCache }) => {
     clearAppendPromptCache(taskId);
-  }).catch(() => {});
+  }).catch((err) => { taskLogger(taskId).warn({ err }, "Failed to clear prompt cache on delete"); });
   return true;
 }
 

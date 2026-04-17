@@ -644,8 +644,8 @@ export function buildAgentState(
                       if (summary) {
                         setCachedSummary(context.taskId, key, summary);
                       }
-                    }).catch(() => {});
-                  }).catch(() => {});
+                    }).catch((err) => { taskLogger(context.taskId).warn({ err, key }, "Semantic summary generation failed"); });
+                  }).catch((err) => { taskLogger(context.taskId).warn({ err, key }, "Semantic summary module import failed"); });
                 }
               }
             },
@@ -1360,8 +1360,8 @@ export function buildParallelGroupState(
                     if (summary) {
                       setCachedSummary(context.taskId, key, summary);
                     }
-                  }).catch(() => {});
-                }).catch(() => {});
+                  }).catch((err) => { taskLogger(context.taskId).warn({ err, key }, "Semantic summary generation failed"); });
+                }).catch((err) => { taskLogger(context.taskId).warn({ err, key }, "Semantic summary module import failed"); });
               }
             }
           }

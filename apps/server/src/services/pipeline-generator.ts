@@ -131,9 +131,12 @@ export async function generatePipeline(req: GenerateRequest): Promise<GenerateRe
     return buildFallbackScript(skeleton);
   });
 
+  // Cache flattened stages for reuse below
+  const allFlatStages = flattenStages(pipelineObj.stages ?? []);
+
   // Validate custom script coverage
   const generatedScriptIds = new Set([...builtinIds, ...scripts.map(s => s.scriptId)]);
-  for (const stage of flattenStages(pipelineObj.stages ?? [])) {
+  for (const stage of allFlatStages) {
     const scriptId = (stage as any)?.runtime?.script_id;
     if (scriptId && !generatedScriptIds.has(scriptId)) {
       warnings.push(`Stage "${(stage as any).name}" references script_id "${scriptId}" but no script was generated for it.`);
@@ -150,7 +153,7 @@ export async function generatePipeline(req: GenerateRequest): Promise<GenerateRe
     const discoveredSkillMap = new Map(discovery.skills.map((s) => [s.name, s]));
 
     // Find MCPs referenced in pipeline stages
-    for (const stage of flattenStages(pipelineObj.stages ?? [])) {
+    for (const stage of allFlatStages) {
       for (const mcp of (stage as any).mcps ?? []) {
         const disc = discoveredMcpMap.get(mcp);
         if (disc) {
@@ -186,7 +189,7 @@ export async function generatePipeline(req: GenerateRequest): Promise<GenerateRe
   // MCP warnings (check after auto-install so newly installed MCPs pass)
   const currentMcpRegistry = loadMcpRegistry();
   const mcpNames = currentMcpRegistry ? Object.keys(currentMcpRegistry) : [];
-  for (const stage of flattenStages(pipelineObj.stages ?? [])) {
+  for (const stage of allFlatStages) {
     for (const mcp of (stage as any).mcps ?? []) {
       if (!mcpNames.includes(mcp)) {
         warnings.push(`Stage "${(stage as any).name}" references MCP "${mcp}" which is not in your MCP registry.`);
