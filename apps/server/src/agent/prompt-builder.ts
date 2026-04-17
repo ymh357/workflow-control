@@ -207,15 +207,22 @@ export function generateSchemaPrompt(outputs: StageOutputSchema): string {
     parts.push("", 'For the "decisions" field, briefly record the most important choices you made and why. This will be shared with subsequent stages as context.');
   }
 
-  // Confidence annotation guidance (optional, not enforced)
-  parts.push("", "### Optional: Confidence Annotation",
-    "",
-    "If some of your findings have varying reliability, you may include a `_confidence` field alongside your output:",
-    "```json",
-    '{ "solutions": [...], "_confidence": { "solutions": "high", "market_size": "low" } }',
-    "```",
-    "Levels: `high` (verified from multiple sources), `medium` (single source), `low` (inferred/estimated).",
-    "Downstream stages use this to decide what to verify independently. Omit if all findings are equally reliable.");
+  // Confidence annotation guidance — only useful for multi-output or
+  // field-rich stages where reliability genuinely varies across findings.
+  // For simple single-output / single-field stages this is prompt noise
+  // that burns tokens without changing behavior.
+  const totalFieldCount = entries.reduce((acc, [, s]) => acc + (s.fields?.length ?? 0), 0);
+  const isComplexEnough = entries.length > 1 || totalFieldCount > 3;
+  if (isComplexEnough) {
+    parts.push("", "### Optional: Confidence Annotation",
+      "",
+      "If some of your findings have varying reliability, you may include a `_confidence` field alongside your output:",
+      "```json",
+      '{ "solutions": [...], "_confidence": { "solutions": "high", "market_size": "low" } }',
+      "```",
+      "Levels: `high` (verified from multiple sources), `medium` (single source), `low` (inferred/estimated).",
+      "Downstream stages use this to decide what to verify independently. Omit if all findings are equally reliable.");
+  }
 
   return parts.join("\n");
 }

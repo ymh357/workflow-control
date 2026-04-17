@@ -4,6 +4,9 @@ import { getNestedValue } from "./config-loader.js";
 import type { ScratchPadEntry } from "../machine/types.js";
 
 const MAX_VALUE_BYTES = 50 * 1024; // 50KB
+// Hard limit on a single scratch-pad entry's content. Keeps tier1 context
+// and store snapshots bounded even if an agent writes verbose notes.
+const MAX_SCRATCH_PAD_CONTENT_BYTES = 2000;
 
 export function createStoreReaderMcp(
   store: Record<string, unknown>,
@@ -37,8 +40,12 @@ export function createStoreReaderMcp(
           const topLevelKeys = Object.keys(store);
 
           if (topLevelKeys.length === 0) {
+            const scratchHint =
+              scratchPad && scratchPad.length > 0
+                ? " Note: the scratch pad has entries — use `read_scratch_pad` instead."
+                : "";
             return {
-              content: [{ type: "text" as const, text: "Store is empty — no values available." }],
+              content: [{ type: "text" as const, text: `Store is empty — no values available.${scratchHint}` }],
               isError: true,
             };
           }
@@ -108,14 +115,33 @@ export function createStoreReaderMcp(
                 "Categories: caveat, discovery, concern, reference, decision.",
               inputSchema: {
                 category: z.enum(["caveat", "discovery", "concern", "reference", "decision"]).describe("Type of note"),
-                content: z.string().describe("The note content (be specific and actionable)"),
+                // Length cap keeps the aggregate scratch-pad from bloating tier1
+                // context. Agents needing to record more should split into
+                // multiple focused entries.
+                content: z
+                  .string()
+                  .min(1)
+                  .max(MAX_SCRATCH_PAD_CONTENT_BYTES)
+                  .describe(`The note content (be specific and actionable, max ${MAX_SCRATCH_PAD_CONTENT_BYTES} chars)`),
               },
               handler: async (args: any) => {
+                const content = typeof args.content === "string" ? args.content : "";
+                // Defensive re-check: zod validates at the SDK boundary but
+                // pretend-compliant MCP clients could skip it.
+                if (content.length > MAX_SCRATCH_PAD_CONTENT_BYTES) {
+                  return {
+                    content: [{
+                      type: "text" as const,
+                      text: `Error: scratch pad content exceeds ${MAX_SCRATCH_PAD_CONTENT_BYTES} characters (got ${content.length}). Split into multiple entries.`,
+                    }],
+                    isError: true,
+                  };
+                }
                 const entry: ScratchPadEntry = {
                   stage: currentStage ?? "unknown",
                   timestamp: new Date().toISOString(),
                   category: args.category as string,
-                  content: args.content as string,
+                  content,
                 };
                 scratchPad.push(entry);
                 return {

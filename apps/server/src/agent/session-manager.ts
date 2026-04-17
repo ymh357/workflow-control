@@ -8,7 +8,7 @@ import type {
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { StageTokenUsage } from "@workflow-control/shared";
-import { AsyncQueue } from "./async-queue.js";
+import { AsyncQueue, QueueAbortedError } from "./async-queue.js";
 import { sseManager } from "../sse/manager.js";
 import { taskLogger } from "../lib/logger.js";
 import { persistSessionId } from "./session-persister.js";
@@ -115,10 +115,18 @@ export class SessionManager {
   private cumulativeCacheReadTokens = 0;
   private cumulativeCacheCreationTokens = 0;
   private stageTurnCount = 0;
+  private turnLimitNotified = false;
   private prevModel: string | undefined;
   private prevPermissionMode: string | undefined;
   private prevMcpKey: string | undefined;
   private idleTimer: ReturnType<typeof setTimeout> | undefined;
+  // Hard-kill deadline (milliseconds since epoch) after which close() aborts the query
+  // regardless of what the agent is doing. Set by stage timeout after a grace period.
+  private hardKillDeadline: number | undefined;
+  // Reason the current query was closed. Lets consumeUntilResult distinguish
+  // "SDK iterator ended because WE closed it" (intentional — report as abort)
+  // from "SDK iterator ended unexpectedly" (agent crashed — report as bug).
+  private closeReason: "idle" | "explicit" | "hardTimeout" | null = null;
   private readonly config: SessionManagerConfig;
   private readonly log;
 
@@ -155,8 +163,34 @@ export class SessionManager {
     return this.consumeUntilResult(params);
   }
 
-  close(): void {
+  /**
+   * Close the session gracefully. Pending consume-loop iterators unwind with
+   * a specific "aborted" error rather than the ambiguous "query ended
+   * unexpectedly" path. Callers that want idle-recovery semantics should
+   * still rely on the `queryClosed && sessionId` branch in createQuery.
+   *
+   * @param reason informs the consume loop how to phrase the error. `idle`
+   *   and `explicit` both unwind cleanly; `hardTimeout` is set by the stage
+   *   timeout path before calling close().
+   */
+  close(reason: "idle" | "explicit" | "hardTimeout" = "explicit"): void {
     this.clearIdleTimer();
+    this.hardKillDeadline = undefined;
+    // Record intent BEFORE closing so the consume loop's done-branch can
+    // distinguish intentional shutdown from SDK crash.
+    this.closeReason = reason;
+
+    // Abort the input queue so any producer waiting on a full buffer unwinds.
+    if (this.inputQueue) {
+      try {
+        this.inputQueue.abort("session closed");
+      } catch {
+        /* best-effort */
+      }
+      this.inputQueue = null;
+    }
+    // Close SDK query — its asyncIterator will resolve with done:true on the
+    // next microtask, which consumeUntilResult catches via closeReason.
     if (this.query) {
       try {
         this.query.close();
@@ -165,10 +199,6 @@ export class SessionManager {
       }
       this.query = null;
       this.queryIterator = null;
-    }
-    if (this.inputQueue) {
-      this.inputQueue.finish();
-      this.inputQueue = null;
     }
     this.queryClosed = true;
   }
@@ -256,8 +286,13 @@ export class SessionManager {
       ) as unknown as SdkOptions["canUseTool"];
     }
 
-    // Idle timeout recovery: resume existing session
-    if (this.queryClosed && this.sessionId) {
+    // Idle timeout recovery: resume existing session.
+    // When recovering, we keep prevModel/prevPermissionMode/prevMcpKey from the
+    // previous query so the next switchStageConfig call can still detect real
+    // config differences. Overwriting them with the current stage's config
+    // (which was built from the LAST stage's config) would mask transitions.
+    const isIdleRecover = this.queryClosed && !!this.sessionId;
+    if (isIdleRecover) {
       options.resume = this.sessionId;
       this.log.info(
         { sessionId: this.sessionId },
@@ -271,10 +306,18 @@ export class SessionManager {
     });
     this.queryIterator = null;
     this.queryClosed = false;
+    // Fresh query — wipe any intent from the previous close so a subsequent
+    // SDK-side unexpected exit isn't misreported as "aborted".
+    this.closeReason = null;
 
-    this.prevModel = params.stageConfig.model;
-    this.prevPermissionMode = params.stageConfig.permissionMode;
-    this.prevMcpKey = mcpServiceKey(params.stageConfig.mcpServices);
+    // Only refresh prev* on a fresh session (first stage or cold start).
+    // On idle-recover we inherit the last-known config so subsequent
+    // switchStageConfig correctly detects transitions.
+    if (!isIdleRecover) {
+      this.prevModel = params.stageConfig.model;
+      this.prevPermissionMode = params.stageConfig.permissionMode;
+      this.prevMcpKey = mcpServiceKey(params.stageConfig.mcpServices);
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -372,22 +415,47 @@ export class SessionManager {
     }
 
     this.stageTurnCount = 0;
+    this.turnLimitNotified = false;
     let resultText = "";
     const startTime = Date.now();
     const redFlagAccumulator = new RedFlagAccumulator();
 
-    // Per-stage timeout
+    // Per-stage timeout. Two-phase: soft (inject URGENT message, give agent
+    // HARD_KILL_GRACE_MS to wrap up) then hard (interrupt SDK query + abort
+    // input queue to unwind the consume loop unconditionally).
     const stageTimeoutSec = params.stageConfig.stageTimeoutSec ?? 1800;
+    const HARD_KILL_GRACE_MS = 60_000;
     let stageTimedOut = false;
+    let hardKillTimer: ReturnType<typeof setTimeout> | undefined;
     const stageTimer = setTimeout(() => {
       stageTimedOut = true;
-      this.log.error({ timeoutSec: stageTimeoutSec, stage: params.stageName }, "Stage execution timeout reached");
-      // Inject urgent stop message — the agent should wrap up
-      this.inputQueue?.enqueue(
+      this.log.error(
+        { timeoutSec: stageTimeoutSec, stage: params.stageName },
+        "Stage soft timeout reached — injecting URGENT stop message",
+      );
+      // Soft stop: let the agent wrap up if it's still responsive.
+      this.inputQueue?.tryEnqueue(
         buildUserMessage(
           "URGENT: Stage execution timeout reached. Stop ALL work immediately and output your current progress as the required JSON NOW.",
         ),
       );
+      // Arm hard kill — unconditional interrupt after grace window.
+      this.hardKillDeadline = Date.now() + HARD_KILL_GRACE_MS;
+      hardKillTimer = setTimeout(() => {
+        this.log.error(
+          { stage: params.stageName, graceMs: HARD_KILL_GRACE_MS },
+          "Stage hard timeout — interrupting SDK query and closing session",
+        );
+        // Best-effort interrupt so any current tool call is signalled to
+        // cancel; then close() with hardTimeout reason so consumeUntilResult
+        // surfaces the correct error when the SDK iterator wraps up.
+        try {
+          this.query?.interrupt();
+        } catch {
+          /* best-effort */
+        }
+        this.close("hardTimeout");
+      }, HARD_KILL_GRACE_MS);
     }, stageTimeoutSec * 1000);
 
     // Emit stage_change SSE
@@ -398,10 +466,48 @@ export class SessionManager {
       }),
     );
 
+    // `queryIterator` is captured into a local so close() setting the field
+    // to null doesn't affect this loop — we detect shutdown via closeReason.
+    const localIterator = this.queryIterator;
+
     try {
       while (true) {
-        const { value: message, done } = await this.queryIterator.next();
+        let message: SDKMessage;
+        let done: boolean | undefined;
+        try {
+          const result = await localIterator.next();
+          message = result.value as SDKMessage;
+          done = result.done;
+        } catch (err) {
+          // AsyncQueue propagated an abort; usually this path is inert (the
+          // inputQueue isn't being iterated here) but keep the branch for
+          // robustness — an SDK-side iterator throwing during shutdown lands
+          // here too.
+          if (err instanceof QueueAbortedError) {
+            if (this.closeReason === "hardTimeout" || stageTimedOut) {
+              throw new Error(
+                `Stage "${params.stageName}" exceeded timeout (${stageTimeoutSec}s) and was hard-killed`,
+              );
+            }
+            throw new Error(
+              `Stage "${params.stageName}" aborted: session closed during execution`,
+            );
+          }
+          throw err;
+        }
         if (done) {
+          // Intentional shutdown — surface a specific error so the caller
+          // knows this wasn't an agent crash.
+          if (this.closeReason === "hardTimeout" || stageTimedOut) {
+            throw new Error(
+              `Stage "${params.stageName}" exceeded timeout (${stageTimeoutSec}s) and was hard-killed`,
+            );
+          }
+          if (this.closeReason === "idle" || this.closeReason === "explicit") {
+            throw new Error(
+              `Stage "${params.stageName}" aborted: session closed during execution`,
+            );
+          }
           throw new Error(
             `Single-session query ended unexpectedly during stage "${params.stageName}"`,
           );
@@ -567,21 +673,24 @@ export class SessionManager {
             break;
         }
 
-        // Soft turn limit
+        // Soft turn limit — notify once per stage
         if (
-          this.stageTurnCount > 0 &&
+          !this.turnLimitNotified &&
           this.stageTurnCount >= params.stageConfig.maxTurns
         ) {
-          this.inputQueue!.enqueue(
+          // Queue may be closed if close() raced with us — tryEnqueue avoids throw
+          this.inputQueue?.tryEnqueue(
             buildUserMessage(
               "You have exceeded the turn limit for this stage. Stop working and output your current progress as the required JSON immediately.",
             ),
           );
-          this.stageTurnCount = -999; // prevent re-sending
+          this.turnLimitNotified = true;
         }
       }
     } finally {
       clearTimeout(stageTimer);
+      if (hardKillTimer) clearTimeout(hardKillTimer);
+      this.hardKillDeadline = undefined;
     }
   }
 
@@ -680,7 +789,7 @@ export class SessionManager {
         { idleTimeoutMs: this.config.idleTimeoutMs },
         "Idle timeout reached, closing query",
       );
-      this.close();
+      this.close("idle");
     }, this.config.idleTimeoutMs);
   }
 

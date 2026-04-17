@@ -461,9 +461,25 @@ describe("PipelineCallRuntimeConfigSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts pipeline call without pipeline_name (store-sourced pipelines use pipeline_key)", () => {
+  it("rejects pipeline call with neither pipeline_name nor (pipeline_source + pipeline_key)", () => {
     const result = PipelineCallRuntimeConfigSchema.safeParse({
       engine: "pipeline",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects pipeline call with pipeline_source: store but no pipeline_key", () => {
+    const result = PipelineCallRuntimeConfigSchema.safeParse({
+      engine: "pipeline",
+      pipeline_source: "store",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts pipeline call with pipeline_name only (default config source)", () => {
+    const result = PipelineCallRuntimeConfigSchema.safeParse({
+      engine: "pipeline",
+      pipeline_name: "child",
     });
     expect(result.success).toBe(true);
   });

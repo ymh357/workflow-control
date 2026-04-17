@@ -25,6 +25,7 @@ vi.mock("./state-builders.js", () => ({
   buildScriptState: vi.fn(() => ({ type: "script-state" })),
   buildHumanGateState: vi.fn(() => ({ type: "human-gate-state" })),
   buildParallelGroupState: vi.fn(() => ({ type: "parallel-state" })),
+  buildSingleSessionParallelState: vi.fn(() => ({ type: "single-session-parallel-state" })),
   buildConditionState: vi.fn(() => ({ type: "condition-state" })),
   buildPipelineCallState: vi.fn(() => ({ type: "pipeline-call-state" })),
   buildForeachState: vi.fn(() => ({ type: "foreach-state" })),
@@ -986,6 +987,65 @@ describe("session_mode validation", () => {
       session_mode: "single" as const,
       engine: "claude" as const,
       stages: [{ name: "s1", type: "agent" as const, runtime: { engine: "llm" as const, system_prompt: "test", writes: ["out"] } }],
+    };
+    expect(() => buildPipelineStates(pipeline as any)).not.toThrow();
+  });
+
+  it("rejects retry.back_to on child of single-session parallel group", () => {
+    const pipeline = {
+      name: "test",
+      session_mode: "single" as const,
+      engine: "claude" as const,
+      stages: [
+        {
+          parallel: {
+            name: "grp",
+            stages: [
+              { name: "a", type: "agent" as const, runtime: { engine: "llm" as const, system_prompt: "a", writes: ["x"] } },
+              {
+                name: "b",
+                type: "agent" as const,
+                runtime: {
+                  engine: "llm" as const,
+                  system_prompt: "b",
+                  writes: ["y"],
+                  retry: { max_retries: 2, back_to: "a" },
+                },
+              },
+            ],
+          },
+        },
+      ],
+    };
+    expect(() => buildPipelineStates(pipeline as any)).toThrow(
+      /retry\.back_to is not supported in session_mode: "single"/,
+    );
+  });
+
+  it("accepts retry.back_to on child of normal parallel group (non-single)", () => {
+    const pipeline = {
+      name: "test",
+      engine: "claude" as const,
+      stages: [
+        {
+          parallel: {
+            name: "grp",
+            stages: [
+              { name: "a", type: "agent" as const, runtime: { engine: "llm" as const, system_prompt: "a", writes: ["x"] } },
+              {
+                name: "b",
+                type: "agent" as const,
+                runtime: {
+                  engine: "llm" as const,
+                  system_prompt: "b",
+                  writes: ["y"],
+                  retry: { max_retries: 2, back_to: "a" },
+                },
+              },
+            ],
+          },
+        },
+      ],
     };
     expect(() => buildPipelineStates(pipeline as any)).not.toThrow();
   });

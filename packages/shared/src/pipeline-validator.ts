@@ -552,12 +552,23 @@ function validateStage(
     }
   }
 
-  // Check writes/outputs consistency for agent and script stages
-  if (!storeSchema && (stage.type === "agent" || stage.type === "script") && runtime?.writes && runtime.writes.length > 0) {
+  // Check writes/outputs consistency for agent and script stages.
+  // When a key is declared in store_schema with produced_by == this stage,
+  // its writes/outputs are auto-derived at build time — skip the check for
+  // THAT KEY only (not the whole stage). This catches mixed mode where some
+  // writes are schema-derived and others are hand-written.
+  if ((stage.type === "agent" || stage.type === "script") && runtime?.writes && runtime.writes.length > 0) {
     const outputKeys = stage.outputs ? new Set(Object.keys(stage.outputs)) : new Set<string>();
     const declaredWriteKeys = new Set(runtime.writes.map(writeKey));
+    const isSchemaDerivedForStage = (key: string): boolean => {
+      if (!storeSchema) return false;
+      const entry = storeSchema[key];
+      return !!entry && entry.produced_by === stage.name;
+    };
+
     for (const w of runtime.writes) {
       const k = writeKey(w);
+      if (isSchemaDerivedForStage(k)) continue;
       if (!outputKeys.has(k)) {
         issues.push({
           severity: "warning",
@@ -568,6 +579,7 @@ function validateStage(
       }
     }
     for (const k of outputKeys) {
+      if (isSchemaDerivedForStage(k)) continue;
       if (!declaredWriteKeys.has(k)) {
         issues.push({
           severity: "warning",

@@ -261,4 +261,17 @@ describe("buildQueryOptions", () => {
     expect(env.CLAUDECODE).toBe("");
     expect(env.CI).toBe("true");
   });
+
+  it("forwards abortController when provided (SDK uses .abortController, not .abortSignal)", () => {
+    const ac = new AbortController();
+    const opts = buildQueryOptions(baseParams({ abortController: ac }) as any);
+    expect((opts as any).abortController).toBe(ac);
+    // Negative: old "abortSignal" field must not be set — SDK type differs.
+    expect((opts as any).abortSignal).toBeUndefined();
+  });
+
+  it("omits abortController key when not provided (no stray undefined)", () => {
+    const opts = buildQueryOptions(baseParams() as any);
+    expect("abortController" in opts).toBe(false);
+  });
 });

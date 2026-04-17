@@ -9,10 +9,78 @@ import { getNestedValue } from "../lib/config-loader.js";
 import { validatePipelineConfig } from "../lib/config/schema.js";
 import { validatePipelineLogic, getValidationErrors } from "@workflow-control/shared";
 import { buildInlinePipelineConfig } from "../machine/inline-pipeline-config.js";
+import { flattenStages } from "../lib/config/types.js";
 import type { PipelineConfig } from "../lib/config/types.js";
 
 const DEFAULT_TIMEOUT_SEC = 1800;
 const MAX_PIPELINE_DEPTH = 3;
+
+// Depth counter sentinel key in initialStore. Using a store key rather than a
+// dedicated WorkflowContext field avoids a cascade of type/persistence
+// changes — the key is filtered out on sub-pipeline completion.
+const DEPTH_STORE_KEY = "__pipeline_depth";
+
+// Security limits for store-sourced pipelines. These pipelines are generated
+// by LLMs (phase planner) and thus untrusted — treat their config as input
+// data, not code. Limits protect against prompt-injection-driven escalation.
+const MAX_INLINE_PROMPT_BYTES = 8 * 1024; // 8KB per prompt
+const MAX_TOTAL_INLINE_PROMPTS_BYTES = 64 * 1024; // 64KB aggregate
+const STORE_SOURCED_DISALLOWED_STAGE_TYPES = new Set([
+  "script",    // arbitrary code execution via registered scripts
+  "pipeline",  // prevents nested store-sourced pipelines
+  "foreach",   // iterates a sub-pipeline, same risk as "pipeline"
+]);
+
+/**
+ * Validate safety constraints for a store-sourced (LLM-generated) pipeline.
+ * Throws on any violation — the call stage will surface the error to the parent.
+ */
+function validateStoreSourcedPipelineSafety(
+  pipeline: PipelineConfig,
+  parentMcps: string[],
+): void {
+  // Size checks on inline_prompts
+  if (pipeline.inline_prompts) {
+    let total = 0;
+    for (const [key, content] of Object.entries(pipeline.inline_prompts)) {
+      const bytes = Buffer.byteLength(content, "utf-8");
+      if (bytes > MAX_INLINE_PROMPT_BYTES) {
+        throw new Error(
+          `Store-sourced pipeline: inline_prompts.${key} is ${bytes} bytes, exceeds limit of ${MAX_INLINE_PROMPT_BYTES} bytes`,
+        );
+      }
+      total += bytes;
+    }
+    if (total > MAX_TOTAL_INLINE_PROMPTS_BYTES) {
+      throw new Error(
+        `Store-sourced pipeline: inline_prompts total ${total} bytes exceeds aggregate limit of ${MAX_TOTAL_INLINE_PROMPTS_BYTES} bytes`,
+      );
+    }
+  }
+
+  // Stage-type allowlist
+  for (const stage of flattenStages(pipeline.stages)) {
+    if (STORE_SOURCED_DISALLOWED_STAGE_TYPES.has(stage.type)) {
+      throw new Error(
+        `Store-sourced pipeline: stage "${stage.name}" uses disallowed type "${stage.type}". ` +
+          `Store-sourced pipelines may only use agent/human_confirm/condition/llm_decision stages.`,
+      );
+    }
+  }
+
+  // MCP allowlist — children may only use MCPs the parent already trusts
+  const parentMcpSet = new Set(parentMcps);
+  for (const stage of flattenStages(pipeline.stages)) {
+    for (const mcp of stage.mcps ?? []) {
+      if (!parentMcpSet.has(mcp)) {
+        throw new Error(
+          `Store-sourced pipeline: stage "${stage.name}" references MCP "${mcp}" ` +
+            `which is not declared by the parent pipeline. Only parent-declared MCPs are allowed.`,
+        );
+      }
+    }
+  }
+}
 
 export interface PipelineCallInput {
   taskId: string;
@@ -32,11 +100,18 @@ export async function runPipelineCall(
   const { taskId: parentTaskId, stageName, context, runtime } = input;
   const log = taskLogger(parentTaskId);
 
-  // Guard against unbounded recursive pipeline calls
-  const depth = (parentTaskId.match(/-sub-/g) ?? []).length;
-  if (depth >= MAX_PIPELINE_DEPTH) {
-    throw new Error(`Pipeline call depth ${depth + 1} exceeds maximum (${MAX_PIPELINE_DEPTH}). Check for recursive pipeline references.`);
+  // Guard against unbounded recursive pipeline calls. Depth is tracked in the
+  // parent's store via a sentinel key rather than a substring match on taskId
+  // (which was fragile — stage names containing "-sub-" would inflate depth).
+  const parentDepth = typeof context.store?.[DEPTH_STORE_KEY] === "number"
+    ? (context.store[DEPTH_STORE_KEY] as number)
+    : 0;
+  if (parentDepth >= MAX_PIPELINE_DEPTH) {
+    throw new Error(
+      `Pipeline call depth ${parentDepth + 1} exceeds maximum (${MAX_PIPELINE_DEPTH}). Check for recursive pipeline references.`,
+    );
   }
+  const childDepth = parentDepth + 1;
 
   // Resolve pipeline: from filesystem config or from parent store
   let resolvedPipelineName: string | undefined = runtime.pipeline_name;
@@ -77,6 +152,9 @@ export async function runPipelineCall(
       throw new Error(`Store-sourced pipeline "${pipelineKey}" failed logical validation: ${errMsg}`);
     }
 
+    // Safety constraints — store-sourced pipelines are LLM-generated (untrusted).
+    validateStoreSourcedPipelineSafety(validatedPipeline, context.config?.mcps ?? []);
+
     inlineConfig = buildInlinePipelineConfig(validatedPipeline, context.config);
     resolvedPipelineName = validatedPipeline.name;
     log.info({ pipelineKey, name: resolvedPipelineName }, "Resolved store-sourced pipeline definition");
@@ -94,6 +172,8 @@ export async function runPipelineCall(
       }
     }
   }
+  // Propagate depth to the child so nested pipeline calls stack correctly.
+  childInitialStore[DEPTH_STORE_KEY] = childDepth;
 
   const childTaskId = `${parentTaskId}-sub-${stageName}-${Date.now()}`;
   const timeoutMs = (runtime.timeout_sec ?? DEFAULT_TIMEOUT_SEC) * 1000;

@@ -1,7 +1,7 @@
 import { assign, emit } from "xstate";
 import { Parser } from "expr-eval";
 import type { TokenUsage, StageTokenUsage } from "@workflow-control/shared";
-import type { WorkflowContext, WorkflowEvent } from "./types.js";
+import type { WorkflowContext, WorkflowEvent, ScratchPadEntry } from "./types.js";
 import type { WorkflowEmittedEvent } from "./events.js";
 import { buildTier1Context } from "../agent/context-builder.js";
 import {
@@ -131,6 +131,29 @@ function incrementVerifyRetryCount(context: WorkflowContext, stageName: string):
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 interface DoneEvent { type: string; output: Record<string, any>; }
 
+// Absolute ceiling on a stage's cumulative cost. Even with budget_flex
+// auto-extensions, we never let a single stage exceed this — otherwise an
+// agent stuck in a "_needs_extension" loop could burn through the user's
+// account. Applied to both buildAgentState and buildSingleSessionParallelState
+// adaptive-budget guards below.
+const MAX_TOTAL_STAGE_BUDGET_USD = 20;
+
+/**
+ * Build the "[Prior attempt failed: ...]" prefix for retry feedback.
+ * Strips any existing prefix from `prev` so cumulative retries don't nest
+ * ("[Prior: [Prior: [Prior: ...]]]") as feedback hops between retry kinds.
+ */
+function makePriorFeedback(prev: string | undefined): string {
+  if (!prev) return "";
+  const stripped = prev.replace(/^\[Prior attempt failed: [^\]]*\]\s*\n\n/, "");
+  return `[Prior attempt failed: ${stripped.slice(0, 300)}]\n\n`;
+}
+
+/** Return a fresh scratchPad array reference so XState detects mutation by MCP handler. */
+function freshScratchPad(context: WorkflowContext): ScratchPadEntry[] {
+  return [...(context.scratchPad ?? [])];
+}
+
 function accumulateTokenUsage(existing: TokenUsage | undefined, stage: StageTokenUsage | undefined): TokenUsage | undefined {
   if (!stage) return existing;
   if (!existing) return { inputTokens: stage.inputTokens, outputTokens: stage.outputTokens, cacheReadTokens: stage.cacheReadTokens, cacheCreationTokens: stage.cacheCreationTokens, totalTokens: stage.totalTokens };
@@ -200,9 +223,7 @@ export function buildAgentState(
             assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
               const sessionId = event.output?.sessionId ?? context.stageSessionIds?.[stateName];
               const writeKeys = runtime.writes!.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
-              const priorFeedback = context.resumeInfo?.feedback
-                ? `[Prior attempt failed: ${context.resumeInfo.feedback.slice(0, 300)}]\n\n`
-                : "";
+              const priorFeedback = makePriorFeedback(context.resumeInfo?.feedback);
               return {
                 retryCount: context.retryCount + 1,
                 stageRetryCount: incrementStageRetryCount(context, stateName),
@@ -211,6 +232,7 @@ export function buildAgentState(
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
                 stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
                 stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
+                scratchPad: freshScratchPad(context),
                 resumeInfo: sessionId
                   ? { sessionId, feedback: `${priorFeedback}Your previous output was missing the required JSON fields (expected: ${writeKeys.join(", ")}). You MUST output the required JSON object before finishing. Do NOT explain — just output the JSON now.` }
                   : undefined,
@@ -252,9 +274,7 @@ export function buildAgentState(
               for (const [key, assertions] of assertionMap) {
                 allFailures.push(...evaluateAssertions(key, parsed?.[key], assertions));
               }
-              const priorFeedback = context.resumeInfo?.feedback
-                ? `[Prior attempt failed: ${context.resumeInfo.feedback.slice(0, 300)}]\n\n`
-                : "";
+              const priorFeedback = makePriorFeedback(context.resumeInfo?.feedback);
               return {
                 retryCount: context.retryCount + 1,
                 stageRetryCount: incrementStageRetryCount(context, stateName),
@@ -263,6 +283,7 @@ export function buildAgentState(
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
                 stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
                 stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
+                scratchPad: freshScratchPad(context),
                 resumeInfo: sessionId
                   ? { sessionId, feedback: `${priorFeedback}${formatAssertionFeedback(allFailures)}` }
                   : undefined,
@@ -308,6 +329,7 @@ export function buildAgentState(
                 totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
                 totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
+                scratchPad: freshScratchPad(context),
               };
             }),
             ({ context }: { context: WorkflowContext }) => {
@@ -364,9 +386,7 @@ export function buildAgentState(
                   }
                 }
               }
-              const priorFeedbackQa = context.resumeInfo?.feedback
-                ? `[Prior attempt failed: ${context.resumeInfo.feedback.slice(0, 300)}]\n\n`
-                : "";
+              const priorFeedbackQa = makePriorFeedback(context.resumeInfo?.feedback);
               return {
                 store,
                 qaRetryCount: (context.qaRetryCount ?? 0) + 1,
@@ -377,6 +397,7 @@ export function buildAgentState(
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
                 stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
                 stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
+                scratchPad: freshScratchPad(context),
               };
             }),
             ({ context }: { context: WorkflowContext }) => {
@@ -412,6 +433,7 @@ export function buildAgentState(
                 totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
                 totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
+                scratchPad: freshScratchPad(context),
               };
             }),
             ({ context }: { context: WorkflowContext }) => {
@@ -435,9 +457,7 @@ export function buildAgentState(
             assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
               const output = event.output as any;
               const failureDetail = formatVerifyFailures(output.verifyResults ?? []);
-              const priorFeedback = context.resumeInfo?.feedback
-                ? `[Prior attempt failed: ${context.resumeInfo.feedback.slice(0, 300)}]\n\n`
-                : "";
+              const priorFeedback = makePriorFeedback(context.resumeInfo?.feedback);
               return {
                 verifyRetryCount: incrementVerifyRetryCount(context, stateName),
                 totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
@@ -445,6 +465,7 @@ export function buildAgentState(
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
                 stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
                 stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
+                scratchPad: freshScratchPad(context),
                 resumeInfo: output.sessionId
                   ? {
                       sessionId: output.sessionId,
@@ -476,7 +497,18 @@ export function buildAgentState(
             );
             if (!needsExt) return false;
             const extCount = context.extensionCount?.[stateName] ?? 0;
-            return extCount < stage.budget_flex.max_extensions;
+            if (extCount >= stage.budget_flex.max_extensions) return false;
+            // Hard cap: refuse further extensions once the cumulative task
+            // cost exceeds the absolute ceiling — protects against runaway
+            // extension loops regardless of per-extension budget.
+            if ((context.totalCostUsd ?? 0) >= MAX_TOTAL_STAGE_BUDGET_USD) {
+              taskLogger(context.taskId).warn(
+                { stage: stateName, totalCostUsd: context.totalCostUsd, cap: MAX_TOTAL_STAGE_BUDGET_USD },
+                "Budget extension denied: absolute stage budget ceiling reached",
+              );
+              return false;
+            }
+            return true;
           },
           target: stateName,
           reenter: true,
@@ -496,6 +528,7 @@ export function buildAgentState(
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
                 stageSessionIds: { ...context.stageSessionIds, [stateName]: sessionId ?? context.stageSessionIds?.[stateName] },
                 stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
+                scratchPad: freshScratchPad(context),
                 resumeInfo: sessionId
                   ? { sessionId, feedback: `Budget extension #${extCount} approved. You now have ${flex.extension_turns} additional turns and $${flex.extension_budget_usd} additional budget. Continue your work.` }
                   : undefined,
@@ -559,7 +592,7 @@ export function buildAgentState(
                 resumeInfo: undefined,
                 // Spread to create a new array reference so XState detects the change
                 // (MCP handler mutates the original array in-place during stage execution)
-                scratchPad: [...(context.scratchPad ?? [])],
+                scratchPad: freshScratchPad(context),
                 totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
                 totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
@@ -1244,8 +1277,14 @@ export function buildParallelGroupState(
 /**
  * Single-Session Parallel Group: Runs all child stages within a single
  * persistent session instead of spawning parallel XState regions.
- * The agent receives the full group definition and executes children sequentially
- * inside one conversation.
+ * The agent receives the full group definition and executes children
+ * sequentially inside one conversation.
+ *
+ * Retry / QA semantics mirror buildAgentState as closely as possible, but
+ * operate on the GROUP as a unit — the whole group re-runs on any failure,
+ * since there is no way to rewind a single-session conversation to the
+ * boundary of a specific child stage. retry.back_to on children is rejected
+ * by pipeline-builder for this mode.
  */
 export function buildSingleSessionParallelState(
   group: { name: string; stages: PipelineStageConfig[] },
@@ -1254,12 +1293,44 @@ export function buildSingleSessionParallelState(
 ): StateNode {
   const groupName = group.name;
 
-  // Combine writes from all child stages
+  // Aggregate writes + assertions across children. A key produced by two
+  // children is a pipeline-builder error (overlapping writes), so dedup here
+  // would only mask a bug — leave duplicates and let Map overwrite semantics
+  // in buildWriteStrategies surface the problem.
   const combinedWrites: WriteDeclaration[] = [];
   for (const stage of group.stages) {
     const runtime = stage.runtime as AgentRuntimeConfig | undefined;
     if (runtime?.writes) combinedWrites.push(...runtime.writes);
   }
+
+  // Union of verify_commands from children, deduped — group reverifies all.
+  const groupVerifyCommands = Array.from(
+    new Set(group.stages.flatMap((s) => (s.verify_commands ?? []))),
+  );
+  // "must_pass" if any child requires must_pass; else "warn"; else "skip".
+  const policies = group.stages.map((s) => s.verify_policy ?? "must_pass");
+  const groupVerifyPolicy: "must_pass" | "warn" | "skip" =
+    policies.includes("must_pass") ? "must_pass"
+      : policies.includes("warn") ? "warn"
+        : "skip";
+  // Max over children's verify_max_retries (default 2).
+  const groupVerifyMaxRetries = Math.max(
+    ...group.stages.map((s) => s.verify_max_retries ?? 2),
+    0,
+  );
+  const hasVerify = groupVerifyCommands.length > 0 && groupVerifyPolicy !== "skip";
+
+  // Aggregate budget_flex — if any child allows extension, group allows it
+  // with min max_extensions, max extension_turns/budget across children.
+  const flexChildren = group.stages.filter((s) => s.budget_flex?.allow_extension);
+  const groupBudgetFlex = flexChildren.length > 0
+    ? {
+        allow_extension: true,
+        max_extensions: Math.min(...flexChildren.map((s) => s.budget_flex!.max_extensions)),
+        extension_turns: Math.max(...flexChildren.map((s) => s.budget_flex!.extension_turns)),
+        extension_budget_usd: Math.max(...flexChildren.map((s) => s.budget_flex!.extension_budget_usd)),
+      }
+    : undefined;
 
   const combinedRuntime: AgentRuntimeConfig = {
     engine: "llm",
@@ -1283,7 +1354,7 @@ export function buildSingleSessionParallelState(
         parallelGroup: group,
       }),
       onDone: [
-        // Writes validation: retry on missing keys
+        // Guard 1: retry if writes are missing
         {
           guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
             if (combinedWrites.length === 0) return false;
@@ -1297,19 +1368,217 @@ export function buildSingleSessionParallelState(
           target: groupName,
           reenter: true,
           actions: [
-            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => ({
-              retryCount: context.retryCount + 1,
-              stageRetryCount: incrementStageRetryCount(context, groupName),
-              totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
-              totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
-              stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [groupName]: event.output.tokenUsage } : context.stageTokenUsages,
-              stageSessionIds: { ...context.stageSessionIds, [groupName]: event.output?.sessionId ?? context.stageSessionIds?.[groupName] },
-              resumeInfo: event.output?.sessionId
-                ? { sessionId: event.output.sessionId, feedback: `Your previous output was missing required JSON fields. Output ALL keys: ${combinedWrites.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key).join(", ")}` }
-                : undefined,
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const sessionId = event.output?.sessionId ?? context.stageSessionIds?.[groupName];
+              const writeKeys = combinedWrites.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
+              const priorFeedback = makePriorFeedback(context.resumeInfo?.feedback);
+              return {
+                retryCount: context.retryCount + 1,
+                stageRetryCount: incrementStageRetryCount(context, groupName),
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [groupName]: event.output.tokenUsage } : context.stageTokenUsages,
+                stageSessionIds: { ...context.stageSessionIds, [groupName]: sessionId ?? context.stageSessionIds?.[groupName] },
+                // Scratch-pad spread so XState detects mutation from MCP handler
+                scratchPad: freshScratchPad(context),
+                resumeInfo: sessionId
+                  ? { sessionId, feedback: `${priorFeedback}Your previous output was missing required JSON fields. Output ALL keys from ALL child stages: ${writeKeys.join(", ")}` }
+                  : undefined,
+              };
+            }),
+            ({ context }: { context: WorkflowContext }) => {
+              taskLogger(context.taskId).warn({ group: groupName, retryCount: context.retryCount }, "Single-session group output missing required fields, retrying");
+            },
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.status",
+              taskId: context.taskId,
+              status: context.status,
+              message: `${groupName}: output missing required fields, retrying (attempt ${context.retryCount})`,
             })),
           ],
         },
+        // Guard 2: retry if any aggregated assertion fails
+        {
+          guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
+            const assertionMap = collectAssertions(combinedWrites);
+            if (assertionMap.size === 0) return false;
+            if (getStageRetryCount(context, groupName) >= 2) return false;
+            const parsed = getCachedParse(event.output);
+            if (!parsed) return false;
+            for (const [key, assertions] of assertionMap) {
+              if (evaluateAssertions(key, parsed[key], assertions).length > 0) return true;
+            }
+            return false;
+          },
+          target: groupName,
+          reenter: true,
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const sessionId = event.output?.sessionId ?? context.stageSessionIds?.[groupName];
+              const parsed = getCachedParse(event.output);
+              const assertionMap = collectAssertions(combinedWrites);
+              const allFailures: { key: string; assertion: string; passed: boolean }[] = [];
+              for (const [key, assertions] of assertionMap) {
+                allFailures.push(...evaluateAssertions(key, parsed?.[key], assertions));
+              }
+              const priorFeedback = makePriorFeedback(context.resumeInfo?.feedback);
+              return {
+                retryCount: context.retryCount + 1,
+                stageRetryCount: incrementStageRetryCount(context, groupName),
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [groupName]: event.output.tokenUsage } : context.stageTokenUsages,
+                stageSessionIds: { ...context.stageSessionIds, [groupName]: sessionId ?? context.stageSessionIds?.[groupName] },
+                scratchPad: freshScratchPad(context),
+                resumeInfo: sessionId
+                  ? { sessionId, feedback: `${priorFeedback}${formatAssertionFeedback(allFailures)}` }
+                  : undefined,
+              };
+            }),
+            ({ context }: { context: WorkflowContext }) => {
+              taskLogger(context.taskId).warn({ group: groupName, retryCount: context.retryCount }, "Single-session group output failed quality assertions, retrying");
+            },
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.status",
+              taskId: context.taskId,
+              status: context.status,
+              message: `${groupName}: output failed quality assertions, retrying (attempt ${context.retryCount})`,
+            })),
+          ],
+        },
+        // Guard 3: retries exhausted → blocked (empty/unparseable/missing output)
+        {
+          guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
+            if (combinedWrites.length === 0) return false;
+            if (!event.output.resultText) return true;
+            const parsed = getCachedParse(event.output);
+            if (!parsed) return true;
+            const writeKeys = combinedWrites.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
+            return !writeKeys.every((field: string) => parsed[field] !== undefined);
+          },
+          target: "blocked",
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const text = event.output?.resultText;
+              const writeKeys = combinedWrites.map((w: WriteDeclaration) => typeof w === "string" ? w : w.key);
+              const msg = !text
+                ? `Group "${groupName}" completed but produced no output. The agent may have failed silently.`
+                : `Group "${groupName}" output could not be parsed or is missing required fields (expected: ${writeKeys.join(", ")}).`;
+              return {
+                error: msg,
+                lastStage: groupName,
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [groupName]: event.output.tokenUsage } : context.stageTokenUsages,
+                scratchPad: freshScratchPad(context),
+              };
+            }),
+            ({ context }: { context: WorkflowContext }) => {
+              taskLogger(context.taskId).error({ group: groupName }, context.error ?? "Empty output");
+            },
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.error",
+              taskId: context.taskId,
+              error: context.error ?? "Empty output",
+            })),
+          ],
+        },
+        // Guard 4: verify failed + retries exhausted → blocked
+        ...(hasVerify ? [{
+          guard: ({ context, event }: { context: WorkflowContext; event: DoneEvent }) => {
+            if (!(event.output as any)?.verifyFailed) return false;
+            return getVerifyRetryCount(context, groupName) >= groupVerifyMaxRetries;
+          },
+          target: "blocked",
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const output = event.output as any;
+              return {
+                error: `Verification failed after max retries. ${formatVerifyFailures(output.verifyResults ?? []).slice(0, 500)}`,
+                lastStage: groupName,
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [groupName]: event.output.tokenUsage } : context.stageTokenUsages,
+                scratchPad: freshScratchPad(context),
+              };
+            }),
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.error",
+              taskId: context.taskId,
+              error: context.error ?? "Verification failed after max retries",
+            })),
+          ],
+        }] : []),
+        // Guard 5: verify failed + retries remaining → re-enter
+        ...(hasVerify ? [{
+          guard: ({ event }: { event: DoneEvent }) => !!(event.output as any)?.verifyFailed,
+          target: groupName,
+          reenter: true,
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const output = event.output as any;
+              const failureDetail = formatVerifyFailures(output.verifyResults ?? []);
+              const priorFeedback = makePriorFeedback(context.resumeInfo?.feedback);
+              return {
+                verifyRetryCount: incrementVerifyRetryCount(context, groupName),
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [groupName]: event.output.tokenUsage } : context.stageTokenUsages,
+                stageSessionIds: { ...context.stageSessionIds, [groupName]: output.sessionId ?? context.stageSessionIds?.[groupName] },
+                scratchPad: freshScratchPad(context),
+                resumeInfo: output.sessionId
+                  ? { sessionId: output.sessionId, feedback: `${priorFeedback}VERIFICATION FAILED. Your changes did not pass the required verification commands. Fix the issues and try again.\n\nFailures:\n${failureDetail}` }
+                  : undefined,
+              };
+            }),
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.status",
+              taskId: context.taskId,
+              status: context.status,
+              message: `${groupName}: verification failed, retrying (attempt ${getStageRetryCount(context, groupName)})`,
+            })),
+          ],
+        }] : []),
+        // Guard 6: budget_flex auto-extension
+        ...(groupBudgetFlex ? [{
+          guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
+            const parsed = getCachedParse(event.output);
+            if (!parsed) return false;
+            const needsExt = Object.values(parsed).some(
+              (v) => typeof v === "object" && v !== null && (v as any)._needs_extension === true,
+            );
+            if (!needsExt) return false;
+            const extCount = context.extensionCount?.[groupName] ?? 0;
+            if (extCount >= groupBudgetFlex.max_extensions) return false;
+            if ((context.totalCostUsd ?? 0) >= MAX_TOTAL_STAGE_BUDGET_USD) {
+              taskLogger(context.taskId).warn(
+                { group: groupName, totalCostUsd: context.totalCostUsd, cap: MAX_TOTAL_STAGE_BUDGET_USD },
+                "Budget extension denied: absolute stage budget ceiling reached",
+              );
+              return false;
+            }
+            return true;
+          },
+          target: groupName,
+          reenter: true,
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const sessionId = event.output?.sessionId ?? context.stageSessionIds?.[groupName];
+              const extCount = (context.extensionCount?.[groupName] ?? 0) + 1;
+              return {
+                extensionCount: { ...context.extensionCount, [groupName]: extCount },
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [groupName]: event.output.tokenUsage } : context.stageTokenUsages,
+                stageSessionIds: { ...context.stageSessionIds, [groupName]: sessionId ?? context.stageSessionIds?.[groupName] },
+                scratchPad: freshScratchPad(context),
+                resumeInfo: sessionId
+                  ? { sessionId, feedback: `Budget extension #${extCount} approved. You now have ${groupBudgetFlex.extension_turns} additional turns and $${groupBudgetFlex.extension_budget_usd} additional budget. Continue your work.` }
+                  : undefined,
+              };
+            }),
+          ],
+        }] : []),
         // Success path
         {
           target: nextTarget,
@@ -1329,6 +1598,7 @@ export function buildSingleSessionParallelState(
                 retryCount: 0,
                 stageRetryCount: resetStageRetryCount(context, groupName),
                 resumeInfo: undefined,
+                scratchPad: freshScratchPad(context),
                 totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
                 totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [groupName]: event.output.tokenUsage } : context.stageTokenUsages,
@@ -1339,6 +1609,7 @@ export function buildSingleSessionParallelState(
               };
             }),
             emitTaskListUpdate(),
+            emitPersistSession(),
           ],
         },
       ],

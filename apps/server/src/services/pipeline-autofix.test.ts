@@ -2,55 +2,37 @@ import { describe, it, expect } from "vitest";
 import { autofixPipeline } from "./pipeline-autofix.js";
 
 describe("autofixPipeline", () => {
-  it("adds missing outputs entries for writes keys", () => {
+  it("is a no-op on pipelines missing outputs for writes (let validator drive LLM retry)", () => {
     const pipeline = {
       stages: [
         {
           name: "analyze",
-          type: "agent",
-          runtime: { engine: "llm", writes: ["analysis"], reads: {} },
+          type: "agent" as const,
+          runtime: { engine: "llm" as const, system_prompt: "x", writes: ["analysis"], reads: {} },
         },
       ],
     };
-    const fixes = autofixPipeline(pipeline);
-    expect(fixes).toHaveLength(1);
-    expect(fixes[0]).toContain("missing outputs");
-    expect((pipeline.stages[0] as any).outputs.analysis).toBeDefined();
+    const before = JSON.parse(JSON.stringify(pipeline));
+    const fixes = autofixPipeline(pipeline as any);
+    expect(fixes).toEqual([]);
+    expect(pipeline).toEqual(before);
   });
 
-  it("does not add outputs when store_schema is present", () => {
-    const pipeline = {
-      store_schema: { analysis: { produced_by: "analyze" } },
-      stages: [
-        {
-          name: "analyze",
-          type: "agent",
-          runtime: { engine: "llm", reads: {} },
-        },
-      ],
-    };
-    const fixes = autofixPipeline(pipeline);
-    // Should only do reads population, not outputs
-    expect(fixes.every((f) => !f.includes("missing outputs"))).toBe(true);
-  });
-
-  it("auto-populates reads from store_schema for agent stages with empty reads", () => {
+  it("is a no-op when store_schema is present but reads are empty (let validator report mismatch)", () => {
     const pipeline = {
       store_schema: {
         analysis: { produced_by: "analyze" },
         plan: { produced_by: "planImpl" },
       },
       stages: [
-        { name: "analyze", type: "agent", runtime: { engine: "llm", reads: {} } },
-        { name: "planImpl", type: "agent", runtime: { engine: "llm", reads: {} } },
+        { name: "analyze", type: "agent" as const, runtime: { engine: "llm" as const, system_prompt: "x", reads: {} } },
+        { name: "planImpl", type: "agent" as const, runtime: { engine: "llm" as const, system_prompt: "x", reads: {} } },
       ],
     };
-    const fixes = autofixPipeline(pipeline);
-    // planImpl should now read "analysis" (produced by analyze which comes before it)
-    expect((pipeline.stages[1] as any).runtime.reads).toEqual({ analysis: "analysis" });
-    // analyze has nothing before it, so no reads populated
-    expect((pipeline.stages[0] as any).runtime.reads).toEqual({});
-    expect(fixes.some((f) => f.includes("planImpl"))).toBe(true);
+    const before = JSON.parse(JSON.stringify(pipeline));
+    const fixes = autofixPipeline(pipeline as any);
+    expect(fixes).toEqual([]);
+    expect(pipeline).toEqual(before);
   });
 
   it("does not overwrite existing reads", () => {
@@ -59,14 +41,13 @@ describe("autofixPipeline", () => {
         analysis: { produced_by: "analyze" },
       },
       stages: [
-        { name: "analyze", type: "agent", runtime: { engine: "llm", reads: {} as Record<string, string> } },
-        { name: "impl", type: "agent", runtime: { engine: "llm", reads: { a: "analysis.title" } } },
+        { name: "analyze", type: "agent" as const, runtime: { engine: "llm" as const, system_prompt: "x", reads: {} } },
+        { name: "impl", type: "agent" as const, runtime: { engine: "llm" as const, system_prompt: "x", reads: { a: "analysis.title" } } },
       ],
     };
-    const fixes = autofixPipeline(pipeline);
-    // impl already has reads, should not be modified
+    const fixes = autofixPipeline(pipeline as any);
     expect((pipeline.stages[1] as any).runtime.reads).toEqual({ a: "analysis.title" });
-    expect(fixes.every((f) => !f.includes('"impl"'))).toBe(true);
+    expect(fixes).toEqual([]);
   });
 
   it("returns empty array for valid pipelines", () => {
@@ -74,36 +55,47 @@ describe("autofixPipeline", () => {
       stages: [
         {
           name: "analyze",
-          type: "agent",
-          runtime: { engine: "llm", writes: ["analysis"], reads: {} },
-          outputs: { analysis: { type: "object", fields: [] } },
+          type: "agent" as const,
+          runtime: { engine: "llm" as const, system_prompt: "x", writes: ["analysis"], reads: {} },
+          outputs: { analysis: { type: "object" as const, fields: [] } },
         },
       ],
     };
-    expect(autofixPipeline(pipeline)).toEqual([]);
+    expect(autofixPipeline(pipeline as any)).toEqual([]);
   });
 
   it("handles empty stages array", () => {
     expect(autofixPipeline({ stages: [] })).toEqual([]);
   });
 
-  it("handles parallel groups", () => {
+  it("handles parallel groups without mutation", () => {
     const pipeline = {
       stages: [
         {
           parallel: {
             name: "research",
             stages: [
-              { name: "a", type: "agent", runtime: { engine: "llm", writes: ["resultA"], reads: {} } },
-              { name: "b", type: "agent", runtime: { engine: "llm", writes: ["resultB"], reads: {} } },
+              { name: "a", type: "agent" as const, runtime: { engine: "llm" as const, system_prompt: "x", writes: ["resultA"], reads: {} } },
+              { name: "b", type: "agent" as const, runtime: { engine: "llm" as const, system_prompt: "x", writes: ["resultB"], reads: {} } },
             ],
           },
         },
       ],
     };
-    const fixes = autofixPipeline(pipeline);
-    expect(fixes).toHaveLength(2);
-    expect((pipeline.stages[0] as any).parallel.stages[0].outputs.resultA).toBeDefined();
-    expect((pipeline.stages[0] as any).parallel.stages[1].outputs.resultB).toBeDefined();
+    const before = JSON.parse(JSON.stringify(pipeline));
+    const fixes = autofixPipeline(pipeline as any);
+    expect(fixes).toEqual([]);
+    expect(pipeline).toEqual(before);
+  });
+
+  it("is idempotent", () => {
+    const pipeline = {
+      store_schema: { foo: { produced_by: "s" } },
+      stages: [
+        { name: "s", type: "agent" as const, runtime: { engine: "llm" as const, system_prompt: "x", reads: {} } },
+      ],
+    };
+    expect(autofixPipeline(pipeline as any)).toEqual([]);
+    expect(autofixPipeline(pipeline as any)).toEqual([]);
   });
 });

@@ -220,4 +220,31 @@ describe("scratch pad tools", () => {
     const result = await handler({ stage: "nonexistent_stage" });
     expect(result.content[0].text).toContain("No scratch pad entries matching filters");
   });
+
+  it("append_scratch_pad rejects content exceeding max length", async () => {
+    const pad: ScratchPadEntry[] = [];
+    const handler = getToolByName({}, pad, "s", "append_scratch_pad");
+    const huge = "x".repeat(2001);
+    const result = await handler({ category: "caveat", content: huge });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("exceeds 2000 characters");
+    expect(pad).toHaveLength(0);
+  });
+
+  it("get_store_value empty-store message hints at scratch pad when available", async () => {
+    const pad: ScratchPadEntry[] = [
+      { stage: "s", timestamp: "2026-01-01T00:00:00.000Z", category: "discovery", content: "note" },
+    ];
+    const handler = getToolByName({}, pad, "s", "get_store_value");
+    const result = await handler({ path: "anything" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("read_scratch_pad");
+  });
+
+  it("get_store_value empty-store message omits scratch pad hint when empty", async () => {
+    const handler = getHandler({});
+    const result = await handler({ path: "anything" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toContain("read_scratch_pad");
+  });
 });

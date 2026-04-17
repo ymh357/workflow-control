@@ -209,11 +209,16 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
         assign(({ context, event }: ErrorActionArgs) => {
           const errorMsg = event.error instanceof Error ? event.error.message : String(event.error);
           const sessionId = context.stageSessionIds?.[stateName];
-          const priorFeedback = context.resumeInfo?.feedback
-            ? `[Prior attempt failed: ${context.resumeInfo.feedback.slice(0, 300)}]\n\n`
+          // Strip any existing "[Prior attempt failed: ...]" prefix so cumulative
+          // retries across different retry kinds don't produce nested prefixes.
+          const prev = context.resumeInfo?.feedback;
+          const stripped = prev?.replace(/^\[Prior attempt failed: [^\]]*\]\s*\n\n/, "");
+          const priorFeedback = stripped
+            ? `[Prior attempt failed: ${stripped.slice(0, 300)}]\n\n`
             : "";
           return {
             retryCount: context.retryCount + 1,
+            scratchPad: [...(context.scratchPad ?? [])],
             resumeInfo: sessionId
               ? { sessionId, feedback: `${priorFeedback}Previous attempt failed with error: ${errorMsg.slice(0, 500)}. Please inspect the current state and fix the issue.` }
               : undefined,
@@ -250,6 +255,7 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
             lastStage: stateName,
             retryCount: 0,
             qaRetryCount: (context.qaRetryCount ?? 0) + 1,
+            scratchPad: [...(context.scratchPad ?? [])],
             resumeInfo: targetSessionId
               ? { sessionId: targetSessionId, feedback: `Stage "${stateName}" failed after retries: ${errorMsg.slice(0, 500)}. Please fix the underlying issue.` }
               : undefined,
@@ -287,9 +293,13 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
             }
           }
         },
-        assign(({ event }: ErrorActionArgs) => {
+        assign(({ event, context }: ErrorActionArgs) => {
           const errorMsg = event.error instanceof Error ? event.error.message : String(event.error);
-          return { error: errorMsg, lastStage: stateName };
+          return {
+            error: errorMsg,
+            lastStage: stateName,
+            scratchPad: [...(context.scratchPad ?? [])],
+          };
         }),
         emit(({ event, context }: ErrorActionArgs): WorkflowEmittedEvent => {
           const errorMsg = event.error instanceof Error ? event.error.message : String(event.error);

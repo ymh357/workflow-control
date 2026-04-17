@@ -113,7 +113,19 @@ export const PipelineCallRuntimeConfigSchema = z.object({
   reads: z.record(z.string(), z.string()).optional(),
   writes: z.array(WriteDeclarationSchema).optional(),
   timeout_sec: z.number().optional(),
-});
+}).refine(
+  (data) => {
+    // pipeline_source: "store" requires pipeline_key
+    if (data.pipeline_source === "store" && !data.pipeline_key) return false;
+    // pipeline_source !== "store" (or omitted) requires pipeline_name
+    if (data.pipeline_source !== "store" && !data.pipeline_name) return false;
+    return true;
+  },
+  {
+    message:
+      "pipeline_source: 'store' requires pipeline_key; otherwise pipeline_name is required",
+  },
+);
 
 export const ForeachRuntimeConfigSchema = z.object({
   engine: z.literal("foreach"),
@@ -203,8 +215,13 @@ export const PipelineStageConfigSchema = z.object({
   budget_flex: z.object({
     allow_extension: z.boolean(),
     max_extensions: z.number().int().min(1).max(5),
-    extension_turns: z.number().int().min(5),
-    extension_budget_usd: z.number().min(0.1),
+    extension_turns: z.number().int().min(5).max(200),
+    // Cap single-extension cost at $5 to bound the total worst case
+    // (max_extensions × extension_budget_usd) to $25 per stage. Together
+    // with MAX_TOTAL_STAGE_BUDGET_USD enforced at runtime this blocks
+    // runaway LLM loops from draining the budget via repeated extension
+    // requests.
+    extension_budget_usd: z.number().min(0.1).max(5),
   }).optional(),
   mcps: z.array(z.string()).optional(),
   notion_label: z.string().optional(),

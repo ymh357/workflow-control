@@ -98,7 +98,11 @@ function findPrevAgentTarget(entries: PipelineStageEntry[], currentIndex: number
 // --- Pipeline state generation ---
 
 export function buildPipelineStates(pipeline: PipelineConfig): Record<string, StateNode> {
-  const transformed = transformDagToParallelGroups(pipeline);
+  // transformDagToParallelGroups may return `pipeline` itself when no DAG
+  // transform is needed, so work off a shallow copy to avoid mutating the
+  // caller's pipeline object below (store_schema derivation, execution_mode
+  // inheritance, etc.).
+  const transformed = { ...transformDagToParallelGroups(pipeline) };
 
   // Validate session_mode constraints
   if (pipeline.session_mode === "single") {
@@ -110,24 +114,49 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
   // When store_schema is present, auto-populate runtime.writes and stage.outputs
   // from the schema. This is a one-time derivation at build time — runtime code
   // continues to read runtime.writes and stage.outputs as before.
+  //
+  // IMPORTANT: stage objects can be shared across snapshots (YAML cache, persisted
+  // pipeline embedded in context.config). We MUST NOT mutate the caller's objects.
+  // Clone runtime and the stage entry before assigning derived fields.
   if (pipeline.store_schema) {
+    const clonedStages: PipelineStageEntry[] = [];
     for (const entry of transformed.stages) {
-      const stages = isParallelGroup(entry) ? entry.parallel.stages : [entry as PipelineStageConfig];
-      for (const stage of stages) {
-        const derivedWrites = deriveStageWrites(pipeline.store_schema, stage.name);
-        if (derivedWrites.length > 0 && stage.runtime) {
+      if (isParallelGroup(entry)) {
+        const clonedChildren = entry.parallel.stages.map((stage) => {
+          const derivedWrites = deriveStageWrites(pipeline.store_schema!, stage.name);
+          const derivedOutputs = deriveStageOutputs(pipeline.store_schema!, stage.name);
           const rt = stage.runtime as any;
-          // Only set if not already explicitly declared
-          if (!rt.writes || rt.writes.length === 0) {
-            rt.writes = derivedWrites;
-          }
-        }
+          const needWrites = derivedWrites.length > 0 && rt && (!rt.writes || rt.writes.length === 0);
+          const needOutputs = derivedOutputs && !stage.outputs;
+          if (!needWrites && !needOutputs) return stage;
+          const nextRuntime = needWrites ? { ...rt, writes: derivedWrites } : rt;
+          return {
+            ...stage,
+            ...(needWrites ? { runtime: nextRuntime } : {}),
+            ...(needOutputs ? { outputs: derivedOutputs } : {}),
+          } as PipelineStageConfig;
+        });
+        clonedStages.push({ parallel: { ...entry.parallel, stages: clonedChildren } });
+      } else {
+        const stage = entry as PipelineStageConfig;
+        const derivedWrites = deriveStageWrites(pipeline.store_schema, stage.name);
         const derivedOutputs = deriveStageOutputs(pipeline.store_schema, stage.name);
-        if (derivedOutputs && !stage.outputs) {
-          stage.outputs = derivedOutputs;
+        const rt = stage.runtime as any;
+        const needWrites = derivedWrites.length > 0 && rt && (!rt.writes || rt.writes.length === 0);
+        const needOutputs = derivedOutputs && !stage.outputs;
+        if (!needWrites && !needOutputs) {
+          clonedStages.push(stage);
+        } else {
+          const nextRuntime = needWrites ? { ...rt, writes: derivedWrites } : rt;
+          clonedStages.push({
+            ...stage,
+            ...(needWrites ? { runtime: nextRuntime } : {}),
+            ...(needOutputs ? { outputs: derivedOutputs } : {}),
+          } as PipelineStageConfig);
         }
       }
     }
+    transformed.stages = clonedStages;
   }
 
   const states: Record<string, StateNode> = {};
@@ -230,7 +259,9 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
   }
 
   for (let i = 0; i < transformed.stages.length; i++) {
-    const entry = transformed.stages[i];
+    // `entry` is reassigned below when parallel-group children need cloning to
+    // inherit default_execution_mode without mutating the caller's pipeline.
+    let entry = transformed.stages[i];
     const linearNext = i < transformed.stages.length - 1
       ? getEntryName(transformed.stages[i + 1])
       : "completed";
@@ -245,11 +276,21 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
         }
       }
 
-      // Inherit pipeline-level default_execution_mode for child stages
-      for (const s of entry.parallel.stages) {
-        if (!s.execution_mode && transformed.default_execution_mode && s.type === "agent") {
-          s.execution_mode = transformed.default_execution_mode;
-        }
+      // Inherit pipeline-level default_execution_mode for child stages.
+      // Clone the parallel entry + children to avoid mutating the caller's
+      // pipeline object (which may be shared with persistence / snapshots).
+      if (transformed.default_execution_mode) {
+        const mutatedChildren = entry.parallel.stages.map((s) => {
+          if (!s.execution_mode && s.type === "agent") {
+            return { ...s, execution_mode: transformed.default_execution_mode };
+          }
+          return s;
+        });
+        // Replace in place within our already-cloned transformed.stages array.
+        const clonedEntry = { parallel: { ...entry.parallel, stages: mutatedChildren } };
+        transformed.stages = transformed.stages.map((e, idx) => (idx === i ? clonedEntry : e));
+        // Rebind entry for subsequent use below
+        entry = clonedEntry;
       }
 
       // Validate: no overlapping writes keys within group
@@ -269,7 +310,13 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
       for (const s of entry.parallel.stages) {
         const runtime = s.runtime as Record<string, any> | undefined;
         if (runtime?.retry?.back_to) {
-          if (!validTargets.has(runtime.retry.back_to)) {
+          if (pipeline.session_mode === "single") {
+            // Single-session groups execute all children in one conversation; there's
+            // no way to rewind to a specific child without restarting the whole group.
+            errors.push(
+              `Stage "${s.name}" in parallel group "${entry.parallel.name}": retry.back_to is not supported in session_mode: "single" (group executes as one session).`,
+            );
+          } else if (!validTargets.has(runtime.retry.back_to)) {
             errors.push(`Stage "${s.name}" in parallel group "${entry.parallel.name}": retry.back_to references non-existent state "${runtime.retry.back_to}"`);
           } else if (!childNames.has(runtime.retry.back_to)) {
             // XState parallel regions cannot transition to states outside the group —

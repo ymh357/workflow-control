@@ -164,4 +164,70 @@ describe("runPipelineCall with pipeline_source: store", () => {
       }),
     ).rejects.toThrow(/no pipeline_key/);
   });
+
+  it("rejects store-sourced pipeline that declares a script stage", async () => {
+    const inline = {
+      name: "Bad",
+      stages: [
+        { name: "w", type: "script", runtime: { engine: "script", script_id: "git_worktree" } },
+      ],
+    };
+    const context = { ...baseContext, store: { p: inline } } as WorkflowContext;
+    await expect(runPipelineCall("p-5", {
+      taskId: "p-5", stageName: "s", context,
+      runtime: { engine: "pipeline", pipeline_source: "store", pipeline_key: "p" },
+    })).rejects.toThrow(/disallowed type "script"/);
+  });
+
+  it("rejects store-sourced pipeline that references an unknown MCP", async () => {
+    const inline = {
+      name: "Bad",
+      stages: [
+        { name: "a", type: "agent", mcps: ["secret_mcp"], runtime: { engine: "llm", system_prompt: "x" } },
+      ],
+    };
+    const ctx = {
+      ...baseContext,
+      store: { p: inline },
+      config: { ...baseContext.config!, mcps: ["safe_mcp"] },
+    } as WorkflowContext;
+    await expect(runPipelineCall("p-6", {
+      taskId: "p-6", stageName: "s", context: ctx,
+      runtime: { engine: "pipeline", pipeline_source: "store", pipeline_key: "p" },
+    })).rejects.toThrow(/not declared by the parent pipeline/);
+  });
+
+  it("rejects store-sourced pipeline with oversized inline_prompts entry", async () => {
+    const huge = "x".repeat(9 * 1024); // 9KB > 8KB limit
+    const inline = {
+      name: "Bad",
+      stages: [
+        { name: "a", type: "agent", runtime: { engine: "llm", system_prompt: "a" } },
+      ],
+      inline_prompts: { a: huge },
+    };
+    const ctx = { ...baseContext, store: { p: inline } } as WorkflowContext;
+    await expect(runPipelineCall("p-7", {
+      taskId: "p-7", stageName: "s", context: ctx,
+      runtime: { engine: "pipeline", pipeline_source: "store", pipeline_key: "p" },
+    })).rejects.toThrow(/exceeds limit of/);
+  });
+
+  it("enforces depth limit via store counter rather than taskId substring", async () => {
+    const inline = {
+      name: "Child",
+      stages: [
+        { name: "a", type: "agent", runtime: { engine: "llm", system_prompt: "a" } },
+      ],
+    };
+    // Simulate that this call is already at depth 3 (MAX)
+    const ctx = {
+      ...baseContext,
+      store: { p: inline, __pipeline_depth: 3 },
+    } as WorkflowContext;
+    await expect(runPipelineCall("parent", {
+      taskId: "parent", stageName: "s", context: ctx,
+      runtime: { engine: "pipeline", pipeline_source: "store", pipeline_key: "p" },
+    })).rejects.toThrow(/exceeds maximum/);
+  });
 });

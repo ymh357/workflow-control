@@ -64,4 +64,30 @@ describe("evaluateAssertions", () => {
     expect(evaluateAssertions("x", value, ["includes(value.tags, 'react')"])).toEqual([]);
     expect(evaluateAssertions("x", value, ["includes(value.tags, 'python')"])).toHaveLength(1);
   });
+
+  it("fails assertions that reference __proto__ (prototype access is denied)", () => {
+    const result = evaluateAssertions("x", { a: 1 }, ["value.__proto__ == null"]);
+    expect(result).toHaveLength(1);
+    expect(result[0].passed).toBe(false);
+  });
+
+  it("fails assertions that reference constructor", () => {
+    const result = evaluateAssertions("x", { a: 1 }, ["value.constructor.name == 'Object'"]);
+    expect(result).toHaveLength(1);
+    expect(result[0].passed).toBe(false);
+  });
+
+  it("fails assertions that reference prototype", () => {
+    const result = evaluateAssertions("x", { a: 1 }, ["value.prototype != null"]);
+    expect(result).toHaveLength(1);
+    expect(result[0].passed).toBe(false);
+  });
+
+  it("sanitizes __proto__ / constructor keys out of the value tree", () => {
+    // Even if an attacker plants these keys in a store value, they're stripped
+    // before evaluation — expressions that look them up resolve to undefined.
+    const value = { nested: { __proto__: { malicious: true }, ok: 1 } };
+    // nested.ok should still be reachable
+    expect(evaluateAssertions("x", value, ["value.nested.ok == 1"])).toEqual([]);
+  });
 });

@@ -5,7 +5,12 @@ import { getDb } from "../lib/db.js";
 import { sseManager } from "../sse/manager.js";
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-const HEARTBEAT_WARN_MS = 5 * 60 * 1000; // 5 minutes — warn if no progress
+// Warn when the edge agent has reported no progress for this long.
+// 10 minutes is a reasonable signal threshold — long enough that legitimate
+// tool calls (large tsc builds, webpack bundles, long WebFetch) don't trip
+// it, short enough to surface truly stuck agents before the 30-minute
+// absolute timeout kills the slot.
+const HEARTBEAT_WARN_MS = 10 * 60 * 1000;
 
 export interface EdgeSlotInfo {
   taskId: string;

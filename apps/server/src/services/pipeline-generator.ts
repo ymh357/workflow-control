@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, existsSync, mkdtempSync, rmSync } from "node
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseYAML, stringify as stringifyYAML } from "yaml";
+import { z } from "zod";
 import { validatePipelineConfig } from "../lib/config/schema.js";
 import { validatePipelineLogic, getValidationErrors } from "@workflow-control/shared";
 import { CONFIG_DIR, loadSystemSettings, loadMcpRegistry } from "../lib/config-loader.js";
@@ -14,6 +15,25 @@ import { logger } from "../lib/logger.js";
 import type { PipelineConfig, WriteDeclaration } from "../lib/config/types.js";
 import { flattenStages } from "../lib/config/types.js";
 import { autofixPipeline } from "./pipeline-autofix.js";
+
+// Zod schema for LLM-produced script skeletons. LLM output is untrusted —
+// without parsing, a malformed entry (missing manifest, null, wrong types)
+// crashes downstream code at unpredictable points.
+const GeneratedScriptSkeletonSchema = z.object({
+  scriptId: z.string().min(1),
+  manifest: z.object({
+    name: z.string().min(1),
+    version: z.string().min(1),
+    type: z.literal("script"),
+    script_id: z.string().min(1),
+    entry: z.string().min(1),
+  }),
+});
+
+// LLM call timeout. Defaults to 5 minutes but can be overridden via
+// system-settings.agent.pipeline_generator_llm_timeout_sec for slower models
+// or extended-thinking runs.
+const DEFAULT_LLM_TIMEOUT_MS = 300_000;
 
 function wKey(w: WriteDeclaration): string {
   return typeof w === "string" ? w : w.key;
@@ -250,10 +270,33 @@ async function generateSkeleton(description: string, engine: "claude" | "gemini"
       // Serialize from validated object for consistency
       const cleanYaml = stringifyYAML(validatedObj);
       const agentStages = flattenStages(validatedObj.stages ?? []).filter((s: any) => s.type === "agent");
-      const skeletonScripts = (parsed.scripts ?? []).map((s: any) => ({
-        scriptId: s.scriptId,
-        manifest: s.manifest,
-      }));
+
+      // Validate each script skeleton strictly — LLM output is untrusted.
+      // A malformed entry (null, missing manifest, wrong type) would crash
+      // generateScriptCode later at a much less useful point.
+      const rawScripts = Array.isArray(parsed.scripts) ? parsed.scripts : [];
+      const skeletonScripts: Array<{ scriptId: string; manifest: z.infer<typeof GeneratedScriptSkeletonSchema>["manifest"] }> = [];
+      const invalidScripts: string[] = [];
+      for (const raw of rawScripts) {
+        const parseResult = GeneratedScriptSkeletonSchema.safeParse(raw);
+        if (parseResult.success) {
+          skeletonScripts.push({
+            scriptId: parseResult.data.scriptId,
+            manifest: parseResult.data.manifest,
+          });
+        } else {
+          const issues = parseResult.error.issues
+            .map((i) => `${i.path.join(".")}: ${i.message}`)
+            .join("; ");
+          invalidScripts.push(issues);
+        }
+      }
+      if (invalidScripts.length > 0) {
+        const errMsg = `scripts[]: ${invalidScripts.length} entries failed validation — ${invalidScripts.slice(0, 3).join(" | ")}`;
+        lastError = errMsg;
+        logger.warn({ attempt, errors: errMsg }, "pipeline-generator: script skeleton validation failed, retrying");
+        continue;
+      }
 
       return { pipelineYaml: cleanYaml, pipelineObj: validatedObj, agentStages, skeletonScripts };
     } catch (err) {
@@ -446,33 +489,40 @@ function extractJson(raw: string): string {
   return raw.trim();
 }
 
+function resolveLlmTimeoutMs(settings: ReturnType<typeof loadSystemSettings>): number {
+  const sec = (settings.agent as Record<string, unknown> | undefined)?.pipeline_generator_llm_timeout_sec;
+  if (typeof sec === "number" && sec > 0) return sec * 1000;
+  return DEFAULT_LLM_TIMEOUT_MS;
+}
+
 async function callLLM(prompt: string, engine: "claude" | "gemini" | "codex"): Promise<string> {
   const settings = loadSystemSettings();
+  const timeoutMs = resolveLlmTimeoutMs(settings);
 
   if (engine === "claude") {
     const executable = settings.paths?.claude_executable ?? "claude";
-    return spawnAndCollect(executable, ["-p", prompt, "--output-format", "text"]);
+    return spawnAndCollect(executable, ["-p", prompt, "--output-format", "text"], timeoutMs);
   } else if (engine === "codex") {
     const executable = settings.paths?.codex_executable ?? "codex";
     // Codex exec reads prompt from stdin when "-" is passed as positional arg
-    return spawnWithStdin(executable, ["exec", "--full-auto", "-o", "/dev/stdout"], prompt);
+    return spawnWithStdin(executable, ["exec", "--full-auto", "-o", "/dev/stdout"], prompt, timeoutMs);
   } else {
     const executable = settings.paths?.gemini_executable ?? "gemini";
     const model = settings.agent?.gemini_model ?? "gemini-2.5-flash";
     // Pass prompt via stdin to avoid shell arg length limits and improve throughput
     // --allowed-mcp-server-names "" disables loading global MCP servers (faster startup)
-    return spawnWithStdin(executable, ["--output-format", "text", "-m", model, "--allowed-mcp-server-names", ""], prompt);
+    return spawnWithStdin(executable, ["--output-format", "text", "-m", model, "--allowed-mcp-server-names", ""], prompt, timeoutMs);
   }
 }
 
 const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10MB
 
-function spawnAndCollect(cmd: string, args: string[]): Promise<string> {
+function spawnAndCollect(cmd: string, args: string[], timeoutMs: number = DEFAULT_LLM_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
-    const timeout = setTimeout(() => { proc.kill(); reject(new Error(`Command timed out: ${cmd}`)); }, 300_000);
+    const timeout = setTimeout(() => { proc.kill(); reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s: ${cmd}`)); }, timeoutMs);
 
     proc.stdout.on("data", (d) => { if (stdout.length < MAX_OUTPUT_BYTES) stdout += d.toString(); });
     proc.stderr.on("data", (d) => { if (stderr.length < MAX_OUTPUT_BYTES) stderr += d.toString(); });
@@ -485,14 +535,14 @@ function spawnAndCollect(cmd: string, args: string[]): Promise<string> {
   });
 }
 
-function spawnWithStdin(cmd: string, args: string[], input: string): Promise<string> {
+function spawnWithStdin(cmd: string, args: string[], input: string, timeoutMs: number = DEFAULT_LLM_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
     // Use a neutral cwd so gemini CLI does not inject workspace file context into the prompt
     const cwd = mkdtempSync(tmpdir() + "/pipeline-gen-");
     const proc = spawn(cmd, args, { stdio: ["pipe", "pipe", "pipe"], cwd });
     let stdout = "";
     let stderr = "";
-    const timeout = setTimeout(() => { proc.kill(); reject(new Error(`Command timed out: ${cmd}`)); }, 300_000);
+    const timeout = setTimeout(() => { proc.kill(); reject(new Error(`Command timed out after ${Math.round(timeoutMs / 1000)}s: ${cmd}`)); }, timeoutMs);
 
     proc.stdout.on("data", (d) => { if (stdout.length < MAX_OUTPUT_BYTES) stdout += d.toString(); });
     proc.stderr.on("data", (d) => { if (stderr.length < MAX_OUTPUT_BYTES) stderr += d.toString(); });

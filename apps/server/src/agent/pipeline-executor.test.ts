@@ -106,7 +106,7 @@ describe("runPipelineCall", () => {
     const [childTaskId, repoName, pipelineName, taskText, options] = mockCreateTaskDraft.mock.calls[0];
     expect(childTaskId).toContain("parent-task-sub-sub-");
     expect(pipelineName).toBe("child-pipeline");
-    expect(options.initialStore).toEqual({ input: "hello" });
+    expect(options.initialStore).toEqual({ input: "hello", __pipeline_depth: 1 });
     expect(options.worktreePath).toBe("/tmp/wt");
     expect(options.branch).toBe("feat/test");
 
@@ -177,7 +177,7 @@ describe("runPipelineCall", () => {
     await runPipelineCall("", { taskId: "p", stageName: "s", context: ctx, runtime });
 
     const options = mockCreateTaskDraft.mock.calls[0][4];
-    expect(options.initialStore).toEqual({ x: "hello" });
+    expect(options.initialStore).toEqual({ x: "hello", __pipeline_depth: 1 });
   });
 
   it("reads values without store. prefix work the same way", async () => {
@@ -190,10 +190,10 @@ describe("runPipelineCall", () => {
     await runPipelineCall("", { taskId: "p", stageName: "s", context: ctx, runtime });
 
     const options = mockCreateTaskDraft.mock.calls[0][4];
-    expect(options.initialStore).toEqual({ x: "hello" });
+    expect(options.initialStore).toEqual({ x: "hello", __pipeline_depth: 1 });
   });
 
-  it("builds empty initialStore when no reads specified", async () => {
+  it("builds empty initialStore (apart from depth counter) when no reads specified", async () => {
     const childSnap = { context: { status: "completed", store: {}, error: undefined } };
     const { actor } = makeMockActor(childSnap);
     mockGetWorkflow.mockReturnValue(actor);
@@ -202,7 +202,7 @@ describe("runPipelineCall", () => {
     await runPipelineCall("", { taskId: "p", stageName: "s", context: makeContext({ x: 1 }), runtime });
 
     const options = mockCreateTaskDraft.mock.calls[0][4];
-    expect(options.initialStore).toEqual({});
+    expect(options.initialStore).toEqual({ __pipeline_depth: 1 });
   });
 
   it("throws timeout error when child pipeline stays running", async () => {
