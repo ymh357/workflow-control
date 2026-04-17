@@ -1000,9 +1000,11 @@ describe("Bug 3 extended — REJECT_WITH_FEEDBACK edge cases", () => {
 
     expect(guard({ event: { type: "REJECT_WITH_FEEDBACK" }, context })).toBe(false);
 
-    // Second handler has no guard — it always fires as fallback
-    expect(handlers[1].guard).toBeUndefined();
+    // Second handler is the fallback; it claims the transition when the feedback
+    // loop is exhausted and no invalid targetStage was provided.
+    expect(typeof handlers[1].guard).toBe("function");
     expect(handlers[1].target).toBe("error"); // default on_reject_to
+    expect(handlers[1].guard!({ event: { type: "REJECT_WITH_FEEDBACK" }, context })).toBe(true);
   });
 
   it("qaRetryCount exactly at max_feedback_loops → falls through to reject", () => {

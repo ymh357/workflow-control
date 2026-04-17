@@ -220,34 +220,50 @@ export async function runPipelineCall(
       return;
     }
 
-    sub = childActor.subscribe((snap) => {
-      if (settled) return;
-      const status = snap.context.status;
-
+    // A sub-pipeline containing only synchronous transitions (script + condition
+    // stages, always-transitions, etc.) can complete within the same microtask
+    // as launchTask(). XState v5's subscribe only delivers *future* snapshots,
+    // so we must check the current snapshot before subscribing — otherwise the
+    // promise hangs until the 1800s timeout.
+    const settleFromSnapshot = (ctx: { status?: string; store?: Record<string, any>; error?: string }): boolean => {
+      const status = ctx.status;
       if (status === "completed") {
         settled = true;
         clearTimeout(timeout);
-        sub?.unsubscribe();
         log.info({ childTaskId }, "Sub-pipeline completed");
         const updates: Record<string, any> = {};
         if (runtime.writes?.length) {
           for (const w of runtime.writes) {
             const key = typeof w === "string" ? w : w.key;
-            if (snap.context.store[key] !== undefined) {
-              updates[key] = snap.context.store[key];
-            }
+            const val = ctx.store?.[key];
+            if (val !== undefined) updates[key] = val;
           }
         }
         resolve(updates);
-      } else if (status === "error" || status === "cancelled" || status === "blocked") {
+        return true;
+      }
+      if (status === "error" || status === "cancelled" || status === "blocked") {
         settled = true;
         clearTimeout(timeout);
-        sub?.unsubscribe();
-        const errMsg = snap.context.error ?? `Sub-pipeline ${childTaskId} ended with status: ${status}`;
+        const errMsg = ctx.error ?? `Sub-pipeline ${childTaskId} ended with status: ${status}`;
         log.error({ childTaskId, status, error: errMsg }, "Sub-pipeline failed");
         reject(new Error(errMsg));
+        return true;
       }
+      return false;
+    };
+
+    sub = childActor.subscribe((snap) => {
+      if (settled) return;
+      if (settleFromSnapshot(snap.context as any)) sub?.unsubscribe();
     });
+
+    // After subscribing, re-check current snapshot in case the child already
+    // reached a terminal state before subscribe() attached.
+    const currentSnap = childActor.getSnapshot();
+    if (settleFromSnapshot(currentSnap.context as any)) {
+      sub?.unsubscribe();
+    }
   });
 
   return storeUpdates;

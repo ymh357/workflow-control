@@ -12,6 +12,11 @@ vi.mock("../machine/actor-registry.js", () => {
       }), 10);
       return { unsubscribe: vi.fn() };
     }),
+    // runPipelineCall now synchronously re-checks the child's current snapshot
+    // after subscribing (closes a race where a synchronous pipeline completes
+    // before subscribe() attaches). Return a non-terminal status so the
+    // promise resolves via the delayed subscribe callback above.
+    getSnapshot: vi.fn(() => ({ context: { status: "running" } })),
   };
   return {
     createTaskDraft: vi.fn().mockReturnValue(mockActor),

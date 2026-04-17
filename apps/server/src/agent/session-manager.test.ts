@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
   query: vi.fn(),
+  createSdkMcpServer: vi.fn((opts) => ({ ...opts, __isMockMcp: true })),
+}));
+vi.mock("../lib/store-reader-mcp.js", () => ({
+  createStoreReaderMcp: vi.fn(() => ({ __mockStoreReader: true })),
 }));
 vi.mock("../sse/manager.js", () => ({
   sseManager: { pushMessage: vi.fn() },

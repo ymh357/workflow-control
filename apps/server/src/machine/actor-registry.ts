@@ -11,7 +11,7 @@ import { cancelTask } from "../agent/query-tracker.js";
 import { taskLogger } from "../lib/logger.js";
 import { safeFire } from "../lib/safe-fire.js";
 import { taskListBroadcaster } from "../sse/task-list-broadcaster.js";
-import { loadPipelineConfig, flattenStages, loadSystemSettings } from "../lib/config-loader.js";
+import { loadPipelineConfig, flattenStages, loadSystemSettings, isParallelGroup } from "../lib/config-loader.js";
 import { snapshotGlobalConfig } from "./workflow-lifecycle.js";
 
 // --- Types ---
@@ -43,12 +43,16 @@ function scheduleActorCleanup(taskId: string): void {
   const timer = setTimeout(() => {
     cleanupTimers.delete(taskId);
     const existing = actors.get(taskId);
-    if (existing) {
-      const snap = existing.getSnapshot();
-      if (snap.status === "done") {
-        actors.delete(taskId);
-        sseManager.closeStream(taskId);
-      }
+    if (!existing) return;
+    const snap = existing.getSnapshot();
+    // XState "done" covers completed/error (type:"final"); our "cancelled" is
+    // a custom state (not final), and "blocked" may still be retryable. We
+    // only clean up if the task is truly terminal by our own semantics.
+    const domainStatus = snap.context?.status;
+    const isTerminal = snap.status === "done" || domainStatus === "completed" || domainStatus === "error" || domainStatus === "cancelled";
+    if (isTerminal) {
+      actors.delete(taskId);
+      sseManager.closeStream(taskId);
     }
   }, ACTOR_CLEANUP_DELAY_MS);
   cleanupTimers.set(taskId, timer);
@@ -145,7 +149,12 @@ export function stopSweepTimer(): void {
 function subscribeForPersistence(taskId: string, actor: WorkflowActor): void {
   actor.subscribe((snapshot: any) => {
     safeFire(persistSnapshot(taskId, actor), taskId, "persist snapshot failed");
-    if (snapshot.status === "done") {
+    // Trigger cleanup on XState "done" (terminal final state — i.e. completed/error)
+    // AND on our domain-level terminal statuses. `blocked` keeps the actor alive
+    // because the user may Retry; the sweepStaleActors path handles truly stale
+    // blocked actors after STALE_ACTOR_MAX_AGE_MS.
+    const domainStatus = snapshot.context?.status;
+    if (snapshot.status === "done" || domainStatus === "completed" || domainStatus === "error" || domainStatus === "cancelled") {
       scheduleActorCleanup(taskId);
     }
   });
@@ -195,9 +204,21 @@ function extractInheritedKeys(
   sourceStore: Record<string, any>,
   inheritKeys: string[] | "*",
 ): Record<string, any> {
-  if (inheritKeys === "*") return { ...sourceStore };
+  if (inheritKeys === "*") {
+    // Strip framework-internal sentinels (keys starting with "__") so they
+    // don't leak across task boundaries. `__pipeline_depth` in particular
+    // would otherwise make the next task start with a non-zero depth counter
+    // and hit MAX_PIPELINE_DEPTH (3) well before its own recursion begins.
+    const result: Record<string, any> = {};
+    for (const [k, v] of Object.entries(sourceStore)) {
+      if (k.startsWith("__")) continue;
+      result[k] = v;
+    }
+    return result;
+  }
   const inherited: Record<string, any> = {};
   for (const key of inheritKeys) {
+    if (key.startsWith("__")) continue; // explicit allowlist still blocks internals
     if (sourceStore[key] !== undefined) {
       inherited[key] = sourceStore[key];
       const summaryKey = `${key}.__semantic_summary`;
@@ -349,11 +370,23 @@ export function startWorkflow(taskId: string, repoName?: string, pipelineName?: 
 
 export function restoreWorkflow(taskId: string): WorkflowActor | undefined {
   if (actors.has(taskId)) return actors.get(taskId);
-  let snapshot = loadSnapshot(taskId) as { value?: string; context?: WorkflowContext } | undefined;
+  // snapshot.value is a string for atomic states but an object like
+  // `{ groupName: { child: "__run_child" } }` when an XState parallel state is
+  // active. We accept either and branch below.
+  let snapshot = loadSnapshot(taskId) as
+    | { value?: string | Record<string, unknown>; context?: WorkflowContext }
+    | undefined;
   if (!snapshot) return undefined;
 
   if (snapshot.context && !snapshot.context.stageSessionIds) {
     (snapshot.context as WorkflowContext).stageSessionIds = {};
+  }
+
+  // Backfill scratchPad for legacy snapshots — downstream code (MCP append-path)
+  // assumes it exists; undefined would make the array default `?? []` orphaned
+  // across the rest of the stage.
+  if (snapshot.context && !snapshot.context.scratchPad) {
+    (snapshot.context as WorkflowContext).scratchPad = [];
   }
 
   if (!snapshot.context?.config?.pipeline) {
@@ -362,14 +395,57 @@ export function restoreWorkflow(taskId: string): WorkflowActor | undefined {
   }
 
   if (snapshot.value && snapshot.context) {
+    // Collect all "mid-execution" state names: invoke stages (agent/script/pipeline/foreach)
+    // PLUS parallel group names — the group itself is an XState parallel state whose
+    // regions host invoke children. A server restart while a group is active leaves the
+    // snapshot.value set to either the group name (single-session mode, which compiles
+    // to a single invoke state) OR an object whose top-level key is the group name
+    // (multi-session mode, XState parallel state). In both cases, recreating an actor
+    // without migration restarts every child from scratch and double-charges work
+    // already staged to parallelStagedWrites.
+    const flat = flattenStages(snapshot.context.config.pipeline.stages);
     const invokeStages = new Set(
-      flattenStages(snapshot.context.config.pipeline.stages)
+      flat
         .filter((s) => s.type === "agent" || s.type === "script" || s.type === "pipeline" || s.type === "foreach")
         .map((s) => s.name)
     );
-    if (invokeStages.has(snapshot.value)) {
-      const originalState = snapshot.value;
-      taskLogger(taskId).warn({ oldState: originalState }, "restore: migrating invoke state to blocked");
+    const parallelGroupNames = new Set<string>();
+    for (const entry of snapshot.context.config.pipeline.stages) {
+      if (isParallelGroup(entry)) parallelGroupNames.add(entry.parallel.name);
+    }
+
+    // Determine originalState from either string or object value.
+    let originalState: string | undefined;
+    let isGroup = false;
+    if (typeof snapshot.value === "string") {
+      if (invokeStages.has(snapshot.value) || parallelGroupNames.has(snapshot.value)) {
+        originalState = snapshot.value;
+        isGroup = parallelGroupNames.has(snapshot.value);
+      }
+    } else if (snapshot.value && typeof snapshot.value === "object") {
+      // XState parallel state value has exactly one top-level key per active
+      // parallel region. We only expect one active group at a time; if multiple
+      // are active somehow, take the first one found in parallelGroupNames.
+      for (const key of Object.keys(snapshot.value)) {
+        if (parallelGroupNames.has(key)) {
+          originalState = key;
+          isGroup = true;
+          break;
+        }
+      }
+    }
+    if (originalState) {
+      taskLogger(taskId).warn({ oldState: originalState, isGroup }, "restore: migrating invoke state to blocked");
+      // Pre-compute child names for the group being reset (TS can't narrow
+      // through nested filter callbacks, so pull the lookup outside).
+      const childNamesOfGroup = (() => {
+        if (!isGroup) return new Set<string>();
+        const groupEntry = snapshot.context.config.pipeline.stages.find(
+          (e) => isParallelGroup(e) && e.parallel.name === originalState,
+        );
+        if (!groupEntry || !isParallelGroup(groupEntry)) return new Set<string>();
+        return new Set(groupEntry.parallel.stages.map((s) => s.name));
+      })();
       snapshot = {
         ...snapshot,
         value: "blocked",
@@ -378,6 +454,25 @@ export function restoreWorkflow(taskId: string): WorkflowActor | undefined {
           status: "blocked",
           lastStage: originalState,
           error: `Server restarted during ${originalState}. Use Retry to re-execute.`,
+          // Reset group bookkeeping so Retry re-runs all children cleanly.
+          // Leaving parallelDone / parallelStagedWrites populated would make the
+          // re-entered group skip already-done children (possibly with stale store data).
+          ...(isGroup
+            ? {
+                parallelDone: snapshot.context.parallelDone
+                  ? Object.fromEntries(
+                      Object.entries(snapshot.context.parallelDone).filter(([k]) => k !== originalState),
+                    )
+                  : undefined,
+                parallelStagedWrites: snapshot.context.parallelStagedWrites
+                  ? Object.fromEntries(
+                      Object.entries(snapshot.context.parallelStagedWrites).filter(
+                        ([k]) => !childNamesOfGroup.has(k),
+                      ),
+                    )
+                  : undefined,
+              }
+            : {}),
         },
       };
     }

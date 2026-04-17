@@ -22,12 +22,48 @@ export function pipelineFingerprint(pipeline: PipelineConfig): string {
   }).join("|");
 }
 
+// Per-taskId serialization so two rapid transitions don't race: the write+rename
+// pair is atomic per call, but two concurrent calls can finish out-of-order
+// (younger snapshot overwritten by older one that happens to rename later).
+//
+// No artificial size cap on this map: the earlier version evicted the oldest
+// entry when it exceeded 500 keys, but that evicted entry's promise was still
+// in flight, and the very next call for the same taskId would read back
+// `Promise.resolve()` and race against the pending write — reintroducing the
+// exact race the chain was supposed to prevent. Relying on the finally-delete
+// below keeps the map bounded by the number of tasks with *unsettled* writes,
+// which is naturally small (writes are fast, tasks complete).
+const persistChains = new Map<string, Promise<void>>();
+
 export async function persistSnapshot(taskId: string, actor: { getPersistedSnapshot(): unknown }): Promise<void> {
+  const prev = persistChains.get(taskId) ?? Promise.resolve();
+  // Capture the snapshot data at enqueue time, not at execution time — so the
+  // serialized order reflects the state at each transition, not the last-seen
+  // state when the chain finally runs. If capture itself throws, treat it
+  // like any other persist failure: log internally, don't bubble.
+  let snapshotData: unknown;
+  try {
+    snapshotData = actor.getPersistedSnapshot();
+  } catch (err) {
+    taskLogger(taskId).error({ err }, "persist snapshot: getPersistedSnapshot threw");
+    return;
+  }
+  const next = prev.then(() => writeSnapshotInternal(taskId, snapshotData));
+  persistChains.set(taskId, next);
+  // Once this write settles, if it's still the latest chain entry for the
+  // taskId, drop it so the map stays bounded.
+  next.finally(() => {
+    if (persistChains.get(taskId) === next) persistChains.delete(taskId);
+  }).catch(() => {});
+  await next;
+}
+
+async function writeSnapshotInternal(taskId: string, snapshotData: unknown): Promise<void> {
   const p = snapshotPath(taskId);
   const tmp = `${p}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
   try {
     await mkdir(dirname(p), { recursive: true });
-    await writeFile(tmp, JSON.stringify({ version: SNAPSHOT_VERSION, snapshot: actor.getPersistedSnapshot() }));
+    await writeFile(tmp, JSON.stringify({ version: SNAPSHOT_VERSION, snapshot: snapshotData }));
     await rename(tmp, p);
   } catch (err) {
     taskLogger(taskId).error({ err }, "persist snapshot failed");

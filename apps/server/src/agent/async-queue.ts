@@ -85,11 +85,15 @@ export class AsyncQueue<T> implements AsyncIterable<T> {
     this.aborted = true;
     this.isDone = true;
     this.queue = [];
-    if (this.waitingReject) {
+    // Prefer checking `waiting` (the resolve fn) — `waiting` and `waitingReject`
+    // are always set/cleared together, so this is equivalent today. But the
+    // intent of abort is "if someone is awaiting, unblock them", so the resolve
+    // handle is the primary signal; if the two ever drift, this fails safe.
+    if (this.waiting) {
       const reject = this.waitingReject;
       this.waiting = null;
       this.waitingReject = null;
-      reject(new QueueAbortedError(reason ?? "AsyncQueue aborted"));
+      reject?.(new QueueAbortedError(reason ?? "AsyncQueue aborted"));
     }
   }
 

@@ -157,8 +157,17 @@ export function buildTier1Context(
       addPart(`\n> Context unchanged from previous attempt: ${unchangedLabels.join(", ")}. Use get_store_value() for details.`);
     }
 
-    // List un-injected store keys as indices (Tier 2 references)
-    const otherKeys = Object.keys(store).filter(k => !renderedKeys.has(k) && !k.includes(".__summary") && !k.includes(".__semantic_summary"));
+    // List un-injected store keys as indices (Tier 2 references).
+    // Exclude framework-internal sentinels (e.g. __pipeline_depth) and the
+    // `.__summary` / `.__semantic_summary` derivatives — surfacing them in
+    // agent context leaks implementation details and wastes tokens.
+    const otherKeys = Object.keys(store).filter(
+      (k) =>
+        !renderedKeys.has(k) &&
+        !k.startsWith("__") &&
+        !k.includes(".__summary") &&
+        !k.includes(".__semantic_summary"),
+    );
     if (otherKeys.length > 0) {
       parts.push("\n## Other Available Context (use get_store_value tool to read these)");
       parts.push(otherKeys.map(k => `- ${k}`).join("\n"));

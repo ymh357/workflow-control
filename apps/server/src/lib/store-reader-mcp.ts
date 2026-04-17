@@ -12,6 +12,7 @@ export function createStoreReaderMcp(
   store: Record<string, unknown>,
   scratchPad?: ScratchPadEntry[],
   currentStage?: string,
+  taskId?: string,
 ) {
   return createSdkMcpServer({
     name: "__store__",
@@ -143,9 +144,41 @@ export function createStoreReaderMcp(
                   category: args.category as string,
                   content,
                 };
+                // Dispatch through the state machine so XState owns the
+                // scratchPad array; avoids orphaned-array bugs when the
+                // caller's reference was a `?? []` default.
+                //
+                // A root-level event sent to a final-state XState actor is
+                // silently discarded by the runtime. To avoid lying to the
+                // caller about persistence in that corner case (agent calls
+                // append after the stage has already terminated), check the
+                // snapshot status before counting the dispatch as successful.
+                let dispatched = false;
+                if (taskId) {
+                  try {
+                    const { getWorkflow } = await import("../machine/actor-registry.js");
+                    const actor = getWorkflow(taskId);
+                    if (actor) {
+                      const snap = actor.getSnapshot?.();
+                      const xstateStatus = (snap as { status?: string } | undefined)?.status;
+                      const domainStatus = (snap as { context?: { status?: string } } | undefined)?.context?.status;
+                      const isTerminal =
+                        xstateStatus === "done" || xstateStatus === "error" || xstateStatus === "stopped" ||
+                        domainStatus === "completed" || domainStatus === "error" || domainStatus === "cancelled";
+                      if (!isTerminal) {
+                        actor.send({ type: "APPEND_SCRATCH_PAD", entry });
+                        dispatched = true;
+                      }
+                    }
+                  } catch { /* fall through to local push */ }
+                }
+                // Local mirror — keeps `read_scratch_pad` working within the
+                // same stage (the MCP closure still reads from this array).
+                // It's OK if this array is orphan-free: the authoritative copy
+                // lives in context.scratchPad via the APPEND event above.
                 scratchPad.push(entry);
                 return {
-                  content: [{ type: "text" as const, text: `Scratch pad entry appended (${scratchPad.length} total entries).` }],
+                  content: [{ type: "text" as const, text: `Scratch pad entry appended (${scratchPad.length} total entries)${dispatched ? "" : " [local-only]"}.` }],
                 };
               },
             },

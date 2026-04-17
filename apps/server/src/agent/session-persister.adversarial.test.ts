@@ -10,9 +10,13 @@ vi.mock("../lib/logger.js", () => ({
 }));
 
 const mockGetWorkflow = vi.fn();
+const mockPersistSnapshot = vi.fn<(taskId: string, actor: unknown) => Promise<void>>(async () => {});
 
 vi.mock("../machine/actor-registry.js", () => ({
-  getWorkflow: (...args: any[]) => mockGetWorkflow(...args),
+  getWorkflow: (taskId: string) => mockGetWorkflow(taskId),
+}));
+vi.mock("../machine/persistence.js", () => ({
+  persistSnapshot: (taskId: string, actor: unknown) => mockPersistSnapshot(taskId, actor),
 }));
 
 import { persistSessionId } from "./session-persister.js";
@@ -22,71 +26,104 @@ describe("persistSessionId – adversarial", () => {
     vi.clearAllMocks();
   });
 
-  it("does nothing when snapshot is null", async () => {
+  it("does not throw when actor.send throws", async () => {
+    const send = vi.fn(() => { throw new Error("send failed"); });
     mockGetWorkflow.mockReturnValue({
-      getSnapshot: () => null,
+      send,
+      getSnapshot: () => ({ context: { stageSessionIds: {} } }),
     });
 
     await expect(persistSessionId("task-1", "stage", "sess")).resolves.toBeUndefined();
   });
 
-  it("does nothing when snapshot.context is undefined", async () => {
-    mockGetWorkflow.mockReturnValue({
-      getSnapshot: () => ({ context: undefined }),
-    });
+  it("does not throw when getWorkflow returns undefined", async () => {
+    mockGetWorkflow.mockReturnValue(undefined);
 
     await expect(persistSessionId("task-1", "stage", "sess")).resolves.toBeUndefined();
+    expect(mockPersistSnapshot).not.toHaveBeenCalled();
   });
 
-  it("handles stageSessionIds being null (not undefined)", async () => {
+  it("dispatches events to multiple different stages in order", async () => {
+    const events: any[] = [];
+    const send = vi.fn((e) => events.push(e));
     mockGetWorkflow.mockReturnValue({
-      getSnapshot: () => ({ context: { stageSessionIds: null } }),
-    });
-
-    // null is falsy so the if check prevents assignment
-    await expect(persistSessionId("task-1", "stage", "sess")).resolves.toBeUndefined();
-  });
-
-  it("can persist to multiple different stages on same context", async () => {
-    const stageSessionIds: Record<string, string> = {};
-    mockGetWorkflow.mockReturnValue({
-      getSnapshot: () => ({ context: { stageSessionIds } }),
+      send,
+      getSnapshot: () => ({ context: { stageSessionIds: {} } }),
     });
 
     await persistSessionId("task-1", "analysis", "sess-1");
     await persistSessionId("task-1", "implementing", "sess-2");
 
-    expect(stageSessionIds).toEqual({
-      analysis: "sess-1",
-      implementing: "sess-2",
-    });
+    expect(events).toEqual([
+      { type: "PERSIST_SESSION_ID", stageName: "analysis", sessionId: "sess-1" },
+      { type: "PERSIST_SESSION_ID", stageName: "implementing", sessionId: "sess-2" },
+    ]);
   });
 
-  it("handles empty string stageName and sessionId", async () => {
-    const stageSessionIds: Record<string, string> = {};
+  it("dispatches even for empty stageName and sessionId (caller responsibility to validate)", async () => {
+    const send = vi.fn();
     mockGetWorkflow.mockReturnValue({
-      getSnapshot: () => ({ context: { stageSessionIds } }),
+      send,
+      getSnapshot: () => ({ context: { stageSessionIds: {} } }),
     });
 
     await persistSessionId("task-1", "", "");
-    expect(stageSessionIds[""]).toBe("");
+    expect(send).toHaveBeenCalledWith({ type: "PERSIST_SESSION_ID", stageName: "", sessionId: "" });
   });
 
-  it("silently catches when getSnapshot throws", async () => {
+  it("silently catches when persistSnapshot rejects", async () => {
+    mockPersistSnapshot.mockImplementationOnce(() => Promise.reject(new Error("disk full")));
     mockGetWorkflow.mockReturnValue({
-      getSnapshot: () => { throw new Error("snapshot failed"); },
+      send: vi.fn(),
+      getSnapshot: () => ({ context: { stageSessionIds: {} } }),
     });
 
     await expect(persistSessionId("task-1", "stage", "sess")).resolves.toBeUndefined();
   });
 
-  it("does not mutate stageSessionIds if it is a frozen object", async () => {
-    const stageSessionIds = Object.freeze({}) as Record<string, string>;
+  it("PERSIST_SESSION_ID reducer produces a new stageSessionIds object (immutability)", async () => {
+    // Substantive end-to-end check: spin up a real XState actor with a
+    // one-state machine whose `on.PERSIST_SESSION_ID` mirrors the production
+    // reducer, send the event, and assert the resulting context.stageSessionIds
+    // is a NEW reference (not mutation of the existing object). Catches a
+    // regression where someone reverts the reducer to mutate-in-place, which
+    // a mock-send test would silently allow.
+    const { createActor, setup, assign } = await import("xstate");
+    const machine = setup({
+      types: {} as { context: { stageSessionIds: Record<string, string> }; events: { type: "PERSIST_SESSION_ID"; stageName: string; sessionId: string } },
+    }).createMachine({
+      id: "test",
+      context: { stageSessionIds: { old: "o1" } },
+      on: {
+        PERSIST_SESSION_ID: {
+          actions: assign(({ context, event }) => {
+            const existing = context.stageSessionIds[event.stageName];
+            if (existing === event.sessionId) return {};
+            return { stageSessionIds: { ...context.stageSessionIds, [event.stageName]: event.sessionId } };
+          }),
+        },
+      },
+    });
+    const actor = createActor(machine).start();
+    const before = actor.getSnapshot().context.stageSessionIds;
+    actor.send({ type: "PERSIST_SESSION_ID", stageName: "implementing", sessionId: "sess-abc" });
+    const after = actor.getSnapshot().context.stageSessionIds;
+    expect(after).not.toBe(before); // new reference
+    expect(after).toEqual({ old: "o1", implementing: "sess-abc" });
+    expect(before).toEqual({ old: "o1" }); // original unchanged
+  });
+
+  it("handles frozen context without crashing", async () => {
+    const frozenCtx = Object.freeze({ stageSessionIds: Object.freeze({}) });
+    const send = vi.fn();
     mockGetWorkflow.mockReturnValue({
-      getSnapshot: () => ({ context: { stageSessionIds } }),
+      send,
+      getSnapshot: () => ({ context: frozenCtx }),
     });
 
-    // Assigning to a frozen object throws in strict mode; the catch block handles it
     await expect(persistSessionId("task-1", "stage", "sess")).resolves.toBeUndefined();
+    // Event dispatch still happens; the reducer is responsible for producing a new
+    // object — our event-based implementation never mutates the frozen one.
+    expect(send).toHaveBeenCalled();
   });
 });

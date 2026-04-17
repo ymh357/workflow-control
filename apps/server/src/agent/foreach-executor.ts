@@ -101,6 +101,19 @@ export async function runForeach(
   const autoCommit = runtime.auto_commit !== false;
   const timestamp = Date.now();
 
+  // Snapshot sub-task IDs that already exist so cleanup only touches tasks we
+  // spawned during THIS foreach run. Prefix-based sweeping would otherwise
+  // also tear down: (a) a previous failed run's still-blocked sub-tasks the
+  // user hasn't retried yet, (b) a concurrent sibling foreach with the same
+  // stageName that happens to be mid-flight.
+  const preExistingSubTaskIds = new Set<string>();
+  {
+    const matchPrefix = `${parentTaskId}-sub-${stageName}-item-`;
+    for (const [id] of getAllWorkflows()) {
+      if (id.startsWith(matchPrefix)) preExistingSubTaskIds.add(id);
+    }
+  }
+
   // Track worktree info for cleanup
   const itemWorktrees: (ItemWorktreeInfo | null)[] = new Array(items.length).fill(null);
 
@@ -247,7 +260,7 @@ export async function runForeach(
   // Cleanup: cancel any sub-tasks that are still running or blocked.
   // This handles cases where items timed out (on_item_error: continue) but the
   // sub-task actor was left dangling in running/blocked state.
-  cleanupDanglingSubTasks(parentTaskId, stageName, log);
+  cleanupDanglingSubTasks(parentTaskId, stageName, preExistingSubTaskIds, log);
 
   log.info({ stageName, itemCount: items.length }, "Foreach iteration complete");
 
@@ -294,6 +307,7 @@ export async function runForeach(
 function cleanupDanglingSubTasks(
   parentTaskId: string,
   stageName: string,
+  excludeIds: Set<string>,
   log: ReturnType<typeof taskLogger>,
 ): void {
   const prefix = `${parentTaskId}-sub-${stageName}-item-`;
@@ -302,6 +316,9 @@ function cleanupDanglingSubTasks(
 
   for (const [taskId, actor] of getAllWorkflows()) {
     if (!taskId.startsWith(prefix)) continue;
+    // Skip sub-tasks that existed before this foreach run — they belong to a
+    // previous execution or a concurrent sibling, not to us.
+    if (excludeIds.has(taskId)) continue;
     const status = actor.getSnapshot().context?.status;
     if (status && !terminalStates.has(status)) {
       try {

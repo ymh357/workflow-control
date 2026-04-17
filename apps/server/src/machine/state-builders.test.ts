@@ -495,11 +495,14 @@ describe("buildHumanGateState basic structure", () => {
     expect(on.REJECT.target).toBe("cancelled");
   });
 
-  it("REJECT_WITH_FEEDBACK has two handlers (feedback loop and fallback)", () => {
+  it("REJECT_WITH_FEEDBACK has three handlers (feedback loop, fallback, invalid-target)", () => {
+    // The third handler surfaces a wf.error when an explicit targetStage is
+    // supplied but doesn't resolve to a known parallel child — prevents silent
+    // fallthrough to the default feedback target with the wrong stage.
     const state = buildHumanGateState("next", "prev", makeGateStage());
     const on = state.on as Record<string, unknown[]>;
     expect(Array.isArray(on.REJECT_WITH_FEEDBACK)).toBe(true);
-    expect((on.REJECT_WITH_FEEDBACK as unknown[]).length).toBe(2);
+    expect((on.REJECT_WITH_FEEDBACK as unknown[]).length).toBe(3);
   });
 });
 

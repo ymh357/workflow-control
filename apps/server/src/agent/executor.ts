@@ -184,17 +184,107 @@ export async function runAgentSingleSession(
     ? flattenStages(pipeline.stages).find((s) => s.name === stageName)
     : undefined;
 
+  // When the "stage" is actually a parallel-group name, flattenStages won't
+  // find it (groups aren't in the flat list). In single-session parallel mode
+  // the whole group runs as one agent invocation, so we need to size its
+  // budget from the children — otherwise maxTurns/maxBudgetUsd fall back to
+  // the hard-coded defaults (30 turns / $2) regardless of what the pipeline
+  // author configured on individual children.
+  let groupChildren: any[] | undefined;
+  if (!privateStage && input.parallelGroup?.stages?.length) {
+    groupChildren = input.parallelGroup.stages;
+  }
+  const mergedMaxTurns = groupChildren
+    ? groupChildren.reduce((sum, s) => sum + (s.max_turns ?? 30), 0)
+    : (privateStage?.max_turns ?? 30);
+  const mergedMaxBudgetUsd = groupChildren
+    ? groupChildren.reduce((sum, s) => sum + (s.max_budget_usd ?? 2), 0)
+    : (privateStage?.max_budget_usd ?? 2);
+  const mergedMcpServices = groupChildren
+    ? Array.from(new Set(groupChildren.flatMap((s) => s.mcps ?? []))) as string[]
+    : ((privateStage?.mcps ?? []) as string[]);
+  // Pick the strongest child config for ambiguous fields (effort/permissionMode/thinking):
+  // - effort: "max" > "high" > "medium" > "low"
+  // - permissionMode: use the least restrictive ("bypassPermissions" > "acceptEdits" > others)
+  //   since the single session needs to do whatever any child needs.
+  const effortRank: Record<string, number> = { low: 1, medium: 2, high: 3, max: 4 };
+  const pickMaxEffort = (stages: any[]): "low" | "medium" | "high" | "max" | undefined => {
+    let best: string | undefined;
+    for (const s of stages) {
+      const e = s.effort as string | undefined;
+      if (!e) continue;
+      if (!best || (effortRank[e] ?? 0) > (effortRank[best] ?? 0)) best = e;
+    }
+    return best as any;
+  };
+  const mergedEffort = groupChildren ? pickMaxEffort(groupChildren) : privateStage?.effort;
+  const permRank: Record<string, number> = {
+    plan: 1,
+    default: 2,
+    dontAsk: 3,
+    acceptEdits: 4,
+    bypassPermissions: 5,
+  };
+  const pickMaxPerm = (stages: any[]): string => {
+    let best = "bypassPermissions";
+    let bestRank = 0;
+    for (const s of stages) {
+      const p = s.permission_mode as string | undefined;
+      if (!p) continue;
+      const r = permRank[p] ?? 0;
+      if (r > bestRank) { best = p; bestRank = r; }
+    }
+    return bestRank > 0 ? best : "bypassPermissions";
+  };
+  const mergedPermissionMode = groupChildren
+    ? pickMaxPerm(groupChildren)
+    : (privateStage?.permission_mode ?? "bypassPermissions");
+  const mergedThinking = groupChildren
+    ? (groupChildren.some((s) => s.thinking?.type === "enabled") ? { type: "enabled" as const } : { type: "disabled" as const })
+    : (privateStage?.thinking
+      ? { type: privateStage.thinking.type as "enabled" | "disabled" | "adaptive" }
+      : { type: "disabled" as const });
+  // stageTimeoutSec: take the max so the group gets enough time for the slowest child.
+  const mergedStageTimeoutSec = groupChildren
+    ? Math.max(...groupChildren.map((s) => s.stage_timeout_sec ?? 0))
+    : privateStage?.stage_timeout_sec;
+
+  // Surface per-stage permission/thinking settings that had to be escalated to
+  // fit the single-session group. In multi-session mode each child runs in its
+  // own SDK query with its own permissionMode; in single-session they share one
+  // session, so we pick the least-restrictive across children. Pipeline authors
+  // who relied on per-stage isolation need to know their stricter per-stage
+  // settings are being ignored.
+  if (groupChildren && groupChildren.length > 1) {
+    const distinctPerms = Array.from(
+      new Set(groupChildren.map((s) => (s.permission_mode as string | undefined) ?? "(default)")),
+    );
+    const distinctThinkings = Array.from(
+      new Set(groupChildren.map((s) => ((s.thinking?.type as string | undefined) ?? "(none)"))),
+    );
+    if (distinctPerms.length > 1) {
+      taskLogger(taskId, stageName).warn(
+        { children: groupChildren.map((s) => s.name), childPerms: distinctPerms, effectivePerm: mergedPermissionMode },
+        "single-session group escalated permission_mode to the least-restrictive across children; per-stage isolation is NOT preserved in this mode",
+      );
+    }
+    if (distinctThinkings.length > 1) {
+      taskLogger(taskId, stageName).warn(
+        { children: groupChildren.map((s) => s.name), childThinking: distinctThinkings, effectiveThinking: mergedThinking.type },
+        "single-session group runs with enabled-if-any thinking; per-stage thinking config diverges",
+      );
+    }
+  }
+
   const stageConfig = {
     model: privateStage?.model || settings.agent?.claude_model,
-    effort: privateStage?.effort,
-    mcpServices: (privateStage?.mcps ?? []) as string[],
-    permissionMode: (privateStage?.permission_mode ?? "bypassPermissions"),
-    maxTurns: privateStage?.max_turns ?? 30,
-    maxBudgetUsd: privateStage?.max_budget_usd ?? 2,
-    thinking: privateStage?.thinking
-      ? { type: privateStage.thinking.type as "enabled" | "disabled" | "adaptive" }
-      : { type: "disabled" as const },
-    stageTimeoutSec: privateStage?.stage_timeout_sec,
+    effort: mergedEffort,
+    mcpServices: mergedMcpServices,
+    permissionMode: mergedPermissionMode,
+    maxTurns: mergedMaxTurns,
+    maxBudgetUsd: mergedMaxBudgetUsd,
+    thinking: mergedThinking,
+    stageTimeoutSec: mergedStageTimeoutSec && mergedStageTimeoutSec > 0 ? mergedStageTimeoutSec : undefined,
   };
 
   const result = await mgr.executeStage({

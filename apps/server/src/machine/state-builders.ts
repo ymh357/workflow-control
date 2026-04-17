@@ -172,11 +172,17 @@ export function buildAgentState(
   nextTarget: string,
   _prevAgentTarget: string,
   stage: AgentStageConfig,
-  opts?: { blockedTarget?: string; statePrefix?: string; sessionMode?: "multi" | "single" },
+  opts?: { blockedTarget?: string; statePrefix?: string; sessionMode?: "multi" | "single"; parallelGroupName?: string },
 ): StateNode {
   const stateName = stage.name;
   const { runtime } = stage;
   const statePrefix = opts?.statePrefix ?? "";
+  // When this stage lives inside a parallel group's region, back_to targets a
+  // sibling child stage — addressable as `#workflow.<groupName>.<sibling>` so
+  // XState re-enters the sibling region (which then runs its child's initial →
+  // running state). A bare `#workflow.<sibling>` would look up a top-level
+  // state and silently fail to match, leaving the transition dead.
+  const parallelGroupName = opts?.parallelGroupName;
 
   return {
     entry: statusEntry(stateName),
@@ -356,10 +362,13 @@ export function buildAgentState(
               return val && typeof val === "object" && (val as Record<string, unknown>).passed === false;
             });
           },
-          target: statePrefix ? `${statePrefix}.${runtime.retry.back_to}` : runtime.retry.back_to,
+          target: parallelGroupName
+            ? `${statePrefix}.${parallelGroupName}.${runtime.retry.back_to}`
+            : (statePrefix ? `${statePrefix}.${runtime.retry.back_to}` : runtime.retry.back_to),
           actions: [
             assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
-              let store = context.store ?? {};
+              // Clone to preserve XState context immutability — applyStoreUpdates mutates in-place.
+              const store = { ...(context.store ?? {}) };
               if (runtime.writes?.length && event.output?.resultText) {
                 const parsed = getCachedParse(event.output);
                 if (parsed) {
@@ -387,6 +396,19 @@ export function buildAgentState(
                 }
               }
               const priorFeedbackQa = makePriorFeedback(context.resumeInfo?.feedback);
+              // Inside a parallel group, removing `backTo` from parallelDone[group]
+              // ensures its region's initial always-guard targets the running state
+              // rather than jumping to the already-done state.
+              let nextParallelDone = context.parallelDone;
+              if (parallelGroupName) {
+                const groupDone = context.parallelDone?.[parallelGroupName];
+                if (groupDone?.includes(backTo)) {
+                  nextParallelDone = {
+                    ...context.parallelDone,
+                    [parallelGroupName]: groupDone.filter((n) => n !== backTo),
+                  };
+                }
+              }
               return {
                 store,
                 qaRetryCount: (context.qaRetryCount ?? 0) + 1,
@@ -397,6 +419,7 @@ export function buildAgentState(
                 stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
                 stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
                 stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
+                ...(parallelGroupName ? { parallelDone: nextParallelDone } : {}),
                 scratchPad: freshScratchPad(context),
               };
             }),
@@ -547,7 +570,8 @@ export function buildAgentState(
           target: nextTarget,
           actions: [
             assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
-              let store = context.store ?? {};
+              // Clone to preserve XState context immutability — applyStoreUpdates mutates in-place.
+              const store = { ...(context.store ?? {}) };
               let parallelStagedWrites = context.parallelStagedWrites;
               if (runtime.writes?.length && event.output?.resultText) {
                 const parsed = getCachedParse(event.output);
@@ -686,7 +710,8 @@ export function buildScriptState(
         target: nextTarget,
         actions: [
           assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
-            let store = context.store ?? {};
+            // Clone to preserve XState context immutability — applyStoreUpdates mutates in-place.
+            const store = { ...(context.store ?? {}) };
             const output = event.output;
 
             if (runtime.writes?.length && output !== undefined) {
@@ -704,12 +729,26 @@ export function buildScriptState(
               }
             }
 
+            // worktreePath can arrive from a script in one of two shapes: a bare
+            // string (direct write), or `{ worktreePath: "..." }` (git_worktree script's
+            // object contract). Anything else must be rejected — a misconfigured
+            // agent writing an unrelated object here would otherwise make context.worktreePath
+            // a non-string, breaking every subsequent `execFileSync({ cwd })`.
+            const rawWtp: unknown = (store as Record<string, unknown>).worktreePath;
+            let resolvedWorktreePath: string | undefined = context.worktreePath;
+            if (typeof rawWtp === "string" && rawWtp.length > 0) {
+              resolvedWorktreePath = rawWtp;
+            } else if (rawWtp && typeof rawWtp === "object" && typeof (rawWtp as Record<string, unknown>).worktreePath === "string") {
+              resolvedWorktreePath = (rawWtp as Record<string, string>).worktreePath;
+            }
+            const rawBranch: unknown = (store as Record<string, unknown>).branch;
+            const resolvedBranch = typeof rawBranch === "string" ? rawBranch : context.branch;
             return {
               store,
               retryCount: 0,
               stageRetryCount: resetStageRetryCount(context, stateName),
-              branch: store.branch ?? context.branch,
-              worktreePath: store.worktreePath?.worktreePath ?? store.worktreePath ?? context.worktreePath,
+              branch: resolvedBranch,
+              worktreePath: resolvedWorktreePath,
               completedStages: [...(context.completedStages ?? []), stateName],
               executionHistory: [...(context.executionHistory ?? []), { stage: stateName, action: "completed" as const, timestamp: new Date().toISOString() }],
             };
@@ -805,7 +844,15 @@ export function buildHumanGateState(
       REJECT_WITH_FEEDBACK: [
         {
           target: feedbackTarget,
-          guard: ({ context }: { context: WorkflowContext }) => (context.qaRetryCount ?? 0) < (stage.max_feedback_loops ?? 5),
+          guard: ({ context, event }: { context: WorkflowContext; event?: WorkflowEvent }) => {
+            if ((context.qaRetryCount ?? 0) >= (stage.max_feedback_loops ?? 5)) return false;
+            // If caller passed an explicit targetStage, validate it resolves to a
+            // known parallel child — otherwise treat as malformed and fall through
+            // to the invalid-target handler below.
+            const ts = (event as { targetStage?: string } | undefined)?.targetStage;
+            if (ts && !childToGroup?.get(ts)) return false;
+            return true;
+          },
           actions: [
             assign(({ event, context }: { event: WorkflowEvent; context: WorkflowContext }) => {
               const feedback = (event as { feedback?: string }).feedback || "Please review and fix the issues.";
@@ -819,14 +866,42 @@ export function buildHumanGateState(
             }),
           ],
         },
+        // Feedback-loop exhausted: the default fallback target. Kept at index 1
+        // so existing tests that assert `REJECT_WITH_FEEDBACK[1].target` still pass.
         {
           target: resolvedRejectTarget ?? "error",
+          guard: ({ context, event }: { context: WorkflowContext; event?: WorkflowEvent }) => {
+            // Only claim this transition when the feedback loop is actually exhausted —
+            // not when the handler failed the targetStage validation above. Otherwise a
+            // malformed targetStage would silently drop into the "loop limit" path.
+            const exhausted = (context.qaRetryCount ?? 0) >= (stage.max_feedback_loops ?? 5);
+            if (!exhausted) return false;
+            const ts = (event as { targetStage?: string } | undefined)?.targetStage;
+            // If targetStage is set but invalid, the invalid-target handler below claims it.
+            if (ts && !childToGroup?.get(ts)) return false;
+            return true;
+          },
           actions: [
             assign({ error: `Feedback loop limit reached (max ${stage.max_feedback_loops ?? 5} iterations)` }),
             emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
               type: "wf.error",
               taskId: context.taskId,
               error: "Feedback loop limit reached",
+            })),
+          ],
+        },
+        // targetStage provided but invalid → emit a visible error without
+        // consuming a feedback-loop slot or transitioning to a wrong stage.
+        {
+          guard: ({ event }: { event?: WorkflowEvent }) => {
+            const ts = (event as { targetStage?: string } | undefined)?.targetStage;
+            return !!(ts && !childToGroup?.get(ts));
+          },
+          actions: [
+            emit(({ context, event }: { context: WorkflowContext; event: WorkflowEvent }): WorkflowEmittedEvent => ({
+              type: "wf.error",
+              taskId: context.taskId,
+              error: `REJECT_WITH_FEEDBACK: invalid targetStage "${(event as { targetStage?: string }).targetStage}" — not a known parallel child.`,
             })),
           ],
         },
@@ -1124,7 +1199,10 @@ export function buildParallelGroupState(
 
   const groupName = group.name;
   const regions: Record<string, StateNode> = {};
-  const stageOpts = { blockedTarget: "#workflow.blocked", statePrefix: "#workflow" };
+  // parallelGroupName makes back_to targets resolve to `#workflow.<group>.<sibling>`
+  // rather than the broken `#workflow.<sibling>` (top-level lookup, never matches
+  // a region name — the transition would silently no-op).
+  const stageOpts = { blockedTarget: "#workflow.blocked", statePrefix: "#workflow", parallelGroupName: groupName };
 
   for (const stage of group.stages) {
     const builder = getStageBuilder(stage);
@@ -1180,10 +1258,31 @@ export function buildParallelGroupState(
             rejectIntoGroup: undefined,
           };
         }
+        // Defense-in-depth for RETRY after a partial selective-re-run: if
+        // `parallelDone[group]` was left in a partial state AND the last stage
+        // tracked on the context is the group itself, clear the skip list so
+        // every failed child re-runs. In the normal code path, parallelDone
+        // is kept tidy — onDone clears it, actor-registry.restoreWorkflow
+        // explicitly drops parallelDone[group] on migrate-to-blocked. This
+        // branch primarily catches the (legitimate) restore-followed-by-RETRY
+        // flow where lastStage was set to groupName during migration, and any
+        // future code path that surfaces a partial skip list under the same
+        // lastStage signature.
+        const done = context.parallelDone?.[groupName];
+        if (done && done.length > 0 && done.length < allChildNames.length && context.lastStage === groupName) {
+          const { [groupName]: _drop, ...rest } = context.parallelDone ?? {};
+          return {
+            status: groupName,
+            parallelDone: Object.keys(rest).length > 0 ? rest : undefined,
+            rejectIntoGroup: undefined,
+          };
+        }
         // Normal entry / RETRY / RESUME: leave parallelDone as-is.
         // - First entry: parallelDone[group] doesn't exist yet → all children run.
-        // - RETRY from blocked: parallelDone[group] has completed children → only failed ones re-run.
-        // - After onDone (retry back_to): onDone already cleared parallelDone[group] → all children run.
+        // - RETRY from blocked inside group: partial done list is preserved
+        //   when the user explicitly wants to resume mid-group (lastStage is a
+        //   child, not the group itself).
+        // - After onDone (retry back_to): onDone already cleared parallelDone[group].
         return { status: groupName, rejectIntoGroup: undefined };
       }),
       emitStatus(groupName),
@@ -1448,8 +1547,14 @@ export function buildSingleSessionParallelState(
         },
         // Guard 3: retries exhausted → blocked (empty/unparseable/missing output)
         {
-          guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
+          guard: ({ event, context }: { event: { output: { resultText: string; verifyFailed?: boolean } }; context: WorkflowContext }) => {
             if (combinedWrites.length === 0) return false;
+            // Yield to verify-retry guards (4/5) when verification failed but
+            // retries remain — otherwise a verify failure with empty resultText
+            // would blocked here before the verify retry loop gets a chance.
+            if (hasVerify && event.output?.verifyFailed && getVerifyRetryCount(context, groupName) < groupVerifyMaxRetries) {
+              return false;
+            }
             if (!event.output.resultText) return true;
             const parsed = getCachedParse(event.output);
             if (!parsed) return true;

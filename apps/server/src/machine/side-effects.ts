@@ -13,7 +13,6 @@ import { questionManager } from "../lib/question-manager.js";
 import { safeFire } from "../lib/safe-fire.js";
 import { taskLogger } from "../lib/logger.js";
 import { emitWorkflowEvent, clearEventCounter } from "./event-emitter.js";
-import { readFileSync, writeFileSync, renameSync } from "node:fs";
 import path, { join } from "node:path";
 import { loadSystemSettings } from "../lib/config-loader.js";
 
@@ -24,18 +23,34 @@ interface EmittingActor {
   ) => { unsubscribe(): void };
 }
 
-function updatePipelineIndex(taskId: string, pipelineName: string): void {
+// Serialize pipeline-index updates so concurrent task completions don't
+// clobber each other's entries. Read-modify-write without a lock would drop
+// updates whenever two tasks complete within the same microtask window.
+let indexWriteChain: Promise<void> = Promise.resolve();
+
+async function updatePipelineIndexSerialized(taskId: string, pipelineName: string): Promise<void> {
   try {
     const settings = loadSystemSettings();
     const dataDir = settings.paths?.data_dir || "/tmp/workflow-control-data";
     const indexPath = join(dataDir, "tasks", "_pipeline_index.json");
+    const { readFile, writeFile, rename, mkdir } = await import("node:fs/promises");
+    await mkdir(join(dataDir, "tasks"), { recursive: true });
     let index: Record<string, { taskId: string; completedAt: string }> = {};
-    try { index = JSON.parse(readFileSync(indexPath, "utf-8")); } catch { /* no index yet */ }
+    try {
+      const raw = await readFile(indexPath, "utf-8");
+      index = JSON.parse(raw);
+    } catch { /* no index yet — fine */ }
     index[pipelineName] = { taskId, completedAt: new Date().toISOString() };
-    const tmp = `${indexPath}.tmp.${Date.now()}`;
-    writeFileSync(tmp, JSON.stringify(index, null, 2));
-    renameSync(tmp, indexPath);
+    const tmp = `${indexPath}.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`;
+    await writeFile(tmp, JSON.stringify(index, null, 2));
+    await rename(tmp, indexPath);
   } catch { /* non-blocking */ }
+}
+
+function updatePipelineIndex(taskId: string, pipelineName: string): void {
+  // Chain onto the previous write so reads see completed writes; chain
+  // keeps propagating even if one task fails (swallow inside serialized).
+  indexWriteChain = indexWriteChain.then(() => updatePipelineIndexSerialized(taskId, pipelineName));
 }
 
 const registeredActors = new WeakSet<object>();

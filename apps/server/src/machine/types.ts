@@ -78,7 +78,9 @@ export type WorkflowEvent =
   | { type: "RETRY_FROM"; fromStage: string }
   | { type: "SYNC_RETRY"; sessionId: string }
   | { type: "CANCEL" }
-  | { type: "RESUME" };
+  | { type: "RESUME" }
+  | { type: "PERSIST_SESSION_ID"; stageName: string; sessionId: string }
+  | { type: "APPEND_SCRATCH_PAD"; entry: ScratchPadEntry };
 
 /** Terminal workflow states — no further stage transitions will occur. */
 export const TERMINAL_STATES = new Set(["completed", "error", "cancelled"]);

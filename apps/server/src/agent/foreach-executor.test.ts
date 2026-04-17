@@ -88,13 +88,26 @@ describe("runForeach", () => {
     });
 
     expect(mockRunPipelineCall).toHaveBeenCalledTimes(3);
-    expect(result).toEqual({
+    // Cross-item consistency annotation (__consistencyWarnings) is added when
+    // items produce different values for the same leaf path — match the core
+    // outcomes with objectContaining rather than strict equality.
+    expect(result).toMatchObject({
       results: [
-        { outcome: "done-a" },
-        { outcome: "done-b" },
-        { outcome: "done-c" },
+        expect.objectContaining({ outcome: "done-a" }),
+        expect.objectContaining({ outcome: "done-b" }),
+        expect.objectContaining({ outcome: "done-c" }),
       ],
     });
+    expect((result as any).results.length).toBe(3);
+    // Whitelist the keys each result is allowed to have — otherwise a future
+    // regression that leaks internal fields (e.g. __pipeline_depth) past the
+    // foreach boundary would pass toMatchObject silently.
+    const ALLOWED_RESULT_KEYS = new Set(["outcome", "__error", "__consistencyWarnings", "__branch", "__filesChanged", "__diffStat", "__conflictRisk", "__overlapsWithItems"]);
+    for (const r of (result as any).results) {
+      for (const k of Object.keys(r)) {
+        expect(ALLOWED_RESULT_KEYS.has(k)).toBe(true);
+      }
+    }
   });
 
   it("injects item_var into each sub-pipeline's context store", async () => {
@@ -131,13 +144,14 @@ describe("runForeach", () => {
       taskId: "p", stageName: "loop", context: makeContext(), runtime: makeRuntime({ on_item_error: "continue" }),
     });
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       results: [
-        { outcome: "ok-a" },
-        { __error: "b failed" },
-        { outcome: "ok-c" },
+        expect.objectContaining({ outcome: "ok-a" }),
+        expect.objectContaining({ __error: "b failed" }),
+        expect.objectContaining({ outcome: "ok-c" }),
       ],
     });
+    expect((result as any).results.length).toBe(3);
   });
 
   it("throws when items is not an array", async () => {
@@ -354,25 +368,46 @@ describe("runForeach", () => {
       .mockRejectedValueOnce(new Error("timed out"))
       .mockResolvedValueOnce({ outcome: "ok-c" });
 
-    // Simulate a dangling sub-task left in "blocked" state by the timed-out item
     const danglingActor = { getSnapshot: () => ({ context: { status: "blocked" } }) };
     const completedActor = { getSnapshot: () => ({ context: { status: "completed" } }) };
-    mockGetAllWorkflows.mockReturnValue(new Map([
-      ["p-sub-loop-item-1-12345", danglingActor],
-      ["p-sub-loop-item-0-12345", completedActor],
-      ["unrelated-task", completedActor],
-    ]));
+    const preExistingSibling = { getSnapshot: () => ({ context: { status: "blocked" } }) };
+
+    // The foreach now snapshots pre-existing sub-task IDs at start to avoid
+    // clobbering a prior run's or concurrent sibling's blocked tasks. Simulate:
+    // - before foreach runs: only "preExistingSibling" exists (should NOT be cancelled)
+    // - after foreach runs: the dangling item appears (SHOULD be cancelled)
+    let getAllCallCount = 0;
+    mockGetAllWorkflows.mockImplementation(() => {
+      getAllCallCount++;
+      if (getAllCallCount === 1) {
+        // Called from foreach-executor to capture the pre-existing snapshot.
+        return new Map<string, any>([
+          ["p-sub-loop-item-1-99999", preExistingSibling],
+          ["unrelated-task", completedActor],
+        ]);
+      }
+      // Subsequent calls (cleanup pass) see the dangling task too.
+      return new Map<string, any>([
+        ["p-sub-loop-item-1-99999", preExistingSibling],
+        ["p-sub-loop-item-1-12345", danglingActor],
+        ["p-sub-loop-item-0-12345", completedActor],
+        ["unrelated-task", completedActor],
+      ]);
+    });
 
     await runForeach("", {
       taskId: "p", stageName: "loop", context: makeContext(), runtime: makeRuntime({ on_item_error: "continue" }),
     });
 
-    // The dangling "blocked" sub-task should be cancelled
+    // Only the newly-appeared dangling "blocked" sub-task should be cancelled.
     expect(mockSendEvent).toHaveBeenCalledWith("p-sub-loop-item-1-12345", { type: "CANCEL" });
     expect(mockCancelTask).toHaveBeenCalledWith("p-sub-loop-item-1-12345");
 
-    // Completed sub-tasks and unrelated tasks should NOT be cancelled
+    // Completed sub-tasks, unrelated tasks, and pre-existing blocked siblings
+    // (e.g. from a previous failed run the user hasn't retried yet) must NOT
+    // be cancelled — that's the whole point of the pre-existing snapshot.
     expect(mockSendEvent).not.toHaveBeenCalledWith("p-sub-loop-item-0-12345", expect.anything());
+    expect(mockSendEvent).not.toHaveBeenCalledWith("p-sub-loop-item-1-99999", expect.anything());
     expect(mockSendEvent).not.toHaveBeenCalledWith("unrelated-task", expect.anything());
   });
 

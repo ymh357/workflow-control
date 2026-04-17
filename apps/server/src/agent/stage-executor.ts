@@ -131,9 +131,12 @@ export async function executeStage(
       context.store,
       context.scratchPad ?? [],
       stageName,
+      taskId,
     );
-  } else if (context.scratchPad && context.scratchPad.length > 0) {
-    localMcp["__store__"] = createStoreReaderMcp({}, context.scratchPad, stageName);
+  } else {
+    // Always attach the reader so APPEND_SCRATCH_PAD path stays available,
+    // even when store is empty and scratchPad is currently empty/undefined.
+    localMcp["__store__"] = createStoreReaderMcp({}, context.scratchPad ?? [], stageName, taskId);
   }
   const appendCacheKey = `${taskId}:${stageName}`;
   let appendPrompt: string;

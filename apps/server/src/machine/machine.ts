@@ -125,6 +125,29 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
           ({ context }) => { taskLogger(context.taskId).info("Task configuration UPDATED successfully"); }
         ]
       },
+      // Eagerly persist a captured sessionId before the stage's own onDone assigns it.
+      // Lets retry-on-error resume the same session even if the agent fails mid-stream.
+      PERSIST_SESSION_ID: {
+        actions: assign(({ context, event }) => {
+          const e = event as { stageName: string; sessionId: string };
+          const existing = context.stageSessionIds?.[e.stageName];
+          if (existing === e.sessionId) return {};
+          return {
+            stageSessionIds: { ...(context.stageSessionIds ?? {}), [e.stageName]: e.sessionId },
+          };
+        }),
+      },
+      // Append a scratch-pad entry through the reducer so XState owns the array
+      // reference. Previous implementation had the MCP handler mutate an array
+      // passed by reference, which lost entries when context.scratchPad was
+      // undefined (restore from legacy snapshot) — the closed-over array was
+      // orphaned and never made it back into context.
+      APPEND_SCRATCH_PAD: {
+        actions: assign(({ context, event }) => {
+          const e = event as { entry: import("./types.js").ScratchPadEntry };
+          return { scratchPad: [...(context.scratchPad ?? []), e.entry] };
+        }),
+      },
     },
     states: {
       idle: {

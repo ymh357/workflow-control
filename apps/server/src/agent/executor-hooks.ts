@@ -1,4 +1,5 @@
 import type { HookInput, HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
+import { resolve as resolvePath } from "node:path";
 import { questionManager } from "../lib/question-manager.js";
 import { taskLogger } from "../lib/logger.js";
 
@@ -73,9 +74,20 @@ export function createPathRestrictionHook(allowPaths?: string[], denyPaths?: str
     const filePath = String(toolInput?.file_path ?? "");
     if (!filePath) return { decision: "approve" as const };
 
-    // Always deny sensitive paths (like Claude Code's safety paths)
+    // Resolve to an absolute path BEFORE matching. path.resolve() canonicalizes
+    // `..` segments, which is the whole traversal-defense story: the attacker
+    // can craft "/workspace/../etc/passwd" but once resolved it's "/etc/passwd"
+    // and no longer matches an allowlist keyed on "/workspace/". All match logic
+    // runs against the resolved form only — checking the literal input alongside
+    // would either add no safety or over-block legitimate relative paths (a
+    // relative file_path like "src/foo.ts" never literally contains an absolute
+    // allow rule like "/project/src/", so requiring BOTH to match rejected every
+    // legitimate relative-path tool call).
+    const resolvedPath = resolvePath(filePath);
+
+    // Always deny sensitive paths (like Claude Code's safety paths).
     for (const pattern of ALWAYS_DENY_PATTERNS) {
-      if (filePath.includes(pattern)) {
+      if (resolvedPath.includes(pattern)) {
         return {
           decision: "block" as const,
           reason: `Write to "${filePath}" blocked — matches protected pattern "${pattern}". This restriction cannot be bypassed.`,
@@ -83,18 +95,17 @@ export function createPathRestrictionHook(allowPaths?: string[], denyPaths?: str
       }
     }
 
-    // Check .env files with precise matching
-    if (isSensitiveEnvFile(filePath)) {
+    // Check .env files with basename matching.
+    if (isSensitiveEnvFile(resolvedPath)) {
       return {
         decision: "block" as const,
         reason: `Write to "${filePath}" blocked — environment files are protected. This restriction cannot be bypassed.`,
       };
     }
 
-    // Check explicit deny paths from pipeline config
     if (denyPaths?.length) {
       for (const dp of denyPaths) {
-        if (filePath.includes(dp)) {
+        if (resolvedPath.includes(dp)) {
           return {
             decision: "block" as const,
             reason: `Write to "${filePath}" blocked — path matches deny rule "${dp}".`,
@@ -103,9 +114,8 @@ export function createPathRestrictionHook(allowPaths?: string[], denyPaths?: str
       }
     }
 
-    // Check allow paths — if specified, only paths matching are allowed
     if (allowPaths?.length) {
-      const allowed = allowPaths.some(ap => filePath.includes(ap));
+      const allowed = allowPaths.some((ap) => resolvedPath.includes(ap));
       if (!allowed) {
         return {
           decision: "block" as const,

@@ -150,6 +150,10 @@ export class SessionManager {
     if (this.query === null) {
       await this.createQuery(params);
     } else if (!isRetry) {
+      // switchStageConfig calls Query.setMcpServers() asynchronously. Enqueueing
+      // the next user message before that promise settles is the SDK equivalent
+      // of "mutating config while a query step is in flight" — unsupported.
+      // Await here so every subsequent enqueue sees a coherent server list.
       await this.switchStageConfig(params);
     }
 
@@ -232,12 +236,16 @@ export class SessionManager {
         params.context.store,
         params.context.scratchPad ?? [],
         params.stageName,
+        params.taskId,
       );
-    } else if (params.context.scratchPad && params.context.scratchPad.length > 0) {
+    } else {
+      // Always attach so APPEND_SCRATCH_PAD path remains available even when
+      // store + scratchPad are both empty — an agent may still want to record notes.
       mcpServers["__store__"] = createStoreReaderMcp(
         {},
-        params.context.scratchPad,
+        params.context.scratchPad ?? [],
         params.stageName,
+        params.taskId,
       );
     }
 
@@ -368,12 +376,14 @@ export class SessionManager {
           params.context.store,
           params.context.scratchPad ?? [],
           params.stageName,
+          params.taskId,
         );
-      } else if (params.context.scratchPad && params.context.scratchPad.length > 0) {
+      } else {
         mcpServers["__store__"] = createStoreReaderMcp(
           {},
-          params.context.scratchPad,
+          params.context.scratchPad ?? [],
           params.stageName,
+          params.taskId,
         );
       }
       await this.query.setMcpServers(
