@@ -654,4 +654,58 @@ describe("runAgentSingleSession — ExecutionRecordWriter lifecycle", () => {
       terminationReason: "error_exceeded_retries",
     });
   });
+
+  it("forwards context.scratchPad entries into close's scratchPadSnapshot", async () => {
+    const ctx = makeContext({
+      scratchPad: [
+        {
+          stage: "analyze",
+          timestamp: "2026-04-18T00:00:00Z",
+          category: "note",
+          content: "one",
+        },
+      ] as any,
+    });
+    await runAgentSingleSession("task-1", {
+      stageName: "s",
+      worktreePath: "/tmp/wt",
+      tier1Context: "t",
+      attempt: 1,
+      runtime: { engine: "llm", system_prompt: "p" } as unknown as AgentRuntimeConfig,
+      context: ctx,
+    });
+    const closeArg = writerStub.close.mock.calls.at(-1)![0] as any;
+    expect(closeArg.scratchPadSnapshot).not.toBeNull();
+    expect(closeArg.scratchPadSnapshot.finalNote).toContain("analyze/note");
+    expect(closeArg.scratchPadSnapshot.precompactEvents).toEqual([]);
+  });
+
+  it("forwards scratchPadSnapshot even when the session throws", async () => {
+    sessionMgrStub.executeStage.mockRejectedValueOnce(new Error("boom"));
+    const ctx = makeContext({
+      scratchPad: [
+        {
+          stage: "analyze",
+          timestamp: "t0",
+          category: "note",
+          content: "preserved-across-failure",
+        },
+      ] as any,
+    });
+    await expect(
+      runAgentSingleSession("task-1", {
+        stageName: "s",
+        worktreePath: "/tmp/wt",
+        tier1Context: "t",
+        attempt: 1,
+        runtime: { engine: "llm", system_prompt: "p" } as unknown as AgentRuntimeConfig,
+        context: ctx,
+      }),
+    ).rejects.toThrow("boom");
+    const closeArg = writerStub.close.mock.calls.at(-1)![0] as any;
+    expect(closeArg.terminationReason).toBe("error_exceeded_retries");
+    expect(closeArg.scratchPadSnapshot.finalNote).toContain(
+      "preserved-across-failure",
+    );
+  });
 });

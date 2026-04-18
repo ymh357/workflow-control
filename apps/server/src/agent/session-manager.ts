@@ -143,6 +143,10 @@ export class SessionManager {
   private currentStageName = "";
   private currentContext: WorkflowContext | null = null;
   private currentScratchPad: Array<{ stage: string; timestamp: string; category: string; content: string }> = [];
+  // Phase 1 / Step 1.5: the ExecutionRecordWriter for the stage currently
+  // running through this session, so the compact path can record precompact
+  // events + final scratch-pad into the active row.
+  private currentExecutionRecordWriter: ExecutionRecordWriter | null = null;
 
   constructor(config: SessionManagerConfig) {
     this.config = config;
@@ -163,6 +167,7 @@ export class SessionManager {
     this.currentStageName = params.stageName;
     this.currentContext = params.context;
     this.currentScratchPad = params.context.scratchPad ?? [];
+    this.currentExecutionRecordWriter = params.executionRecordWriter ?? null;
 
     const isRetry = !!params.resumeInfo?.feedback;
 
@@ -822,6 +827,7 @@ export class SessionManager {
             const sysMsg = msg as SDKMessage & { subtype?: string; compact_metadata?: { trigger?: string; pre_tokens?: number } };
             if (sysMsg.subtype === "compact_boundary") {
               const meta = sysMsg.compact_metadata;
+              const ts = new Date().toISOString();
               this.log.info(
                 { trigger: meta?.trigger, preTokens: meta?.pre_tokens, stage: params.stageName },
                 "Compact boundary detected",
@@ -830,7 +836,17 @@ export class SessionManager {
                 taskId: params.taskId,
                 type: "compact",
                 data: { trigger: meta?.trigger, preTokens: meta?.pre_tokens, stage: params.stageName },
-                timestamp: new Date().toISOString(),
+                timestamp: ts,
+              });
+              // Phase 1 / Step 1.5 — record the precompact event into the
+              // current stage's ExecutionRecord row. tier1ReInjectedBytes
+              // defaults to 0 here; the PreCompact hook does the re-inject
+              // but we don't yet measure its size — A3 (store schema) will
+              // tighten that.
+              params.executionRecordWriter?.recordPrecompact({
+                tokensAtTrigger: meta?.pre_tokens ?? 0,
+                tier1ReInjectedBytes: 0,
+                timestamp: ts,
               });
             }
             break;

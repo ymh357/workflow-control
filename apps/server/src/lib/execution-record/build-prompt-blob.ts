@@ -3,7 +3,7 @@
 // itself has no knowledge of store / pipeline internals.
 
 import { getNestedValue } from "../config-loader.js";
-import type { PromptBlob } from "./types.js";
+import type { PromptBlob, ScratchPadSnapshot } from "./types.js";
 
 /**
  * Resolve a stage's `reads` map against the current store, returning the
@@ -51,6 +51,39 @@ export function buildPromptBlob(input: {
     invariants: input.invariants ?? [],
     fragments: input.fragments ?? [],
     outputSchema: input.outputSchema ?? null,
+  };
+}
+
+/**
+ * Build the scratchPadSnapshot value passed to writer.close().
+ *
+ * Phase 1 is deliberately conservative here: we serialize the entries as
+ * `finalNote` (a markdown-ish joined string) rather than trying to parse
+ * opening/final semantics out of `category`. The `precompactEvents` field
+ * is owned by the writer (recordPrecompact accumulates them), so we leave
+ * it empty — the writer's close() merges what it accumulated with what we
+ * pass here.
+ *
+ * Returns null when there is no scratch pad content worth recording.
+ */
+export function buildScratchPadSnapshot(
+  entries: Array<{
+    stage: string;
+    timestamp: string;
+    category: string;
+    content: string;
+  }> | undefined,
+): ScratchPadSnapshot | null {
+  if (!entries || entries.length === 0) return null;
+  const finalNote = entries
+    .map(
+      (e) => `- [${e.stage}/${e.category} @ ${e.timestamp}] ${e.content}`,
+    )
+    .join("\n");
+  return {
+    openingNote: null,
+    finalNote,
+    precompactEvents: [],
   };
 }
 

@@ -3,6 +3,7 @@ import {
   resolveReadsSnapshot,
   buildPromptBlob,
   parseWritesFromResult,
+  buildScratchPadSnapshot,
 } from "./build-prompt-blob.js";
 
 describe("resolveReadsSnapshot", () => {
@@ -84,6 +85,37 @@ describe("buildPromptBlob", () => {
     expect(blob.invariants).toEqual(["inv-a"]);
     expect(blob.fragments).toEqual([{ id: "f1", contentHash: "h1" }]);
     expect(blob.outputSchema).toEqual({ type: "object" });
+  });
+});
+
+describe("buildScratchPadSnapshot", () => {
+  it("returns null for empty / undefined input", () => {
+    expect(buildScratchPadSnapshot(undefined)).toBeNull();
+    expect(buildScratchPadSnapshot([])).toBeNull();
+  });
+
+  it("serializes entries into finalNote with null opening + empty precompactEvents", () => {
+    const result = buildScratchPadSnapshot([
+      {
+        stage: "analyze",
+        timestamp: "2026-04-18T00:00:00Z",
+        category: "note",
+        content: "first",
+      },
+      {
+        stage: "implement",
+        timestamp: "2026-04-18T00:05:00Z",
+        category: "decision",
+        content: "second",
+      },
+    ]);
+    expect(result).not.toBeNull();
+    expect(result!.openingNote).toBeNull();
+    expect(result!.precompactEvents).toEqual([]);
+    expect(result!.finalNote).toContain("[analyze/note @ 2026-04-18T00:00:00Z] first");
+    expect(result!.finalNote).toContain(
+      "[implement/decision @ 2026-04-18T00:05:00Z] second",
+    );
   });
 });
 

@@ -21,6 +21,7 @@ import {
   resolveReadsSnapshot,
   buildPromptBlob,
   parseWritesFromResult,
+  buildScratchPadSnapshot,
 } from "../lib/execution-record/build-prompt-blob.js";
 import type { EngineName } from "../lib/execution-record/types.js";
 
@@ -405,6 +406,7 @@ export async function runAgentSingleSession(
     writer.close({
       terminationReason: "error_exceeded_retries",
       worktreeDiff: diff,
+      scratchPadSnapshot: buildScratchPadSnapshot(inputContext.scratchPad),
     });
     throw err;
   }
@@ -420,6 +422,7 @@ export async function runAgentSingleSession(
     terminationReason: "natural_completion" as const,
     writesParsed,
     worktreeDiff,
+    scratchPadSnapshot: buildScratchPadSnapshot(inputContext.scratchPad),
     costUsd: result.costUsd ?? null,
     tokenInput: result.tokenUsage?.inputTokens ?? null,
     tokenOutput: result.tokenUsage?.outputTokens ?? null,
