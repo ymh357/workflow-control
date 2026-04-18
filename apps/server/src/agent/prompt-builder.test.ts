@@ -242,7 +242,7 @@ describe("buildSystemAppendPrompt", () => {
 
   it("resolves fragment IDs from snapshot (content lives in staticPromptPrefix)", async () => {
     mockResolveFragmentsFromSnapshot.mockReturnValue([
-      { id: "frag1", content: "Resolved fragment content" },
+      { id: "frag1", content: "Resolved fragment content", meta: { stages: "*", keywords: ["lint"], always: false } },
     ]);
     const { prompt: result, fragmentIds } = await buildSystemAppendPrompt({
       ...baseParams,
@@ -427,8 +427,8 @@ describe("buildSystemAppendPrompt", () => {
 
   it("does not include fragment content (dedup is in staticPromptPrefix)", async () => {
     mockResolveFragmentsFromSnapshot.mockReturnValue([
-      { id: "a", content: "Same content" },
-      { id: "b", content: "Same content" },
+      { id: "a", content: "Same content", meta: { stages: "*", keywords: [], always: true } },
+      { id: "b", content: "Same content", meta: { stages: "*", keywords: [], always: true } },
     ]);
     const { prompt: result } = await buildSystemAppendPrompt(baseParams as any);
     expect(result).not.toContain("Same content");

@@ -171,8 +171,8 @@ describe("adversarial: buildEffectivePrompt priority and edge cases", () => {
 describe("adversarial: buildSystemAppendPrompt fragment handling", () => {
   it("fragment content is NOT in appendPrompt (lives in staticPromptPrefix)", async () => {
     mockResolveFragmentsFromSnapshot.mockReturnValue([
-      { id: "a", content: "" },
-      { id: "b", content: "real content" },
+      { id: "a", content: "", meta: { stages: "*", keywords: [], always: true } },
+      { id: "b", content: "real content", meta: { stages: "*", keywords: [], always: true } },
     ]);
 
     const { prompt: result, fragmentIds } = await buildSystemAppendPrompt({

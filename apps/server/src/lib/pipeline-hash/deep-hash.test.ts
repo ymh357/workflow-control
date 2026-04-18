@@ -17,17 +17,26 @@ type FragEntry = {
 
 function makeResolver(
   entries: Record<string, FragEntry>,
-): (stage: string, steps: string[] | undefined) => Array<{ id: string; content: string }> {
+): (stage: string, steps: string[] | undefined) => Array<{
+  id: string;
+  content: string;
+  meta: { stages: string[] | "*"; keywords: string[]; always: boolean };
+}> {
   return (stageName, steps) => {
     const stepsSet = new Set(steps ?? []);
-    const out: Array<{ id: string; content: string }> = [];
+    const out: Array<{
+      id: string;
+      content: string;
+      meta: { stages: string[] | "*"; keywords: string[]; always: boolean };
+    }> = [];
     for (const [id, e] of Object.entries(entries)) {
       const stageMatch = e.stages === "*" || (e.stages as string[]).includes(stageName);
       if (!stageMatch) continue;
+      const meta = { stages: e.stages, keywords: e.keywords, always: e.always };
       if (e.always) {
-        out.push({ id, content: e.content });
+        out.push({ id, content: e.content, meta });
       } else if (stepsSet.size > 0 && e.keywords.some((k) => stepsSet.has(k))) {
-        out.push({ id, content: e.content });
+        out.push({ id, content: e.content, meta });
       }
     }
     return out;
@@ -244,5 +253,77 @@ stages:
     const first = canonicalHashDeep(simplePipeline, resolver);
     const second = canonicalHashDeep(simplePipeline, resolver);
     expect(first).toEqual(second);
+  });
+});
+
+// T1.1 — Activation rules must flip the hash even when the rule change
+// doesn't alter the current pipeline's probe results. Previously only
+// content changes were hashed; keywords/stages/always drifting silently
+// kept the hash stable, which made pipelineVersionHash a false identity.
+describe("canonicalHashDeep — activation rule sensitivity (T1.1)", () => {
+  it("differs when a fragment's keywords change (even if still matched here)", () => {
+    const before = makeResolver({
+      frag: { content: "same", always: false, stages: ["analyze"], keywords: ["reviewSecurity"] },
+    });
+    const after = makeResolver({
+      frag: { content: "same", always: false, stages: ["analyze"], keywords: ["reviewSecurity", "newKeyword"] },
+    });
+    // Both probed with the same pipeline → both return the frag with same content.
+    // Pre-T1.1 these would hash identically; post-T1.1 meta digest differs.
+    expect(canonicalHashDeep(pipelineWithSteps, before)).not.toEqual(
+      canonicalHashDeep(pipelineWithSteps, after),
+    );
+  });
+
+  it("differs when a fragment's stages scope changes (even if still matches here)", () => {
+    const before = makeResolver({
+      frag: { content: "same", always: true, stages: ["analyze"], keywords: [] },
+    });
+    const after = makeResolver({
+      frag: { content: "same", always: true, stages: ["analyze", "other"], keywords: [] },
+    });
+    expect(canonicalHashDeep(simplePipeline, before)).not.toEqual(
+      canonicalHashDeep(simplePipeline, after),
+    );
+  });
+
+  it("differs when a fragment toggles always (same content, same matched result)", () => {
+    // Both configs result in the fragment matching on 'analyze'.
+    // - always=true + stages:["analyze"] → matches via always
+    // - always=false + stages:["analyze"] + keywords:["reviewSecurity"] → matches via step probe
+    const before = makeResolver({
+      frag: { content: "same", always: true, stages: ["analyze"], keywords: ["reviewSecurity"] },
+    });
+    const after = makeResolver({
+      frag: { content: "same", always: false, stages: ["analyze"], keywords: ["reviewSecurity"] },
+    });
+    expect(canonicalHashDeep(pipelineWithSteps, before)).not.toEqual(
+      canonicalHashDeep(pipelineWithSteps, after),
+    );
+  });
+
+  it("is stable when meta is semantically identical but key order varies", () => {
+    // canonicalJson sorts object keys, so {stages, keywords, always} and
+    // {always, keywords, stages} must produce the same metaHash.
+    const r1 = (stageName: string, _steps: string[] | undefined) => {
+      if (stageName !== "analyze" && stageName !== "implement") return [];
+      return [{
+        id: "f",
+        content: "c",
+        meta: { stages: "*" as const, keywords: ["a", "b"], always: true },
+      }];
+    };
+    const r2 = (stageName: string, _steps: string[] | undefined) => {
+      if (stageName !== "analyze" && stageName !== "implement") return [];
+      return [{
+        id: "f",
+        content: "c",
+        // Same values, different key order
+        meta: { always: true, keywords: ["a", "b"], stages: "*" as const },
+      }];
+    };
+    expect(canonicalHashDeep(simplePipeline, r1)).toEqual(
+      canonicalHashDeep(simplePipeline, r2),
+    );
   });
 });

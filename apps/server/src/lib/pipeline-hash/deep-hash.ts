@@ -19,6 +19,20 @@ import { canonicalize, canonicalJson } from "./canonical.js";
 export interface ResolvedFragmentEntry {
   id: string;
   content: string;
+  /**
+   * T1.1 — Activation rules for this fragment (stages match list, keywords,
+   * always flag). Hashed into the digest so changes to activation rules
+   * flip the pipeline version hash even when the rule change does not
+   * affect the current pipeline's probe results.
+   *
+   * Optional for backward compat with tests / callers that don't populate it;
+   * when omitted, `metaHash` defaults to the hash of an empty object.
+   */
+  meta?: {
+    stages: string[] | "*";
+    keywords: string[];
+    always: boolean;
+  };
 }
 
 export type FragmentResolver = (
@@ -93,27 +107,38 @@ function pushProbe(
 export function collectPipelineFragmentDigest(
   pipeline: PipelineShape,
   resolver: FragmentResolver,
-): Array<{ id: string; contentHash: string }> {
-  const seen = new Map<string, string>(); // id -> content
+): Array<{ id: string; contentHash: string; metaHash: string }> {
+  // Track both content and meta per id. First sighting wins for both —
+  // same fragment ID can surface through multiple probes but must be
+  // identical across them (callers are expected to use a deterministic
+  // resolver; no cross-check is performed).
+  const seen = new Map<string, ResolvedFragmentEntry>();
   const probes = collectStageProbes(pipeline);
   for (const probe of probes) {
     const entries = resolver(probe.name, undefined);
-    for (const { id, content } of entries) {
-      if (!seen.has(id)) seen.set(id, content);
+    for (const entry of entries) {
+      if (!seen.has(entry.id)) seen.set(entry.id, entry);
     }
     if (probe.availableStepKeys) {
       for (const step of probe.availableStepKeys) {
         const entries2 = resolver(probe.name, [step]);
-        for (const { id, content } of entries2) {
-          if (!seen.has(id)) seen.set(id, content);
+        for (const entry of entries2) {
+          if (!seen.has(entry.id)) seen.set(entry.id, entry);
         }
       }
     }
   }
   const sorted = [...seen.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-  return sorted.map(([id, content]) => ({
+  return sorted.map(([id, entry]) => ({
     id,
-    contentHash: createHash("sha256").update(content, "utf8").digest("hex"),
+    contentHash: createHash("sha256").update(entry.content, "utf8").digest("hex"),
+    // T1.1 — activation rule hash. Canonicalize the meta object so key
+    // order inside `meta` doesn't change the digest. Callers without meta
+    // get a stable "empty meta" hash (hash of `{}`), which keeps pre-T1.1
+    // call sites working but doesn't protect them from activation-rule drift.
+    metaHash: createHash("sha256")
+      .update(canonicalJson(entry.meta ?? {}), "utf8")
+      .digest("hex"),
   }));
 }
 

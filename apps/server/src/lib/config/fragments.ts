@@ -179,8 +179,8 @@ export function resolveFragmentsFromSnapshot(
   enabledSteps: string[] | undefined,
   fragmentContents: Record<string, string>,
   fragmentMeta: Record<string, FragmentMeta>,
-): { id: string; content: string }[] {
-  const results: { id: string; content: string }[] = [];
+): { id: string; content: string; meta: { stages: string[] | "*"; keywords: string[]; always: boolean } }[] {
+  const results: { id: string; content: string; meta: { stages: string[] | "*"; keywords: string[]; always: boolean } }[] = [];
   const stepsSet = new Set(enabledSteps ?? []);
 
   for (const [id, meta] of Object.entries(fragmentMeta)) {
@@ -190,10 +190,18 @@ export function resolveFragmentsFromSnapshot(
     const stageMatch = meta.stages === "*" || (meta.stages as string[]).includes(stageName);
     if (!stageMatch) continue;
 
+    // T1.1 — attach activation meta to each returned entry so the deep
+    // hash can fold activation rules into the digest.
+    const activationMeta = {
+      stages: meta.stages,
+      keywords: meta.keywords,
+      always: meta.always,
+    };
+
     if (meta.always) {
-      results.push({ id, content });
+      results.push({ id, content, meta: activationMeta });
     } else if (stepsSet.size > 0 && meta.keywords.some((k) => stepsSet.has(k))) {
-      results.push({ id, content });
+      results.push({ id, content, meta: activationMeta });
     }
   }
   return results;
