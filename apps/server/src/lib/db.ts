@@ -47,6 +47,49 @@ export function getDb(): DatabaseSync {
       created_at INTEGER NOT NULL,
       PRIMARY KEY (task_id, stage_name)
     );
+
+    -- Phase 1 / A1: ExecutionRecord. See docs/execution-record-design.md.
+    CREATE TABLE IF NOT EXISTS execution_records (
+      attempt_id              TEXT PRIMARY KEY,
+      task_id                 TEXT NOT NULL,
+      stage_name              TEXT NOT NULL,
+      attempt_index           INTEGER NOT NULL,
+      pipeline_version_hash   TEXT,
+
+      started_at              TEXT NOT NULL,
+      terminated_at           TEXT,
+      termination_reason      TEXT,
+
+      engine                  TEXT NOT NULL,
+      model                   TEXT,
+      session_id              TEXT,
+
+      prompt_blob             TEXT NOT NULL,
+      reads_snapshot          TEXT NOT NULL,
+      tool_calls              TEXT NOT NULL DEFAULT '[]',
+      agent_stream            TEXT NOT NULL DEFAULT '[]',
+      writes_parsed           TEXT,
+      writes_committed        TEXT,
+      worktree_diff           TEXT,
+      worktree_diff_truncated INTEGER NOT NULL DEFAULT 0,
+      scratch_pad_snapshot    TEXT,
+
+      cost_usd                REAL,
+      token_input             INTEGER,
+      token_output            INTEGER,
+      duration_ms             INTEGER,
+
+      last_heartbeat_at       TEXT NOT NULL,
+      created_at              TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_exec_task ON execution_records(task_id);
+    CREATE INDEX IF NOT EXISTS idx_exec_task_stage_attempt
+      ON execution_records(task_id, stage_name, attempt_index);
+    CREATE INDEX IF NOT EXISTS idx_exec_pipeline_hash
+      ON execution_records(pipeline_version_hash);
+    CREATE INDEX IF NOT EXISTS idx_exec_open
+      ON execution_records(last_heartbeat_at)
+      WHERE terminated_at IS NULL;
   `);
 
   logger.info({ dbPath }, "SQLite database initialized");
