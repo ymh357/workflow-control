@@ -15,6 +15,8 @@ import { extractJSON } from "../lib/json-extractor.js";
 import { getStageBuilder } from "./stage-registry.js";
 import { formatVerifyFailures } from "../agent/verify-commands.js";
 import { evaluateAssertions, formatAssertionFeedback } from "./assertion-evaluator.js";
+import { evaluateSchemaShape, formatShapeFeedback } from "./schema-shape-validator.js";
+import type { StoreSchema } from "../lib/config/types.js";
 
 type WriteDeclaration = string | { key: string; strategy?: string; summary_prompt?: string; assertions?: string[] };
 
@@ -172,11 +174,12 @@ export function buildAgentState(
   nextTarget: string,
   _prevAgentTarget: string,
   stage: AgentStageConfig,
-  opts?: { blockedTarget?: string; statePrefix?: string; sessionMode?: "multi" | "single"; parallelGroupName?: string },
+  opts?: { blockedTarget?: string; statePrefix?: string; sessionMode?: "multi" | "single"; parallelGroupName?: string; storeSchema?: StoreSchema },
 ): StateNode {
   const stateName = stage.name;
   const { runtime } = stage;
   const statePrefix = opts?.statePrefix ?? "";
+  const storeSchema = opts?.storeSchema;
   // When this stage lives inside a parallel group's region, back_to targets a
   // sibling child stage — addressable as `#workflow.<groupName>.<sibling>` so
   // XState re-enters the sibling region (which then runs its child's initial →
@@ -255,6 +258,66 @@ export function buildAgentState(
             })),
           ],
         },
+        // Guard: retry if runtime shape violates declared store_schema.
+        // Phase 3.5 (D2): reuses stageRetryCount — schema shape errors
+        // count against the same retry budget as missing-fields and
+        // assertion failures. Runs before assertions because if the
+        // shape is wrong, assertions referencing fields are meaningless.
+        // Only emitted when a store_schema is actually provided, so
+        // pipelines without a schema see the pre-Phase-3.5 guard order.
+        ...(storeSchema ? [{
+          guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
+            const writeKeys = (runtime.writes ?? []).map(
+              (w: WriteDeclaration) => (typeof w === "string" ? w : w.key),
+            );
+            if (writeKeys.length === 0) return false;
+            if (getStageRetryCount(context, stateName) >= 2) return false;
+            const parsed = getCachedParse(event.output);
+            if (!parsed) return false;
+            const failures = evaluateSchemaShape(stateName, parsed, storeSchema, writeKeys);
+            return failures.length > 0;
+          },
+          target: stateName,
+          reenter: true,
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const sessionId = event.output?.sessionId ?? context.stageSessionIds?.[stateName];
+              const parsed = getCachedParse(event.output);
+              const writeKeys = (runtime.writes ?? []).map(
+                (w: WriteDeclaration) => (typeof w === "string" ? w : w.key),
+              );
+              const failures = evaluateSchemaShape(
+                stateName,
+                parsed ?? {},
+                storeSchema,
+                writeKeys,
+              );
+              const priorFeedback = makePriorFeedback(context.resumeInfo?.feedback);
+              return {
+                retryCount: context.retryCount + 1,
+                stageRetryCount: incrementStageRetryCount(context, stateName),
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [stateName]: event.output.tokenUsage } : context.stageTokenUsages,
+                stageSessionIds: { ...context.stageSessionIds, [stateName]: event.output?.sessionId ?? context.stageSessionIds?.[stateName] },
+                stageCwds: { ...context.stageCwds, ...(event.output?.cwd ? { [stateName]: event.output.cwd } : {}) },
+                scratchPad: freshScratchPad(context),
+                resumeInfo: sessionId
+                  ? { sessionId, feedback: `${priorFeedback}${formatShapeFeedback(failures)}` }
+                  : undefined,
+              };
+            }),
+            ({ context }: { context: WorkflowContext }) => {
+              taskLogger(context.taskId).warn({ stage: stateName, retryCount: context.retryCount }, "Output failed store_schema shape check, retrying");
+            },
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.status",
+              taskId: context.taskId,
+              status: context.status,
+              message: `${stateName}: output failed store_schema shape check, retrying (attempt ${context.retryCount})`,
+            })),
+          ],
+        }] : []),
         // Guard: retry if assertions fail
         {
           guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
@@ -1166,6 +1229,7 @@ export function buildParallelGroupState(
   group: { name: string; stages: PipelineStageConfig[] },
   nextTarget: string,
   prevAgentTarget: string,
+  opts?: { storeSchema?: StoreSchema },
 ): StateNode {
   for (const childStage of group.stages) {
     if (childStage.type === "agent" && childStage.runtime) {
@@ -1184,7 +1248,7 @@ export function buildParallelGroupState(
   // parallelGroupName makes back_to targets resolve to `#workflow.<group>.<sibling>`
   // rather than the broken `#workflow.<sibling>` (top-level lookup, never matches
   // a region name — the transition would silently no-op).
-  const stageOpts = { blockedTarget: "#workflow.blocked", statePrefix: "#workflow", parallelGroupName: groupName };
+  const stageOpts = { blockedTarget: "#workflow.blocked", statePrefix: "#workflow", parallelGroupName: groupName, storeSchema: opts?.storeSchema };
 
   for (const stage of group.stages) {
     const builder = getStageBuilder(stage);
@@ -1371,8 +1435,11 @@ export function buildSingleSessionParallelState(
   group: { name: string; stages: PipelineStageConfig[] },
   nextTarget: string,
   _prevAgentTarget: string,
+  opts?: { storeSchema?: StoreSchema },
 ): StateNode {
   const groupName = group.name;
+  const storeSchema = opts?.storeSchema;
+  const childStageNames = new Set(group.stages.map((s) => s.name));
 
   // Aggregate writes + assertions across children. A key produced by two
   // children is a pipeline-builder error (overlapping writes), so dedup here
@@ -1478,6 +1545,69 @@ export function buildSingleSessionParallelState(
             })),
           ],
         },
+        // Guard 1.5: retry if aggregated output violates store_schema shape.
+        // Phase 3.5 (D2). For single-session groups, check each child stage's
+        // keys separately because child stages own different subsets of the
+        // combined output. Only emitted when a schema is provided.
+        ...(storeSchema ? [{
+          guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {
+            const writeKeys = combinedWrites.map(
+              (w: WriteDeclaration) => (typeof w === "string" ? w : w.key),
+            );
+            if (writeKeys.length === 0) return false;
+            if (getStageRetryCount(context, groupName) >= 2) return false;
+            const parsed = getCachedParse(event.output);
+            if (!parsed) return false;
+            for (const childName of childStageNames) {
+              const childKeys = writeKeys.filter((k) => storeSchema[k]?.produced_by === childName);
+              if (childKeys.length === 0) continue;
+              if (evaluateSchemaShape(childName, parsed, storeSchema, childKeys).length > 0) {
+                return true;
+              }
+            }
+            return false;
+          },
+          target: groupName,
+          reenter: true,
+          actions: [
+            assign(({ event, context }: { event: DoneEvent; context: WorkflowContext }) => {
+              const sessionId = event.output?.sessionId ?? context.stageSessionIds?.[groupName];
+              const parsed = getCachedParse(event.output);
+              const writeKeys = combinedWrites.map(
+                (w: WriteDeclaration) => (typeof w === "string" ? w : w.key),
+              );
+              const allFailures = [] as ReturnType<typeof evaluateSchemaShape>;
+              for (const childName of childStageNames) {
+                const childKeys = writeKeys.filter((k) => storeSchema[k]?.produced_by === childName);
+                allFailures.push(
+                  ...evaluateSchemaShape(childName, parsed ?? {}, storeSchema, childKeys),
+                );
+              }
+              const priorFeedback = makePriorFeedback(context.resumeInfo?.feedback);
+              return {
+                retryCount: context.retryCount + 1,
+                stageRetryCount: incrementStageRetryCount(context, groupName),
+                totalCostUsd: (context.totalCostUsd ?? 0) + (event.output?.costUsd ?? 0),
+                totalTokenUsage: accumulateTokenUsage(context.totalTokenUsage, event.output?.tokenUsage),
+                stageTokenUsages: event.output?.tokenUsage ? { ...context.stageTokenUsages, [groupName]: event.output.tokenUsage } : context.stageTokenUsages,
+                stageSessionIds: { ...context.stageSessionIds, [groupName]: sessionId ?? context.stageSessionIds?.[groupName] },
+                scratchPad: freshScratchPad(context),
+                resumeInfo: sessionId
+                  ? { sessionId, feedback: `${priorFeedback}${formatShapeFeedback(allFailures)}` }
+                  : undefined,
+              };
+            }),
+            ({ context }: { context: WorkflowContext }) => {
+              taskLogger(context.taskId).warn({ group: groupName, retryCount: context.retryCount }, "Single-session group output failed store_schema shape check, retrying");
+            },
+            emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
+              type: "wf.status",
+              taskId: context.taskId,
+              status: context.status,
+              message: `${groupName}: output failed store_schema shape check, retrying (attempt ${context.retryCount})`,
+            })),
+          ],
+        }] : []),
         // Guard 2: retry if any aggregated assertion fails
         {
           guard: ({ event, context }: { event: { output: { resultText: string } }; context: WorkflowContext }) => {

@@ -1279,3 +1279,115 @@ describe("buildHumanGateState tests", () => {
   // Slack notify tests removed in Phase 0 Step 0.1 (Slack Bridge deletion).
   // Human gate entry actions are now pure status updates without external notifications.
 });
+
+// ---------------------------------------------------------------------------
+// Phase 3.5 (D2): schema-shape guard is inserted when storeSchema is provided.
+// ---------------------------------------------------------------------------
+describe("Phase 3.5 — storeSchema shape guard inserted at index 1", () => {
+  it("handlers without schema keep pre-3.5 order (retry, assertion, blocked)", () => {
+    const stage = makeAgentStage();
+    const state = buildAgentState("next", "prev", stage);
+    const handlers = getOnDoneHandlers(state);
+    // retry + assertion + blocked (+ optional QA) — no shape guard
+    // Targets for the first three: stateName, stateName, "blocked"
+    expect(handlers[0].target).toBe("testAgent");
+    expect(handlers[1].target).toBe("testAgent");
+    expect(handlers[2].target).toBe("blocked");
+  });
+
+  it("handlers with schema insert shape guard at index 1 before assertion", () => {
+    const stage = makeAgentStage();
+    const storeSchema = {
+      result: {
+        produced_by: "testAgent",
+        fields: { ok: { type: "boolean" as const, required: true } },
+      },
+    };
+    const state = buildAgentState("next", "prev", stage, { storeSchema });
+    const handlers = getOnDoneHandlers(state);
+    // Order is now: retry, shape, assertion, blocked(+QA)
+    expect(handlers.length).toBeGreaterThanOrEqual(4);
+    expect(handlers[0].target).toBe("testAgent");
+    expect(handlers[1].target).toBe("testAgent"); // shape guard reenters stage
+    expect(handlers[2].target).toBe("testAgent"); // assertion
+    expect(handlers[3].target).toBe("blocked");
+  });
+
+  it("shape guard fires when required field is missing", () => {
+    const stage = makeAgentStage();
+    const storeSchema = {
+      result: {
+        produced_by: "testAgent",
+        fields: { ok: { type: "boolean" as const, required: true } },
+      },
+    };
+    const state = buildAgentState("next", "prev", stage, { storeSchema });
+    const handlers = getOnDoneHandlers(state);
+    const shapeGuard = handlers[1].guard!;
+
+    // Missing `ok` — parsed top-level has `result` but inner field is absent.
+    const event = { output: { resultText: JSON.stringify({ result: { other: "x" } }) } };
+    const context = makeContext({ retryCount: 0 });
+    expect(shapeGuard({ event, context })).toBe(true);
+  });
+
+  it("shape guard does not fire when output conforms", () => {
+    const stage = makeAgentStage();
+    const storeSchema = {
+      result: {
+        produced_by: "testAgent",
+        fields: { ok: { type: "boolean" as const, required: true } },
+      },
+    };
+    const state = buildAgentState("next", "prev", stage, { storeSchema });
+    const handlers = getOnDoneHandlers(state);
+    const shapeGuard = handlers[1].guard!;
+
+    const event = { output: { resultText: JSON.stringify({ result: { ok: true } }) } };
+    const context = makeContext({ retryCount: 0 });
+    expect(shapeGuard({ event, context })).toBe(false);
+  });
+
+  it("shape guard honors retry budget (>=2 stops retrying)", () => {
+    const stage = makeAgentStage();
+    const storeSchema = {
+      result: {
+        produced_by: "testAgent",
+        fields: { ok: { type: "boolean" as const, required: true } },
+      },
+    };
+    const state = buildAgentState("next", "prev", stage, { storeSchema });
+    const handlers = getOnDoneHandlers(state);
+    const shapeGuard = handlers[1].guard!;
+
+    const event = { output: { resultText: JSON.stringify({ result: {} }) } };
+    const contextAtBudget = makeContext({
+      retryCount: 0,
+      stageRetryCount: { testAgent: 2 },
+    });
+    expect(shapeGuard({ event, context: contextAtBudget })).toBe(false);
+  });
+
+  it("shape guard assign action produces schema feedback in resumeInfo", () => {
+    const stage = makeAgentStage();
+    const storeSchema = {
+      result: {
+        produced_by: "testAgent",
+        fields: { ok: { type: "boolean" as const, required: true } },
+      },
+    };
+    const state = buildAgentState("next", "prev", stage, { storeSchema });
+    const handlers = getOnDoneHandlers(state);
+    const shapeHandler = handlers[1];
+    const assignFn = findAssignAction(shapeHandler as any)!;
+
+    const event = {
+      output: { resultText: JSON.stringify({ result: {} }), sessionId: "sess1" },
+    };
+    const context = makeContext({ retryCount: 0 });
+    const result = assignFn({ event, context });
+    expect(result.resumeInfo?.sessionId).toBe("sess1");
+    expect(result.resumeInfo?.feedback).toContain("store_schema shape");
+    expect(result.resumeInfo?.feedback).toContain("result.ok");
+  });
+});

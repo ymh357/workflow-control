@@ -366,15 +366,16 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
         }
       }
 
+      const parallelOpts = pipeline.store_schema ? { storeSchema: pipeline.store_schema } : undefined;
       if (pipeline.session_mode === "single") {
-        states[entry.parallel.name] = buildSingleSessionParallelState(
-          entry.parallel, nextStateName, prevAgentState
-        );
+        states[entry.parallel.name] = parallelOpts
+          ? buildSingleSessionParallelState(entry.parallel, nextStateName, prevAgentState, parallelOpts)
+          : buildSingleSessionParallelState(entry.parallel, nextStateName, prevAgentState);
         taskLogger("pipeline").info({ group: entry.parallel.name, next: nextStateName, mode: "single-session" }, "Single-session parallel group built");
       } else {
-        states[entry.parallel.name] = buildParallelGroupState(
-          entry.parallel, nextStateName, prevAgentState
-        );
+        states[entry.parallel.name] = parallelOpts
+          ? buildParallelGroupState(entry.parallel, nextStateName, prevAgentState, parallelOpts)
+          : buildParallelGroupState(entry.parallel, nextStateName, prevAgentState);
         taskLogger("pipeline").info({ group: entry.parallel.name, children: entry.parallel.stages.map(s => s.name), next: nextStateName }, "Parallel group built");
       }
     } else {
@@ -507,7 +508,7 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
 
       const builder = getStageBuilder(stage);
       if (builder) {
-        states[stateName] = builder(nextStateName, prevAgentStateForGate, stage, { childToGroup, sessionMode: pipeline.session_mode });
+        states[stateName] = builder(nextStateName, prevAgentStateForGate, stage, { childToGroup, sessionMode: pipeline.session_mode, storeSchema: pipeline.store_schema });
         taskLogger("pipeline").info({ stage: stage.name, type: stage.type, next: nextStateName }, "State built");
       } else {
         errors.push(`Stage "${stage.name}": no builder found for type "${stage.type}" (engine: ${runtime?.engine ?? "none"})`);
