@@ -380,16 +380,29 @@
 
 **目标**：清理噪音，让 A/B 在干净代码基础上开始。
 
-| Step | 动作 | 时间 | 性质 |
-|---|---|---|---|
-| 0.1 | 删 Slack Bridge：`apps/slack-cli-bridge/`、所有 `slack_*` SSE 事件、相关依赖 | 2-3 天 | cut |
-| 0.2 | 冷冻 Edge Runner：`apps/server/src/edge/` 加 `@deprecated`，文档标 unsupported，不删代码 | 0.5 天 | cut |
-| 0.3 | 冷冻 Gemini/Codex：`agent/gemini-executor.ts`、`agent/codex-executor.ts` 加 `@deprecated`，engine field validator 改 warning | 0.5 天 | cut |
-| 0.4 | 删多余内置 pipeline：只保留 `pipeline-generator` / `tech-research` / `web3-tech-research`，其他全删 | 1 天 | cut |
-| 0.5 | 更新 README + CLAUDE.md：反映新定位（本地单用户、Claude-first、AI 代写） | 0.5-1 天 | cut |
-| 0.6 | 新增 `task_triage` 内置 pipeline：定义 triage stage type、`skip_triage` 豁免字段、server 路由接入 | 1 周 | build |
+| Step | 动作 | 时间 | 性质 | 状态 |
+|---|---|---|---|---|
+| 0.1 | 删 Slack Bridge：`apps/slack-cli-bridge/`、所有 `slack_*` SSE 事件、相关依赖 | 2-3 天 | cut | ✅ 已完成 |
+| 0.2 | 冷冻 Edge Runner：`apps/server/src/edge/` 加 `@deprecated`，文档标 unsupported，不删代码 | 0.5 天 | cut | ✅ 已完成 |
+| 0.3 | 冷冻 Gemini/Codex：`agent/gemini-executor.ts`、`agent/codex-executor.ts` 加 `@deprecated`，engine field validator 改 warning | 0.5 天 | cut | ✅ 已完成 |
+| 0.4 | 删多余内置 pipeline：~~只保留 `pipeline-generator` / `tech-research` / `web3-tech-research`~~ → 实际只保留了 `pipeline-generator`；`tech-research` 和 `web3-tech-research` 尚未实现 | 1 天 | cut | ⚠️ 部分（见下） |
+| 0.5 | 更新 README + CLAUDE.md：反映新定位（本地单用户、Claude-first、AI 代写） | 0.5-1 天 | cut | ✅ 已完成 |
+| 0.6 | 新增 `task_triage` 内置 pipeline：~~定义 triage stage type、`skip_triage` 豁免字段、server 路由接入~~ → 重新定义为"系统级路由"，移出 Phase 0，见 Phase 0 补做议题 | 1 周 | build | ❌ 未做（已重定义） |
 
-**Phase 0 里程碑**：仓库瘦 30%+，3 个保留 pipeline 都带 triage（或显式豁免），地基干净。
+**Phase 0 里程碑**：仓库瘦 30%+，~~3 个保留 pipeline 都带 triage（或显式豁免）~~，地基干净。
+
+#### Phase 0 补做议题（2026-04-18 决策）
+
+在推进 Tier 1 补丁时发现 Phase 0.6 从未落地。经 Review B → Tier 1 评估后决定：
+
+- **0.4 补做**：实现 / 移植 `tech-research` 和 `web3-tech-research` 两个内置 pipeline。没有多个 pipeline，系统级路由无处可路由。
+- **0.6 重定义**：原"每个 pipeline 第一个 stage 强制 triage + `skip_triage` 豁免"被重定义为**系统级路由**。task 创建前跑一次 llm_decision，决定 "fit 走某 pipeline" / "not_fit 建议 Claude Code" / "fit with different pipeline"。AI 写的 pipeline **不负责** triage 逻辑。`skip_triage` 字段废除。
+
+**为什么重定义**：AI 写的 pipeline 要操心 triage criteria 会形成循环依赖（pipeline-generator 生成的 pipeline 自己决定自己合不合适）。系统级路由把这个责任从 per-pipeline 提到 server 路由层，AI 写 pipeline 时专注业务。
+
+**前置依赖**：0.4 必须先补做（至少有 2 个业务 pipeline 可供路由），否则系统级路由退化为 yes/no 开关，没价值。
+
+**触发条件**：Tier 1 补丁完成后，你决定要做 A3 或继续观察时，再开 0.4 + 0.6 补做。**Tier 1 阶段不做这两项**。
 
 ---
 
