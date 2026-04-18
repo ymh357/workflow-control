@@ -28,6 +28,7 @@ import {
   buildStaticPromptPrefix,
 } from "./prompt-builder.js";
 import { RedFlagAccumulator } from "./red-flag-detector.js";
+import type { ExecutionRecordWriter } from "../lib/execution-record/writer.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -61,6 +62,12 @@ export interface ExecuteStageParams {
   runtime: AgentRuntimeConfig;
   context: WorkflowContext;
   parallelGroup?: { name: string; stages: any[] };
+  /**
+   * Phase 1 / Step 1.3c. When present, the session-manager fans the
+   * same text/thinking/tool_use/cost events it sends to SSE into the
+   * writer. Owned and closed by the caller (runAgentSingleSession).
+   */
+  executionRecordWriter?: ExecutionRecordWriter;
 }
 
 interface AgentResult {
@@ -615,12 +622,18 @@ export class SessionManager {
             if (Array.isArray(content)) {
               for (const block of content) {
                 if (block.type === "text" && block.text) {
+                  const ts = new Date().toISOString();
                   sseManager.pushMessage(
                     params.taskId,
                     createSSEMessage(params.taskId, "agent_text", {
                       text: block.text,
                     }),
                   );
+                  params.executionRecordWriter?.appendAgentStream({
+                    type: "text",
+                    text: block.text,
+                    timestamp: ts,
+                  });
                   if (resultText.length < MAX_RESULT_TEXT) {
                     resultText += block.text;
                   }
@@ -639,14 +652,22 @@ export class SessionManager {
                   }
                 }
                 if (block.type === "thinking" && (block as any).thinking) {
+                  const ts = new Date().toISOString();
+                  const text = (block as any).thinking as string;
                   sseManager.pushMessage(
                     params.taskId,
                     createSSEMessage(params.taskId, "agent_thinking", {
-                      text: (block as any).thinking as string,
+                      text,
                     }),
                   );
+                  params.executionRecordWriter?.appendAgentStream({
+                    type: "thinking",
+                    text,
+                    timestamp: ts,
+                  });
                 }
                 if (block.type === "tool_use") {
+                  const ts = new Date().toISOString();
                   sseManager.pushMessage(
                     params.taskId,
                     createSSEMessage(params.taskId, "agent_tool_use", {
@@ -654,6 +675,18 @@ export class SessionManager {
                       input: block.input as Record<string, unknown>,
                     }),
                   );
+                  params.executionRecordWriter?.appendToolCall({
+                    id: (block as any).id ?? `tu-${this.stageTurnCount}`,
+                    name: block.name,
+                    input: block.input,
+                    result: null,
+                    isError: false,
+                    tokenIn: null,
+                    tokenOut: null,
+                    durationMs: null,
+                    startedAt: ts,
+                    finishedAt: null,
+                  });
                   this.stageTurnCount++;
                   this.totalTurnCount++;
                   sseManager.pushMessage(
@@ -663,6 +696,30 @@ export class SessionManager {
                       phase: "working",
                     }),
                   );
+                }
+              }
+            }
+            break;
+          }
+
+          case "user": {
+            if (params.executionRecordWriter) {
+              const userMsg = msg.message as { content?: unknown[] } | undefined;
+              const content = userMsg?.content;
+              if (Array.isArray(content)) {
+                for (const block of content) {
+                  if (!block || typeof block !== "object") continue;
+                  const b = block as Record<string, unknown>;
+                  if (b.type === "tool_result") {
+                    const toolUseId = b.tool_use_id as string | undefined;
+                    if (toolUseId) {
+                      params.executionRecordWriter.completeToolCall(toolUseId, {
+                        result: b.content,
+                        isError: !!b.is_error,
+                        finishedAt: new Date().toISOString(),
+                      });
+                    }
+                  }
                 }
               }
             }
@@ -723,6 +780,18 @@ export class SessionManager {
             // Update session ID from result if present
             if (msg.session_id) {
               this.sessionId = msg.session_id as string;
+            }
+
+            // Fan cost / session into the execution record (Phase 1 / Step 1.3c).
+            if (params.executionRecordWriter) {
+              params.executionRecordWriter.updateCost({
+                costUsd: stageCost,
+                tokenInput: tokenUsage?.inputTokens ?? null,
+                tokenOutput: tokenUsage?.outputTokens ?? null,
+              });
+              if (this.sessionId) {
+                params.executionRecordWriter.updateSessionId(this.sessionId);
+              }
             }
 
             // Start idle timer

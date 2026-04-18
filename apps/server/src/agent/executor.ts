@@ -345,36 +345,88 @@ export async function runAgentSingleSession(
     stageTimeoutSec: mergedStageTimeoutSec && mergedStageTimeoutSec > 0 ? mergedStageTimeoutSec : undefined,
   };
 
-  const result = await mgr.executeStage({
+  // Phase 1 / A1 — open an ExecutionRecord writer for this single-session
+  // attempt. Same flag, same shape as runAgent (§1.3b). No-op when the
+  // flag is off.
+  const engine: EngineName =
+    (privateStage?.engine as EngineName | undefined) ??
+    (pipeline?.engine as EngineName | undefined) ??
+    (settings.agent?.default_engine as EngineName | undefined) ??
+    "claude";
+  const readsSnapshot = resolveReadsSnapshot(
+    runtime.reads,
+    inputContext.store as Record<string, unknown> | undefined,
+  );
+  const promptBlob = buildPromptBlob({
+    tier1: tier1Context,
+    systemPromptFull: runtime.system_prompt,
+    stagePrompt: runtime.system_prompt,
+  });
+  const writer = createExecutionRecordWriter({
     taskId,
     stageName,
-    tier1Context,
-    stagePrompt: runtime.system_prompt,
-    stageConfig,
-    resumeInfo: resumeInfo?.feedback ? { feedback: resumeInfo.feedback } : undefined,
-    worktreePath,
-    interactive: interactive ?? false,
-    runtime,
-    context: inputContext,
-    parallelGroup: input.parallelGroup,
+    attemptIndex: input.attempt,
+    pipelineVersionHash: null,
+    engine,
+    model: stageConfig.model ?? null,
+    sessionId: resumeInfo?.sessionId ?? null,
+    promptBlob,
+    readsSnapshot,
   });
+
+  let result: AgentResult;
+  try {
+    result = await mgr.executeStage({
+      taskId,
+      stageName,
+      tier1Context,
+      stagePrompt: runtime.system_prompt,
+      stageConfig,
+      resumeInfo: resumeInfo?.feedback ? { feedback: resumeInfo.feedback } : undefined,
+      worktreePath,
+      interactive: interactive ?? false,
+      runtime,
+      context: inputContext,
+      parallelGroup: input.parallelGroup,
+      executionRecordWriter: writer,
+    });
+  } catch (err) {
+    writer.close({
+      terminationReason: "error_exceeded_retries",
+    });
+    throw err;
+  }
 
   // Run verify commands if configured (same pattern as runAgent)
   const stageConf = findStageConfig(inputContext.config?.pipeline?.stages, stageName);
   const verifyCommands = stageConf?.verify_commands as string[] | undefined;
   const verifyPolicy = (stageConf?.verify_policy ?? "must_pass") as string;
 
+  const writesParsed = parseWritesFromResult(result.resultText);
+  const closeFields = {
+    terminationReason: "natural_completion" as const,
+    writesParsed,
+    costUsd: result.costUsd ?? null,
+    tokenInput: result.tokenUsage?.inputTokens ?? null,
+    tokenOutput: result.tokenUsage?.outputTokens ?? null,
+    durationMs: result.durationMs ?? null,
+    sessionId: result.sessionId ?? null,
+  };
+
   if (verifyCommands?.length && verifyPolicy !== "skip") {
     const { allPassed, results: verifyResults } = await runVerifyCommands(taskId, stageName, verifyCommands, worktreePath);
     if (!allPassed) {
       if (verifyPolicy === "must_pass") {
+        writer.close(closeFields);
         return { ...result, verifyFailed: true, verifyResults };
       }
       taskLogger(taskId, stageName).warn({ failures: formatVerifyFailures(verifyResults).slice(0, 1000) }, "Verify commands failed (warn policy, continuing)");
     }
+    writer.close(closeFields);
     return { ...result, verifyResults };
   }
 
+  writer.close(closeFields);
   return result;
 }
 

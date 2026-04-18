@@ -77,7 +77,24 @@ vi.mock("../lib/config/stage-lookup.js", () => ({
   findStageConfig: vi.fn(() => undefined),
 }));
 
-import { runAgent, runScript, createWorktreeForTask } from "./executor.js";
+// Mock the session-manager registry so runAgentSingleSession tests don't
+// actually spin up a Claude SDK session. The stub's executeStage returns
+// a canned result; individual tests override via mockResolvedValueOnce.
+const sessionMgrStub = vi.hoisted(() => ({
+  executeStage: vi.fn(async () => ({
+    resultText: '{"done":true}',
+    sessionId: "sess-single",
+    costUsd: 0.1,
+    durationMs: 500,
+    tokenUsage: { inputTokens: 10, outputTokens: 20 },
+    cwd: "/tmp/wt",
+  })),
+}));
+vi.mock("./session-manager-registry.js", () => ({
+  getOrCreateSessionManager: vi.fn(() => sessionMgrStub),
+}));
+
+import { runAgent, runAgentSingleSession, runScript, createWorktreeForTask } from "./executor.js";
 import { executeStage } from "./stage-executor.js";
 import { scriptRegistry } from "../scripts/index.js";
 import { loadSystemSettings, getNestedValue } from "../lib/config-loader.js";
@@ -374,7 +391,7 @@ describe("runAgent — ExecutionRecordWriter lifecycle", () => {
     });
 
     expect(createWriterSpy).toHaveBeenCalledTimes(1);
-    const openInput = createWriterSpy.mock.calls[0]![0] as any;
+    const openInput = (createWriterSpy.mock.calls as any[])[0][0];
     expect(openInput.taskId).toBe("task-1");
     expect(openInput.stageName).toBe("implement");
     expect(openInput.attemptIndex).toBe(2);
@@ -467,6 +484,94 @@ describe("runAgent — ExecutionRecordWriter lifecycle", () => {
       context: ctx,
     });
 
-    expect((createWriterSpy.mock.calls[0]![0] as any).engine).toBe("gemini");
+    expect(((createWriterSpy.mock.calls as any[])[0][0] as any).engine).toBe("gemini");
+  });
+});
+
+// ---------- runAgentSingleSession — ExecutionRecordWriter lifecycle (Phase 1 / 1.3c) ----------
+
+describe("runAgentSingleSession — ExecutionRecordWriter lifecycle", () => {
+  beforeEach(() => {
+    createWriterSpy.mockClear();
+    writerStub.close.mockClear();
+    sessionMgrStub.executeStage.mockClear();
+    sessionMgrStub.executeStage.mockResolvedValue({
+      resultText: '{"impl":"done"}',
+      sessionId: "sess-single",
+      costUsd: 0.25,
+      durationMs: 2_000,
+      tokenUsage: {
+        inputTokens: 50,
+        outputTokens: 75,
+        cacheReadTokens: 0,
+        totalTokens: 125,
+      } as any,
+      cwd: "/tmp/wt",
+    } as any);
+  });
+
+  it("opens writer and forwards to session manager, closes on success", async () => {
+    const ctx = makeContext({
+      store: { analysis: { plan: "P" } },
+    });
+    // The single-session path reads pipeline.stages to find privateStage.
+    (ctx.config as any).pipeline.stages = [
+      { name: "implement", type: "agent", engine: "claude" },
+    ];
+
+    await runAgentSingleSession("task-1", {
+      stageName: "implement",
+      worktreePath: "/tmp/wt",
+      tier1Context: "TIER1",
+      attempt: 1,
+      runtime: {
+        engine: "llm",
+        system_prompt: "do it",
+        reads: { plan: "analysis.plan" },
+      } as unknown as AgentRuntimeConfig,
+      context: ctx,
+    });
+
+    expect(createWriterSpy).toHaveBeenCalledTimes(1);
+    const openInput = (createWriterSpy.mock.calls as any[])[0][0] as any;
+    expect(openInput.taskId).toBe("task-1");
+    expect(openInput.stageName).toBe("implement");
+    expect(openInput.engine).toBe("claude");
+    expect(openInput.readsSnapshot).toEqual({ plan: "P" });
+
+    // session manager received the writer
+    const mgrParams = (sessionMgrStub.executeStage.mock.calls as any[])[0][0] as any;
+    expect(mgrParams.executionRecordWriter).toBe(writerStub);
+
+    expect(writerStub.close).toHaveBeenCalledTimes(1);
+    const closeArg = writerStub.close.mock.calls[0]![0] as any;
+    expect(closeArg.terminationReason).toBe("natural_completion");
+    expect(closeArg.writesParsed).toEqual({ impl: "done" });
+    expect(closeArg.costUsd).toBe(0.25);
+    expect(closeArg.tokenInput).toBe(50);
+    expect(closeArg.tokenOutput).toBe(75);
+    expect(closeArg.sessionId).toBe("sess-single");
+  });
+
+  it("closes with error_exceeded_retries and rethrows when session manager throws", async () => {
+    const boom = new Error("single-session crashed");
+    sessionMgrStub.executeStage.mockRejectedValueOnce(boom);
+
+    const ctx = makeContext();
+    await expect(
+      runAgentSingleSession("task-1", {
+        stageName: "s",
+        worktreePath: "/tmp/wt",
+        tier1Context: "t",
+        attempt: 1,
+        runtime: { engine: "llm", system_prompt: "p" } as unknown as AgentRuntimeConfig,
+        context: ctx,
+      }),
+    ).rejects.toThrow("single-session crashed");
+
+    expect(writerStub.close).toHaveBeenCalledTimes(1);
+    expect(writerStub.close.mock.calls[0]![0]).toMatchObject({
+      terminationReason: "error_exceeded_retries",
+    });
   });
 });
