@@ -14,6 +14,7 @@ import {
 import { persistSessionId } from "./session-persister.js";
 import { RedFlagAccumulator } from "./red-flag-detector.js";
 import { redactSensitive } from "../lib/redact.js";
+import type { ExecutionRecordWriter } from "../lib/execution-record/writer.js";
 
 function createSSEMessage(taskId: string, type: SSEMessage["type"], data: unknown): SSEMessage {
   return { type, taskId, timestamp: new Date().toISOString(), data };
@@ -29,8 +30,16 @@ export async function processAgentStream(params: {
   agentQuery: any;
   resumeDepth: number;
   onResume: (opts: { sessionId: string; resumePrompt: string }) => Promise<AgentResult>;
+  /**
+   * Optional sink for ExecutionRecord events. The writer receives the
+   * same text/thinking/tool_use/cost stream that SSE gets — they are
+   * parallel consumers of one source (see docs/execution-record-design.md §6).
+   * When omitted (flag off or call site not yet wired), this is a pure
+   * no-op and the existing SSE behavior is unchanged.
+   */
+  executionRecordWriter?: ExecutionRecordWriter;
 }): Promise<AgentResult> {
-  const { taskId, stageName, agentQuery, resumeDepth, onResume } = params;
+  const { taskId, stageName, agentQuery, resumeDepth, onResume, executionRecordWriter } = params;
 
   let resultText = "", sessionId: string | undefined, costUsd = 0, durationMs = 0;
   let tokenUsage: StageTokenUsage | undefined;
@@ -86,7 +95,9 @@ export async function processAgentStream(params: {
         case "assistant":
           for (const block of message.message.content) {
             if (block.type === "text" && block.text) {
+              const ts = new Date().toISOString();
               sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_text", { text: block.text }));
+              executionRecordWriter?.appendAgentStream({ type: "text", text: block.text, timestamp: ts });
               if (resultText.length < MAX_RESULT_TEXT) {
                 resultText += block.text;
               }
@@ -101,13 +112,29 @@ export async function processAgentStream(params: {
               }
             }
             if (block.type === "thinking" && (block as any).thinking) {
+              const ts = new Date().toISOString();
+              const text = (block as any).thinking as string;
               sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_thinking", {
-                text: (block as any).thinking as string
+                text,
               }));
+              executionRecordWriter?.appendAgentStream({ type: "thinking", text, timestamp: ts });
             }
             if (block.type === "tool_use") {
-              lastToolUse = { name: block.name, timestamp: new Date().toISOString() };
+              const ts = new Date().toISOString();
+              lastToolUse = { name: block.name, timestamp: ts };
               sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_tool_use", { toolName: block.name, input: redactSensitive(block.input) as Record<string, unknown> }));
+              executionRecordWriter?.appendToolCall({
+                id: (block as any).id ?? `tu-${toolCallCount}`,
+                name: block.name,
+                input: redactSensitive(block.input),
+                result: null,
+                isError: false,
+                tokenIn: null,
+                tokenOut: null,
+                durationMs: null,
+                startedAt: ts,
+                finishedAt: null,
+              });
               toolCallCount++;
               sseManager.pushMessage(taskId, createSSEMessage(taskId, "agent_progress", {
                 toolCallCount, phase: "working"
@@ -115,12 +142,51 @@ export async function processAgentStream(params: {
             }
           }
           break;
+        case "user": {
+          // User messages in the Claude SDK stream carry tool_result blocks
+          // that pair back to earlier assistant tool_use blocks. We fan those
+          // into the execution record only — SSE does not surface tool results
+          // (they can be huge and are already visible in the agent's next
+          // text turn). Unmatched tool_use_ids are silently dropped by the
+          // writer's completeToolCall.
+          if (executionRecordWriter) {
+            const userMsg = (message as Record<string, unknown>).message as
+              | { content?: unknown[] }
+              | undefined;
+            const content = userMsg?.content;
+            if (Array.isArray(content)) {
+              for (const block of content) {
+                if (!block || typeof block !== "object") continue;
+                const b = block as Record<string, unknown>;
+                if (b.type === "tool_result") {
+                  const toolUseId = b.tool_use_id as string | undefined;
+                  if (toolUseId) {
+                    executionRecordWriter.completeToolCall(toolUseId, {
+                      result: b.content,
+                      isError: !!b.is_error,
+                      finishedAt: new Date().toISOString(),
+                    });
+                  }
+                }
+              }
+            }
+          }
+          break;
+        }
         case "result": {
           const r = message as Record<string, unknown>;
           costUsd = (r.total_cost_usd as number) ?? 0;
           durationMs = (r.duration_ms as number) ?? 0;
           tokenUsage = extractTokenUsage(r);
           if (r.session_id) sessionId = r.session_id as string;
+          if (executionRecordWriter) {
+            executionRecordWriter.updateCost({
+              costUsd,
+              tokenInput: tokenUsage?.inputTokens ?? null,
+              tokenOutput: tokenUsage?.outputTokens ?? null,
+            });
+            if (sessionId) executionRecordWriter.updateSessionId(sessionId);
+          }
           const subtype = r.subtype as string | undefined;
           taskLogger(taskId, stageName).info({ subtype, sessionId: sessionId ?? "none", hasResult: !!r.result, hasStructured: !!r.structured_output }, "result message received");
           if (subtype === "error_max_structured_output_retries") {

@@ -515,3 +515,234 @@ describe("processAgentStream", () => {
     expect(result.resultText).toBe("");
   });
 });
+
+// ---------- ExecutionRecordWriter fanout (Phase 1 / Step 1.3a) ----------
+
+function makeStubWriter() {
+  return {
+    attemptId: "att-stub",
+    isNoop: false as const,
+    appendToolCall: vi.fn(),
+    completeToolCall: vi.fn(),
+    appendAgentStream: vi.fn(),
+    recordPrecompact: vi.fn(),
+    updateCost: vi.fn(),
+    updateSessionId: vi.fn(),
+    heartbeat: vi.fn(),
+    close: vi.fn(),
+    __flushForTests: vi.fn(),
+  };
+}
+
+describe("processAgentStream — executionRecordWriter fanout", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.clearAllMocks();
+    queryTrackerMock.hasPendingResume.mockReturnValue(false);
+    queryTrackerMock.getActiveQuery.mockReturnValue(undefined);
+    queryTrackerMock.consumePendingResume.mockReturnValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("forwards agent_text blocks to appendAgentStream as type=text", async () => {
+    const writer = makeStubWriter();
+    const msg = {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "hello world" }] },
+    };
+    const query = makeAsyncIterable([msg]);
+    const promise = processAgentStream(
+      defaultParams({ agentQuery: query, executionRecordWriter: writer as any }),
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(writer.appendAgentStream).toHaveBeenCalledTimes(1);
+    expect(writer.appendAgentStream).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "text", text: "hello world" }),
+    );
+  });
+
+  it("forwards thinking blocks as type=thinking", async () => {
+    const writer = makeStubWriter();
+    const msg = {
+      type: "assistant",
+      message: {
+        content: [{ type: "thinking", thinking: "reasoning..." }],
+      },
+    };
+    const query = makeAsyncIterable([msg]);
+    const promise = processAgentStream(
+      defaultParams({ agentQuery: query, executionRecordWriter: writer as any }),
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(writer.appendAgentStream).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "thinking", text: "reasoning..." }),
+    );
+  });
+
+  it("forwards tool_use blocks to appendToolCall with input redacted", async () => {
+    const writer = makeStubWriter();
+    const msg = {
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            id: "tu-abc",
+            name: "Read",
+            input: { path: "/a/b" },
+          },
+        ],
+      },
+    };
+    const query = makeAsyncIterable([msg]);
+    const promise = processAgentStream(
+      defaultParams({ agentQuery: query, executionRecordWriter: writer as any }),
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(writer.appendToolCall).toHaveBeenCalledTimes(1);
+    const arg = writer.appendToolCall.mock.calls[0]![0] as any;
+    expect(arg.id).toBe("tu-abc");
+    expect(arg.name).toBe("Read");
+    expect(arg.input).toBeDefined();
+    expect(arg.result).toBeNull();
+    expect(arg.startedAt).toEqual(expect.any(String));
+  });
+
+  it("forwards user tool_result blocks to completeToolCall", async () => {
+    const writer = makeStubWriter();
+    const msgs = [
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "tu-xyz", name: "Bash", input: {} },
+          ],
+        },
+      },
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tu-xyz",
+              content: "stdout",
+              is_error: false,
+            },
+          ],
+        },
+      },
+    ];
+    const query = makeAsyncIterable(msgs);
+    const promise = processAgentStream(
+      defaultParams({ agentQuery: query, executionRecordWriter: writer as any }),
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(writer.completeToolCall).toHaveBeenCalledWith(
+      "tu-xyz",
+      expect.objectContaining({ result: "stdout", isError: false }),
+    );
+  });
+
+  it("updates cost and session id from result message", async () => {
+    const writer = makeStubWriter();
+    const msgs = [
+      {
+        type: "result",
+        subtype: "success",
+        result: "final text",
+        total_cost_usd: 0.42,
+        duration_ms: 1234,
+        session_id: "sess-x",
+        usage: { input_tokens: 100, output_tokens: 200 },
+      },
+    ];
+    const query = makeAsyncIterable(msgs);
+    const promise = processAgentStream(
+      defaultParams({ agentQuery: query, executionRecordWriter: writer as any }),
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(writer.updateCost).toHaveBeenCalledWith({
+      costUsd: 0.42,
+      tokenInput: 100,
+      tokenOutput: 200,
+    });
+    expect(writer.updateSessionId).toHaveBeenCalledWith("sess-x");
+  });
+
+  it("no writer ⇒ no writer calls, existing SSE behavior unchanged", async () => {
+    // Regression guard: absence of writer must not change SSE fanout.
+    const msg = {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "hi" }] },
+    };
+    const query = makeAsyncIterable([msg]);
+    const promise = processAgentStream(defaultParams({ agentQuery: query }));
+    await vi.runAllTimersAsync();
+    const result = await promise;
+    expect(result.resultText).toBe("hi");
+    // SSE still fired
+    expect(sseManager.pushMessage).toHaveBeenCalledWith(
+      "task-1",
+      expect.objectContaining({ type: "agent_text" }),
+    );
+  });
+
+  it("unmatched tool_use_id in user message is safely forwarded (writer decides)", async () => {
+    const writer = makeStubWriter();
+    const msgs = [
+      {
+        type: "user",
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "tu-orphan",
+              content: "no matching tool_use",
+              is_error: true,
+            },
+          ],
+        },
+      },
+    ];
+    const query = makeAsyncIterable(msgs);
+    const promise = processAgentStream(
+      defaultParams({ agentQuery: query, executionRecordWriter: writer as any }),
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(writer.completeToolCall).toHaveBeenCalledWith(
+      "tu-orphan",
+      expect.objectContaining({ isError: true }),
+    );
+  });
+
+  it("malformed user message (non-array content) is ignored without throwing", async () => {
+    const writer = makeStubWriter();
+    const msgs = [
+      { type: "user", message: { content: "not-an-array" } },
+      { type: "user" }, // no message at all
+    ];
+    const query = makeAsyncIterable(msgs);
+    const promise = processAgentStream(
+      defaultParams({ agentQuery: query, executionRecordWriter: writer as any }),
+    );
+    await vi.runAllTimersAsync();
+    await promise;
+    expect(writer.completeToolCall).not.toHaveBeenCalled();
+  });
+});
