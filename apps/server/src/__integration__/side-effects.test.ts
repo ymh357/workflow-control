@@ -13,19 +13,6 @@ vi.mock("../sse/task-list-broadcaster.js", () => ({
   taskListBroadcaster: { broadcastTaskUpdate },
 }));
 
-const notifyBlocked = vi.fn().mockResolvedValue(undefined);
-const notifyStageComplete = vi.fn().mockResolvedValue(undefined);
-const notifyCompleted = vi.fn().mockResolvedValue(undefined);
-const notifyCancelled = vi.fn().mockResolvedValue(undefined);
-const notifyGenericGate = vi.fn().mockResolvedValue(undefined);
-vi.mock("../lib/slack.js", () => ({
-  notifyBlocked,
-  notifyStageComplete,
-  notifyCompleted,
-  notifyCancelled,
-  notifyGenericGate,
-}));
-
 const updateNotionPageStatus = vi.fn().mockResolvedValue(undefined);
 vi.mock("../lib/notion.js", () => ({
   updateNotionPageStatus,
@@ -213,40 +200,11 @@ describe("registerSideEffects", () => {
     });
   });
 
-  // 6. wf.slackBlocked → Slack notify + terminated
-  it("wf.slackBlocked → calls notifyBlocked and notifyTaskTerminated", () => {
-    actor.emit({ type: "wf.slackBlocked", taskId: "t6", stage: "build", error: "build failed" });
+  // 6. wf.stageBlocked → terminated (Slack notify removed in Phase 0)
+  it("wf.stageBlocked → calls notifyTaskTerminated", () => {
+    actor.emit({ type: "wf.stageBlocked", taskId: "t6", stage: "build", error: "build failed" });
 
-    expect(notifyBlocked).toHaveBeenCalledWith("t6", "build", "build failed");
     expect(notifyTaskTerminated).toHaveBeenCalledWith("t6", "blocked");
-  });
-
-  // 7. wf.slackStageComplete → notifyStageComplete
-  it("wf.slackStageComplete → calls notifyStageComplete", () => {
-    actor.emit({ type: "wf.slackStageComplete", taskId: "t7", title: "Build", templateName: "build-tpl" });
-
-    expect(notifyStageComplete).toHaveBeenCalledWith("t7", "Build", "build-tpl");
-  });
-
-  // 8. wf.slackCompleted → notifyCompleted
-  it("wf.slackCompleted → calls notifyCompleted", () => {
-    actor.emit({ type: "wf.slackCompleted", taskId: "t8", deliverable: "PR #42" });
-
-    expect(notifyCompleted).toHaveBeenCalledWith("t8", "PR #42");
-  });
-
-  // 9. wf.slackCancelled → notifyCancelled
-  it("wf.slackCancelled → calls notifyCancelled", () => {
-    actor.emit({ type: "wf.slackCancelled", taskId: "t9" });
-
-    expect(notifyCancelled).toHaveBeenCalledWith("t9");
-  });
-
-  // 10. wf.slackGate → notifyGenericGate
-  it("wf.slackGate → calls notifyGenericGate", () => {
-    actor.emit({ type: "wf.slackGate", taskId: "t10", stageName: "approval", template: "gate-tpl" });
-
-    expect(notifyGenericGate).toHaveBeenCalledWith("t10", "approval", "gate-tpl");
   });
 
   // 11. wf.taskListUpdate → broadcaster

@@ -805,26 +805,6 @@ const StageDetail = ({
                   </select>
                 </Field>
 
-                <Field label={t("notify")}>
-                  <div className="grid grid-cols-[auto_1fr] gap-2">
-                    <select
-                      value={(runtime.notify as { type?: string; template?: string } | undefined)?.type || "slack"}
-                      onChange={(e) => onRuntimeUpdate({ notify: { ...(runtime.notify as Record<string, unknown> || {}), type: e.target.value } })}
-                      disabled={readOnly}
-                      className="bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-300 outline-none appearance-none"
-                    >
-                      <option value="slack">slack</option>
-                    </select>
-                    <input
-                      value={(runtime.notify as { type?: string; template?: string } | undefined)?.template || ""}
-                      onChange={(e) => onRuntimeUpdate({ notify: { ...(runtime.notify as Record<string, unknown> || {}), type: (runtime.notify as { type?: string } | undefined)?.type || "slack", template: e.target.value || undefined } })}
-                      readOnly={readOnly}
-                      className="w-full bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-300 outline-none focus:border-blue-600"
-                      placeholder={t("notifyTemplatePlaceholder")}
-                    />
-                  </div>
-                </Field>
-
                 <Field label={t("maxFeedbackLoops")}>
                   <input
                     type="number"

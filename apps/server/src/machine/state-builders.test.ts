@@ -460,8 +460,8 @@ describe("buildScriptState assign", () => {
 // ── buildHumanGateState: basic structure ──
 
 describe("buildHumanGateState basic structure", () => {
-  function makeGateStage(overrides: Partial<HumanGateRuntimeConfig & { name: string; notify?: { type: "slack"; template: string } }> = {}) {
-    return { name: "review", ...overrides } as HumanGateRuntimeConfig & { name: string; notify?: { type: "slack"; template: string } };
+  function makeGateStage(overrides: Partial<HumanGateRuntimeConfig & { name: string }> = {}) {
+    return { name: "review", ...overrides } as HumanGateRuntimeConfig & { name: string };
   }
 
   it("has CONFIRM and REJECT event handlers", () => {
@@ -509,8 +509,8 @@ describe("buildHumanGateState basic structure", () => {
 // ── buildHumanGateState: CONFIRM assign ──
 
 describe("buildHumanGateState CONFIRM assign", () => {
-  function makeGateStage(overrides: Partial<HumanGateRuntimeConfig & { name: string; notify?: { type: "slack"; template: string } }> = {}) {
-    return { name: "review", ...overrides } as HumanGateRuntimeConfig & { name: string; notify?: { type: "slack"; template: string } };
+  function makeGateStage(overrides: Partial<HumanGateRuntimeConfig & { name: string }> = {}) {
+    return { name: "review", ...overrides } as HumanGateRuntimeConfig & { name: string };
   }
 
   it("CONFIRM resets retryCount to 0", () => {
@@ -538,8 +538,8 @@ describe("buildHumanGateState CONFIRM assign", () => {
 // ── buildHumanGateState: REJECT_WITH_FEEDBACK ──
 
 describe("buildHumanGateState REJECT_WITH_FEEDBACK", () => {
-  function makeGateStage(overrides: Partial<HumanGateRuntimeConfig & { name: string; notify?: { type: "slack"; template: string } }> = {}) {
-    return { name: "review", ...overrides } as HumanGateRuntimeConfig & { name: string; notify?: { type: "slack"; template: string } };
+  function makeGateStage(overrides: Partial<HumanGateRuntimeConfig & { name: string }> = {}) {
+    return { name: "review", ...overrides } as HumanGateRuntimeConfig & { name: string };
   }
 
   it("first handler guard returns true when qaRetryCount < max_feedback_loops", () => {

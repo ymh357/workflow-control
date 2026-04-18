@@ -75,12 +75,6 @@ export const ScriptRuntimeConfigSchema = z.object({
 
 export const HumanGateRuntimeConfigSchema = z.object({
   engine: z.literal("human_gate"),
-  notify: z
-    .object({
-      type: z.literal("slack"),
-      template: z.string(),
-    })
-    .optional(),
   on_approve_to: z.string().optional(),
   on_reject_to: z.string().optional(),
   max_feedback_loops: z.number().optional(),
@@ -401,14 +395,6 @@ export const SandboxConfigSchema = z.object({
 
 export const SystemSettingsSchema = z
   .object({
-    slack: z
-      .object({
-        bot_token: z.string().optional(),
-        notify_channel_id: z.string().optional(),
-        signing_secret: z.string().optional(),
-        app_token: z.string().optional(),
-      })
-      .optional(),
     paths: z
       .object({
         repos_base: z.string().optional(),

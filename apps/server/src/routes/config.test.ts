@@ -35,7 +35,6 @@ vi.mock("../lib/config-loader.js", () => ({
   clearConfigCache: vi.fn(),
   loadSystemSettings: vi.fn(() => ({
     paths: { repos_base: "/repos" },
-    slack: {},
     sandbox: { enabled: false },
     agent: {},
   })),
@@ -152,7 +151,6 @@ describe("GET /config/system", () => {
     vi.resetAllMocks();
     vi.mocked(loadSystemSettings).mockReturnValue({
       paths: { repos_base: "/repos" },
-      slack: { bot_token: "xoxb", notify_channel_id: "C123" },
       sandbox: { enabled: false },
       agent: { default_engine: "claude" },
     });
@@ -175,18 +173,11 @@ describe("GET /config/system", () => {
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.environment).toBeDefined();
-    expect(body.notifications).toBeDefined();
     expect(body.capabilities).toBeDefined();
     expect(body.sandbox).toBeDefined();
     expect(body.instructions.globalClaudeMd).toBe("# Claude");
     expect(body.instructions.globalGeminiMd).toBe("# Gemini");
     expect(body.instructions.globalCodexMd).toBe("# Codex");
-  });
-
-  it("reports slack as configured when tokens present", async () => {
-    const res = await app.request("/config/system");
-    const body = await res.json();
-    expect(body.notifications.slackConfigured).toBe(true);
   });
 });
 

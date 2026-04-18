@@ -39,7 +39,6 @@ packages/
 - **pnpm** — `npm install -g pnpm`
 - **gh CLI** — [cli.github.com](https://cli.github.com) (authenticated via `gh auth login`)
 - **Claude Code CLI** or **Gemini CLI** — at least one on PATH
-- **Slack App** (optional) — Bot Token + App Token for interactive Slack notifications via Socket Mode
 
 ## Quick Start
 
@@ -67,7 +66,7 @@ pnpm dev          # Server (:3001) + Dashboard (:3000)
 
 Open `http://localhost:3000`. The **Config** page has a health panel to verify all services are reachable.
 
-> **Minimal setup**: Only `claude` or `gemini` on PATH is required to run pipelines. Slack, Notion, Figma, and GitHub integrations are all optional — leave them blank in the config and the system works without them.
+> **Minimal setup**: Only `claude` or `gemini` on PATH is required to run pipelines. Notion, Figma, and GitHub integrations are all optional — leave them blank in the config and the system works without them.
 
 > `system-settings.yaml` supports `${ENV_VAR}` interpolation. Keep secrets in `.env.local`, not in the YAML file.
 
@@ -130,12 +129,6 @@ The project includes a config package manager for sharing and installing reusabl
 - `pnpm --filter server registry:bootstrap` — installs the default package set (run once after fresh clone)
 
 The dashboard **Store** page (`/registry`) provides a web UI for browsing, installing, publishing, and managing packages. Local config packages appear with a "local" badge and can be published to the remote registry directly from the Store page.
-
-### Slack Integration
-
-All `human_confirm` gates automatically send Slack notifications. With Socket Mode (`app_token` configured), notifications include interactive buttons — approve/reject gates, answer agent questions, and send messages to blocked tasks directly in Slack. Without `app_token`, notifications are text-only.
-
-Config page Health tab shows Slack connection status (Bot Token / Socket Mode / Channel).
 
 ### Claude Code MCP Integration
 
@@ -202,9 +195,6 @@ Two config files control the system (both gitignored):
 |----------|----------|-------------|
 | `REPOS_BASE_PATH` | Yes | Base directory where your git repos live |
 | `CLAUDE_PATH` / `GEMINI_PATH` / `CODEX_PATH` | No | Override CLI executable paths (auto-detected if on PATH) |
-| `SLACK_BOT_TOKEN` | No | Slack bot token for task notifications |
-| `SLACK_APP_TOKEN` | No | Slack app token for Socket Mode (interactive buttons) |
-| `SLACK_NOTIFY_CHANNEL_ID` | No | Slack channel/user for notifications |
 | `GITHUB_ORG` | No | GitHub org for PR creation |
 | `FIGMA_ACCESS_TOKEN` | No | Figma API access (for design pipelines) |
 

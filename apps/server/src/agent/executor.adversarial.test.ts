@@ -188,13 +188,13 @@ describe("adversarial: runScript multiple required settings", () => {
       metadata: {
         id: "needs-many",
         description: "test",
-        requiredSettings: ["slack.token", "notion.token"],
+        requiredSettings: ["github.token", "notion.token"],
       },
       handler: vi.fn(),
     } as any);
 
     vi.mocked(loadSystemSettings).mockReturnValue({
-      slack: { token: "ok" },
+      github: { token: "ok" },
       // notion.token is missing
     } as any);
 

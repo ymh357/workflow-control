@@ -190,7 +190,7 @@ describe("handleStageError adversarial", () => {
     expect((backToTransition.guard as Function)({ context: c })).toBe(true);
   });
 
-  it("final blocked transition actions array has 3 entries (assign with compensation, emitError, emitSlackBlocked)", () => {
+  it("final blocked transition actions array has 3 entries (assign with compensation, emitError, emitStageBlocked)", () => {
     const transitions = handleStageError("myStage");
     const lastTransition = transitions[transitions.length - 1];
     expect(lastTransition.actions).toHaveLength(3);

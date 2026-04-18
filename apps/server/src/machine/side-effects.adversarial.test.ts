@@ -11,19 +11,6 @@ vi.mock("../sse/task-list-broadcaster.js", () => ({
   taskListBroadcaster: { broadcastTaskUpdate },
 }));
 
-const notifyBlocked = vi.fn().mockResolvedValue(undefined);
-const notifyStageComplete = vi.fn().mockResolvedValue(undefined);
-const notifyCompleted = vi.fn().mockResolvedValue(undefined);
-const notifyCancelled = vi.fn().mockResolvedValue(undefined);
-const notifyGenericGate = vi.fn().mockResolvedValue(undefined);
-vi.mock("../lib/slack.js", () => ({
-  notifyBlocked,
-  notifyStageComplete,
-  notifyCompleted,
-  notifyCancelled,
-  notifyGenericGate,
-}));
-
 const updateNotionPageStatus = vi.fn().mockResolvedValue(undefined);
 vi.mock("../lib/notion.js", () => ({
   updateNotionPageStatus,
@@ -152,28 +139,6 @@ describe("side-effects adversarial", () => {
     actor.emit({ type: "wf.worktreeCleanup", taskId: "t-no-wt", worktreePath: "" });
     // No dynamic import should be triggered for empty path
     expect(execFileMock).not.toHaveBeenCalled();
-  });
-
-  it("wf.slackStageComplete passes all fields through to safeFire", () => {
-    actor.emit({
-      type: "wf.slackStageComplete",
-      taskId: "t-stage",
-      title: "Dev Complete",
-      templateName: "dev-done",
-    });
-    expect(mockSafeFire).toHaveBeenCalled();
-    expect(notifyStageComplete).toHaveBeenCalledWith("t-stage", "Dev Complete", "dev-done");
-  });
-
-  it("wf.slackGate passes stageName and template correctly", () => {
-    actor.emit({
-      type: "wf.slackGate",
-      taskId: "t-gate",
-      stageName: "review",
-      template: "needs-approval",
-    });
-    expect(mockSafeFire).toHaveBeenCalled();
-    expect(notifyGenericGate).toHaveBeenCalledWith("t-gate", "review", "needs-approval");
   });
 
   it("wf.status includes ISO timestamp in pushed SSE message", () => {

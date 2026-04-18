@@ -54,29 +54,6 @@ options; Gemini gets a generated `.gemini/settings.json` scoped
 to that stage. In edge mode, the runner connects to the server's
 built-in MCP server via `--mcp-config`.
 
-## Slack Integration
-
-Slack notifications support bidirectional interaction via Socket Mode.
-All human gates automatically send Slack notifications.
-
-> **Notification Only** (bot_token + notify_channel_id)
-> Text-only notifications for gate approvals, blocked tasks, completions, and cancellations. No interactive buttons.
-
-> **Socket Mode** (+ app_token)
-> Interactive Block Kit messages. Approve/reject gates, answer agent questions,
-> and send messages to blocked tasks — all directly in Slack. No public URL needed.
-
-```yaml
-# system-settings.yaml
-slack:
-  bot_token: ${SLACK_BOT_TOKEN}
-  notify_channel_id: ${SLACK_NOTIFY_CHANNEL_ID}
-  app_token: ${SLACK_APP_TOKEN}
-```
-
-After button clicks, the original message updates to show the action result
-(e.g., "Approved by user"), preventing duplicate actions.
-
 ## Configuration UI
 
 > **Infrastructure & Health**
@@ -84,7 +61,6 @@ After button clicks, the original message updates to show the action result
 > - System settings editor (raw YAML)
 > - MCP registry configuration
 > - Sandbox settings (filesystem/network isolation)
-> - Slack notification status (Bot Token / Socket Mode / Channel)
 
 > **Blueprints & Intelligence**
 > - Pipeline CRUD with visual editor

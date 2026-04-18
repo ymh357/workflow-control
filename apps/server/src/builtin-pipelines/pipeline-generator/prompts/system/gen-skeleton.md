@@ -95,7 +95,6 @@ interface GateRuntime {
   on_approve_to?: string;
   on_reject_to?: string;
   max_feedback_loops?: number;
-  notify?: { type: "slack"; template: string };
 }
 
 // For type: "condition"
@@ -189,7 +188,6 @@ Do NOT invent alternative names. If `design` prose uses different wording, follo
 8. Translate stageDesign fields to config fields exactly:
    - `Permission mode: plan` → `permission_mode: "plan"`
    - `Disallowed tools: [Edit, Write]` → `runtime.disallowed_tools: ["Edit", "Write"]`
-   - `On complete: notify slack` → `on_complete: { notify: "slack" }`
    - `display_hint: field=badge` → field-level `display_hint: "badge"`
    - `hidden: true` → output-level `hidden: true`
    - `Interactive: true` → `interactive: true`

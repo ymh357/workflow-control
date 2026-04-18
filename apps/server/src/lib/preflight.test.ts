@@ -63,37 +63,36 @@ beforeEach(() => {
 
 describe("preflight - sensitive value masking regex", () => {
   it("masks paths containing 'token'", () => {
-    const settings = { slack: { bot_token: "xoxb-1234-secret-value-9999" } };
+    const settings = { notion: { token: "ntn_1234-secret-value-9999" } };
     mockLoadSystemSettings.mockReturnValue(settings);
     mockGetNestedValue.mockImplementation((obj: any, path: string) => {
       if (!obj || !path) return undefined;
       return path.split(".").reduce((acc: any, part: string) => acc && acc[part], obj);
     });
+    mockGetAllScripts.mockReturnValue([
+      { metadata: { id: "test", name: "test", requiredSettings: ["notion.token"] }, run: vi.fn() } as any,
+    ]);
 
     const { results } = runPreflight();
-    const tokenResult = results.find((r) => r.name === "Setting: slack.bot_token");
+    const tokenResult = results.find((r) => r.name === "Setting: notion.token");
     expect(tokenResult).toBeDefined();
-    expect(tokenResult!.detail).toBe("xoxb...9999");
+    expect(tokenResult!.detail).toBe("ntn_...9999");
     expect(tokenResult!.detail).not.toContain("secret");
   });
 
   it("masks paths containing 'secret'", () => {
-    const settings = { slack: { signing_secret: "abcd1234efgh5678" } };
+    const settings = { integrations: { signing_secret: "abcd1234efgh5678" } };
     mockLoadSystemSettings.mockReturnValue(settings);
     mockGetNestedValue.mockImplementation((obj: any, path: string) => {
       if (!obj || !path) return undefined;
       return path.split(".").reduce((acc: any, part: string) => acc && acc[part], obj);
     });
-    const { results } = runPreflight();
-    // "signing_secret" contains "secret" so should be masked
-    // But it won't show up unless a script or pipeline stage requires it.
-    // Let's test with a script that requires it.
     mockGetAllScripts.mockReturnValue([
-      { metadata: { id: "test", name: "test", requiredSettings: ["slack.signing_secret"] }, run: vi.fn() } as any,
+      { metadata: { id: "test", name: "test", requiredSettings: ["integrations.signing_secret"] }, run: vi.fn() } as any,
     ]);
 
     const result2 = runPreflight();
-    const secretResult = result2.results.find((r) => r.name === "Setting: slack.signing_secret");
+    const secretResult = result2.results.find((r) => r.name === "Setting: integrations.signing_secret");
     expect(secretResult).toBeDefined();
     expect(secretResult!.detail).toBe("abcd...5678");
   });
@@ -101,15 +100,18 @@ describe("preflight - sensitive value masking regex", () => {
   it("false-positive: masks paths containing 'id' like 'notify_channel_id'", () => {
     // The regex /token|secret|key|id/i matches "id" anywhere in the path,
     // so "notify_channel_id" will be masked even though it may not be sensitive.
-    const settings = { slack: { notify_channel_id: "C0123456789" } };
+    const settings = { integrations: { notify_channel_id: "C0123456789" } };
     mockLoadSystemSettings.mockReturnValue(settings);
     mockGetNestedValue.mockImplementation((obj: any, path: string) => {
       if (!obj || !path) return undefined;
       return path.split(".").reduce((acc: any, part: string) => acc && acc[part], obj);
     });
+    mockGetAllScripts.mockReturnValue([
+      { metadata: { id: "test", name: "test", requiredSettings: ["integrations.notify_channel_id"] }, run: vi.fn() } as any,
+    ]);
 
     const { results } = runPreflight();
-    const idResult = results.find((r) => r.name === "Setting: slack.notify_channel_id");
+    const idResult = results.find((r) => r.name === "Setting: integrations.notify_channel_id");
     expect(idResult).toBeDefined();
     // "notify_channel_id" contains "id" -> masked
     expect(idResult!.detail).toBe("C012...6789");
@@ -135,19 +137,20 @@ describe("preflight - sensitive value masking regex", () => {
 
 describe("preflight - checkedPaths deduplication", () => {
   it("does not add duplicate results for the same setting path", () => {
-    const settings = { slack: { bot_token: "xoxb-1234-5678-abcd" } };
+    const settings = { notion: { token: "ntn_1234-5678-abcd" } };
     mockLoadSystemSettings.mockReturnValue(settings);
     mockGetNestedValue.mockImplementation((obj: any, path: string) => {
       if (!obj || !path) return undefined;
       return path.split(".").reduce((acc: any, part: string) => acc && acc[part], obj);
     });
-    // Both core framework and a script require the same path
+    // Two scripts require the same path — must dedupe
     mockGetAllScripts.mockReturnValue([
-      { metadata: { id: "s1", name: "s1", requiredSettings: ["slack.bot_token"] }, run: vi.fn() } as any,
+      { metadata: { id: "s1", name: "s1", requiredSettings: ["notion.token"] }, run: vi.fn() } as any,
+      { metadata: { id: "s2", name: "s2", requiredSettings: ["notion.token"] }, run: vi.fn() } as any,
     ]);
 
     const { results } = runPreflight();
-    const tokenResults = results.filter((r) => r.name === "Setting: slack.bot_token");
+    const tokenResults = results.filter((r) => r.name === "Setting: notion.token");
     expect(tokenResults).toHaveLength(1);
   });
 
@@ -180,7 +183,7 @@ describe("preflight - passed calculation", () => {
       { name: "default", isDirectory: () => true, isFile: () => false, isBlockDevice: () => false, isCharacterDevice: () => false, isFIFO: () => false, isSocket: () => false, isSymbolicLink: () => false, parentPath: "", path: "" },
     ] as any);
     const settings = {
-      slack: { bot_token: "xoxb-test", notify_channel_id: "C123" },
+      notion: { token: "ntn-test" },
     };
     mockLoadSystemSettings.mockReturnValue(settings);
     mockGetNestedValue.mockImplementation((obj: any, path: string) => {
@@ -216,7 +219,7 @@ describe("preflight - passed calculation", () => {
       notion: { description: "Notion API", command: "npx", args: [] },
     });
     mockBuildMcpFromRegistry.mockReturnValue(null); // missing credentials
-    const settings = { slack: { bot_token: "xoxb", notify_channel_id: "C1" } };
+    const settings = { notion: { token: "ntn_test" } };
     mockLoadSystemSettings.mockReturnValue(settings);
 
     const { results } = runPreflight();

@@ -11,7 +11,7 @@ vi.mock("./logger.js", () => ({
 
 const mockWithRetry = vi.fn();
 
-vi.mock("./slack.js", () => ({
+vi.mock("./retry.js", () => ({
   withRetry: (fn: any) => mockWithRetry(fn),
 }));
 

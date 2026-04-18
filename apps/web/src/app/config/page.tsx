@@ -25,11 +25,6 @@ interface SystemFullView {
     preflight: Array<{ name: string; ok: boolean; detail?: string }>;
     effectivePaths: Record<string, string>;
   };
-  notifications: {
-    slackConfigured: boolean;
-    slackSocketMode: boolean;
-    channelId?: string;
-  };
   capabilities: {
     skills: string[];
     mcps: Array<{ name: string; description: string; available: boolean }>;
@@ -495,29 +490,6 @@ const ConfigPage = () => {
                         ))}
                       </div>
                     )}
-                  </div>
-                  <div className="rounded-xl border border-zinc-800 bg-zinc-900/30 p-5">
-                    <h3 className="text-[10px] font-bold uppercase text-zinc-500 tracking-widest mb-4">{t("slackNotifications")}</h3>
-                    <div className="space-y-3 text-sm">
-                      <div className="flex justify-between">
-                        <span className="text-zinc-500">{t("slackBot")}</span>
-                        <span className={systemView.notifications.slackConfigured ? "text-emerald-400 font-bold" : "text-zinc-600"}>
-                          {systemView.notifications.slackConfigured ? t("ready") : t("slackNotConfigured")}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-zinc-500">{t("slackSocketMode")}</span>
-                        <span className={systemView.notifications.slackSocketMode ? "text-emerald-400 font-bold" : "text-zinc-600"}>
-                          {systemView.notifications.slackSocketMode ? t("ready") : t("off")}
-                        </span>
-                      </div>
-                      {systemView.notifications.channelId && (
-                        <div className="flex justify-between">
-                          <span className="text-zinc-500">{t("slackChannel")}</span>
-                          <span className="text-zinc-300 font-mono text-xs">{systemView.notifications.channelId}</span>
-                        </div>
-                      )}
-                    </div>
                   </div>
                 </div>
                 <div className="space-y-3">

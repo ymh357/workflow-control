@@ -13,19 +13,6 @@ vi.mock("../sse/task-list-broadcaster.js", () => ({
   taskListBroadcaster: { broadcastTaskUpdate },
 }));
 
-const notifyBlocked = vi.fn().mockResolvedValue(undefined);
-const notifyStageComplete = vi.fn().mockResolvedValue(undefined);
-const notifyCompleted = vi.fn().mockResolvedValue(undefined);
-const notifyCancelled = vi.fn().mockResolvedValue(undefined);
-const notifyGenericGate = vi.fn().mockResolvedValue(undefined);
-vi.mock("../lib/slack.js", () => ({
-  notifyBlocked,
-  notifyStageComplete,
-  notifyCompleted,
-  notifyCancelled,
-  notifyGenericGate,
-}));
-
 const updateNotionPageStatus = vi.fn().mockResolvedValue(undefined);
 vi.mock("../lib/notion.js", () => ({
   updateNotionPageStatus,
@@ -114,18 +101,14 @@ describe("registerSideEffects", () => {
   });
 
   // 1. Registers handlers for all expected event types
-  it("registers handlers for all 15 event types", () => {
+  it("registers handlers for all expected event types", () => {
     const events = actor.registeredEvents();
     expect(events).toContain("wf.status");
     expect(events).toContain("wf.error");
     expect(events).toContain("wf.costUpdate");
     expect(events).toContain("wf.streamClose");
     expect(events).toContain("wf.notionSync");
-    expect(events).toContain("wf.slackBlocked");
-    expect(events).toContain("wf.slackStageComplete");
-    expect(events).toContain("wf.slackCompleted");
-    expect(events).toContain("wf.slackCancelled");
-    expect(events).toContain("wf.slackGate");
+    expect(events).toContain("wf.stageBlocked");
     expect(events).toContain("wf.taskListUpdate");
     expect(events).toContain("wf.persistSession");
     expect(events).toContain("wf.cancelAgent");
@@ -171,11 +154,10 @@ describe("registerSideEffects", () => {
     expect(notifyTaskTerminated).toHaveBeenCalledWith("t4", "completed or error");
   });
 
-  // 6. wf.slackBlocked calls notifyBlocked and notifyTaskTerminated
-  it("wf.slackBlocked triggers Slack notify and task termination", () => {
-    actor.emit({ type: "wf.slackBlocked", taskId: "t6", stage: "deploy", error: "timeout" });
+  // 6. wf.stageBlocked calls notifyTaskTerminated (Slack notification removed in Phase 0)
+  it("wf.stageBlocked triggers task termination", () => {
+    actor.emit({ type: "wf.stageBlocked", taskId: "t6", stage: "deploy", error: "timeout" });
 
-    expect(notifyBlocked).toHaveBeenCalledWith("t6", "deploy", "timeout");
     expect(notifyTaskTerminated).toHaveBeenCalledWith("t6", "blocked");
   });
 

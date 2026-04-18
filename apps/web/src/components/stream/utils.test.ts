@@ -29,8 +29,8 @@ describe("humanizeToolCall — MCP tools", () => {
   });
 
   it("mcp__server__ (trailing __) → tool part is empty string → falls back to 'call'", () => {
-    // parts = ["mcp","slack",""], parts.slice(2).join("__") = "" (falsy) → "call"
-    expect(humanizeToolCall("mcp__slack__", {})).toBe("slack: call");
+    // parts = ["mcp","notion",""], parts.slice(2).join("__") = "" (falsy) → "call"
+    expect(humanizeToolCall("mcp__notion__", {})).toBe("notion: call");
   });
 });
 

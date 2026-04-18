@@ -10,10 +10,6 @@ vi.mock("../sse/manager.js", () => ({
   },
 }));
 
-vi.mock("./slack.js", () => ({
-  notifyQuestionAsked: vi.fn().mockResolvedValue(undefined),
-}));
-
 vi.mock("./logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
   taskLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
@@ -31,14 +27,12 @@ vi.mock("./db.js", () => ({
 }));
 
 import { sseManager } from "../sse/manager.js";
-import { notifyQuestionAsked } from "./slack.js";
 
 // We need a fresh QuestionManager per test since it's a singleton.
 // Re-import the module each time would be complex; instead we use cancelForTask to clean up.
 import { questionManager } from "./question-manager.js";
 
 const mockPushMessage = vi.mocked(sseManager.pushMessage);
-const mockNotifyQuestion = vi.mocked(notifyQuestionAsked);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -104,21 +98,6 @@ describe("QuestionManager", () => {
       // Clean up
       const pending = questionManager.getPending("task-2");
       questionManager.answer(pending!.questionId, "yes");
-      await promise;
-    });
-
-    it("notifies Slack", async () => {
-      const promise = questionManager.ask("task-3", "What now?", ["A", "B"]);
-      // notifyQuestionAsked is called but not awaited (fire-and-forget)
-      expect(mockNotifyQuestion).toHaveBeenCalledWith(
-        "task-3",
-        expect.any(String),
-        "What now?",
-        ["A", "B"],
-      );
-
-      const pending = questionManager.getPending("task-3");
-      questionManager.answer(pending!.questionId, "A");
       await promise;
     });
 
@@ -329,20 +308,6 @@ describe("QuestionManager", () => {
         options: undefined,
         createdAt: "2026-01-02T00:00:00.000Z",
       });
-    });
-  });
-
-  describe("notifyQuestionAsked failure in ask", () => {
-    it("still returns the promise even when notifyQuestionAsked rejects", async () => {
-      mockNotifyQuestion.mockRejectedValueOnce(new Error("Slack down"));
-
-      const promise = questionManager.ask("task-notify-fail", "Question?");
-      // The promise should still be resolvable
-      expect(questionManager.hasPending("task-notify-fail")).toBe(true);
-
-      const pending = questionManager.getPending("task-notify-fail");
-      questionManager.answer(pending!.questionId, "answer");
-      await expect(promise).resolves.toBe("answer");
     });
   });
 

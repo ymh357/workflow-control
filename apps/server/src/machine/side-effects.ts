@@ -2,9 +2,6 @@ import type { WorkflowEmittedEvent } from "./events.js";
 import { getNotionStatusLabel } from "./helpers.js";
 import { sseManager } from "../sse/manager.js";
 import { taskListBroadcaster } from "../sse/task-list-broadcaster.js";
-import {
-  notifyBlocked, notifyStageComplete, notifyCompleted, notifyCancelled, notifyGenericGate,
-} from "../lib/slack.js";
 import { updateNotionPageStatus } from "../lib/notion.js";
 import { writeArtifact } from "../lib/artifacts.js";
 import { cancelTask } from "../agent/query-tracker.js";
@@ -132,30 +129,9 @@ export function registerSideEffects(actor: EmittingActor): void {
     );
   });
 
-  actor.on("wf.slackBlocked", (event: Extract<WorkflowEmittedEvent, { type: "wf.slackBlocked" }>) => {
-    safeFire(notifyBlocked(event.taskId, event.stage, event.error), event.taskId, "notifyBlocked failed");
+  actor.on("wf.stageBlocked", (event: Extract<WorkflowEmittedEvent, { type: "wf.stageBlocked" }>) => {
     notifyTaskTerminated(event.taskId, "blocked");
     emitWorkflowEvent(event.taskId, "stage_failed", event.stage, { error: event.error });
-  });
-
-  actor.on("wf.slackStageComplete", (event: Extract<WorkflowEmittedEvent, { type: "wf.slackStageComplete" }>) => {
-    safeFire(
-      notifyStageComplete(event.taskId, event.title, event.templateName),
-      event.taskId,
-      "notifyStageComplete failed",
-    );
-  });
-
-  actor.on("wf.slackCompleted", (event: Extract<WorkflowEmittedEvent, { type: "wf.slackCompleted" }>) => {
-    safeFire(notifyCompleted(event.taskId, event.deliverable), event.taskId, "notifyCompleted failed");
-  });
-
-  actor.on("wf.slackCancelled", (event: Extract<WorkflowEmittedEvent, { type: "wf.slackCancelled" }>) => {
-    safeFire(notifyCancelled(event.taskId), event.taskId, "notifyCancelled failed");
-  });
-
-  actor.on("wf.slackGate", (event: Extract<WorkflowEmittedEvent, { type: "wf.slackGate" }>) => {
-    safeFire(notifyGenericGate(event.taskId, event.stageName, event.template), event.taskId, "notifyGenericGate failed");
   });
 
   actor.on("wf.taskListUpdate", (event: Extract<WorkflowEmittedEvent, { type: "wf.taskListUpdate" }>) => {

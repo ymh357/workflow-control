@@ -18,8 +18,6 @@ pnpm run dev        # start dev server (default :3001)
 | `PORT` | HTTP server port | `3001` |
 | `ANTHROPIC_API_KEY` | Claude API key | — |
 | `NOTION_TOKEN` | Notion integration token (optional) | — |
-| `SLACK_BOT_TOKEN` | Slack bot token (optional) | — |
-| `SLACK_NOTIFY_CHANNEL_ID` | Slack channel for notifications | — |
 | `EXTRA_PATH` | Additional PATH entries for git/shell commands | `/opt/homebrew/bin:/usr/local/bin` |
 
 ## API Endpoints
@@ -70,7 +68,7 @@ src/
     safe-fire.ts        # Fire-and-forget promise helper
     error-response.ts   # Unified API error format
     question-manager.ts # Human Q&A with timeout
-    slack.ts            # Slack notifications
+    retry.ts            # Retry with backoff
     notion.ts           # Notion page status sync
     git.ts              # Worktree management
     artifacts.ts        # File artifact persistence

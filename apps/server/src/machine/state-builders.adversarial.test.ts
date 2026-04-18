@@ -331,9 +331,8 @@ describe("Bug 3: REJECT_WITH_FEEDBACK must default empty feedback", () => {
     return {
       name: "review",
       engine: "human_gate" as const,
-      notify: { type: "slack" as const, template: "approval-needed" },
       max_feedback_loops: 5,
-    } satisfies HumanGateRuntimeConfig & { name: string; notify: { type: "slack"; template: string } };
+    } satisfies HumanGateRuntimeConfig & { name: string };
   }
 
   function getRejectWithFeedbackHandlers(state: Record<string, unknown>) {
@@ -941,14 +940,13 @@ describe("Bug 2 extended — store merge behavior", () => {
 // ---------------------------------------------------------------------------
 
 describe("Bug 3 extended — REJECT_WITH_FEEDBACK edge cases", () => {
-  function makeHumanGateStage(overrides: Partial<HumanGateRuntimeConfig & { name: string; notify?: { type: "slack"; template: string } }> = {}) {
+  function makeHumanGateStage(overrides: Partial<HumanGateRuntimeConfig & { name: string }> = {}) {
     return {
       name: "review",
       engine: "human_gate" as const,
-      notify: { type: "slack" as const, template: "approval-needed" },
       max_feedback_loops: 5,
       ...overrides,
-    } satisfies HumanGateRuntimeConfig & { name: string; notify: { type: "slack"; template: string } };
+    } satisfies HumanGateRuntimeConfig & { name: string };
   }
 
   function getRejectWithFeedbackHandlers(state: Record<string, unknown>) {
@@ -1186,14 +1184,13 @@ describe("buildScriptState tests", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildHumanGateState tests", () => {
-  function makeGateStage(overrides: Partial<HumanGateRuntimeConfig & { name: string; notify?: { type: "slack"; template: string } }> = {}) {
+  function makeGateStage(overrides: Partial<HumanGateRuntimeConfig & { name: string }> = {}) {
     return {
       name: "gate",
       engine: "human_gate" as const,
-      notify: { type: "slack" as const, template: "approval-needed" },
       max_feedback_loops: 5,
       ...overrides,
-    } satisfies HumanGateRuntimeConfig & { name: string; notify: { type: "slack"; template: string } };
+    } satisfies HumanGateRuntimeConfig & { name: string };
   }
 
   function getConfirmHandler(state: Record<string, unknown>) {
@@ -1279,50 +1276,6 @@ describe("buildHumanGateState tests", () => {
     expect(handler.target).toBe("error");
   });
 
-  it("entry emits wf.slackGate with correct template", () => {
-    const stage = makeGateStage({ notify: { type: "slack", template: "my-template" } });
-    const state = buildHumanGateState("next", "prev", stage);
-
-    const entryActions = state.entry as unknown[];
-    // Entry is an array: [...statusEntry(), emit(...)]
-    // The emit action is the last one; it should be an XState emit object
-    const emitAction = entryActions[entryActions.length - 1] as any;
-
-    // XState emit actions have a type of "xstate.emit" and an `event` or `params` function
-    expect(emitAction).toBeDefined();
-    expect(emitAction.type).toBe("xstate.emit");
-
-    // The emit params function returns the event shape
-    const context = makeContext({ taskId: "task-123" });
-    const emittedEvent = emitAction.event({ context });
-    expect(emittedEvent.type).toBe("wf.slackGate");
-    expect(emittedEvent.taskId).toBe("task-123");
-    expect(emittedEvent.stageName).toBe("gate");
-    expect(emittedEvent.template).toBe("my-template");
-  });
-
-  it("custom notify template used when configured", () => {
-    const stage = makeGateStage({ notify: { type: "slack", template: "custom-approval" } });
-    const state = buildHumanGateState("next", "prev", stage);
-
-    const entryActions = state.entry as unknown[];
-    const emitAction = entryActions[entryActions.length - 1] as any;
-
-    const context = makeContext();
-    const emittedEvent = emitAction.event({ context });
-    expect(emittedEvent.template).toBe("custom-approval");
-  });
-
-  it("default template 'approval-needed' when no notify configured", () => {
-    // No notify property
-    const stage = { name: "gate", engine: "human_gate" as const, max_feedback_loops: 5 } as any;
-    const state = buildHumanGateState("next", "prev", stage);
-
-    const entryActions = state.entry as unknown[];
-    const emitAction = entryActions[entryActions.length - 1] as any;
-
-    const context = makeContext();
-    const emittedEvent = emitAction.event({ context });
-    expect(emittedEvent.template).toBe("approval-needed");
-  });
+  // Slack notify tests removed in Phase 0 Step 0.1 (Slack Bridge deletion).
+  // Human gate entry actions are now pure status updates without external notifications.
 });

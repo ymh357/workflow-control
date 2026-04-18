@@ -110,7 +110,6 @@ stages:
 > - `on_reject_to` — where to go on rejection
 > - `on_approve_to` — where to go on approval
 > - `max_feedback_loops` — rejection limit before error
-> - `notify` — Slack notification
 
 > **Condition**
 > type: condition / engine: condition

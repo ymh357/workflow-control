@@ -56,7 +56,6 @@
 | pnpm | 任意 | npm install -g pnpm |
 | gh CLI | 任意 | 通过 gh auth login 完成认证 |
 | Claude Code 或 Gemini CLI | 任意 | 至少一个在 PATH 中 |
-| Slack App | 可选 | Bot Token + App Token 用于 Slack 交互式通知 |
 
 ### 安装
 

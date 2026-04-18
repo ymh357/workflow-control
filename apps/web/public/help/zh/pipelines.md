@@ -110,7 +110,6 @@ stages:
 > - `on_reject_to` — 拒绝后跳转到哪个阶段
 > - `on_approve_to` — 批准后跳转到哪个阶段
 > - `max_feedback_loops` — 拒绝次数上限，超过则报错
-> - `notify` — Slack 通知
 
 > **条件路由**
 > type: condition / engine: condition

@@ -35,7 +35,6 @@ vi.mock("../lib/config-loader.js", () => ({
   clearConfigCache: vi.fn(),
   loadSystemSettings: vi.fn(() => ({
     paths: { repos_base: "/repos" },
-    slack: {},
     sandbox: { enabled: false },
     agent: {},
   })),
@@ -139,7 +138,7 @@ describe("PUT /config/settings - YAML edge cases", () => {
 
   it("accepts YAML with null values", async () => {
     const res = await jsonReq("PUT", "/config/settings", {
-      content: "agent: null\nslack: null\n",
+      content: "agent: null\nnotion: null\n",
     });
     expect(res.status).toBe(200);
   });

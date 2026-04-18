@@ -83,11 +83,7 @@ export function runPreflight(): { passed: boolean; results: CheckResult[] } {
     detail: worktreesBase || "Not set (will fallback to temp dir)" 
   });
 
-  // 2. Integrations (optional — only needed when pipelines use Slack notifications)
-  checkSettingPath("slack.bot_token", settings, checkedPaths, results, true);
-  checkSettingPath("slack.notify_channel_id", settings, checkedPaths, results, true);
-
-  // 3. Tool availability
+  // 2. Tool availability
   try {
     const ghVersion = execFileSync("gh", ["--version"], { encoding: "utf-8", timeout: 5_000 }).split("\n")[0];
     results.push({ name: "gh CLI", ok: true, detail: ghVersion });

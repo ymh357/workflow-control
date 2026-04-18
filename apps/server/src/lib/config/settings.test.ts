@@ -206,11 +206,11 @@ describe("loadSystemSettings", () => {
   it("YAML values override core defaults", () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(
-      'slack:\n  bot_token: "yaml-token"\n',
+      'notion:\n  token: "yaml-token"\n',
     );
 
     const settings = loadSystemSettings();
-    expect(settings.slack!.bot_token).toBe("yaml-token");
+    expect(settings.notion!.token).toBe("yaml-token");
   });
 });
 

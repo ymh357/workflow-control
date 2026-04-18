@@ -53,28 +53,6 @@ context7:
 Gemini 则获取一个针对该阶段生成的 `.gemini/settings.json`。
 在 Edge 模式下，Runner 通过 `--mcp-config` 连接到服务器内置的 MCP 服务器。
 
-## Slack 集成
-
-Slack 通知支持通过 Socket Mode 进行双向交互。
-所有人工审批门控自动发送 Slack 通知。
-
-> **仅通知模式**（bot_token + notify_channel_id）
-> 纯文本通知：门控审批、任务阻塞、完成和取消。无交互按钮。
-
-> **Socket Mode**（+ app_token）
-> 带交互按钮的 Block Kit 消息。在 Slack 中直接审批/驳回门控、回答 Agent 问题、
-> 给阻塞任务发消息。无需公网 URL。
-
-```yaml
-# system-settings.yaml
-slack:
-  bot_token: ${SLACK_BOT_TOKEN}
-  notify_channel_id: ${SLACK_NOTIFY_CHANNEL_ID}
-  app_token: ${SLACK_APP_TOKEN}
-```
-
-按钮点击后，原消息自动更新为操作结果（如 "Approved by user"），避免重复操作。
-
 ## 配置界面
 
 > **基础设施与健康检查**
@@ -82,7 +60,6 @@ slack:
 > - 系统设置编辑器（原始 YAML）
 > - MCP 注册表配置
 > - 沙箱设置（文件系统/网络隔离）
-> - Slack 通知状态（Bot Token / Socket Mode / 频道）
 
 > **蓝图与智能**
 > - 流水线 CRUD 可视化编辑器

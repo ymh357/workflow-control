@@ -335,43 +335,8 @@ describe("VULN-7: /tasks/:taskId/message has no body validation middleware", () 
 // Severity: HIGH (combined with no auth)
 // ============================================================================
 
-describe("VULN-8: Question IDs are predictable/observable via unauthenticated SSE", () => {
-  it("should verify that all callers of answer() provide a taskId", async () => {
-    // The question manager's answer() signature is: answer(questionId, answer, taskId?)
-    // If taskId is omitted, the cross-task ownership check is skipped.
-    // Verify that no production code calls answer() without taskId.
-    const fs = await import("node:fs");
-    const path = await import("node:path");
-
-    // Check slack-app.ts which is a known caller
-    let slackSource: string;
-    try {
-      slackSource = fs.readFileSync(
-        path.resolve(__dirname, "../services/slack-app.ts"),
-        "utf-8"
-      );
-    } catch {
-      slackSource = fs.readFileSync(
-        path.resolve(__dirname, "../../src/services/slack-app.ts"),
-        "utf-8"
-      );
-    }
-
-    // Find all answer() calls — they should have 3 arguments (including taskId)
-    const answerCalls = slackSource.match(/questionManager\.answer\([^)]+\)/g) ?? [];
-    const callsWithoutTaskId = answerCalls.filter((call) => {
-      // Count commas to determine argument count: 2 commas = 3 args
-      const commas = (call.match(/,/g) ?? []).length;
-      return commas < 2;
-    });
-
-    expect(
-      callsWithoutTaskId,
-      "Some answer() calls omit taskId, bypassing the cross-task ownership check. " +
-        "Fix: always pass taskId to questionManager.answer()."
-    ).toEqual([]);
-  });
-});
+// VULN-8 was Slack-specific (verified slack-app.ts calls to answer() included taskId).
+// Removed with Slack Bridge deletion in Phase 0 Step 0.1.
 
 // ============================================================================
 // VULNERABILITY 9: sandboxSchema allows arbitrary strings in filesystem paths
@@ -427,7 +392,6 @@ describe("VULN-9: sandboxSchema allows dangerous filesystem paths", () => {
 // An attacker can overwrite ANY system setting including:
 //   - paths.claude_executable (leading to VULN-1 command injection)
 //   - notion.token (credential theft by pointing to attacker's Notion)
-//   - slack.bot_token (credential theft)
 //   - sandbox.enabled: false (disabling sandbox)
 //
 // Combined with no auth (VULN-4), any network client can reconfigure the system.
@@ -448,8 +412,6 @@ paths:
   work_dir: "/tmp/pwned"
 notion:
   token: "ntn_attacker_controlled_token"
-slack:
-  bot_token: "xoxb-attacker-token"
 sandbox:
   enabled: false
 `;

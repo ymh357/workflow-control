@@ -23,7 +23,6 @@ import { getFragmentRegistry, loadPipelineConfig, listAvailablePipelines, loadSy
 import { getDb, cleanupOldData, startPeriodicCleanup } from "./lib/db.js";
 import { validateTaskId } from "./middleware/validate.js";
 import { errorResponse, ErrorCode } from "./lib/error-response.js";
-import { initSlackApp, stopSlackApp } from "./services/slack-app.js";
 import { stopSweepTimer } from "./machine/actor-registry.js";
 import { mkdirSync } from "node:fs";
 import { writeFile, unlink } from "node:fs/promises";
@@ -160,15 +159,12 @@ const port = Number(process.env.PORT ?? 3001);
 
 logger.info({ port }, "Server ready");
 
-initSlackApp().catch((err) => logger.warn({ err }, "slack: Socket Mode init failed (non-blocking)"));
-
 const server = serve({ fetch: app.fetch, port });
 
 async function gracefulShutdown(signal: string): Promise<void> {
   logger.info(`${signal} received — shutting down gracefully`);
   try { server.close(); } catch { /* best-effort */ }
   try { stopSweepTimer(); } catch { /* best-effort */ }
-  try { await stopSlackApp(); } catch { /* best-effort */ }
   try {
     const { closeAllSessionManagers } = await import("./agent/session-manager-registry.js");
     closeAllSessionManagers();

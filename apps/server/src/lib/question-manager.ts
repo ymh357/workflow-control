@@ -1,7 +1,5 @@
 import { sseManager } from "../sse/manager.js";
 import { taskListBroadcaster } from "../sse/task-list-broadcaster.js";
-import { notifyQuestionAsked } from "./slack.js";
-import { logger as rootLogger } from "./logger.js";
 import { getDb } from "./db.js";
 
 const QUESTION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
@@ -82,10 +80,6 @@ class QuestionManager {
       data: { questionId: id, question, options },
     });
     this.notifyTaskList(taskId);
-
-    notifyQuestionAsked(taskId, id, question, options).catch((err) => {
-      rootLogger.warn({ err, taskId }, "Failed to send question notification");
-    });
 
     return promise;
   }

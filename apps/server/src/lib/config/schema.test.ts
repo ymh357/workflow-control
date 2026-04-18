@@ -235,7 +235,7 @@ describe("PipelineStageConfigSchema", () => {
       mcps: ["context7", "figma"],
       notion_label: "Review",
       execution_mode: "edge",
-      on_complete: { notify: "slack" },
+      on_complete: { notify: "internal" },
     });
     expect(result.success).toBe(true);
   });
@@ -334,10 +334,9 @@ describe("StageRuntimeConfigSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  it("accepts human_gate with notify", () => {
+  it("accepts human_gate with approve/reject targets", () => {
     const result = HumanGateRuntimeConfigSchema.safeParse({
       engine: "human_gate",
-      notify: { type: "slack", template: "Please review" },
       on_approve_to: "deploy",
       on_reject_to: "fix",
       max_feedback_loops: 3,
@@ -742,7 +741,6 @@ describe("SystemSettingsSchema", () => {
 
   it("accepts full settings", () => {
     const result = SystemSettingsSchema.safeParse({
-      slack: { bot_token: "xoxb-123", notify_channel_id: "C123" },
       paths: { repos_base: "/repos", claude_executable: "claude" },
       agent: { default_engine: "claude", max_budget_usd: 10 },
       sandbox: { enabled: false },

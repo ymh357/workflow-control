@@ -24,14 +24,6 @@ vi.mock("../agent/foreach-executor.js", () => ({
   runForeach: vi.fn().mockRejectedValue(new Error("runForeach should not be called in edge-only tests")),
 }));
 
-vi.mock("../lib/slack.js", () => ({
-  notifyBlocked: vi.fn().mockResolvedValue(undefined),
-  notifyStageComplete: vi.fn().mockResolvedValue(undefined),
-  notifyCompleted: vi.fn().mockResolvedValue(undefined),
-  notifyCancelled: vi.fn().mockResolvedValue(undefined),
-  notifyGenericGate: vi.fn().mockResolvedValue(undefined),
-}));
-
 vi.mock("../lib/notion.js", () => ({
   updateNotionPageStatus: vi.fn().mockResolvedValue(undefined),
 }));

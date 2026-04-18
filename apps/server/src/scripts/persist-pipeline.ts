@@ -300,12 +300,6 @@ const WELL_KNOWN_MCPS: Record<string, {
     command: "npx",
     args: ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
   },
-  slack: {
-    description: "Slack messaging — channels, messages, users, and reactions",
-    command: "npx",
-    args: ["-y", "@anthropic-ai/mcp-server-slack"],
-    env: { SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}" },
-  },
   "google-maps": {
     description: "Google Maps API — geocoding, directions, places, and distance matrix",
     command: "npx",

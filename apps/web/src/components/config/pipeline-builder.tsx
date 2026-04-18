@@ -32,7 +32,6 @@ interface Stage {
     timeout_sec?: number;
     enabled_steps_path?: string;
     available_steps?: { key: string; label: string }[];
-    notify?: { type: "slack"; template: string };
     on_approve_to?: string;
     on_reject_to?: string;
     retry?: { max_retries?: number; back_to?: string };
@@ -1032,15 +1031,6 @@ const PipelineBuilder = ({ stages, pipelineMeta, onChange, onPipelineMetaChange,
 
                   {stage.type === "human_confirm" && (
                     <>
-                      <div className="space-y-1">
-                        <label className="text-[9px] font-bold uppercase text-zinc-500 tracking-widest block">Notification Template</label>
-                        <input
-                          value={runtime.notify?.template || ""}
-                          onChange={(e) => updateRuntime(index, { notify: e.target.value ? { type: "slack", template: e.target.value } : undefined })}
-                          className="w-full rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-[11px] text-zinc-300 focus:outline-none"
-                          placeholder="design-ready, spec-ready, generic..."
-                        />
-                      </div>
                       <div className="space-y-0.5">
                         <label className="text-[8px] font-bold uppercase text-zinc-600 block">Notion Label</label>
                         <input

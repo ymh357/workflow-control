@@ -56,10 +56,6 @@ export interface ScriptRuntimeConfig {
 
 export interface HumanGateRuntimeConfig {
   engine: "human_gate";
-  notify?: {
-    type: "slack";
-    template: string;
-  };
   on_approve_to?: string;
   on_reject_to?: string;
   max_feedback_loops?: number;
@@ -312,12 +308,6 @@ export interface SandboxConfig {
 }
 
 export interface SystemSettings extends Record<string, any> {
-  slack?: {
-    bot_token?: string;
-    notify_channel_id?: string;
-    signing_secret?: string;
-    app_token?: string;
-  };
   paths?: {
     repos_base?: string;
     worktrees_base?: string;

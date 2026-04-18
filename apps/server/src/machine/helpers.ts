@@ -317,7 +317,7 @@ export function handleStageError(stateName: string, retryConfig?: StageRetryConf
         }),
         emit(({ event, context }: ErrorActionArgs): WorkflowEmittedEvent => {
           const errorMsg = event.error instanceof Error ? event.error.message : String(event.error);
-          return { type: "wf.slackBlocked", taskId: context.taskId, stage: stateName, error: errorMsg };
+          return { type: "wf.stageBlocked", taskId: context.taskId, stage: stateName, error: errorMsg };
         }),
       ],
     },

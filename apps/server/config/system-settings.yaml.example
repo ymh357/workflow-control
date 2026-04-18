@@ -1,11 +1,6 @@
 # System Settings — copy to system-settings.yaml and fill in real values
 # Supports ${ENV_VAR} interpolation (reads from process.env at runtime)
 
-slack:
-  bot_token: ${SLACK_BOT_TOKEN}
-  notify_channel_id: ${SLACK_NOTIFY_CHANNEL_ID}
-  signing_secret: ${SLACK_SIGNING_SECRET}
-  app_token: ${SLACK_APP_TOKEN}
 paths:
   repos_base: ${HOME}
   worktrees_base: ${HOME}/worktrees

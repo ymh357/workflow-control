@@ -45,16 +45,5 @@ jobs:
               -H "Notion-Version: 2022-06-28" \\
               -d '{"properties":{"Status":{"select":{"name":"已完成"}}}}'
           fi
-
-      - name: Slack notification
-        if: env.SLACK_BOT_TOKEN != ''
-        env:
-          SLACK_BOT_TOKEN: \${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL_ID: \${{ secrets.SLACK_NOTIFY_CHANNEL_ID }}
-        run: |
-          curl -s -X POST https://slack.com/api/chat.postMessage \\
-            -H "Authorization: Bearer $SLACK_BOT_TOKEN" \\
-            -H "Content-Type: application/json" \\
-            -d "{\\"channel\\":\\"$SLACK_CHANNEL_ID\\",\\"text\\":\\"[Deployed] Merged to main: \${{ github.event.head_commit.message }}\\"}"
 `;
 }

@@ -57,7 +57,6 @@ trigger via CLI and monitor on the web.
 | pnpm | any | npm install -g pnpm |
 | gh CLI | any | Authenticated via gh auth login |
 | Claude Code or Gemini CLI | any | At least one on PATH |
-| Slack App | optional | Bot Token + App Token for interactive Slack notifications |
 
 ### Installation
 

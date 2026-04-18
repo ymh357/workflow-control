@@ -6,7 +6,7 @@ Before designing, identify ambiguities in the user's description. Use the `AskUs
 
 - Target engine preference (claude/gemini/mixed) if not stated
 - Whether the pipeline needs user approval gates or should run fully automated
-- External integrations (Notion, Slack, GitHub) that affect stage design
+- External integrations (Notion, GitHub) that affect stage design
 - Input source: free-text, Notion ticket URL, GitHub issue, etc.
 
 Rules:
@@ -161,13 +161,8 @@ Only the first analyzing-type stage should be interactive — downstream stages 
 - Place `human_confirm` gates after analysis stages and before destructive actions.
 - **Gates after parallel groups**: always set `on_reject_to` to the specific child stage most likely to need revision. This enables selective re-run — only the targeted child re-runs, siblings are skipped. Without `on_reject_to`, all children re-run on reject.
 - Gates support `max_feedback_loops` for iterative refinement with user feedback.
-- Gates can `notify: { type: slack, template: "..." }` for async review.
 
-### 7. Completion → on_complete
-
-- Add `on_complete: { notify: slack }` to long-running stages (implementation, QA) so users get notified without watching.
-
-### 8. Stage granularity → resilience
+### 7. Stage granularity → resilience
 
 Large stages ($5+, 50+ turns) risk losing progress on failure. Guidelines:
 
@@ -225,14 +220,12 @@ This field is the **single source of truth** — two downstream generators (YAML
 - Interactive: true
 - Disallowed tools: [Edit, Write, Bash]
 - Sub-agents: name(model, maxTurns, tools:[...])
-- On complete: notify slack
 - Incremental commits: yes
 
 ## Stage 2: gateName
 - Type: human_confirm
 - On reject to: stageName
 - Max feedback loops: 3
-- Notify: slack
 
 ## Stage 3: scriptName
 - Type: script
@@ -343,7 +336,7 @@ specGeneration (agent, thinking, $4, mcps:[context7]) → system_prompt: spec-ge
   reads: {analysis, techContext}, writes: [specSummary]
 implementationPlan (agent, thinking, permission_mode:plan, $2) → system_prompt: implementation-plan
   reads: {analysis, techContext, specSummary}, writes: [implementationPlan]
-implementing (agent, thinking, $8, 100 turns, on_complete: notify slack) → system_prompt: implementation
+implementing (agent, thinking, $8, 100 turns) → system_prompt: implementation
   reads: {analysis, techContext, specSummary, implementationPlan}, writes: [implementedFiles]
   sub-agents: file-implementer(sonnet,30), test-runner(haiku,10)
 buildGate (script, script_id: build_gate, retry→implementing) → reads: {worktreePath: worktreePath.worktreePath}

@@ -34,11 +34,6 @@ configSettingsRoute.get("/config/system", async (c) => {
       preflight: preflight.results,
       effectivePaths: settings.paths,
     },
-    notifications: {
-      slackConfigured: !!(settings.slack?.bot_token && settings.slack?.notify_channel_id),
-      slackSocketMode: !!settings.slack?.app_token,
-      channelId: settings.slack?.notify_channel_id,
-    },
     capabilities: {
       skills: listFiles(join(CONFIG_DIR, "skills"), ".md").map(s => s.replace(".md", "")),
       mcps: Object.entries(mcpRegistry || {}).map(([name, entry]) => ({

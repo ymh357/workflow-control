@@ -210,15 +210,6 @@ async function main() {
         lines.push(`SETTING_NOTION_TOKEN=${notionToken}`);
       }
 
-      const slackToken = await ask("\n  Slack bot token (optional, press Enter to skip): ");
-      if (slackToken.trim()) {
-        lines.push(`SETTING_SLACK_BOT_TOKEN=${slackToken.trim()}`);
-        const channelId = await ask("  Slack notify channel ID: ");
-        if (channelId.trim()) {
-          lines.push(`SETTING_SLACK_NOTIFY_CHANNEL_ID=${channelId.trim()}`);
-        }
-      }
-
       writeFileSync(envLocalPath, lines.join("\n") + "\n", "utf-8");
       console.log("  -> Created " + envLocalPath);
     } catch {

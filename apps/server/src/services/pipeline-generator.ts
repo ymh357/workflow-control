@@ -667,7 +667,7 @@ Use \`store_schema\` (see below) for production pipelines — it handles writes 
 
 ### human_confirm gate: pausing and feedback loops
 
-When execution reaches a gate, the state machine pauses (optionally sends Slack notification).
+When execution reaches a gate, the state machine pauses.
 The gate accepts three human decisions:
 1. **Approve** → advance to \`on_approve_to\` or next stage
 2. **Reject** → transition to \`on_reject_to\` or error (ends task)
@@ -768,7 +768,6 @@ interface GateRuntime {
   on_approve_to?: string;          // stage name to jump to on approve
   on_reject_to?: string;           // stage name to jump to on reject
   max_feedback_loops?: number;
-  notify?: { type: "slack"; template: string };
 }
 
 \`\`\`

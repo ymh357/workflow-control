@@ -658,16 +658,6 @@ export function buildAgentState(
             })),
             emitTaskListUpdate(),
             ...(stage.on_complete?.notify ? [
-              emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => {
-                const titlePath = context.config?.pipeline?.display?.title_path;
-                const title = (titlePath ? getNestedValue(context.store, titlePath) : undefined) ?? context.taskId;
-                return {
-                  type: "wf.slackStageComplete",
-                  taskId: context.taskId,
-                  title,
-                  templateName: stage.on_complete!.notify!,
-                };
-              }),
               emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
                 type: "wf.status",
                 taskId: context.taskId,
@@ -767,12 +757,10 @@ export function buildScriptState(
 export function buildHumanGateState(
   nextTarget: string,
   prevAgentTarget: string,
-  stage: HumanGateRuntimeConfig & { name: string; notify?: { type: "slack"; template: string } },
+  stage: HumanGateRuntimeConfig & { name: string },
   childToGroup?: Map<string, string>,
 ): StateNode {
   const stateName = stage.name;
-
-  const notifyTemplate = stage.notify?.type === "slack" ? stage.notify.template : "approval-needed";
 
   // Resolve reject target: if on_reject_to points to a parallel child, route to the group
   const rawRejectTo = stage.on_reject_to;
@@ -805,12 +793,6 @@ export function buildHumanGateState(
   return {
     entry: [
       ...statusEntry(stateName),
-      emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
-        type: "wf.slackGate",
-        taskId: context.taskId,
-        stageName: stateName,
-        template: notifyTemplate,
-      })),
     ],
     on: {
       CONFIRM: {

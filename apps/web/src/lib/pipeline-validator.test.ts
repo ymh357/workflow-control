@@ -24,6 +24,7 @@ describe("validatePipeline", () => {
       baseState.pipeline.stages,
       expect.any(Set),
       undefined,
+      undefined,
     );
   });
 
@@ -35,6 +36,7 @@ describe("validatePipeline", () => {
       baseState.pipeline.stages,
       expect.any(Set),
       mcps,
+      undefined,
     );
   });
 

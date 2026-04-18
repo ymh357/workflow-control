@@ -99,22 +99,6 @@ describe("schema adversarial: StageRuntimeConfigSchema discriminated union", () 
     expect(result.success).toBe(true);
   });
 
-  it("rejects human_gate with invalid notify type", () => {
-    const result = HumanGateRuntimeConfigSchema.safeParse({
-      engine: "human_gate",
-      notify: { type: "email", template: "test" },
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects human_gate notify without template", () => {
-    const result = HumanGateRuntimeConfigSchema.safeParse({
-      engine: "human_gate",
-      notify: { type: "slack" },
-    });
-    expect(result.success).toBe(false);
-  });
-
   it("rejects negative max_retries in retry", () => {
     const result = AgentRuntimeConfigSchema.safeParse({
       engine: "llm",

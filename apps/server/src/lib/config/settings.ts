@@ -69,11 +69,6 @@ export function loadSystemSettings(): SystemSettings {
 
   // Core defaults / ENV fallbacks for internal framework use
   const coreDefaults: SystemSettings = {
-    slack: {
-      bot_token: process.env.SLACK_BOT_TOKEN,
-      notify_channel_id: process.env.SLACK_NOTIFY_CHANNEL_ID,
-      signing_secret: process.env.SLACK_SIGNING_SECRET,
-    },
     paths: {
       repos_base: process.env.REPOS_BASE_PATH || process.env.HOME || "",
       worktrees_base: process.env.WORKTREES_BASE_PATH || join(process.env.HOME ?? "/tmp", "wfc-worktrees"),

@@ -198,15 +198,6 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
             type: "wf.cancelQuestions",
             taskId: context.taskId,
           })),
-          emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => {
-            const summaryPath = pipeline.display?.completion_summary_path;
-            const summary = summaryPath ? getNestedValue(context.store, summaryPath) : undefined;
-            return {
-              type: "wf.slackCompleted",
-              taskId: context.taskId,
-              deliverable: summary ?? "",
-            };
-          }),
           emitTaskListUpdate(),
           emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
             type: "wf.worktreeCleanup",
@@ -358,10 +349,6 @@ export function createWorkflowMachine(pipeline: PipelineConfig) {
           })),
           emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
             type: "wf.cancelQuestions",
-            taskId: context.taskId,
-          })),
-          emit(({ context }: { context: WorkflowContext }): WorkflowEmittedEvent => ({
-            type: "wf.slackCancelled",
             taskId: context.taskId,
           })),
         ],

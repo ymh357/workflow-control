@@ -33,11 +33,6 @@ describe("generateCIWorkflow", () => {
     expect(yaml).toContain("Update Notion status");
   });
 
-  it("contains Slack notification step", () => {
-    expect(yaml).toContain("Slack notification");
-    expect(yaml).toContain("SLACK_BOT_TOKEN");
-  });
-
   it("uses actions/checkout@v4", () => {
     expect(yaml).toContain("actions/checkout@v4");
   });

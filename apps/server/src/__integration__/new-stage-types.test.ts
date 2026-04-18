@@ -18,13 +18,7 @@ vi.mock("../lib/logger.js", () => {
   return { logger: noopLogger, taskLogger: () => noopLogger };
 });
 
-vi.mock("../lib/slack.js", () => ({
-  notifyStageComplete: vi.fn(async () => {}),
-  notifyBlocked: vi.fn(async () => {}),
-  notifyCompleted: vi.fn(async () => {}),
-  notifyQuestionAsked: vi.fn(async () => {}),
-  notifyCancelled: vi.fn(async () => {}),
-  notifyGenericGate: vi.fn(async () => {}),
+vi.mock("../lib/retry.js", () => ({
   withRetry: vi.fn(async (fn: () => Promise<any>) => fn()),
 }));
 

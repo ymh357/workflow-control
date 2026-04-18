@@ -6,10 +6,6 @@ vi.mock("../sse/manager.js", () => ({
   },
 }));
 
-vi.mock("./slack.js", () => ({
-  notifyQuestionAsked: vi.fn().mockResolvedValue(undefined),
-}));
-
 vi.mock("./logger.js", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), child: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) },
   taskLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
