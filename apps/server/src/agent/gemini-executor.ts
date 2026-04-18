@@ -1,3 +1,8 @@
+/**
+ * @deprecated Gemini 引擎已冷冻（frozen）。
+ * 此模块保留代码但不再接收新功能或 bug fix。
+ * 参见 docs/product-roadmap.md §3 战略决策 S1。
+ */
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync, copyFileSync } from "node:fs";
 import { join } from "node:path";

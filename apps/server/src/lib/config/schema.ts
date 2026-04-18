@@ -1,5 +1,6 @@
 import { z, type ZodError } from "zod";
 import type { PipelineConfig } from "./types.js";
+import { flattenStages } from "./types.js";
 
 // --- Fragment / SubAgent ---
 
@@ -450,12 +451,42 @@ export interface ValidationResult {
   success: boolean;
   data?: PipelineConfig;
   errors?: ZodError;
+  /**
+   * Non-fatal warnings surfaced to callers (e.g. use of frozen engines).
+   * See docs/product-roadmap.md §3 S1 — Gemini/Codex engines are frozen;
+   * pipelines referencing them still validate, but callers should display
+   * these warnings in the UI / logs.
+   */
+  warnings?: string[];
+}
+
+const FROZEN_ENGINES = new Set(["gemini", "codex"]);
+
+function collectFrozenEngineWarnings(pipeline: PipelineConfig): string[] {
+  const warnings: string[] = [];
+  if (pipeline.engine && FROZEN_ENGINES.has(pipeline.engine)) {
+    warnings.push(
+      `Pipeline engine "${pipeline.engine}" is frozen and no longer receives updates. See docs/product-roadmap.md §3 (S1). Consider switching to "claude".`,
+    );
+  }
+  for (const stage of flattenStages(pipeline.stages)) {
+    if (stage.engine && FROZEN_ENGINES.has(stage.engine)) {
+      warnings.push(
+        `Stage "${stage.name}" uses frozen engine "${stage.engine}". See docs/product-roadmap.md §3 (S1). Consider switching to "claude".`,
+      );
+    }
+  }
+  return warnings;
 }
 
 export function validatePipelineConfig(raw: unknown): ValidationResult {
   const result = PipelineConfigSchema.safeParse(raw);
   if (result.success) {
-    return { success: true, data: result.data as PipelineConfig };
+    const data = result.data as PipelineConfig;
+    const warnings = collectFrozenEngineWarnings(data);
+    return warnings.length > 0
+      ? { success: true, data, warnings }
+      : { success: true, data };
   }
   return { success: false, errors: result.error };
 }

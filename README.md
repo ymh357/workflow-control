@@ -38,7 +38,7 @@ packages/
 - **Node.js >= 20** (required for `node:sqlite`)
 - **pnpm** — `npm install -g pnpm`
 - **gh CLI** — [cli.github.com](https://cli.github.com) (authenticated via `gh auth login`)
-- **Claude Code CLI** or **Gemini CLI** — at least one on PATH
+- **Claude Code CLI** — required; Gemini/Codex CLIs are optional (engines frozen)
 
 ## Quick Start
 
@@ -84,7 +84,7 @@ A pipeline is a YAML file defining a sequence of stages:
 
 Stages declare explicit data flow via `reads` (inputs from store) and `writes` (outputs to store). No implicit state access.
 
-Pipelines support **mixed engines** — each stage independently specifies `claude` or `gemini`, so a single pipeline can leverage both models where each excels.
+Pipelines support **mixed engines** — each stage independently specifies `claude`, `gemini`, or `codex`. Claude is the primary, fully supported engine; Gemini and Codex are **frozen** (see `docs/product-roadmap.md` §3 S1) — existing pipelines continue to work, but no new features or bug fixes land. New pipelines should default to `claude`.
 
 The Config page provides an **AI Generate** button: describe your workflow in natural language, select an engine, and the system generates a complete pipeline YAML via local CLI (`claude -p` or `gemini`). No additional API keys needed.
 

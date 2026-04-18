@@ -261,6 +261,12 @@ async function generateSkeleton(description: string, engine: "claude" | "gemini"
         logger.warn({ attempt, errors: errMsg }, "pipeline-generator: skeleton validation failed, retrying");
         continue;
       }
+      if (validation.warnings?.length) {
+        logger.warn(
+          { attempt, warnings: validation.warnings },
+          "pipeline-generator: schema warnings (non-fatal)",
+        );
+      }
 
       const validatedObj = validation.data!;
 
