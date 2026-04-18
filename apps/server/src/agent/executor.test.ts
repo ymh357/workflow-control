@@ -540,6 +540,23 @@ describe("runAgent — ExecutionRecordWriter lifecycle", () => {
     });
   });
 
+  it("passes through context.config.pipelineVersionHash to writer.open", async () => {
+    const ctx = makeContext();
+    (ctx.config as any).pipelineVersionHash = "hash-abc-123";
+
+    await runAgent("task-1", {
+      stageName: "implement",
+      worktreePath: "/tmp/wt",
+      tier1Context: "t",
+      attempt: 1,
+      runtime: { engine: "llm", system_prompt: "p" } as unknown as AgentRuntimeConfig,
+      context: ctx,
+    });
+
+    const openInput = (createWriterSpy.mock.calls as any[]).at(-1)![0] as any;
+    expect(openInput.pipelineVersionHash).toBe("hash-abc-123");
+  });
+
   it("captures worktree diff even on executeStage failure", async () => {
     const git = await import("../lib/git.js");
     const resolveHead = vi.mocked(git.resolveHeadRef);
