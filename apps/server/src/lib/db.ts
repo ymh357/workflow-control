@@ -90,6 +90,17 @@ export function getDb(): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_exec_open
       ON execution_records(last_heartbeat_at)
       WHERE terminated_at IS NULL;
+
+    -- Phase 2 / A2: pipeline_versions. See lib/pipeline-hash/deep-hash.ts.
+    CREATE TABLE IF NOT EXISTS pipeline_versions (
+      version_hash     TEXT PRIMARY KEY,
+      pipeline_name    TEXT NOT NULL,
+      canonical_json   TEXT NOT NULL,
+      first_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen_at     TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_pipeline_versions_name
+      ON pipeline_versions(pipeline_name, last_seen_at DESC);
   `);
 
   logger.info({ dbPath }, "SQLite database initialized");

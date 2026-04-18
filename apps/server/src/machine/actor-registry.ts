@@ -13,6 +13,10 @@ import { safeFire } from "../lib/safe-fire.js";
 import { taskListBroadcaster } from "../sse/task-list-broadcaster.js";
 import { loadPipelineConfig, flattenStages, loadSystemSettings, isParallelGroup } from "../lib/config-loader.js";
 import { snapshotGlobalConfig } from "./workflow-lifecycle.js";
+import { observePipelineVersion } from "../lib/pipeline-hash/versions-store.js";
+import { canonicalize } from "../lib/pipeline-hash/canonical.js";
+import { collectPipelineFragmentDigest } from "../lib/pipeline-hash/deep-hash.js";
+import { resolveFragmentsFromSnapshot } from "../lib/config/fragments.js";
 
 // --- Types ---
 
@@ -309,6 +313,34 @@ export function createTaskDraft(
 
   if (options?.edge) {
     config.pipeline.default_execution_mode = "edge";
+  }
+
+  // Phase 2 / Step 2.5 — record that we have observed this pipeline
+  // version. Best-effort; DB failure must not prevent task creation.
+  if (config.pipelineVersionHash) {
+    try {
+      const fragmentsDigest = collectPipelineFragmentDigest(
+        config.pipeline,
+        (stageName, enabledSteps) =>
+          resolveFragmentsFromSnapshot(
+            stageName,
+            enabledSteps,
+            config.prompts.fragments,
+            config.prompts.fragmentMeta ?? {},
+          ),
+      );
+      const canonicalJson = JSON.stringify({
+        pipeline: canonicalize(config.pipeline),
+        fragments: fragmentsDigest,
+      });
+      observePipelineVersion({
+        versionHash: config.pipelineVersionHash,
+        pipelineName: config.pipelineName,
+        canonicalJson,
+      });
+    } catch (err) {
+      taskLogger(taskId).warn({ err }, "observePipelineVersion failed (non-fatal)");
+    }
   }
 
   const inherited = resolveInheritedStore(
