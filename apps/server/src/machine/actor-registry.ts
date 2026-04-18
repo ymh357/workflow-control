@@ -14,7 +14,7 @@ import { taskListBroadcaster } from "../sse/task-list-broadcaster.js";
 import { loadPipelineConfig, flattenStages, loadSystemSettings, isParallelGroup } from "../lib/config-loader.js";
 import { snapshotGlobalConfig } from "./workflow-lifecycle.js";
 import { observePipelineVersion } from "../lib/pipeline-hash/versions-store.js";
-import { canonicalize } from "../lib/pipeline-hash/canonical.js";
+import { canonicalize, canonicalJson } from "../lib/pipeline-hash/canonical.js";
 import { collectPipelineFragmentDigest } from "../lib/pipeline-hash/deep-hash.js";
 import { resolveFragmentsFromSnapshot } from "../lib/config/fragments.js";
 
@@ -329,14 +329,21 @@ export function createTaskDraft(
             config.prompts.fragmentMeta ?? {},
           ),
       );
-      const canonicalJson = JSON.stringify({
+      // Must use canonicalJson (sorted keys) — not JSON.stringify — so the
+      // bytes stored in pipeline_versions.canonical_json match the exact
+      // bytes hashed in canonicalHashDeep(). Otherwise the row's payload
+      // doesn't round-trip the hash, even though the pipeline part happens
+      // to be canonicalized: fragment entries ({id, contentHash, metaHash})
+      // serialize in insertion order under JSON.stringify but sorted under
+      // canonicalJson, producing different bytes for the same hash.
+      const payloadJson = canonicalJson({
         pipeline: canonicalize(config.pipeline),
         fragments: fragmentsDigest,
       });
       observePipelineVersion({
         versionHash: config.pipelineVersionHash,
         pipelineName: config.pipelineName,
-        canonicalJson,
+        canonicalJson: payloadJson,
       });
     } catch (err) {
       taskLogger(taskId).warn({ err }, "observePipelineVersion failed (non-fatal)");

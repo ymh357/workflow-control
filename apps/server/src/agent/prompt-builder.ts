@@ -7,6 +7,7 @@ import {
 } from "../lib/config-loader.js";
 import { findStageConfig } from "../lib/config/stage-lookup.js";
 import { buildCapabilitySummary, formatCapabilityPrompt } from "../lib/capability-registry.js";
+import { taskLogger } from "../lib/logger.js";
 
 interface PromptBuilderParams {
   taskId: string;
@@ -53,17 +54,18 @@ export async function buildSystemAppendPrompt(params: PromptBuilderParams): Prom
     const contents = privateConfig.prompts.fragments as Record<string, string>;
     resolvedFragments = resolveFragmentsFromSnapshot(stageName, enabledSteps, contents, meta);
   } else if (privateConfig) {
-    console.warn(
-      `[prompt-builder] Stage "${stageName}" (task ${params.taskId.slice(0, 8)}) has privateConfig without fragmentMeta — ` +
-      `falling back to ALL fragments. This is a snapshot integrity bug and should be fixed at snapshot time.`,
+    taskLogger(params.taskId).warn(
+      { stageName },
+      "prompt-builder: privateConfig missing fragmentMeta — falling back to ALL fragments. " +
+      "This is a snapshot integrity bug and should be fixed at snapshot time.",
     );
     resolvedFragments = Object.entries(privateConfig.prompts.fragments as Record<string, string>)
       .map(([id, content]) => ({ id, content }));
   } else {
-    console.warn(
-      `[prompt-builder] Stage "${stageName}" (task ${params.taskId.slice(0, 8)}) has no privateConfig — ` +
-      `falling back to live FragmentRegistry. This breaks pipelineVersionHash guarantees; ` +
-      `investigate why the task has no snapshot.`,
+    taskLogger(params.taskId).warn(
+      { stageName },
+      "prompt-builder: no privateConfig — falling back to live FragmentRegistry. " +
+      "This breaks pipelineVersionHash guarantees; investigate why the task has no snapshot.",
     );
     resolvedFragments = getFragmentRegistry().resolve(stageName, enabledSteps);
   }

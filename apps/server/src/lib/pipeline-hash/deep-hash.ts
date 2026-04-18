@@ -25,10 +25,10 @@ export interface ResolvedFragmentEntry {
    * flip the pipeline version hash even when the rule change does not
    * affect the current pipeline's probe results.
    *
-   * Optional for backward compat with tests / callers that don't populate it;
-   * when omitted, `metaHash` defaults to the hash of an empty object.
+   * Required: every resolver must supply meta so pipelineVersionHash
+   * reflects the full activation rule set.
    */
-  meta?: {
+  meta: {
     stages: string[] | "*";
     keywords: string[];
     always: boolean;
@@ -133,11 +133,9 @@ export function collectPipelineFragmentDigest(
     id,
     contentHash: createHash("sha256").update(entry.content, "utf8").digest("hex"),
     // T1.1 — activation rule hash. Canonicalize the meta object so key
-    // order inside `meta` doesn't change the digest. Callers without meta
-    // get a stable "empty meta" hash (hash of `{}`), which keeps pre-T1.1
-    // call sites working but doesn't protect them from activation-rule drift.
+    // order inside `meta` doesn't change the digest.
     metaHash: createHash("sha256")
-      .update(canonicalJson(entry.meta ?? {}), "utf8")
+      .update(canonicalJson(entry.meta), "utf8")
       .digest("hex"),
   }));
 }

@@ -302,6 +302,41 @@ describe("canonicalHashDeep — activation rule sensitivity (T1.1)", () => {
     );
   });
 
+  // Regression for Tier 1 hotfix #1: actor-registry was using JSON.stringify
+  // to persist canonical_json while canonicalHashDeep used canonicalJson.
+  // Fragment entries sort to {contentHash, id, metaHash} under canonicalJson
+  // but serialize as {id, contentHash, metaHash} under JSON.stringify, so
+  // the stored payload didn't byte-equal the hash input. This test pins the
+  // contract: the same payload rehashed must match the stored version hash.
+  it("round-trips: hash(pipeline + fragments) equals hash of the canonical payload bytes", async () => {
+    const { canonicalJson } = await import("./canonical.js");
+    const { canonicalize } = await import("./canonical.js");
+    const { createHash } = await import("node:crypto");
+
+    const resolver = makeResolver({
+      frag: {
+        content: "some content",
+        always: false,
+        stages: ["analyze"],
+        keywords: ["reviewSecurity"],
+      },
+    });
+
+    const hash = canonicalHashDeep(pipelineWithSteps, resolver);
+    const digest = collectPipelineFragmentDigest(pipelineWithSteps, resolver);
+
+    // Re-serialize with canonicalJson (the contract) and re-hash.
+    const payloadJson = canonicalJson({
+      pipeline: canonicalize(pipelineWithSteps),
+      fragments: digest,
+    });
+    const rebuiltHash = createHash("sha256")
+      .update(payloadJson, "utf8")
+      .digest("hex");
+
+    expect(rebuiltHash).toEqual(hash);
+  });
+
   it("is stable when meta is semantically identical but key order varies", () => {
     // canonicalJson sorts object keys, so {stages, keywords, always} and
     // {always, keywords, stages} must produce the same metaHash.

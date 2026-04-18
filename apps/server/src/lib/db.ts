@@ -110,8 +110,71 @@ export function getDb(): DatabaseSync {
       ON pipeline_versions(pipeline_name, last_seen_at DESC);
   `);
 
+  // Schema drift detection — CREATE TABLE IF NOT EXISTS is a no-op on
+  // pre-existing tables, so adding columns in the DDL above does NOT
+  // upgrade old databases. Roadmap §8.1 requires users to rm -rf the DB
+  // on schema changes during dev, but if they forget, INSERTs silently
+  // fail inside writer try/catch and ExecutionRecord records are lost
+  // with no signal. Surface the drift loudly on startup so a forgetful
+  // author notices before data disappears.
+  assertExecutionRecordsSchema(db, dbPath);
+
   logger.info({ dbPath }, "SQLite database initialized");
   return db;
+}
+
+const EXPECTED_EXECUTION_RECORD_COLUMNS = [
+  "attempt_id",
+  "task_id",
+  "stage_name",
+  "attempt_index",
+  "pipeline_version_hash",
+  "workflow_control_version",
+  "started_at",
+  "terminated_at",
+  "termination_reason",
+  "engine",
+  "model",
+  "session_id",
+  "prompt_blob",
+  "reads_snapshot",
+  "tool_calls",
+  "agent_stream",
+  "decisions",
+  "writes_parsed",
+  "writes_committed",
+  "worktree_diff",
+  "worktree_diff_truncated",
+  "scratch_pad_snapshot",
+  "cost_usd",
+  "token_input",
+  "token_output",
+  "duration_ms",
+  "last_heartbeat_at",
+  "created_at",
+] as const;
+
+export function assertExecutionRecordsSchema(db: DatabaseSync, dbPath: string): void {
+  try {
+    const rows = db
+      .prepare("PRAGMA table_info(execution_records)")
+      .all() as Array<{ name: string }>;
+    const present = new Set(rows.map((r) => r.name));
+    const missing = EXPECTED_EXECUTION_RECORD_COLUMNS.filter(
+      (c) => !present.has(c),
+    );
+    if (missing.length > 0) {
+      logger.warn(
+        { dbPath, missing },
+        "SQLite schema drift: execution_records is missing columns. " +
+          "This happens when you keep an old workflow.db across schema changes. " +
+          "INSERTs will fail silently and ExecutionRecord data will be lost. " +
+          "Remove the DB file and restart: `rm workflow.db workflow.db-wal workflow.db-shm`.",
+      );
+    }
+  } catch (err) {
+    logger.warn({ err, dbPath }, "Schema drift check failed");
+  }
 }
 
 export function cleanupOldData(days: number): void {
