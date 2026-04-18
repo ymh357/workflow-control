@@ -54,7 +54,8 @@ export type SSEMessageType =
   | "cost_update"
   | "error"
   | "user_message"
-  | "agent_red_flag";
+  | "agent_red_flag"
+  | "compact";
 
 export interface SSEMessage {
   type: SSEMessageType;

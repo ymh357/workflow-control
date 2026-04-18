@@ -724,6 +724,258 @@ Full audit across error handling (A), concurrency (B), security (C), and validat
 
 ---
 
+### Comprehensive Review (2026-04-18)
+
+Full architectural audit across execution quality, frontend UX, multi-engine reliability, pipeline generation, and data persistence. Each issue independently verified against source code.
+
+#### Issue Map (verified status)
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    VERIFIED ISSUE MAP                        │
+├────────────────┬────────────┬───────────────────────────────┤
+│ Category       │ Severity   │ Issue                         │
+├────────────────┼────────────┼───────────────────────────────┤
+│ Exec Quality   │ ■■■■ CRIT  │ R1  Session history bloat     │
+│ Exec Quality   │ ■■■  HIGH  │ R2  Shared turn budget        │
+│ Exec Quality   │ ■■■  HIGH  │ R3  Soft turn limit           │
+│ Exec Quality   │ ■■   MED   │ R4  Stale Tier1 on stage N+1 │
+│ Multi-Engine   │ ■■   MED   │ R5  Gemini/Codex cost = 0    │
+│ Pipeline Gen   │ ■■   MED   │ R6  Fallback stubs crash     │
+│ Pipeline Gen   │ ■■   MED   │ R7  Skeleton prompt bloat    │
+│ Dead Code      │ ■    LOW   │ R8  .__summary dead path     │
+├────────────────┼────────────┼───────────────────────────────┤
+│ DISMISSED      │            │                               │
+│ (was #5)       │ ——         │ SSE msg gap: has replay+dedup │
+│ (was #6)       │ ——         │ Task list SSE: has init event │
+│ (was #8)       │ ——         │ Gemini JSON fragile: fallback │
+│ (was #11)      │ ——         │ Legacy snapshot: version gate │
+└────────────────┴────────────┴───────────────────────────────┘
+```
+
+---
+
+#### R1: Multi-Stage Session History Bloat (CRITICAL)
+
+**What**: In single-session pipelines, the Claude SDK session accumulates ALL prior conversation turns across every stage. A 5-stage pipeline with 20 turns each = 100 turns of history in the SDK context. Later stages drown in irrelevant old messages.
+
+**Where**: `session-manager.ts:265, 302-329`
+
+**Why it matters**: (1) Token waste — later stages pay for all prior turns in their context window. (2) Quality degradation — the agent's attention is diluted by irrelevant history from earlier stages. (3) Cost — 100-turn sessions cost 5-10x more than necessary for the final stage.
+
+**Mechanism**:
+
+```
+┌────────────────────────────────────────────────────────────┐
+│              SDK Session (single session mode)              │
+│                                                            │
+│  Stage A: 20 turns ─────────────────────┐                 │
+│  Stage B: 20 turns ──────────┐          │                 │
+│  Stage C: 20 turns ───┐      │          │                 │
+│                        ▼      ▼          ▼                 │
+│  Stage D prompt   = [A history + B history + C history     │
+│                      + D tier1 + D stagePrompt]            │
+│                                                            │
+│  SDK maxTurns = stageMaxTurns * 3 (cumulative ceiling)     │
+│  No compaction. No summarization. No history pruning.      │
+└────────────────────────────────────────────────────────────┘
+```
+
+**How to fix**: At stage boundary (`switchStageConfig`), inject a compaction message that summarizes prior turns, or use the SDK's `resume` with a fresh session per stage while passing a structured context handoff. Alternative: set per-stage session isolation as default for pipelines with >3 stages.
+
+**Estimated effort**: 2-3 days (requires SDK API investigation for compaction support).
+
+---
+
+#### R2: Shared Turn Budget Starves Late Stages (HIGH)
+
+**What**: The SDK-level `maxTurns` is set to `stageMaxTurns * 3` as a cumulative ceiling for the entire session. If Stage A consumes 60 of 90 available turns, Stage B only gets 30 — but Stage B's config still says `maxTurns: 30` and has no visibility into remaining budget.
+
+**Where**: `session-manager.ts:265`
+
+**Why it matters**: In practice, an early "analyze" stage might use 40+ turns on a complex codebase, leaving a critical "implement" stage with insufficient turns. The SDK hard-cuts the session when the ceiling is hit — no graceful output, just termination.
+
+**Mechanism**:
+
+```
+SDK ceiling = 30 * 3 = 90 turns
+
+Stage A (maxTurns=30):  ████████████████████████░░░░░░  used 45
+Stage B (maxTurns=30):  ██████████████████████████████  used 30
+Stage C (maxTurns=30):  ███████████████·                used 15 ← SDK HARD CUT at 90
+                                       ↑
+                                 Stage C thinks it has 30
+                                 but only 15 remain
+```
+
+**How to fix**: Track cumulative turns consumed across stages. Before each stage, compute `remainingBudget = sdkMaxTurns - consumedTurns`. If remaining < stage's declared maxTurns, either (a) log a warning and cap, or (b) create a fresh SDK session for the stage.
+
+**Estimated effort**: 1 day (turn counter already exists as `stageTurnCount`; needs a cumulative counterpart).
+
+---
+
+#### R3: Turn Limit Is Soft — Agent Can Ignore It (HIGH)
+
+**What**: When `maxTurns` per stage is reached, only a text message is injected: "Stop working and output your current progress as JSON immediately." The agent can continue working. There is no hard enforcement at the per-stage level.
+
+**Where**: `session-manager.ts:686-698`
+
+**Why it matters**: Cost unpredictability. A stage configured for `maxTurns: 30` might actually run 40+ turns. The stage timeout (`stageTimeoutSec`, default 1800s) is the real hard limit, but it's time-based, not turn-based.
+
+**Mechanism**:
+
+```
+Turn 1..29:  Normal execution
+Turn 30:     Soft message injected: "STOP and output JSON NOW"
+Turn 31..?:  Agent may continue (no enforcement)
+Turn ???:    Stage timeout (30min) → hard kill
+
+  ┌─── Soft limit (message only) ─── Hard limit (time only) ───┐
+  │        maxTurns                       stageTimeoutSec       │
+  │           ↓                                ↓                │
+  0────────30────────────────────────────────1800s──────────────→
+            ↑                                  ↑
+      "please stop"                    SIGINT → SIGKILL
+      (may be ignored)                 (guaranteed)
+```
+
+**How to fix**: After the soft message, if the agent produces N more turns without outputting result JSON, force-close the session via `close("hardTimeout")`. Suggested N = 3 (give agent grace to wrap up tool calls).
+
+**Estimated effort**: Half day (add counter after `turnLimitNotified`, call `close()` when grace exceeded).
+
+---
+
+#### R4: Tier1 Context Not Re-Injected for Stage N+1 (MEDIUM)
+
+**What**: Only the first stage in a session receives `tier1Context` (structured store reads). Subsequent stages receive only `stagePrompt` as the user message. The agent must use `get_store_value()` MCP calls to access store data — extra round-trips that waste turns and tokens.
+
+**Where**: `session-manager.ts:400-414`
+
+```typescript
+if (isFirst) {
+  // Full: tier1Context + stagePrompt
+  return parts.join("\n\n---\n\n");
+}
+// Incremental: ONLY stagePrompt — no fresh tier1 data
+return params.stagePrompt;
+```
+
+**Why it matters**: Stage B reads store keys written by Stage A. But Stage B's user message doesn't include those values — the agent must discover them via MCP tool calls. This burns 2-4 extra turns per stage and creates a poor experience where the agent asks "let me check the store" before doing real work.
+
+**How to fix**: Always inject tier1Context when the store has changed since the last injection. Use the diff-detection mechanism already in `context-builder.ts:114-123` to only inject changed keys.
+
+**Estimated effort**: 1 day (modify `buildStagePrompt` to accept and inject fresh tier1 when store changed).
+
+---
+
+#### R5: Gemini/Codex Cost Tracking Reports $0.00 (MEDIUM)
+
+**What**: Gemini CLI and Codex CLI may not report cost in their JSON output. The code has a `// TODO` comment acknowledging this. All Gemini/Codex stages show `costUsd: 0` in the UI regardless of actual API spend.
+
+**Where**:
+- `gemini-executor.ts:375` — `total_cost_usd: raw.stats?.cost_usd ?? 0 // TODO: Gemini CLI may not report cost`
+- `codex-executor.ts:158` — `if (mapped.total_cost_usd) totalCost += mapped.total_cost_usd`
+- `stream-processor.ts:120` — `costUsd = (r.total_cost_usd as number) ?? 0`
+
+**Why it matters**: Users cannot track actual spend on multi-engine pipelines. A pipeline using Gemini for 3 stages will show $0.00 total cost for those stages, making budget management impossible.
+
+**Mechanism**:
+
+```
+                         Cost Pipeline
+Claude stage ──→ SDK reports cost ──→ costUsd = $2.30  ✓
+Gemini stage ──→ CLI output ──→ stats.cost_usd = undefined ──→ costUsd = $0.00  ✗
+Codex stage  ──→ CLI output ──→ total_cost_usd = undefined ──→ costUsd = $0.00  ✗
+                                                                        ↓
+                                                              User sees: "Total: $2.30"
+                                                              Reality:   "Total: $8.50"
+```
+
+**How to fix**: Estimate cost from token counts when CLI doesn't report cost. `tokenUsage.inputTokens` and `outputTokens` are available from Gemini stats — multiply by known per-token pricing. Add a `costEstimated: boolean` flag so UI can show "~$X.XX (estimated)".
+
+**Estimated effort**: 1 day (pricing table + estimation logic + UI indicator).
+
+---
+
+#### R6: Pipeline Generation Fallback Stubs Cause Runtime Crash (MEDIUM)
+
+**What**: When stage prompt or script generation fails, fallback stubs are used:
+- Prompt fallback: `"You are an AI agent... implement required logic"` (generic, no context)
+- Script fallback: `throw new Error("Script 'X' not yet implemented")` (immediate crash)
+
+The pipeline reports as "successfully generated" with warnings, but contains ticking time bombs.
+
+**Where**: `pipeline-generator.ts:463-477`
+
+**Why it matters**: User creates a pipeline, sees "Generated successfully (2 warnings)". Runs it. Stage 3 immediately crashes with "not yet implemented". No way to know which stage had the stub without reading warnings.
+
+**Mechanism**:
+
+```
+User: "Create a pipeline for code review"
+                    │
+        ┌───────────┴───────────┐
+        ▼                       ▼
+  Stage prompt gen OK     Stage prompt gen FAILED
+  "Review code for..."   "You are an AI agent..."  ← useless
+        │                       │
+        ▼                       ▼
+  Script gen OK           Script gen FAILED
+  "async function..."    "throw new Error(...)"    ← crash
+        │                       │
+        ▼                       ▼
+  Pipeline "generated"    Warnings logged (easy to miss)
+  with hidden stubs       Runtime: BOOM 💥
+```
+
+**How to fix**: Two options: (1) Fail the generation entirely if any stage fails — return error, not warnings. (2) If partial success is desired, mark failed stages clearly in the YAML with `# GENERATION FAILED — manual edit required` and set `enabled: false` so they're skipped at runtime.
+
+**Estimated effort**: Half day (option 1 is simpler and safer).
+
+---
+
+#### R7: Skeleton Prompt Token Bloat ~6K Tokens (MEDIUM)
+
+**What**: Every pipeline generation call sends a ~6000-token skeleton prompt containing: full TypeScript interface definitions (~1000 tokens), two complete example pipelines (~1000 tokens each), full MCP/script/skill capability tables (~500+ tokens), verbose generation rules (~1000 tokens). Most of this is redundant across calls.
+
+**Where**: `pipeline-generator.ts:buildSkeletonPrompt` (lines 611-901)
+
+**Why it matters**: At ~$3/1M input tokens (Claude pricing), each generation costs ~$0.018 in prompt alone. Over 100 generations/day = $1.80/day just in prompt overhead. More importantly, the bloated prompt competes with the user's actual request for context window space.
+
+**How to fix**: (1) Conditionally include capability tables only when relevant MCPs/skills were discovered. (2) Replace two full example pipelines with one minimal 3-stage example. (3) Collapse TypeScript interfaces into a JSON schema snippet. Target: ~2000 tokens.
+
+**Estimated effort**: 1 day (prompt editing + regression testing on generation quality).
+
+---
+
+#### R8: `.__summary` / `.__semantic_summary` Dead Code Paths (LOW)
+
+**What**: After the store value in-place replacement fix (commit `7b44eec`), large store values are replaced with summary strings directly on the key — no more `field.__summary` sibling key. But `context-builder.ts` still checks for `mechanicalSummaryKey` (`field.__summary`) which will never exist. Similarly, `actor-registry.ts:226-227` still inherits `field.__summary` keys across tasks.
+
+**Where**:
+- `context-builder.ts:137, 142, 168` — dead lookup for `.__summary`
+- `actor-registry.ts:226-227` — dead inheritance for `.__summary`
+- `context-builder.test.ts:432` — test for dead path
+
+**Why it matters**: Not a correctness bug — the dead paths are safely skipped. But they mislead future developers into thinking `.__summary` keys exist in the store, and the test creates false confidence in a non-functional code path.
+
+**How to fix**: Remove `mechanicalSummaryKey` lookups from context-builder, remove `.__summary` inheritance from actor-registry, update tests.
+
+**Estimated effort**: 1 hour.
+
+---
+
+#### Dismissed Findings (verified as non-issues)
+
+| Original Claim | Verification Result | Why Dismissed |
+|----------------|--------------------|----|
+| SSE reconnect loses streaming messages (#5) | `sse/manager.ts:98-112` replays up to 500 messages from memory/SQLite on reconnect. Frontend `seenMessageIdsRef` (task page line 86, 350-356) deduplicates replayed messages. | Full replay + dedup mechanism exists |
+| Task list SSE reconnect gap (#6) | `task-list-broadcaster.ts:65-69` sends `task_list_init` with full snapshot on every new connection. 2s reconnect window is covered by full state rebuild. | Init event rebuilds complete state |
+| Gemini JSON parsing fragile (#8) | `gemini-executor.ts:407` has catch-all fallback returning empty content. Unknown message types are silently skipped — not crashed. The caller (stream-processor) handles missing result gracefully. | Graceful degradation exists |
+| Legacy snapshot migration (#11) | `persistence.ts:92-94` gates on `version === SNAPSHOT_VERSION` and returns `undefined` for mismatches. Legacy snapshots log warning but load for backward compat. Future version bumps will correctly reject old snapshots. | Version check already exists |
+
+---
+
 ## 与白皮书的章节映射
 
 | 本文章节                          | 白皮书对应章节                                 |

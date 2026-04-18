@@ -130,6 +130,12 @@ export class SessionManager {
   private readonly config: SessionManagerConfig;
   private readonly log;
 
+  // Mutable stage context for PreCompact hook — updated synchronously
+  // at the start of each executeStage() before any SDK interaction.
+  private currentStageName = "";
+  private currentContext: WorkflowContext | null = null;
+  private currentScratchPad: Array<{ stage: string; timestamp: string; category: string; content: string }> = [];
+
   constructor(config: SessionManagerConfig) {
     this.config = config;
     this.log = taskLogger(config.taskId, "session-mgr");
@@ -144,7 +150,12 @@ export class SessionManager {
       return this.executeParallelGroup(params);
     }
 
-    const isFirstStage = this.query === null && !this.queryClosed;
+    // Update mutable stage context BEFORE any SDK interaction so the
+    // PreCompact hook closure always reads current-stage data.
+    this.currentStageName = params.stageName;
+    this.currentContext = params.context;
+    this.currentScratchPad = params.context.scratchPad ?? [];
+
     const isRetry = !!params.resumeInfo?.feedback;
 
     if (this.query === null) {
@@ -160,7 +171,7 @@ export class SessionManager {
     // Build the user message for this stage
     const promptText = isRetry
       ? params.resumeInfo!.feedback
-      : this.buildStagePrompt(params, isFirstStage);
+      : this.buildStagePrompt(params);
 
     this.inputQueue!.enqueue(buildUserMessage(promptText));
 
@@ -227,6 +238,7 @@ export class SessionManager {
     );
     const hooks: Record<string, Array<{ hooks: Array<(input: HookInput, toolUseId: string | undefined, options: { signal: AbortSignal }) => Promise<HookJSONOutput>> }>> = {
       PreToolUse: [{ hooks: [pathHook] }],
+      PreCompact: [{ hooks: [this.compactHook.bind(this)] }],
     };
 
     // Build MCP servers with store-reader
@@ -362,55 +374,103 @@ export class SessionManager {
       this.prevPermissionMode = params.stageConfig.permissionMode;
     }
 
-    // Update MCP servers if service list changed — always re-include __store__
+    // Always rebuild MCP servers: store content changes between stages even
+    // when the service list is identical, so __store__ must be recreated with
+    // fresh store/scratchPad data every time.
     const newMcpKey = mcpServiceKey(params.stageConfig.mcpServices);
-    if (newMcpKey !== this.prevMcpKey) {
+    const mcpKeyChanged = newMcpKey !== this.prevMcpKey;
+    if (mcpKeyChanged) {
       this.log.info(
         { from: this.prevMcpKey, to: newMcpKey },
         "Switching MCP servers between stages",
       );
-      const mcpServers: Record<string, unknown> = buildMcpServers(params.stageConfig.mcpServices, "claude");
-      // Re-attach __store__ MCP so it persists across MCP service changes
-      if (params.context.store && Object.keys(params.context.store).length > 0) {
-        mcpServers["__store__"] = createStoreReaderMcp(
-          params.context.store,
-          params.context.scratchPad ?? [],
-          params.stageName,
-          params.taskId,
-        );
-      } else {
-        mcpServers["__store__"] = createStoreReaderMcp(
-          {},
-          params.context.scratchPad ?? [],
-          params.stageName,
-          params.taskId,
-        );
-      }
-      await this.query.setMcpServers(
-        mcpServers as Parameters<Query["setMcpServers"]>[0],
-      );
-      this.prevMcpKey = newMcpKey;
     }
+    const mcpServers: Record<string, unknown> = buildMcpServers(params.stageConfig.mcpServices, "claude");
+    mcpServers["__store__"] = createStoreReaderMcp(
+      params.context.store && Object.keys(params.context.store).length > 0
+        ? params.context.store
+        : {},
+      params.context.scratchPad ?? [],
+      params.stageName,
+      params.taskId,
+    );
+    await this.query.setMcpServers(
+      mcpServers as Parameters<Query["setMcpServers"]>[0],
+    );
+    this.prevMcpKey = newMcpKey;
+  }
+
+  // -----------------------------------------------------------------------
+  // PreCompact hook — pipeline-aware compact instructions
+  // -----------------------------------------------------------------------
+
+  private async compactHook(input: HookInput, _toolUseId: string | undefined, _options: { signal: AbortSignal }): Promise<HookJSONOutput> {
+    const ctx = this.currentContext;
+    if (!ctx) return {};
+    const trigger = (input as { trigger?: string }).trigger ?? "unknown";
+
+    const lines: string[] = [
+      "You are compacting a multi-stage pipeline conversation. Preserve the following pipeline-critical information with HIGH fidelity:",
+      "",
+    ];
+
+    // Store keys and values
+    if (ctx.store && Object.keys(ctx.store).length > 0) {
+      lines.push("## Store State (key = value written by stages)");
+      for (const [key, value] of Object.entries(ctx.store)) {
+        let serialized: string;
+        try {
+          serialized = typeof value === "string" ? value : JSON.stringify(value);
+        } catch {
+          serialized = "[unserializable]";
+        }
+        lines.push(`- store.${key} = ${serialized.slice(0, 500)}`);
+      }
+      lines.push("");
+    }
+
+    // Scratch pad notes
+    if (this.currentScratchPad.length > 0) {
+      lines.push("## Scratch Pad Notes");
+      for (const entry of this.currentScratchPad.slice(-20)) {
+        lines.push(`- [${entry.stage}/${entry.category}] ${entry.content.slice(0, 300)}`);
+      }
+      lines.push("");
+    }
+
+    // Stage progression
+    if (ctx.stageCheckpoints && Object.keys(ctx.stageCheckpoints).length > 0) {
+      lines.push("## Completed Stages");
+      for (const [stage, checkpoint] of Object.entries(ctx.stageCheckpoints)) {
+        const cp = checkpoint as { startedAt?: string; gitHead?: string };
+        lines.push(`- ${stage} (started: ${cp.startedAt ?? "unknown"})`);
+      }
+      lines.push("");
+    }
+
+    lines.push(`## Current Stage: ${this.currentStageName}`);
+    lines.push("");
+    lines.push("Preserve: all file paths modified and their purpose, stage results affecting downstream stages, errors and their resolutions, and any decisions that constrain future stages.");
+
+    this.log.info(
+      { stage: this.currentStageName, trigger, instructionLength: lines.join("\n").length },
+      "PreCompact hook injecting pipeline-aware instructions",
+    );
+
+    return { systemMessage: lines.join("\n") };
   }
 
   // -----------------------------------------------------------------------
   // Prompt building
   // -----------------------------------------------------------------------
 
-  private buildStagePrompt(
-    params: ExecuteStageParams,
-    isFirst: boolean,
-  ): string {
-    if (isFirst) {
-      // Full prompt: Tier 1 context + stage instruction
-      const parts: string[] = [];
-      if (params.tier1Context) parts.push(params.tier1Context);
-      if (params.stagePrompt) parts.push(params.stagePrompt);
-      return parts.join("\n\n---\n\n");
-    }
-
-    // Incremental prompt: just the stage instruction
-    return params.stagePrompt;
+  private buildStagePrompt(params: ExecuteStageParams): string {
+    // Always inject tier1Context — after auto-compact, old tier1 is summarized
+    // away. Re-injecting ensures the agent always has full task context.
+    const parts: string[] = [];
+    if (params.tier1Context) parts.push(params.tier1Context);
+    if (params.stagePrompt) parts.push(params.stagePrompt);
+    return parts.join("\n\n---\n\n");
   }
 
   // -----------------------------------------------------------------------
@@ -676,8 +736,23 @@ export class SessionManager {
             };
           }
 
-          case "system":
+          case "system": {
+            const sysMsg = msg as SDKMessage & { subtype?: string; compact_metadata?: { trigger?: string; pre_tokens?: number } };
+            if (sysMsg.subtype === "compact_boundary") {
+              const meta = sysMsg.compact_metadata;
+              this.log.info(
+                { trigger: meta?.trigger, preTokens: meta?.pre_tokens, stage: params.stageName },
+                "Compact boundary detected",
+              );
+              sseManager.pushMessage(params.taskId, {
+                taskId: params.taskId,
+                type: "compact",
+                data: { trigger: meta?.trigger, preTokens: meta?.pre_tokens, stage: params.stageName },
+                timestamp: new Date().toISOString(),
+              });
+            }
             break;
+          }
 
           default:
             break;
