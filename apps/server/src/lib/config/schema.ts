@@ -452,6 +452,12 @@ export interface ValidationResult {
   data?: PipelineConfig;
   errors?: ZodError;
   /**
+   * Structural errors that are not captured by the Zod schema itself
+   * (e.g. store_schema coverage gaps). These are fatal in strict mode
+   * and surfaced as a top-level failure.
+   */
+  structuralErrors?: string[];
+  /**
    * Non-fatal warnings surfaced to callers (e.g. use of frozen engines).
    * See docs/product-roadmap.md §3 S1 — Gemini/Codex engines are frozen;
    * pipelines referencing them still validate, but callers should display
@@ -479,14 +485,98 @@ function collectFrozenEngineWarnings(pipeline: PipelineConfig): string[] {
   return warnings;
 }
 
+/**
+ * Phase 3.3-hard (D1, 2026-04-19): every agent/script stage that writes
+ * anything to the store MUST have matching entries in `store_schema`.
+ *
+ * Rules:
+ *   - If any agent/script stage declares a non-empty `runtime.writes`,
+ *     `pipeline.store_schema` must exist.
+ *   - Every key in `runtime.writes` must have a `store_schema` entry
+ *     whose `produced_by` equals the stage name.
+ *   - Every `store_schema` entry's `produced_by` must match a real
+ *     stage name in the pipeline. Orphan schema entries are rejected.
+ *
+ * Non-writing stage types (human_confirm, condition, foreach, pipeline,
+ * llm_decision) are ignored here.
+ */
+function collectStoreSchemaErrors(pipeline: PipelineConfig): string[] {
+  const errors: string[] = [];
+  const schema = pipeline.store_schema;
+  const stages = flattenStages(pipeline.stages);
+  const stageNames = new Set(stages.map((s) => s.name));
+
+  const stagesWithWrites: Array<{ name: string; writes: string[] }> = [];
+  for (const stage of stages) {
+    if (stage.type !== "agent" && stage.type !== "script") continue;
+    const runtime = stage.runtime as { writes?: Array<string | { key: string }> } | undefined;
+    const writeDecls = runtime?.writes ?? [];
+    const writeKeys = writeDecls
+      .map((w) => (typeof w === "string" ? w : w?.key))
+      .filter((k): k is string => typeof k === "string" && k.length > 0);
+    if (writeKeys.length > 0) {
+      stagesWithWrites.push({ name: stage.name, writes: writeKeys });
+    }
+  }
+
+  if (stagesWithWrites.length === 0) {
+    // Pipeline has no writes at all (e.g. pipelines composed only of
+    // human_confirm + conditions). store_schema is optional in that case.
+    return errors;
+  }
+
+  if (!schema || Object.keys(schema).length === 0) {
+    const names = stagesWithWrites.map((s) => s.name).join(", ");
+    errors.push(
+      `Pipeline has agent/script stages that write to the store (${names}) but no \`store_schema\` was declared. ` +
+        `Declare a top-level store_schema with one entry per write key. See docs/store-schema-design.md.`,
+    );
+    return errors;
+  }
+
+  const schemaByKey = new Map(Object.entries(schema));
+  for (const { name, writes } of stagesWithWrites) {
+    for (const key of writes) {
+      const entry = schemaByKey.get(key);
+      if (!entry) {
+        errors.push(
+          `Stage "${name}" writes key "${key}" but no matching entry exists in \`store_schema\`. ` +
+            `Add \`store_schema.${key}\` with \`produced_by: "${name}"\`.`,
+        );
+        continue;
+      }
+      if (entry.produced_by !== name) {
+        errors.push(
+          `store_schema["${key}"].produced_by is "${entry.produced_by}" but stage "${name}" also writes this key. ` +
+            `Every schema entry must be produced by exactly one stage.`,
+        );
+      }
+    }
+  }
+
+  for (const [key, entry] of schemaByKey) {
+    if (!stageNames.has(entry.produced_by)) {
+      errors.push(
+        `store_schema["${key}"].produced_by references stage "${entry.produced_by}" which does not exist in this pipeline.`,
+      );
+    }
+  }
+
+  return errors;
+}
+
 export function validatePipelineConfig(raw: unknown): ValidationResult {
   const result = PipelineConfigSchema.safeParse(raw);
-  if (result.success) {
-    const data = result.data as PipelineConfig;
-    const warnings = collectFrozenEngineWarnings(data);
-    return warnings.length > 0
-      ? { success: true, data, warnings }
-      : { success: true, data };
+  if (!result.success) {
+    return { success: false, errors: result.error };
   }
-  return { success: false, errors: result.error };
+  const data = result.data as PipelineConfig;
+  const structuralErrors = collectStoreSchemaErrors(data);
+  if (structuralErrors.length > 0) {
+    return { success: false, data, structuralErrors };
+  }
+  const warnings = collectFrozenEngineWarnings(data);
+  return warnings.length > 0
+    ? { success: true, data, warnings }
+    : { success: true, data };
 }

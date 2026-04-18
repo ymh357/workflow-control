@@ -134,7 +134,11 @@ export async function runPipelineCall(
     // Validate the store-sourced pipeline definition
     const validation = validatePipelineConfig(pipelineDef);
     if (!validation.success) {
-      const errMsg = validation.errors?.issues?.map((i: any) => `${i.path.join(".")}: ${i.message}`).join("; ");
+      const zodMsg = validation.errors?.issues
+        ?.map((i: any) => `${i.path.join(".")}: ${i.message}`)
+        .join("; ");
+      const structMsg = validation.structuralErrors?.join("; ");
+      const errMsg = [zodMsg, structMsg].filter(Boolean).join(" | ");
       throw new Error(`Store-sourced pipeline "${pipelineKey}" failed schema validation: ${errMsg}`);
     }
     const validatedPipeline = validation.data as PipelineConfig;

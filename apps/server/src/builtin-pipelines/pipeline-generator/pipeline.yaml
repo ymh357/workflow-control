@@ -19,18 +19,23 @@ store_schema:
       pipelineName:
         type: string
         description: Human-readable pipeline name
+        required: true
       pipelineId:
         type: string
         description: Directory-safe pipeline ID (kebab-case)
+        required: true
       description:
         type: string
         description: Pipeline description
+        required: true
       engine:
         type: string
         description: Default engine (claude/gemini/mixed)
+        required: true
       stageDesign:
         type: markdown
         description: Detailed stage-by-stage design with data flow
+        required: true
       dataFlowSummary:
         type: markdown
         description: Store key flow diagram
@@ -51,7 +56,7 @@ store_schema:
         description: Skill names discovered externally that should be used in the pipeline
       targetRepoName:
         type: string
-        description: Repository name extracted from task description (empty if not specified)
+        description: Repository name extracted from task description (empty string if not specified)
       assumptions:
         type: string[]
         description: Assumptions made when user input was ambiguous (shown to user at confirmation gate)
@@ -61,9 +66,11 @@ store_schema:
           Structured naming contracts for each stage (including parallel group children).
           Each entry: { name: string, type: string, systemPrompt?: string, writes?: string[] }.
           This is the authoritative naming source consumed by both downstream generators.
+        required: true
       summary:
         type: markdown
         description: Design summary for user review
+        required: true
   pipelineYaml:
     produced_by: genSkeleton
     description: Pipeline Configuration
@@ -71,9 +78,16 @@ store_schema:
       pipeline:
         type: object
         description: Complete pipeline configuration object (PipelineConfig)
+        required: true
       warnings:
         type: string[]
         description: Any warnings about the generated pipeline
+      sub_pipelines:
+        type: object[]
+        description: >
+          Optional sibling pipelines generated alongside the main one (e.g.
+          per-item sub-pipelines referenced by a foreach stage). Each entry
+          must have at least {name, stages}. Empty/absent when not needed.
   promptFiles:
     produced_by: genPrompts
     description: Generated Prompts
@@ -81,12 +95,15 @@ store_schema:
       outputDir:
         type: string
         description: Absolute path to temp directory containing generated prompt .md files
+        required: true
       generatedFiles:
         type: string[]
         description: List of prompt file names written (kebab-case, no .md extension)
+        required: true
       hasGlobalConstraints:
         type: boolean
         description: Whether global-constraints.md was generated
+        required: true
   refinedPromptFiles:
     produced_by: refinePrompts
     description: Refined Prompts
@@ -94,12 +111,15 @@ store_schema:
       outputDir:
         type: string
         description: Absolute path to the temp directory containing enhanced prompt files
+        required: true
       refinedFiles:
         type: string[]
         description: List of prompt file names that were enhanced (kebab-case, no .md)
+        required: true
       summary:
         type: string
         description: Summary of refinements applied
+        required: true
   persistResult:
     produced_by: persisting
     description: Saved Pipeline
@@ -107,15 +127,22 @@ store_schema:
       pipelineId:
         type: string
         description: Pipeline directory name
+        required: true
+      pipelineName:
+        type: string
+        description: Human-readable pipeline name (defaults to pipelineId when not supplied)
+        required: true
       savedFiles:
         type: string[]
         description: Files written to disk
+        required: true
       validationPassed:
         type: boolean
         description: Whether the YAML passed schema validation
+        required: true
       mcpSetupNeeded:
         type: object[]
-        description: MCPs that were auto-registered but need API keys configured (each has name and envVars fields)
+        description: MCPs that were auto-registered but need API keys configured (each has name and envVars fields). Omitted when all MCPs were installed cleanly.
 
 stages:
   - name: analyzing

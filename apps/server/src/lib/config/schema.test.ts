@@ -172,6 +172,108 @@ describe("validatePipelineConfig", () => {
     });
     expect(result.success).toBe(true);
   });
+
+  // Phase 3.3-hard (D1): store_schema coverage is strict.
+  describe("store_schema coverage (Phase 3.3-hard)", () => {
+    it("rejects pipelines with agent writes but no store_schema", () => {
+      const result = validatePipelineConfig({
+        name: "missing-schema",
+        stages: [
+          {
+            name: "analyze",
+            type: "agent",
+            runtime: { engine: "llm", system_prompt: "analyze", writes: ["result"] },
+          },
+        ],
+      });
+      expect(result.success).toBe(false);
+      expect(result.structuralErrors?.[0]).toContain("store_schema");
+    });
+
+    it("rejects pipelines where a write key has no schema entry", () => {
+      const result = validatePipelineConfig({
+        name: "partial-schema",
+        store_schema: {
+          covered: { produced_by: "analyze" },
+        },
+        stages: [
+          {
+            name: "analyze",
+            type: "agent",
+            runtime: { engine: "llm", system_prompt: "p", writes: ["covered", "uncovered"] },
+          },
+        ],
+      });
+      expect(result.success).toBe(false);
+      expect(result.structuralErrors?.some((e) => e.includes("uncovered"))).toBe(true);
+    });
+
+    it("rejects orphan store_schema entries (produced_by references missing stage)", () => {
+      const result = validatePipelineConfig({
+        name: "orphan-schema",
+        store_schema: {
+          a: { produced_by: "analyze" },
+          ghost: { produced_by: "nonexistent" },
+        },
+        stages: [
+          {
+            name: "analyze",
+            type: "agent",
+            runtime: { engine: "llm", system_prompt: "p", writes: ["a"] },
+          },
+        ],
+      });
+      expect(result.success).toBe(false);
+      expect(result.structuralErrors?.some((e) => e.includes("nonexistent"))).toBe(true);
+    });
+
+    it("accepts pipelines with no writes at all (gate-only pipelines)", () => {
+      const result = validatePipelineConfig({
+        name: "gates-only",
+        stages: [
+          { name: "gate1", type: "human_confirm", runtime: { engine: "human_gate" } },
+        ],
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts pipelines whose writes are fully covered by schema", () => {
+      const result = validatePipelineConfig({
+        name: "well-formed",
+        store_schema: {
+          analysis: { produced_by: "analyze" },
+        },
+        stages: [
+          {
+            name: "analyze",
+            type: "agent",
+            runtime: { engine: "llm", system_prompt: "p", writes: ["analysis"] },
+          },
+        ],
+      });
+      expect(result.success).toBe(true);
+      expect(result.structuralErrors).toBeUndefined();
+    });
+
+    it("rejects a mismatched produced_by (wrong stage name)", () => {
+      const result = validatePipelineConfig({
+        name: "wrong-owner",
+        store_schema: {
+          result: { produced_by: "wrong" },
+        },
+        stages: [
+          { name: "wrong", type: "agent", runtime: { engine: "llm", system_prompt: "p" } },
+          {
+            name: "analyze",
+            type: "agent",
+            runtime: { engine: "llm", system_prompt: "p", writes: ["result"] },
+          },
+        ],
+      });
+      expect(result.success).toBe(false);
+      expect(result.structuralErrors?.some((e) => e.includes("produced_by"))).toBe(true);
+    });
+  });
 });
 
 // ---------- PipelineStageConfigSchema ----------

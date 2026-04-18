@@ -92,7 +92,18 @@ function validateAndWarn(raw: unknown, label: string): PipelineConfig | null {
   if (!raw || typeof raw !== "object") return null;
   const result = validatePipelineConfig(raw);
   if (!result.success) {
-    console.error(`[config] Pipeline validation failed for "${label}":`, result.errors?.issues?.map((i) => `${i.path?.join(".")}: ${i.message}`).join("; "));
+    if (result.errors) {
+      console.error(
+        `[config] Pipeline validation failed for "${label}":`,
+        result.errors.issues?.map((i) => `${i.path?.join(".")}: ${i.message}`).join("; "),
+      );
+    }
+    if (result.structuralErrors && result.structuralErrors.length > 0) {
+      console.error(
+        `[config] Pipeline store_schema errors for "${label}":`,
+        result.structuralErrors.join("; "),
+      );
+    }
     // Return raw with type cast for backward compatibility, but log prominently
     return raw as PipelineConfig;
   }

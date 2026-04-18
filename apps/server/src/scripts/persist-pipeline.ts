@@ -63,10 +63,14 @@ If validation fails, an error is thrown and nothing is written.
 
     const validation = validatePipelineConfig(parsed);
     if (!validation.success) {
-      const issues = validation.errors!.issues.map(
-        (i) => `${(i as any).path?.join(".") ?? ""}: ${i.message}`,
-      );
-      throw new Error(`Pipeline schema validation failed:\n${issues.join("\n")}`);
+      const issues = validation.errors
+        ? validation.errors.issues.map(
+            (i) => `${(i as any).path?.join(".") ?? ""}: ${i.message}`,
+          )
+        : [];
+      const structural = validation.structuralErrors ?? [];
+      const all = [...issues, ...structural];
+      throw new Error(`Pipeline schema validation failed:\n${all.join("\n")}`);
     }
 
     // Logical validation (reads/writes consistency, routing targets, parallel rules)

@@ -256,7 +256,11 @@ async function generateSkeleton(description: string, engine: "claude" | "gemini"
 
       const validation = validatePipelineConfig(pipelineObj);
       if (!validation.success) {
-        const errMsg = validation.errors?.issues?.map((i: any) => `${i.path.join(".")}: ${i.message}`).join("; ") ?? "Validation failed";
+        const zodMsg = validation.errors?.issues
+          ?.map((i: any) => `${i.path.join(".")}: ${i.message}`)
+          .join("; ");
+        const structMsg = validation.structuralErrors?.join("; ");
+        const errMsg = [zodMsg, structMsg].filter(Boolean).join(" | ") || "Validation failed";
         lastError = errMsg;
         logger.warn({ attempt, errors: errMsg }, "pipeline-generator: skeleton validation failed, retrying");
         continue;

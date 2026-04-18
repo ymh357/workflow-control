@@ -8,6 +8,10 @@ describe("Single-session pipeline integration", () => {
       name: "Test Single Session",
       session_mode: "single",
       engine: "claude",
+      store_schema: {
+        analysis: { produced_by: "analyze" },
+        result: { produced_by: "implement" },
+      },
       stages: [
         {
           name: "analyze",
