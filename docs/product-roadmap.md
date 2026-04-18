@@ -462,6 +462,18 @@
 
 **Phase 3 里程碑**：AI 写 pipeline 时看得到 store shape；tier1 token 成本下降。
 
+**2026-04-19 进度更新**：
+- ✅ 3.1 / 3.2 设计 + parser + validator（commit `5ad7dff` 前已完成）
+- ✅ 3.3-hard（D1）：validator warn→error + 强制 store_schema（commit `78ce67e`）
+- ✅ 3.5（D2）：agent 输出的 shape 校验 + retry feedback（commit `76ee9cc`）
+- ✅ 3.7（部分）：`context-builder.baseline.test.ts` 锁 token 数与结构契约
+- ⏸ 3.6 推迟：investigate-first 后发现"5 级 fallback"不是单一结构。真正需要
+  删的 legacy fallback（无 reads 路径）仍会在某些 stage 合法触发；reads 内部
+  的 inline JSON / semantic summary / keys preview 3 级是 token budget
+  触发的 graceful degradation，不是"fallback"。完整 schema-driven tier1
+  重写需单独 session（1 周）+ 3.7 剩余回归测试。baseline 已在位作护栏。
+- ⏸ 3.4 等 Phase 0 补做
+
 ---
 
 ### Phase 4：A4 调试工具链 MCP（持续 3 个月，MVP 1 个月）
