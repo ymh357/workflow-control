@@ -123,7 +123,9 @@ registryRoute.get("/registry/local", (c) => {
 
 registryRoute.post("/registry/bootstrap", async (c) => {
   try {
-    const result = await registryService.bootstrap(["test-mixed"]);
+    const index = await registryService.getIndex();
+    const allPackages = index.packages.map((p) => p.name);
+    const result = await registryService.bootstrap(allPackages);
     return c.json(result);
   } catch (err) {
     logger.error({ err }, "Registry operation failed");

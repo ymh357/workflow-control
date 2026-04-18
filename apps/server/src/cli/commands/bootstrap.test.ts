@@ -14,7 +14,7 @@ vi.mock("../lib/fetch.js", () => ({
   fetchIndex: vi.fn(async () => ({
     version: 1,
     updated_at: "2025-01-01",
-    packages: [{ name: "test-mixed", version: "1.0.0", type: "pipeline" }],
+    packages: [{ name: "sample-pipeline", version: "1.0.0", type: "pipeline" }],
   })),
 }));
 
@@ -41,7 +41,7 @@ describe("bootstrapCommand", () => {
 
     await bootstrapCommand();
 
-    expect(registryService.bootstrap).toHaveBeenCalledWith(["test-mixed"]);
+    expect(registryService.bootstrap).toHaveBeenCalledWith(["sample-pipeline"]);
     expect(logSpy).toHaveBeenCalledWith("Installed 2 package(s):");
     expect(logSpy).toHaveBeenCalledWith("  + pkg-a@1.0.0 (pipeline)");
     expect(logSpy).toHaveBeenCalledWith("  + pkg-b@2.0.0 (skill)");

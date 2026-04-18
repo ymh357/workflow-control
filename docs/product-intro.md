@@ -67,7 +67,7 @@ Edge Runner 在本地终端通过 PTY 启动 Claude/Gemini CLI，你可以直接
 - **Claude**：Web 模式用 `@anthropic-ai/claude-agent-sdk`；Edge 模式用 `claude` CLI
 - **Gemini**：两种模式都用 `gemini` CLI 子进程
 
-支持**混合引擎**——同一个流水线中，每个阶段可以独立指定 `claude` 或 `gemini`。`test-mixed` 流水线就是一个混合引擎的示例。
+支持**混合引擎**——同一个流水线中，每个阶段可以独立指定 `claude` 或 `gemini`。但 Gemini / Codex 引擎已冷冻（frozen），新流水线应默认使用 `claude`。详见 `docs/product-roadmap.md` §3 S1。
 
 ---
 
@@ -440,14 +440,16 @@ Runner 通过 HTTP 与 Server 通信，用 PTY 启动 CLI 进程。CLI 通过 MC
 
 ```bash
 # 新建任务并执行
-pnpm edge -- --trigger "Add dark mode toggle" --pipeline claude-text
+pnpm edge -- --trigger "Add dark mode toggle" --pipeline pipeline-generator
 
-# 指定引擎
-pnpm edge -- --trigger "Refactor auth module" --pipeline test-mixed --engine gemini
+# 指定流水线
+pnpm edge -- --trigger "Research X vs Y" --pipeline tech-research
 
 # 接入已有任务
 pnpm edge -- <task-id>
 ```
+
+> 注：Edge Runner 已冷冻（frozen）。新工作流推荐使用 Dashboard 模式。详见 `docs/product-roadmap.md` §3 S1。
 
 #### Command Mode（Ctrl+\）
 
@@ -536,7 +538,7 @@ pnpm dev    # Server (:3001) + Dashboard (:3000)
 **通过 Edge Runner：**
 
 ```bash
-pnpm edge -- --trigger "给登录页面加暗色模式切换" --pipeline claude-text
+pnpm edge -- --trigger "给登录页面加暗色模式切换" --pipeline pipeline-generator
 ```
 
 #### 健康检查

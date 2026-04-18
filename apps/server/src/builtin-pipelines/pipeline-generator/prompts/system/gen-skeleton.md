@@ -175,7 +175,7 @@ Do NOT invent alternative names. If `design` prose uses different wording, follo
 ## Translation Rules
 
 1. Follow `stageDesign` exactly — every stage mentioned must appear in the same order
-2. `system_prompt` values in agent stages: use the exact kebab-case `system_prompt` name from stageDesign (e.g. `"report-generator"`, `"code-fix-suggestion"`). Do NOT use placeholders like `"__GENERATED__"`.
+2. `system_prompt` values in agent stages: use the exact kebab-case `system_prompt` name from stageDesign (e.g. `"analyze-requirements"`, `"implement-feature"`). Do NOT use placeholders like `"__GENERATED__"`.
 3. Stage names are camelCase
 4. Every agent/script `writes` key needs a corresponding `outputs` entry
 5. Every `reads` path must reference a key written by a prior stage
