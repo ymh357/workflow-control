@@ -27,6 +27,7 @@ testDb.exec(`
     reads_snapshot          TEXT NOT NULL,
     tool_calls              TEXT NOT NULL DEFAULT '[]',
     agent_stream            TEXT NOT NULL DEFAULT '[]',
+    decisions               TEXT NOT NULL DEFAULT '[]',
     writes_parsed           TEXT,
     writes_committed        TEXT,
     worktree_diff           TEXT,

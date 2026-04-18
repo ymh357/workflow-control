@@ -18,6 +18,7 @@ import { logger } from "../logger.js";
 import type {
   AgentStreamEvent,
   CloseRecordInput,
+  DecisionRecord,
   OpenRecordInput,
   PrecompactEvent,
   ToolCallRecord,
@@ -38,6 +39,8 @@ export interface ExecutionRecordWriter {
   completeToolCall(id: string, patch: Partial<ToolCallRecord>): void;
   appendAgentStream(event: AgentStreamEvent): void;
   recordPrecompact(event: PrecompactEvent): void;
+  /** T1.5 — append a structured decision. Buffered with 1Hz flush. */
+  recordDecision(decision: DecisionRecord): void;
   updateCost(patch: {
     costUsd?: number | null;
     tokenInput?: number | null;
@@ -60,6 +63,7 @@ class NoopWriter implements ExecutionRecordWriter {
   completeToolCall(): void {}
   appendAgentStream(): void {}
   recordPrecompact(): void {}
+  recordDecision(): void {}
   updateCost(): void {}
   updateSessionId(): void {}
   heartbeat(): void {}
@@ -72,9 +76,11 @@ interface WriterState {
   toolCalls: ToolCallRecord[];
   agentStream: AgentStreamEvent[];
   precompactEvents: PrecompactEvent[];
+  decisions: DecisionRecord[];
   dirtyToolCalls: boolean;
   dirtyAgentStream: boolean;
   dirtyPrecompact: boolean;
+  dirtyDecisions: boolean;
   costUsd: number | null;
   tokenInput: number | null;
   tokenOutput: number | null;
@@ -98,9 +104,11 @@ class SqliteWriter implements ExecutionRecordWriter {
       toolCalls: [],
       agentStream: [],
       precompactEvents: [],
+      decisions: [],
       dirtyToolCalls: false,
       dirtyAgentStream: false,
       dirtyPrecompact: false,
+      dirtyDecisions: false,
       costUsd: null,
       tokenInput: null,
       tokenOutput: null,
@@ -144,6 +152,12 @@ class SqliteWriter implements ExecutionRecordWriter {
     if (this.state.closed) return;
     this.state.precompactEvents.push(event);
     this.state.dirtyPrecompact = true;
+  }
+
+  recordDecision(decision: DecisionRecord): void {
+    if (this.state.closed) return;
+    this.state.decisions.push(decision);
+    this.state.dirtyDecisions = true;
   }
 
   updateCost(patch: {
@@ -192,6 +206,7 @@ class SqliteWriter implements ExecutionRecordWriter {
       this.state.dirtyToolCalls ||
       this.state.dirtyAgentStream ||
       this.state.dirtyPrecompact ||
+      this.state.dirtyDecisions ||
       this.state.costDirty ||
       this.state.sessionDirty;
     if (!needsFlush) return;
@@ -220,6 +235,10 @@ class SqliteWriter implements ExecutionRecordWriter {
         );
         values.push(JSON.stringify(this.state.precompactEvents));
       }
+      if (this.state.dirtyDecisions) {
+        parts.push("decisions = ?");
+        values.push(JSON.stringify(this.state.decisions));
+      }
       if (this.state.costDirty) {
         parts.push("cost_usd = ?");
         values.push(this.state.costUsd);
@@ -242,6 +261,7 @@ class SqliteWriter implements ExecutionRecordWriter {
       this.state.dirtyToolCalls = false;
       this.state.dirtyAgentStream = false;
       this.state.dirtyPrecompact = false;
+      this.state.dirtyDecisions = false;
       this.state.costDirty = false;
       this.state.sessionDirty = false;
     } catch (err) {

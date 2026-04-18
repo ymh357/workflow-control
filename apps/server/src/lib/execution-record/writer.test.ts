@@ -29,6 +29,7 @@ testDb.exec(`
     reads_snapshot          TEXT NOT NULL,
     tool_calls              TEXT NOT NULL DEFAULT '[]',
     agent_stream            TEXT NOT NULL DEFAULT '[]',
+    decisions               TEXT NOT NULL DEFAULT '[]',
     writes_parsed           TEXT,
     writes_committed        TEXT,
     worktree_diff           TEXT,
@@ -154,6 +155,44 @@ describe("ExecutionRecordWriter — feature flag", () => {
     // Format: "0.0.1" or "0.0.1+abc1234" — never null / empty, never "unknown"
     // when running inside the repo with the package.json present.
     expect(row.workflow_control_version).toMatch(/^\d+\.\d+\.\d+(\+[0-9a-f]{7,40})?$/);
+    writer.close({ terminationReason: "natural_completion" });
+  });
+
+  // T1.5 — decisions are buffered and flushed.
+  it("records decisions via recordDecision and flushes to DB", () => {
+    const writer = createExecutionRecordWriter(
+      baseOpen({ attemptId: "att-dec" }),
+    );
+    writer.recordDecision({
+      timestamp: "2026-04-19T00:00:00.000Z",
+      context: "parser choice",
+      optionsConsidered: ["json", "yaml"],
+      chosen: "json",
+      reasoning: "input is always JSON on this endpoint",
+    });
+    writer.recordDecision({
+      timestamp: "2026-04-19T00:00:01.000Z",
+      context: "retry strategy",
+      optionsConsidered: ["exponential", "linear"],
+      chosen: "exponential",
+      reasoning: "network is the failure mode",
+    });
+    writer.__flushForTests();
+    const row = readRow("att-dec")!;
+    const decisions = JSON.parse(row.decisions as string);
+    expect(decisions).toHaveLength(2);
+    expect(decisions[0].context).toBe("parser choice");
+    expect(decisions[0].chosen).toBe("json");
+    expect(decisions[1].optionsConsidered).toEqual(["exponential", "linear"]);
+    writer.close({ terminationReason: "natural_completion" });
+  });
+
+  it("decisions default to [] on fresh insert", () => {
+    const writer = createExecutionRecordWriter(
+      baseOpen({ attemptId: "att-nodec" }),
+    );
+    const row = readRow("att-nodec")!;
+    expect(row.decisions).toBe("[]");
     writer.close({ terminationReason: "natural_completion" });
   });
 });

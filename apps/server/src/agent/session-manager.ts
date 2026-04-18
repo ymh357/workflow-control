@@ -17,6 +17,7 @@ import type { AgentRuntimeConfig } from "../lib/config-loader.js";
 import type { WorkflowContext } from "../machine/types.js";
 import { buildMcpServers } from "../lib/mcp-config.js";
 import { createStoreReaderMcp } from "../lib/store-reader-mcp.js";
+import { createAgentLogMcp } from "../lib/agent-log-mcp.js";
 import { buildChildEnv } from "../lib/child-env.js";
 import {
   createAskUserQuestionInterceptor,
@@ -273,6 +274,8 @@ export class SessionManager {
         params.taskId,
       );
     }
+    // T1.5 — __agent_log__ for structured decisions. Inert when writer absent.
+    mcpServers["__agent_log__"] = createAgentLogMcp(params.executionRecordWriter);
 
     const options: SdkOptions = {
       systemPrompt: {
@@ -407,6 +410,10 @@ export class SessionManager {
       params.stageName,
       params.taskId,
     );
+    // T1.5 — rebuild __agent_log__ too so the new stage's writer is the one
+    // record_decision writes to (single-session attempts span stage switches,
+    // so the writer reference may change).
+    mcpServers["__agent_log__"] = createAgentLogMcp(params.executionRecordWriter);
     await this.query.setMcpServers(
       mcpServers as Parameters<Query["setMcpServers"]>[0],
     );

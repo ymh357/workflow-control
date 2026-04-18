@@ -50,6 +50,26 @@ export interface ScratchPadSnapshot {
   precompactEvents: PrecompactEvent[];
 }
 
+/**
+ * T1.5 — Structured decision log entry. Agents call `record_decision`
+ * on the `__agent_log__` MCP when they make a choice that affects
+ * downstream stages. Unlike scratch-pad notes (free-form observations),
+ * decisions have mandatory structure so A4 debug tools can reason over
+ * them without NLP.
+ */
+export interface DecisionRecord {
+  /** ISO timestamp when the decision was recorded. */
+  timestamp: string;
+  /** Brief one-line context the decision was made in. */
+  context: string;
+  /** Options the agent considered. Must include the chosen one. */
+  optionsConsidered: string[];
+  /** The option the agent picked. Should match one of optionsConsidered. */
+  chosen: string;
+  /** Free-form reasoning explaining WHY chosen over the alternatives. */
+  reasoning: string;
+}
+
 export interface ExecutionRecord {
   attemptId: string;
   taskId: string;
@@ -80,6 +100,8 @@ export interface ExecutionRecord {
   worktreeDiff: string | null;
   worktreeDiffTruncated: boolean;
   scratchPadSnapshot: ScratchPadSnapshot | null;
+  /** T1.5 — structured decisions recorded via the __agent_log__ MCP. */
+  decisions: DecisionRecord[];
 
   costUsd: number | null;
   tokenInput: number | null;

@@ -2,6 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { HookInput, HookJSONOutput } from "@anthropic-ai/claude-agent-sdk";
 import { buildMcpServers } from "../lib/mcp-config.js";
 import { createStoreReaderMcp } from "../lib/store-reader-mcp.js";
+import { createAgentLogMcp } from "../lib/agent-log-mcp.js";
 import type { SSEMessage } from "../types/index.js";
 import { sseManager } from "../sse/manager.js";
 import { taskLogger } from "../lib/logger.js";
@@ -145,6 +146,9 @@ export async function executeStage(
     // even when store is empty and scratchPad is currently empty/undefined.
     localMcp["__store__"] = createStoreReaderMcp({}, context.scratchPad ?? [], stageName, taskId);
   }
+  // T1.5 — attach __agent_log__ so agents can record structured decisions.
+  // Inert when executionRecordWriter is absent or no-op (flag off).
+  localMcp["__agent_log__"] = createAgentLogMcp(executionRecordWriter);
   const appendCacheKey = `${taskId}:${stageName}`;
   let appendPrompt: string;
   let resolvedFragmentIds: string[];

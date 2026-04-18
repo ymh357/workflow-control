@@ -73,6 +73,8 @@ export function getDb(): DatabaseSync {
       reads_snapshot          TEXT NOT NULL,
       tool_calls              TEXT NOT NULL DEFAULT '[]',
       agent_stream            TEXT NOT NULL DEFAULT '[]',
+      -- T1.5 — structured decisions recorded via __agent_log__ MCP.
+      decisions               TEXT NOT NULL DEFAULT '[]',
       writes_parsed           TEXT,
       writes_committed        TEXT,
       worktree_diff           TEXT,
