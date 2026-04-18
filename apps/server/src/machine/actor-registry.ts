@@ -221,10 +221,6 @@ function extractInheritedKeys(
     if (key.startsWith("__")) continue; // explicit allowlist still blocks internals
     if (sourceStore[key] !== undefined) {
       inherited[key] = sourceStore[key];
-      const summaryKey = `${key}.__semantic_summary`;
-      if (sourceStore[summaryKey] !== undefined) inherited[summaryKey] = sourceStore[summaryKey];
-      const mechanicalKey = `${key}.__summary`;
-      if (sourceStore[mechanicalKey] !== undefined) inherited[mechanicalKey] = sourceStore[mechanicalKey];
     }
   }
   return inherited;

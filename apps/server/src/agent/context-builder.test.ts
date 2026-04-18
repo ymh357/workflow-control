@@ -31,6 +31,7 @@ vi.mock("../lib/config-loader.js", () => ({
 }));
 
 import { buildTier1Context, estimateTokens } from "./context-builder.js";
+import { setCachedSummary, clearTaskSummaries } from "./semantic-summary-cache.js";
 import type { WorkflowContext } from "../machine/types.js";
 
 function makeContext(overrides?: Record<string, any>): WorkflowContext {
@@ -385,60 +386,34 @@ describe("buildTier1Context - parallel group stages", () => {
   });
 });
 
-describe("buildTier1Context - compact summary preference", () => {
-  it("uses compact summary for large store values when __summary exists", () => {
-    const ctx = makeContext({
-      store: {
-        analysis: { plan: "x".repeat(5000), details: "y".repeat(5000) },
-        "analysis.__summary": "[object] plan, details (10200 chars)",
-      },
-    });
-    const runtime = { reads: { "Analysis": "analysis" } } as any;
-    const result = buildTier1Context(ctx, runtime);
-    expect(result).toContain("compact summary");
-    expect(result).toContain("get_store_value");
-    expect(result).not.toContain("x".repeat(100));
+describe("buildTier1Context - semantic summary via cache", () => {
+  it("uses cached semantic summary when value exceeds MAX_INLINE_CHARS", () => {
+    setCachedSummary("test-id", "plan", "5 tasks using TDD approach, starting with unit tests");
+    try {
+      const ctx = makeContext({
+        store: {
+          plan: { tasks: "x".repeat(5000), approach: "y".repeat(5000) },
+        },
+      });
+      const runtime = { reads: { "Plan": "plan" } } as any;
+      const result = buildTier1Context(ctx, runtime);
+      expect(result).toContain("5 tasks using TDD approach");
+      expect(result).toContain("semantic summary");
+    } finally {
+      clearTaskSummaries("test-id");
+    }
   });
 
-  it("renders full value when __summary exists but value is small", () => {
-    const ctx = makeContext({
-      store: {
-        analysis: { plan: "short plan" },
-        "analysis.__summary": "[object] plan (20 chars)",
-      },
-    });
-    const runtime = { reads: { "Analysis": "analysis" } } as any;
-    const result = buildTier1Context(ctx, runtime);
-    expect(result).toContain("short plan");
-    expect(result).not.toContain("compact summary");
-  });
-});
-
-describe("buildTier1Context - semantic summary preference", () => {
-  it("uses __semantic_summary when value exceeds MAX_INLINE_CHARS", () => {
-    const ctx = makeContext({
-      store: {
-        plan: { tasks: "x".repeat(5000), approach: "y".repeat(5000) },
-        "plan.__summary": "[object] tasks, approach (12345 chars)",
-        "plan.__semantic_summary": "5 tasks using TDD approach, starting with unit tests",
-      },
-    });
-    const runtime = { reads: { "Plan": "plan" } } as any;
-    const result = buildTier1Context(ctx, runtime);
-    expect(result).toContain("5 tasks using TDD approach");
-    expect(result).toContain("semantic summary");
-  });
-
-  it("falls back to __summary when __semantic_summary not available", () => {
+  it("falls back to object key preview when no summary available and budget exceeded", () => {
     const ctx = makeContext({
       store: {
         plan: { tasks: Array(100).fill("task"), approach: "TDD", details: "x".repeat(10000) },
-        "plan.__summary": "[object] tasks, approach, details (15000 chars)",
       },
     });
     const runtime = { reads: { "Plan": "plan" } } as any;
     const result = buildTier1Context(ctx, runtime, 50);
-    expect(result).toContain("[object] tasks, approach, details");
+    expect(result).toContain("Object with");
+    expect(result).toContain("get_store_value");
   });
 });
 

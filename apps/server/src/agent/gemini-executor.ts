@@ -344,6 +344,45 @@ export function queryGemini(input: { prompt: string; options: GeminiOptions }): 
   return query;
 }
 
+// Gemini Flash pricing: $0.15/1M input, $0.60/1M output (2.5 Flash default)
+// Gemini Pro pricing:   $1.25/1M input, $5.00/1M output (2.5 Pro)
+const GEMINI_PRICING: Record<string, { input: number; output: number }> = {
+  default: { input: 0.15, output: 0.60 },
+  pro: { input: 1.25, output: 5.00 },
+};
+
+function estimateGeminiCost(stats: Record<string, any> | undefined): number {
+  if (!stats) return 0;
+
+  // Priority 1: explicit cost from CLI
+  if (typeof stats.cost_usd === "number" && stats.cost_usd > 0) return stats.cost_usd;
+
+  // Priority 2: aggregate per-model costs
+  const models = stats.models as Record<string, Record<string, any>> | undefined;
+  if (models) {
+    let total = 0;
+    let hasModelCost = false;
+    for (const ms of Object.values(models)) {
+      if (typeof ms.cost_usd === "number" && ms.cost_usd > 0) {
+        total += ms.cost_usd;
+        hasModelCost = true;
+      }
+    }
+    if (hasModelCost) return total;
+  }
+
+  // Priority 3: token-based estimation
+  const inputTokens = (stats.input_tokens as number) ?? 0;
+  const outputTokens = (stats.output_tokens as number) ?? 0;
+  if (inputTokens === 0 && outputTokens === 0) return 0;
+
+  const isPro = models
+    ? Object.keys(models).some((name) => name.toLowerCase().includes("pro"))
+    : false;
+  const pricing = isPro ? GEMINI_PRICING.pro : GEMINI_PRICING.default;
+  return (inputTokens * pricing.input + outputTokens * pricing.output) / 1_000_000;
+}
+
 function mapGeminiMessage(raw: any): GeminiMessage {
   const type = raw.type;
 
@@ -372,7 +411,7 @@ function mapGeminiMessage(raw: any): GeminiMessage {
       status: raw.status,
       subtype: raw.status ?? undefined,
       session_id: raw.session_id,
-      total_cost_usd: raw.stats?.cost_usd ?? 0, // TODO: Gemini CLI may not report cost
+      total_cost_usd: estimateGeminiCost(raw.stats),
       duration_ms: raw.stats?.duration_ms ?? 0,
       stats: raw.stats ?? undefined,
       result: raw.result,

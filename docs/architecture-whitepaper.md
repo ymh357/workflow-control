@@ -1,6 +1,6 @@
 # Workflow Control: Technical Architecture Whitepaper
 
-> Version 1.0 | 2026-04-14
+> Version 1.1 | 2026-04-18
 
 ---
 
@@ -414,6 +414,8 @@ Context is delivered to agents in two tiers to manage token budgets:
   4. Field preview (first 5 fields + truncation indicator)
   5. Summarized view (first 20 fields, 80-char value truncation)
 
+In single-session mode, tier1Context is re-injected with every stage's user message (not just the first). After SDK auto-compact fires, the original tier1 from earlier stages is summarized away — re-injection ensures agents always have fresh, complete task context regardless of compaction history.
+
 **Tier 2 (On-Demand MCP):**
 - Available via `get_store_value(key)` MCP tool
 - No token budget constraint
@@ -530,6 +532,24 @@ stages:
     engine: claude                  # Use Claude for complex implementation
     execution_mode: auto            # Run locally
 ```
+
+### 8.4 Single-Session Compact Optimization
+
+In single-session mode, all stages of a pipeline execute within a single Claude Agent SDK conversation. This avoids the overhead of session creation per stage but introduces a challenge: conversation history grows unbounded across stages. SDK auto-compact fires at approximately 167k tokens (on a 200k context window), using a generic summarization prompt that has no awareness of pipeline semantics — it may summarize away critical store values, stage progression context, or scratch pad notes.
+
+To address this, the system registers a `PreCompact` hook with the Agent SDK that injects pipeline-aware instructions into the compact LLM's summarization prompt. The hook tells the compact model to preserve:
+
+- **Store key-value pairs** referenced by the current and downstream stages
+- **Scratch pad notes** accumulated during pipeline execution
+- **Completed stage progression** (which stages finished, their outputs)
+- **File modification context** (which files were created/modified and why)
+- **Downstream-affecting decisions** (routing choices, condition evaluations)
+
+The hook reads mutable `SessionManager` fields (`currentStageName`, `currentContext`, `currentScratchPad`) that are updated synchronously at the start of each `executeStage()` call. This ensures the compact instructions always reflect the current pipeline state, not a stale snapshot from session creation time.
+
+Additionally, the store reader MCP (`__store__`) is unconditionally refreshed on every stage transition via `switchStageConfig()`. This ensures agents always see fresh store data even after compaction removes earlier tool results from context. The SDK's `setMcpServers` is diff-based, so unchanged external MCP servers are not reconnected — only the store reader is rebuilt with current values.
+
+For observability, `compact_boundary` system messages emitted by the SDK are detected and forwarded as SSE events, allowing operators to monitor when compaction fires, the pre-compact token count, and which stage was active at the time.
 
 ---
 
@@ -719,6 +739,7 @@ stages:
 | `question` | Human gate question | Gate stage entry |
 | `error` | Error messages | Error handlers |
 | `agent_red_flag` | Safety flag detection | Red flag scanner |
+| `compact` | Compact boundary detection (trigger, pre-token count, stage) | Session manager (compact_boundary system message) |
 
 ### 12.3 Cost Tracking
 
@@ -890,10 +911,10 @@ Sibling stages within a parallel group cannot read each other's writes. This is 
 
 **Workaround: Post-group stages can merge parallel outputs.**
 
-#### Gemini Cost Tracking Not Implemented
-The Gemini CLI does not report cost data. `totalCostUsd` for Gemini stages is always 0, making mixed-engine pipelines have incomplete cost accounting.
+#### Gemini Cost Tracking via Estimation
+The Gemini CLI does not report cost data natively. `estimateGeminiCost()` provides a three-tier fallback: (1) direct `stats.cost_usd` if reported, (2) aggregated per-model costs from `stats.models`, (3) token-based estimation using Flash/Pro pricing tables. Codex uses a similar token-based approach.
 
-**Impact: Budget enforcement doesn't work for Gemini stages.**
+**Impact: Mixed-engine pipelines now have approximate cost accounting. Accuracy depends on pricing table currency.**
 
 #### Edge Runner Transcript Parsing is Fragile
 Transcript sync relies on finding the newest `.jsonl` file in a Claude-specific directory path (`~/.claude/projects/<normalized-cwd>/`). Multiple fragility points exist: (1) path normalization replaces `/` with `-`, which creates collisions (e.g., `/a/b` and `/a-b` both normalize to `a-b`); (2) the transcript file path is bound on first discovery and never updated — if Claude CLI creates a new file mid-session, the runner continues reading the stale one; (3) all errors are silently swallowed (`catch { /* non-critical */ }`), making failures invisible.
@@ -979,6 +1000,7 @@ Workflow Control represents a thoughtful approach to AI agent orchestration that
 - YAML pipeline DSL with static validation catches errors before execution
 - Edge runner architecture cleanly separates orchestration from execution
 - Git-native worktree isolation is a natural fit for code-producing workflows
+- SDK PreCompact hook integration enables pipeline-aware conversation compaction, preserving critical stage context across auto-compact boundaries
 
 **Bets that carry risk:**
 - Single-process architecture limits scaling beyond individual/small team use
@@ -992,4 +1014,4 @@ The codebase demonstrates high engineering quality — extensive test coverage (
 
 ---
 
-*This document reflects the codebase state as of 2026-04-14. All claims are based on direct source code analysis.*
+*This document reflects the codebase state as of 2026-04-18. All claims are based on direct source code analysis.*

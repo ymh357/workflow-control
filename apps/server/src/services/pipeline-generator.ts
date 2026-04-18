@@ -61,6 +61,8 @@ export interface GenerateResult {
   scripts: GeneratedScript[];
   promptFiles: GeneratedPromptFile[];
   warnings: string[];
+  hasStubs: boolean;
+  stubStages: string[];
   capabilityDiscovery?: {
     discoveredMcps: Array<{ name: string; packageName: string; description: string }>;
     discoveredSkills: Array<{ name: string; repo: string; description: string }>;
@@ -105,6 +107,7 @@ export async function generatePipeline(req: GenerateRequest): Promise<GenerateRe
 
   const builtinIds = scriptRegistry.getAllMetadata().map(m => m.id);
   const warnings: string[] = [];
+  const stubStages: string[] = [];
 
   // Step 2: Generate system prompts in parallel
   const promptResults = await Promise.allSettled(
@@ -115,6 +118,7 @@ export async function generatePipeline(req: GenerateRequest): Promise<GenerateRe
     if (result.status === "fulfilled") return result.value;
     const errMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
     warnings.push(`Stage '${stage.name}' system prompt generation failed: ${errMsg}. A placeholder was used.`);
+    stubStages.push(stage.name);
     return buildFallbackPrompt(stage, pipelineObj);
   });
 
@@ -128,6 +132,7 @@ export async function generatePipeline(req: GenerateRequest): Promise<GenerateRe
     if (result.status === "fulfilled") return result.value;
     const errMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
     warnings.push(`Script '${skeleton.scriptId}' code generation failed: ${errMsg}. A stub was used.`);
+    if (!stubStages.includes(skeleton.scriptId)) stubStages.push(skeleton.scriptId);
     return buildFallbackScript(skeleton);
   });
 
@@ -207,7 +212,7 @@ export async function generatePipeline(req: GenerateRequest): Promise<GenerateRe
       }
     : undefined;
 
-  return { yaml: pipelineYaml, parsed: pipelineObj, scripts, promptFiles, warnings, capabilityDiscovery };
+  return { yaml: pipelineYaml, parsed: pipelineObj, scripts, promptFiles, warnings, hasStubs: stubStages.length > 0, stubStages, capabilityDiscovery };
 }
 
 async function generateSkeleton(description: string, engine: "claude" | "gemini" | "codex", discovery?: DiscoveryResult): Promise<{
@@ -473,7 +478,7 @@ function buildFallbackScript(skeleton: { scriptId: string; manifest: any }): Gen
   return {
     scriptId: skeleton.scriptId,
     manifest: skeleton.manifest,
-    code: `// TODO: Implement ${skeleton.scriptId}\nexport default async function handler({ inputs, args }: any): Promise<Record<string, unknown>> {\n  throw new Error("Script '${skeleton.scriptId}' not yet implemented");\n}\n`,
+    code: `// STUB: Auto-generation failed — manual implementation required\nexport default async function handler({ inputs, args }: any): Promise<Record<string, unknown>> {\n  throw new Error("[STUB] Script '${skeleton.scriptId}' generation failed. Edit this file before running the pipeline.");\n}\n`,
   };
 }
 
@@ -611,12 +616,9 @@ function normalizeExamplePipeline(yaml: string, asJson = false): string {
 function buildSkeletonPrompt(description: string, engine: "claude" | "gemini" | "codex", retryError: string | null, discovery?: DiscoveryResult): string {
   const capabilitySection = formatCapabilityPrompt(buildCapabilitySummary());
 
-  // Read example pipelines as JSON objects, normalizing system_prompt to __GENERATED__
-  const testMixedPath = join(CONFIG_DIR, "pipelines", "test-mixed", "pipeline.yaml");
+  // Read one example pipeline as a JSON object, normalizing system_prompt to __GENERATED__
   const claudeTextPath = join(CONFIG_DIR, "pipelines", "claude-text", "pipeline.yaml");
-  const testMixedJson = existsSync(testMixedPath)
-    ? normalizeExamplePipeline(readFileSync(testMixedPath, "utf-8"), true) : "";
-  const claudeTextJson = existsSync(claudeTextPath)
+  const exampleJson = existsSync(claudeTextPath)
     ? normalizeExamplePipeline(readFileSync(claudeTextPath, "utf-8"), true) : "";
 
   const retrySection = retryError
@@ -769,11 +771,8 @@ interface GateRuntime {
   notify?: { type: "slack"; template: string };
 }
 
-// Advanced stage runtimes (use only when explicitly needed):
-// condition: { engine: "condition", branches: [{when?: string, default?: true, to: string}] }
-// pipeline:  { engine: "pipeline", pipeline_name: string, reads?: {...}, writes?: string[], timeout_sec?: number }
-// foreach:   { engine: "foreach", items: string, item_var: string, pipeline_name: string, max_concurrency?: number, collect_to?: string, item_writes?: string[], on_item_error?: "fail_fast"|"continue" }
 \`\`\`
+Advanced stage runtimes (condition/pipeline/foreach) — use only when the user explicitly needs conditional routing, sub-pipeline reuse, or batch iteration. See field names in the TypeScript types above.
 
 ## Stage Quality Settings
 
@@ -798,16 +797,10 @@ Do NOT enable thinking for simple/fast stages (e.g., a stage that just formats o
 ${capabilitySection}
 
 ${formatDiscoverySection(discovery)}
-## Example Pipelines (as JSON objects)
+## Example Pipeline (JSON)
 
-### Simple (test-mixed)
 \`\`\`json
-${testMixedJson}
-\`\`\`
-
-### Complex (claude-text)
-\`\`\`json
-${claudeTextJson}
+${exampleJson}
 \`\`\`
 
 ## store_schema (RECOMMENDED)

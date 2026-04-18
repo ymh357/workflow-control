@@ -133,14 +133,10 @@ export function buildTier1Context(
         const jsonStr = JSON.stringify(truncated, null, 2);
         const fullBlock = `\n### ${label}\n\`\`\`json\n${jsonStr}\n\`\`\``;
 
-        const semanticSummaryKey = `${storePath.split(".")[0]}.__semantic_summary`;
-        const mechanicalSummaryKey = `${storePath.split(".")[0]}.__summary`;
-        const semanticSummary = getCachedSummary(context.taskId, storePath.split(".")[0]) ?? store[semanticSummaryKey];
+        const semanticSummary = getCachedSummary(context.taskId, storePath.split(".")[0]);
 
         if (semanticSummary !== undefined && (fullBlock.length > MAX_INLINE_CHARS || !addPart(fullBlock))) {
           parts.push(`\n### ${label} (semantic summary)\n${semanticSummary}\n> Full content: use get_store_value("${storePath}") for complete data`);
-        } else if (store[mechanicalSummaryKey] !== undefined && fullBlock.length > MAX_INLINE_CHARS) {
-          addPart(`\n### ${label} (compact summary)\n${store[mechanicalSummaryKey]}\n> Full content: use get_store_value("${storePath}") for complete data`);
         } else if (!addPart(fullBlock)) {
           const keys = Object.keys(val);
           const preview = keys.length <= 10
@@ -157,16 +153,10 @@ export function buildTier1Context(
       addPart(`\n> Context unchanged from previous attempt: ${unchangedLabels.join(", ")}. Use get_store_value() for details.`);
     }
 
-    // List un-injected store keys as indices (Tier 2 references).
-    // Exclude framework-internal sentinels (e.g. __pipeline_depth) and the
-    // `.__summary` / `.__semantic_summary` derivatives — surfacing them in
-    // agent context leaks implementation details and wastes tokens.
     const otherKeys = Object.keys(store).filter(
       (k) =>
         !renderedKeys.has(k) &&
-        !k.startsWith("__") &&
-        !k.includes(".__summary") &&
-        !k.includes(".__semantic_summary"),
+        !k.startsWith("__"),
     );
     if (otherKeys.length > 0) {
       parts.push("\n## Other Available Context (use get_store_value tool to read these)");

@@ -164,6 +164,31 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
 
   const states: Record<string, StateNode> = {};
   const errors: string[] = [];
+
+  // Global writes-key tracking: warn when multiple stages write the same key
+  // with "replace" strategy. Within-group conflicts are caught separately as errors.
+  const globalWrites = new Map<string, string[]>();
+  for (const entry of transformed.stages) {
+    const stagesInEntry = isParallelGroup(entry) ? entry.parallel.stages : [entry as PipelineStageConfig];
+    for (const s of stagesInEntry) {
+      const writes = (s.runtime as Record<string, any> | undefined)?.writes as Array<string | { key: string; strategy?: string }> | undefined;
+      for (const w of writes ?? []) {
+        const key = typeof w === "string" ? w : w.key;
+        const strategy = typeof w === "string" ? "replace" : (w.strategy ?? "replace");
+        if (strategy !== "replace") continue;
+        const existing = globalWrites.get(key) ?? [];
+        existing.push(s.name);
+        globalWrites.set(key, existing);
+      }
+    }
+  }
+  for (const [key, stages] of globalWrites) {
+    if (stages.length > 1) {
+      const log = taskLogger("pipeline-builder");
+      log.warn({ key, stages }, `Multiple stages write key "${key}" with replace strategy: ${stages.join(", ")}. Later stages will overwrite earlier values.`);
+    }
+  }
+
   const validTargets = new Set(collectAllNames(transformed.stages));
   validTargets.add("completed");
   validTargets.add("error");

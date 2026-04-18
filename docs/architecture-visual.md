@@ -1,6 +1,6 @@
 # Workflow Control: 架构可视化
 
-> Version 1.0 | 2026-04-17 | Companion to [`architecture-whitepaper-zh.md`](./architecture-whitepaper-zh.md)
+> Version 1.0 | 2026-04-18 | Companion to [`architecture-whitepaper-zh.md`](./architecture-whitepaper-zh.md)
 
 本文是白皮书的**可视化补充**，用 Mermaid 把白皮书里的 ASCII 图和文字说明图形化，方便在 dashboard / GitHub / Notion 直接渲染。不覆盖白皮书的文字论述，只做图解与对照表。每张图下方给出"看图要点"与源码锚点，便于跳转核对。
 
@@ -22,7 +22,7 @@
   - [3.2 Single-Session vs Multi-Session](#32-single-session-vs-multi-session)
   - [3.3 Actor 注册表](#33-actor-注册表)
   - [3.4 SSE 事件清单](#34-sse-事件清单)
-- [第四层：潜在问题提示](#第四层潜在问题提示)
+- [第四层：已知问题与防御措施](#第四层已知问题与防御措施)
 - [与白皮书的章节映射](#与白皮书的章节映射)
 
 ---
@@ -361,6 +361,44 @@ flowchart TB
 - 清理钩子: `apps/server/src/machine/side-effects.ts:111` (完成/错误), `:179` (取消)
 - 进程级清理: `apps/server/src/index.ts:173-174`
 
+#### 2.4.1 Compact 优化（Single-Session 模式）
+
+在 single-session 模式下，会话历史随 stage 累积持续增长。SDK 在 token 接近上下文窗口上限时自动触发 compact（压缩），PreCompact hook 确保压缩过程保留 pipeline 关键上下文。
+
+```mermaid
+sequenceDiagram
+  participant SM as SessionManager
+  participant SDK as Claude SDK
+  participant Hook as PreCompact Hook
+  participant SSE as SSE Manager
+
+  Note over SM: executeStage() updates<br/>currentStageName, currentContext,<br/>currentScratchPad
+
+  SM->>SDK: enqueue user message
+  loop Agent turns accumulate
+    SDK-->>SM: stream messages
+  end
+  Note over SDK: Token count ≈ 167k<br/>auto-compact triggers
+
+  SDK->>Hook: PreCompact callback
+  Hook->>Hook: Build pipeline-aware instructions<br/>• Store key-value pairs<br/>• Scratch pad notes<br/>• Completed stages<br/>• Current stage name
+  Hook-->>SDK: {systemMessage: instructions}
+  SDK->>SDK: Compact with pipeline context preserved
+  SDK-->>SM: compact_boundary message
+  SM->>SSE: Push "compact" event<br/>{trigger, preTokens, stage}
+```
+
+**看图要点**
+- PreCompact hook 在 SDK 自动压缩前被调用，注入 pipeline 感知的指令，确保压缩 LLM 保留 store 状态、scratch pad、stage 进度等关键信息。
+- Hook 通过 SessionManager 的 mutable 字段读取当前 stage 上下文，这些字段在 executeStage() 开始时同步更新，不存在竞态条件（同一事件循环）。
+- compact_boundary 消息被观测并推送为 SSE 事件，提供压缩可观测性。
+
+**源码锚点**
+- PreCompact hook 注册: `session-manager.ts:241`
+- compactHook 方法: `session-manager.ts:408`
+- compact_boundary 处理: `session-manager.ts:737`
+- Mutable 字段更新: `session-manager.ts:153-157`
+
 ---
 
 ### 2.5 Context Tier 与 Store 数据流
@@ -475,7 +513,8 @@ flowchart TB
 | Actor                    | `runAgent`                                | `runAgentSingleSession`                              |
 | 每 stage 是否新开 query  | 是                                         | **否**，共享一个 query                                 |
 | 对话历史                 | 不跨 stage                                 | 跨 stage 累积                                         |
-| Prompt cache 复用        | 每 stage 重新 build prefix                | prefix 一次构建，后续 stage 仅追加增量                 |
+| Prompt cache 复用        | 每 stage 重新 build prefix                | prefix 一次构建，后续 stage 追加 tier1Context + stagePrompt；auto-compact 后 PreCompact hook 保留 pipeline 关键上下文 |
+| 压缩策略                 | N/A（每 stage 独立 session）              | PreCompact hook 注入 pipeline 感知指令；tier1Context 每 stage 重新注入 |
 | 并行执行                 | XState parallel state 级并行（每 child 独立 query） | **单 session 内** agent 用 Agent tool 并发派发 child |
 | 失败重试粒度             | 单 stage 重试                              | **整组重试**（SDK resume 只能整 session 恢复；可通过 stageCheckpoints 做迂回，见 P2） |
 | Idle 超时                | N/A                                       | 默认 30s，超时后 `resume: sessionId` 恢复              |
@@ -543,436 +582,141 @@ flowchart LR
     E14[wf.cancelQuestions]
     E15[wf.worktreeCleanup]
   end
+  subgraph Compact[压缩观测]
+    E16[compact]
+  end
 ```
 
 源码: `apps/server/src/machine/events.ts:3-18` + `side-effects.ts` 的 handler。
 
 ---
 
-## 第四层：潜在问题提示
+## 第四层：已知问题与防御措施
 
-扫描源码时发现的问题，供后续演进参考。不是必须立刻修复的 bug，但值得记录。
+本节描述系统当前状态下的已知问题、已实施的防御措施，以及仍待解决的缺陷。与白皮书 §16 互补。
 
-### P1 "parallel group" 概念名与实现语义错位（**已澄清，非 bug**）
+### 已实施的防御措施
 
-**位置**: `apps/server/src/machine/state-builders.ts:1376-1388` + `apps/server/src/agent/session-manager.ts:711-760` (`executeParallelGroup`)
+| 类别 | 防御措施 | 源码位置 |
+|------|---------|---------|
+| 校验 | Zod schema 对 max_retries/max_turns/max_budget_usd 等数值字段强制 `.int().min()` 边界 | `lib/config/types.ts` |
+| 校验 | Condition stage 的 `when` 表达式在 pipeline 构建期通过 `expr-eval` 预校验 | `pipeline-builder.ts` |
+| 校验 | 并行组内 writes 冲突检测支持 object-form `WriteDeclaration`，允许 `append` 策略并发写入 | `pipeline-builder.ts:299-313` |
+| 校验 | 跨 stage 的 writes key 重复（replace 策略）在构建期发出 warn 日志 | `pipeline-builder.ts` |
+| 校验 | Fragment 去重采用 whitespace normalization + `Set<string>`，覆盖空白差异场景 | `prompt-builder.ts` |
+| 安全 | SSE 广播经 `redactSensitive()` 过滤 key pattern（api_key/token/secret）和 value pattern（sk-/ghp_/xox-/AKIA/eyJ） | `lib/redact.ts` |
+| 并发 | SessionManager registry 构造后 double-check，防御未来异步化的 TOCTOU 风险 | `session-manager-registry.ts` |
+| 执行限制 | Turn limit 两阶段强制：soft（注入停止消息）+ hard（maxTurns+5 后 `query.interrupt()`） | `session-manager.ts` |
+| 执行限制 | Turn budget 感知：stage 开始时若 SDK 剩余 turn 不足本 stage 配额，注入效率警告 | `session-manager.ts:buildStagePrompt` |
+| 成本 | Gemini cost 三级估算：CLI 报告 → per-model 聚合 → token 估算（Flash/Pro 分别定价） | `gemini-executor.ts:estimateGeminiCost` |
+| 生成安全 | Pipeline 生成结果包含 `hasStubs`/`stubStages` 字段，标记使用了 fallback stub 的 stage | `pipeline-generator.ts` |
+| 错误处理 | Git compensation 失败记录到 `context.compensationFailures` 数组，供重试逻辑和前端展示 | `helpers.ts` |
+| 可观测 | SSE DB 写入失败从静默 catch 改为 `taskLogger.warn` | `sse/manager.ts` |
+| Session | SessionManager 清理路径齐全：任务完成/出错（`side-effects.ts:111`）、取消（`:179`）、进程退出（`index.ts:173`） | 三处 |
 
-**真相**: 经 `session-manager.ts:711-760` 验证，single-session 模式下 child stages **确实是并发执行的**——agent 在单一 conversation 里用 Claude SDK 的 Agent tool 并发派发所有 child。dispatch prompt 明确写 "Launch ALL child stages simultaneously using the Agent tool"（L740）。
+### 并行组并发语义说明
 
-源码注释里的 "sequentially inside one conversation" 指的是**对话会话的连续性**（不跨 session），不是 child 执行串行。
+Single-session 模式下的 "parallel group" 并发有两个层次，容易混淆：
 
-**遗留问题**（文档层面）:
-- 两个"并发"层次容易混淆：
-  - Multi-session：每个 child 独立 SDK query，XState 层并发
-  - Single-session：一个 SDK query，agent 层用 Agent tool 并发
-- XState 视角能看到的只是 "runAgentSingleSession" 一个 invoke，中途的并发 sub-task 对外层不可见（cost/token 聚合按整组粒度）
+- **Multi-session**：每个 child 独立 SDK query，XState 层并发
+- **Single-session**：一个 SDK query，agent 层用 Agent tool 并发派发 child（`session-manager.ts` `executeParallelGroup`，dispatch prompt 写 "Launch ALL child stages simultaneously using the Agent tool"）
 
-**建议**: 保持代码不改，在文档（本文 3.2 + 2.3）已明确区分两种并发语义即可。
+XState 视角只看到 `runAgentSingleSession` 一个 invoke，child 的并发对外层不可见（cost/token 按整组粒度聚合）。
 
----
+### Single-session 整组重试限制
 
-### P2 整组重试：硬约束可通过 per-child checkpoint 绕过
+Claude Agent SDK 的 `resume: sessionId` 只能整个 session 完整恢复，无法截断到某个 child 边界。从 XState 层看，group 失败时只能整组重试。已有 `stageCheckpoints` 机制可作为未来 per-child 增量恢复的基础，但尚未实现。
 
-**位置**: `state-builders.ts:1382-1386`（约束声明）+ `stage-executor.ts:112-120`（既有 checkpoint 机制）
+### 仍待解决的问题
 
-**硬约束部分**: Claude Agent SDK 的 `resume: sessionId` 只能**整个 session 完整恢复**，无法截断到某个 child 边界（见 `session-manager.ts:302-309`）。所以从 **XState 层**看，group 整组重试是硬约束——不能把整组 state 回退到"只重跑第 3 个 child"。
+当前无重大未解决问题。以下为已知的设计取舍，暂不视为缺陷：
 
-**可绕过部分**（迂回方案）:
-项目**已有** `stageCheckpoints` 机制（`stage-executor.ts:112-120`），用于单 stage 中断恢复：
+- SDK 创建后 `maxTurns` 不可动态调整，turn budget 感知只能通过 prompt 层面的效率提示缓解，无法彻底消除饿死风险
+- Gemini cost 估算基于已知定价表，新模型上线时需手动更新 `GEMINI_PRICING`
+- Skeleton prompt 瘦身后仍约 ~3K tokens，进一步压缩需平衡生成质量
 
-```ts
-const checkpoint = context.stageCheckpoints?.[stageName];
-// 若有 checkpoint → 在下次 prompt 里注入 "Previous Progress (from interrupted execution)"
-```
+#### 已排除的误报
 
-把这个机制扩展到 single-session group 内部：
-
-| 步骤 | 实现点 | 成本估计 |
-|------|--------|---------|
-| 1. `executeParallelGroup` 里每个 child Agent 调用完成后，把其产出的 writes 单独存到 `stageCheckpoints[groupName].children[childName]` | `session-manager.ts:711-760` | 小 |
-| 2. Group 失败重跑时，构造 dispatch prompt 时**排除已完成的 child**（改写 prompt 里的 "## Child Stages" 只列未完成的） | 同文件，dispatch prompt 构造段 | 中 |
-| 3. 聚合输出时，把 checkpoint 里的 writes 和本次新产出的 writes 合并 | applyStoreUpdates 前 | 小 |
-
-**关键点**: 这个方案不依赖 SDK 的 session rewind，因为每次 group 重跑本来就是一次新的 Agent tool 派发；只是我们告诉父 agent"这些 child 已经做完了，只派发剩下的"。
-
-**风险**:
-- child 之间如果有隐式依赖（后一个 child 的 prompt 依赖前一个 child 的输出），漏掉前一个就不工作——需要 pipeline 设计者保证 child 间独立，否则回退到整组重跑
-- 若失败原因是 agent 自己的推理崩了（而不是某 child tool 调用失败），checkpoint 复用未必合适——需要区分失败类型
-
-**建议**: 实现上是可行的，**不需要 SDK 新能力**。估工作量 1-2 天。是否做取决于 single-session group 的典型 child 数量和成本——child 多、每 child 贵才值得。
-
----
-
-### P3 跨 group 的 writes 冲突检测缺失（**已修复** — Batch 1）
-
-**位置**: `pipeline-builder.ts:296-306`（现有检测）vs 缺失点
-
-**现状**:
-- Group **内部** 的 writes 冲突检测已存在（`pipeline-builder.ts:296-306`）：
-
-  ```ts
-  const groupWrites = new Map<string, string>();
-  for (const s of entry.parallel.stages) {
-    for (const w of writes ?? []) {
-      if (groupWrites.has(w)) errors.push(`... overlaps between ... and ...`);
-    }
-  }
-  ```
-
-- **跨 group / 跨 stage** 的 writes 冲突检测**不存在**。build 阶段不报错，runtime 通过 Map 覆盖语义隐式 last-wins。
-
-**影响**: 真并行（multi-session XState parallel）的两个 stage 同时 write 同一 key 时，静默覆盖，难以复现调试。串行 stage 同写一 key 一般是故意 overwrite（业务语义），不应一刀切报错。
-
-**推荐修法**（不是 "全部重复 key 都报错"）:
-
-在 pipeline-builder 追加一次**全局扫描**，但**只对真并行路径**报错：
-
-1. 构建 pipeline 的 DAG，识别两两**无序** 的 stage 对（无 transition 祖先关系）
-2. 对每对并行 stage：若 writes 交集非空 → 错误
-3. 串行 stage 间的重复 writes 允许（视为 overwrite 语义）
-
-可以直接在现有的 `pipeline-builder.ts` 校验循环里加一段扫描，不需要新模块。
-
-**估工**: 半天。价值明确（消除一类静默 bug），推荐做。
+| 原始报告 | 排除原因 |
+|---------|---------|
+| SSE 重连丢消息 | `sse/manager.ts:98-112` 重放最多 500 条 + 前端 `seenMessageIdsRef` 去重 |
+| Task list SSE 重连空档 | `task-list-broadcaster.ts:65-69` 每次新连接发 `task_list_init` 全量快照 |
+| Gemini JSON 解析脆弱 | `gemini-executor.ts:407` 有 catch-all fallback，未知消息类型静默跳过 |
+| Legacy snapshot 迁移 | `persistence.ts:92-94` 按 `version === SNAPSHOT_VERSION` 守门 |
 
 ---
 
-### P4 Fragment 去重靠字符串相等（**L1 已修复** — Batch 1；L2 待 Batch 2）
+### 已解决的关键问题
 
-**位置**: `prompt-builder.ts:145-150` 附近
+#### Session 历史膨胀（原 CRITICAL，已解决）
 
-**现状**: `!parts.includes(content)` 只挡**完全相同**的字符串；空白、标点、大小写、同义改写都能绕过。
+Single-session pipeline 中 SDK 对话历史跨 stage 无限增长。通过三重修复解决：
 
-**重新评估（你的反馈：fragment 一般由 AI 生成）**:
-- 如果 fragment 由 AI 生成，**实质重复率会高**：同一知识点在不同 pipeline 里让不同模型写出来，语义相同但字符不同——现在的去重形同虚设
-- 注入 prompt 的不仅是 token 成本问题，还有**互相矛盾**的风险（两份同题 fragment 措辞相反时，agent 行为不稳定）
-
-**推荐方案（分层加固）**:
-
-| 层级 | 做法 | 成本 |
-|------|------|------|
-| L1（最小） | `content.trim()` + 折叠多空白后再 `includes` | 十几行 |
-| L2（语义） | 对每个 fragment 生成稳定 ID（例如 sha256 of normalized content，或者人工 tag）—— AI 生成器产出时带 ID，组装时按 ID 去重 | 需要修改 fragment schema + 生成器 |
-| L3（语义层） | 在组装时计算 fragment 两两的 embedding 相似度，>阈值的保留优先级最高的一份 | 引入 embedding 依赖，最重 |
-
-**建议**:
-- 既然你说 fragment 基本 AI 生成，**至少上 L1**（零成本），并评估 L2（AI 生成器额外输出一个 `fragment_id`，本地以 id 去重）
-- L3 过重，除非真出现 fragment 冲突的可观测案例再上
-
-**估工**: L1 半天；L2 一天；L3 两天。推荐 L1 立刻做，L2 纳入下个迭代。
-
----
-
-### P5 Explore 报告误判的"session 泄漏"（已核实无此风险）
-
-为避免误导后来者，显式记录：Explore 报告第 11 条曾标记"未看到 `closeAllSessionManagers()` 显式调用点"，**核实结论是该风险不成立**。实际三条清理路径齐全：
-- `side-effects.ts:111` — 任务完成/出错
-- `side-effects.ts:179` — 任务取消
-- `index.ts:173-174` — 进程退出
-
----
-
-### Batch 1 Hardening (2026-04-17)
-
-Full audit across error handling (A), concurrency (B), security (C), and validation (D). Items reviewed, triaged, and resolved below.
-
-#### Resolved in Batch 1
-
-| ID | Category | Finding | Resolution | Commit |
-|----|----------|---------|------------|--------|
-| D3 | Validation | Numeric schema fields accept negative/float values | Added `.int().min()` bounds to max_retries, max_attempts, max_turns, max_budget_usd, maxTurns | `bc695e2` |
-| C4 | Security | YAML parse may execute custom tags | No change needed — `yaml` v2.x defaults to safe mode (standard tags only) | N/A |
-| P4 L1 | Validation | Fragment dedup uses exact string match, fails on whitespace variance | Normalize whitespace before comparison via `Set<string>` | `bc695e2` |
-| D2 | Validation | Invalid `when` expressions only caught at runtime | Pre-validate via `expr-eval` parse at build time in pipeline-builder | `bc695e2` |
-| P3 | Validation | Parallel group writes conflict detection ignores object-form WriteDeclarations | Enhanced to extract `.key` from objects; concurrent `append` strategy allowed | `bc695e2` |
-| B3 | Observability | SSE DB write failures silently swallowed | Added `taskLogger.warn` on catch | `bc695e2` |
-
-#### Reviewed and Dismissed
-
-| ID | Category | Agent Claim | Actual Finding | Verdict |
-|----|----------|-------------|----------------|---------|
-| B1 | Concurrency | Concurrent trigger_task with same taskId overwrites actor | `trigger_task` generates UUID internally; external callers cannot supply taskId | Dismissed |
-| B5 | Concurrency | Duplicate CONFIRM causes idempotency failure | XState sendEvent is serialized; second CONFIRM hits non-matching state and is correctly ignored | Dismissed |
-| B3 (original) | Concurrency | Async DB insert loses messages on crash | `.run()` is synchronous in node:sqlite + WAL mode; no async data loss risk | Reclassified to observability (silent catch) |
-
-#### Resolved in Batch 2
-
-| ID | Category | Finding | Resolution | Commit |
-|----|----------|---------|------------|--------|
-| B2 | Concurrency | SessionManager registry TOCTOU race | Added defensive double-check after construction; currently safe in sync Node.js but guards future async | `1f53425` |
-| A1 | Error Handling | Compensation failure not surfaced to context/UI | Record failures in `context.compensationFailures` array for retry logic and frontend visibility | `1f53425` |
-
-#### Reviewed and Closed in Batch 2
-
-| ID | Category | Original Concern | Actual Finding | Verdict |
-|----|----------|-----------------|----------------|---------|
-| B4 | Concurrency | Parallel stage merge not atomic | XState `assign()` + `parallelStagedWrites` staging buffer provides atomic merge; children never write to store directly | No fix needed |
-| P4 L2 | Validation | Fragment ID-based dedup | L1 whitespace normalization already covers assembly-side dedup; generator-side fragment_id is feature work beyond hardening scope | Deferred to feature backlog |
-
-#### Resolved in Batch 3
-
-| ID | Category | Finding | Resolution | Commit |
-|----|----------|---------|------------|--------|
-| C5 | Security | SSE broadcasts raw tool inputs and store data with no filtering | Added `redactSensitive()` utility covering key patterns (api_key, token, secret) and value patterns (sk-, ghp_, xox-, AKIA, eyJ); applied to agent_tool_use, task list, and task detail endpoints | `9d2c55f` |
-
-#### Reviewed and Closed in Batch 3
-
-| ID | Category | Original Concern | Actual Finding | Verdict |
-|----|----------|-----------------|----------------|---------|
-| A2 | Error Handling | Store/sessionId consistency gap | Already covered by existing "Bug 2" tests and defensive guards in state-builders.ts | No fix needed |
-| A4 | Error Handling | Verify retry re-runs entire stage instead of just verification | Intentional design — verify failure means agent output is flawed, re-running only verification would be pointless | Correct behavior, documented |
-
----
-
-### Comprehensive Review (2026-04-18)
-
-Full architectural audit across execution quality, frontend UX, multi-engine reliability, pipeline generation, and data persistence. Each issue independently verified against source code.
-
-#### Issue Map (verified status)
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    VERIFIED ISSUE MAP                        │
-├────────────────┬────────────┬───────────────────────────────┤
-│ Category       │ Severity   │ Issue                         │
-├────────────────┼────────────┼───────────────────────────────┤
-│ Exec Quality   │ ■■■■ CRIT  │ R1  Session history bloat     │
-│ Exec Quality   │ ■■■  HIGH  │ R2  Shared turn budget        │
-│ Exec Quality   │ ■■■  HIGH  │ R3  Soft turn limit           │
-│ Exec Quality   │ ■■   MED   │ R4  Stale Tier1 on stage N+1 │
-│ Multi-Engine   │ ■■   MED   │ R5  Gemini/Codex cost = 0    │
-│ Pipeline Gen   │ ■■   MED   │ R6  Fallback stubs crash     │
-│ Pipeline Gen   │ ■■   MED   │ R7  Skeleton prompt bloat    │
-│ Dead Code      │ ■    LOW   │ R8  .__summary dead path     │
-├────────────────┼────────────┼───────────────────────────────┤
-│ DISMISSED      │            │                               │
-│ (was #5)       │ ——         │ SSE msg gap: has replay+dedup │
-│ (was #6)       │ ——         │ Task list SSE: has init event │
-│ (was #8)       │ ——         │ Gemini JSON fragile: fallback │
-│ (was #11)      │ ——         │ Legacy snapshot: version gate │
-└────────────────┴────────────┴───────────────────────────────┘
-```
-
----
-
-#### R1: Multi-Stage Session History Bloat (CRITICAL)
-
-**What**: In single-session pipelines, the Claude SDK session accumulates ALL prior conversation turns across every stage. A 5-stage pipeline with 20 turns each = 100 turns of history in the SDK context. Later stages drown in irrelevant old messages.
-
-**Where**: `session-manager.ts:265, 302-329`
-
-**Why it matters**: (1) Token waste — later stages pay for all prior turns in their context window. (2) Quality degradation — the agent's attention is diluted by irrelevant history from earlier stages. (3) Cost — 100-turn sessions cost 5-10x more than necessary for the final stage.
-
-**Mechanism**:
+1. **PreCompact hook** — `createQuery()` 注册 `PreCompact` hook，在 SDK auto-compact 触发时（~167k tokens）注入 pipeline 感知指令，保留 store 键值对、scratch pad、已完成 stage 列表、当前 stage 名称
+2. **tier1Context 重新注入** — `buildStagePrompt()` 对每个 stage 都注入 tier1Context，auto-compact 摘要化旧 tier1 后仍保证 agent 拥有完整任务上下文
+3. **Store MCP 无条件刷新** — `switchStageConfig()` 每次 stage 切换无条件调用 `setMcpServers()`，确保 `__store__` MCP 反映最新 store/scratchPad 数据
 
 ```
 ┌────────────────────────────────────────────────────────────┐
 │              SDK Session (single session mode)              │
 │                                                            │
-│  Stage A: 20 turns ─────────────────────┐                 │
-│  Stage B: 20 turns ──────────┐          │                 │
-│  Stage C: 20 turns ───┐      │          │                 │
-│                        ▼      ▼          ▼                 │
-│  Stage D prompt   = [A history + B history + C history     │
-│                      + D tier1 + D stagePrompt]            │
+│  Stage A: 20 turns ──┐                                    │
+│  Stage B: 20 turns ──┤  SDK auto-compact fires at ~167k   │
+│                       ▼                                    │
+│  PreCompact hook injects:                                  │
+│    - store.* key-value snapshot                            │
+│    - scratchPad notes (last 20)                            │
+│    - completed stage list                                  │
+│    - current stage name                                    │
+│                       ▼                                    │
+│  Stage C prompt = [compacted history (pipeline-aware)      │
+│                    + fresh tier1Context + stagePrompt]      │
 │                                                            │
-│  SDK maxTurns = stageMaxTurns * 3 (cumulative ceiling)     │
-│  No compaction. No summarization. No history pruning.      │
+│  compact_boundary -> SSE "compact" event for observability │
 └────────────────────────────────────────────────────────────┘
 ```
 
-**How to fix**: At stage boundary (`switchStageConfig`), inject a compaction message that summarizes prior turns, or use the SDK's `resume` with a fresh session per stage while passing a structured context handoff. Alternative: set per-stage session isolation as default for pipelines with >3 stages.
+**源码**: `session-manager.ts` — hook 注册 `:241`, compactHook `:408`, compact_boundary `:737`, mutable 字段 `:133-137`
 
-**Estimated effort**: 2-3 days (requires SDK API investigation for compaction support).
+#### Tier1 上下文丢失（原 MEDIUM，已解决）
 
----
+`buildStagePrompt()` 现无条件注入 `tier1Context`，每 stage 额外 ~2-5k tokens，消除了 agent 需要 2-4 轮 MCP 调用才能获取 store 数据的问题。
 
-#### R2: Shared Turn Budget Starves Late Stages (HIGH)
+**源码**: `session-manager.ts:buildStagePrompt`
 
-**What**: The SDK-level `maxTurns` is set to `stageMaxTurns * 3` as a cumulative ceiling for the entire session. If Stage A consumes 60 of 90 available turns, Stage B only gets 30 — but Stage B's config still says `maxTurns: 30` and has no visibility into remaining budget.
+#### Turn budget 饿死 + 软限制（原 HIGH，已解决）
 
-**Where**: `session-manager.ts:265`
+- **Hard turn limit**: 达到 `maxTurns` 后注入 soft stop 消息，再过 5 个 turn 仍未停止则 `query.interrupt()` 强制截断
+- **Budget 感知**: `buildStagePrompt()` 检测 SDK 剩余 turn 数，不足时注入效率警告
+- **总 turn 追踪**: 新增 `totalTurnCount` 跨 stage 累计
 
-**Why it matters**: In practice, an early "analyze" stage might use 40+ turns on a complex codebase, leaving a critical "implement" stage with insufficient turns. The SDK hard-cuts the session when the ceiling is hit — no graceful output, just termination.
+**源码**: `session-manager.ts` — hard limit、budget 感知均在 `consumeUntilResult` 和 `buildStagePrompt` 中
 
-**Mechanism**:
+#### Gemini cost 报 $0（原 MEDIUM，已解决）
 
-```
-SDK ceiling = 30 * 3 = 90 turns
+`estimateGeminiCost()` 三级策略：优先使用 CLI 直接报告的 `stats.cost_usd`，其次聚合 `stats.models[*].cost_usd`，最后基于 token 数按 Flash/Pro 分别定价估算。Codex 已有类似机制。
 
-Stage A (maxTurns=30):  ████████████████████████░░░░░░  used 45
-Stage B (maxTurns=30):  ██████████████████████████████  used 30
-Stage C (maxTurns=30):  ███████████████·                used 15 ← SDK HARD CUT at 90
-                                       ↑
-                                 Stage C thinks it has 30
-                                 but only 15 remain
-```
+**源码**: `gemini-executor.ts:estimateGeminiCost`
 
-**How to fix**: Track cumulative turns consumed across stages. Before each stage, compute `remainingBudget = sdkMaxTurns - consumedTurns`. If remaining < stage's declared maxTurns, either (a) log a warning and cap, or (b) create a fresh SDK session for the stage.
+#### 生成 stub 运行时崩溃（原 MEDIUM，已解决）
 
-**Estimated effort**: 1 day (turn counter already exists as `stageTurnCount`; needs a cumulative counterpart).
+`GenerateResult` 新增 `hasStubs: boolean` 和 `stubStages: string[]` 字段。Fallback script 错误消息改为 `[STUB]` 前缀，明确提示需手动编辑。
 
----
+**源码**: `pipeline-generator.ts`
 
-#### R3: Turn Limit Is Soft — Agent Can Ignore It (HIGH)
+#### Skeleton prompt 膨胀（原 MEDIUM，已解决）
 
-**What**: When `maxTurns` per stage is reached, only a text message is injected: "Stop working and output your current progress as JSON immediately." The agent can continue working. There is no hard enforcement at the per-stage level.
+移除一个冗余示例 pipeline（保留一个），压缩 advanced stage runtimes 接口定义为单行说明。Prompt 体积从 ~4K tokens 降至 ~3K tokens。
 
-**Where**: `session-manager.ts:686-698`
+**源码**: `pipeline-generator.ts:buildSkeletonPrompt`
 
-**Why it matters**: Cost unpredictability. A stage configured for `maxTurns: 30` might actually run 40+ turns. The stage timeout (`stageTimeoutSec`, default 1800s) is the real hard limit, but it's time-based, not turn-based.
+#### `.__summary` 死代码（原 LOW，已解决）
 
-**Mechanism**:
+移除 `context-builder.ts` 中 `mechanicalSummaryKey` 查找和 `store[semanticSummaryKey]` fallback，移除 `actor-registry.ts` 中 `.__summary`/`.__semantic_summary` 继承代码。语义摘要现仅通过 `getCachedSummary()` 内存缓存获取。
 
-```
-Turn 1..29:  Normal execution
-Turn 30:     Soft message injected: "STOP and output JSON NOW"
-Turn 31..?:  Agent may continue (no enforcement)
-Turn ???:    Stage timeout (30min) → hard kill
+#### 跨 stage writes 冲突（原 LOW，已解决）
 
-  ┌─── Soft limit (message only) ─── Hard limit (time only) ───┐
-  │        maxTurns                       stageTimeoutSec       │
-  │           ↓                                ↓                │
-  0────────30────────────────────────────────1800s──────────────→
-            ↑                                  ↑
-      "please stop"                    SIGINT → SIGKILL
-      (may be ignored)                 (guaranteed)
-```
-
-**How to fix**: After the soft message, if the agent produces N more turns without outputting result JSON, force-close the session via `close("hardTimeout")`. Suggested N = 3 (give agent grace to wrap up tool calls).
-
-**Estimated effort**: Half day (add counter after `turnLimitNotified`, call `close()` when grace exceeded).
-
----
-
-#### R4: Tier1 Context Not Re-Injected for Stage N+1 (MEDIUM)
-
-**What**: Only the first stage in a session receives `tier1Context` (structured store reads). Subsequent stages receive only `stagePrompt` as the user message. The agent must use `get_store_value()` MCP calls to access store data — extra round-trips that waste turns and tokens.
-
-**Where**: `session-manager.ts:400-414`
-
-```typescript
-if (isFirst) {
-  // Full: tier1Context + stagePrompt
-  return parts.join("\n\n---\n\n");
-}
-// Incremental: ONLY stagePrompt — no fresh tier1 data
-return params.stagePrompt;
-```
-
-**Why it matters**: Stage B reads store keys written by Stage A. But Stage B's user message doesn't include those values — the agent must discover them via MCP tool calls. This burns 2-4 extra turns per stage and creates a poor experience where the agent asks "let me check the store" before doing real work.
-
-**How to fix**: Always inject tier1Context when the store has changed since the last injection. Use the diff-detection mechanism already in `context-builder.ts:114-123` to only inject changed keys.
-
-**Estimated effort**: 1 day (modify `buildStagePrompt` to accept and inject fresh tier1 when store changed).
-
----
-
-#### R5: Gemini/Codex Cost Tracking Reports $0.00 (MEDIUM)
-
-**What**: Gemini CLI and Codex CLI may not report cost in their JSON output. The code has a `// TODO` comment acknowledging this. All Gemini/Codex stages show `costUsd: 0` in the UI regardless of actual API spend.
-
-**Where**:
-- `gemini-executor.ts:375` — `total_cost_usd: raw.stats?.cost_usd ?? 0 // TODO: Gemini CLI may not report cost`
-- `codex-executor.ts:158` — `if (mapped.total_cost_usd) totalCost += mapped.total_cost_usd`
-- `stream-processor.ts:120` — `costUsd = (r.total_cost_usd as number) ?? 0`
-
-**Why it matters**: Users cannot track actual spend on multi-engine pipelines. A pipeline using Gemini for 3 stages will show $0.00 total cost for those stages, making budget management impossible.
-
-**Mechanism**:
-
-```
-                         Cost Pipeline
-Claude stage ──→ SDK reports cost ──→ costUsd = $2.30  ✓
-Gemini stage ──→ CLI output ──→ stats.cost_usd = undefined ──→ costUsd = $0.00  ✗
-Codex stage  ──→ CLI output ──→ total_cost_usd = undefined ──→ costUsd = $0.00  ✗
-                                                                        ↓
-                                                              User sees: "Total: $2.30"
-                                                              Reality:   "Total: $8.50"
-```
-
-**How to fix**: Estimate cost from token counts when CLI doesn't report cost. `tokenUsage.inputTokens` and `outputTokens` are available from Gemini stats — multiply by known per-token pricing. Add a `costEstimated: boolean` flag so UI can show "~$X.XX (estimated)".
-
-**Estimated effort**: 1 day (pricing table + estimation logic + UI indicator).
-
----
-
-#### R6: Pipeline Generation Fallback Stubs Cause Runtime Crash (MEDIUM)
-
-**What**: When stage prompt or script generation fails, fallback stubs are used:
-- Prompt fallback: `"You are an AI agent... implement required logic"` (generic, no context)
-- Script fallback: `throw new Error("Script 'X' not yet implemented")` (immediate crash)
-
-The pipeline reports as "successfully generated" with warnings, but contains ticking time bombs.
-
-**Where**: `pipeline-generator.ts:463-477`
-
-**Why it matters**: User creates a pipeline, sees "Generated successfully (2 warnings)". Runs it. Stage 3 immediately crashes with "not yet implemented". No way to know which stage had the stub without reading warnings.
-
-**Mechanism**:
-
-```
-User: "Create a pipeline for code review"
-                    │
-        ┌───────────┴───────────┐
-        ▼                       ▼
-  Stage prompt gen OK     Stage prompt gen FAILED
-  "Review code for..."   "You are an AI agent..."  ← useless
-        │                       │
-        ▼                       ▼
-  Script gen OK           Script gen FAILED
-  "async function..."    "throw new Error(...)"    ← crash
-        │                       │
-        ▼                       ▼
-  Pipeline "generated"    Warnings logged (easy to miss)
-  with hidden stubs       Runtime: BOOM 💥
-```
-
-**How to fix**: Two options: (1) Fail the generation entirely if any stage fails — return error, not warnings. (2) If partial success is desired, mark failed stages clearly in the YAML with `# GENERATION FAILED — manual edit required` and set `enabled: false` so they're skipped at runtime.
-
-**Estimated effort**: Half day (option 1 is simpler and safer).
-
----
-
-#### R7: Skeleton Prompt Token Bloat ~6K Tokens (MEDIUM)
-
-**What**: Every pipeline generation call sends a ~6000-token skeleton prompt containing: full TypeScript interface definitions (~1000 tokens), two complete example pipelines (~1000 tokens each), full MCP/script/skill capability tables (~500+ tokens), verbose generation rules (~1000 tokens). Most of this is redundant across calls.
-
-**Where**: `pipeline-generator.ts:buildSkeletonPrompt` (lines 611-901)
-
-**Why it matters**: At ~$3/1M input tokens (Claude pricing), each generation costs ~$0.018 in prompt alone. Over 100 generations/day = $1.80/day just in prompt overhead. More importantly, the bloated prompt competes with the user's actual request for context window space.
-
-**How to fix**: (1) Conditionally include capability tables only when relevant MCPs/skills were discovered. (2) Replace two full example pipelines with one minimal 3-stage example. (3) Collapse TypeScript interfaces into a JSON schema snippet. Target: ~2000 tokens.
-
-**Estimated effort**: 1 day (prompt editing + regression testing on generation quality).
-
----
-
-#### R8: `.__summary` / `.__semantic_summary` Dead Code Paths (LOW)
-
-**What**: After the store value in-place replacement fix (commit `7b44eec`), large store values are replaced with summary strings directly on the key — no more `field.__summary` sibling key. But `context-builder.ts` still checks for `mechanicalSummaryKey` (`field.__summary`) which will never exist. Similarly, `actor-registry.ts:226-227` still inherits `field.__summary` keys across tasks.
-
-**Where**:
-- `context-builder.ts:137, 142, 168` — dead lookup for `.__summary`
-- `actor-registry.ts:226-227` — dead inheritance for `.__summary`
-- `context-builder.test.ts:432` — test for dead path
-
-**Why it matters**: Not a correctness bug — the dead paths are safely skipped. But they mislead future developers into thinking `.__summary` keys exist in the store, and the test creates false confidence in a non-functional code path.
-
-**How to fix**: Remove `mechanicalSummaryKey` lookups from context-builder, remove `.__summary` inheritance from actor-registry, update tests.
-
-**Estimated effort**: 1 hour.
-
----
-
-#### Dismissed Findings (verified as non-issues)
-
-| Original Claim | Verification Result | Why Dismissed |
-|----------------|--------------------|----|
-| SSE reconnect loses streaming messages (#5) | `sse/manager.ts:98-112` replays up to 500 messages from memory/SQLite on reconnect. Frontend `seenMessageIdsRef` (task page line 86, 350-356) deduplicates replayed messages. | Full replay + dedup mechanism exists |
-| Task list SSE reconnect gap (#6) | `task-list-broadcaster.ts:65-69` sends `task_list_init` with full snapshot on every new connection. 2s reconnect window is covered by full state rebuild. | Init event rebuilds complete state |
-| Gemini JSON parsing fragile (#8) | `gemini-executor.ts:407` has catch-all fallback returning empty content. Unknown message types are silently skipped — not crashed. The caller (stream-processor) handles missing result gracefully. | Graceful degradation exists |
-| Legacy snapshot migration (#11) | `persistence.ts:92-94` gates on `version === SNAPSHOT_VERSION` and returns `undefined` for mismatches. Legacy snapshots log warning but load for backward compat. Future version bumps will correctly reject old snapshots. | Version check already exists |
+`pipeline-builder.ts` 构建期新增全局 writes key 追踪。多个 stage 以 replace 策略写同一 key 时发出 warn 日志，帮助 pipeline 作者发现无意覆盖。
 
 ---
 
@@ -993,7 +737,7 @@ User: "Create a pipeline for code review"
 | 3.2 Single vs Multi Session       | （白皮书未覆盖，本文新增）                       |
 | 3.3 Actor 注册表                  | §4.4 Actor 注册表                               |
 | 3.4 SSE 事件                      | §12 可观测性与实时事件流                         |
-| 第四层 潜在问题                   | §16 已知缺陷与客观评估（互补）                    |
+| 第四层 已知问题与防御措施           | §16 已知缺陷与客观评估（互补）                    |
 
 ---
 

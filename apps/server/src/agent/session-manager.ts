@@ -115,6 +115,7 @@ export class SessionManager {
   private cumulativeCacheReadTokens = 0;
   private cumulativeCacheCreationTokens = 0;
   private stageTurnCount = 0;
+  private totalTurnCount = 0;
   private turnLimitNotified = false;
   private prevModel: string | undefined;
   private prevPermissionMode: string | undefined;
@@ -465,11 +466,21 @@ export class SessionManager {
   // -----------------------------------------------------------------------
 
   private buildStagePrompt(params: ExecuteStageParams): string {
-    // Always inject tier1Context — after auto-compact, old tier1 is summarized
-    // away. Re-injecting ensures the agent always has full task context.
     const parts: string[] = [];
     if (params.tier1Context) parts.push(params.tier1Context);
     if (params.stagePrompt) parts.push(params.stagePrompt);
+
+    // Warn agent when cumulative turn usage is eating into SDK ceiling
+    const sdkMaxTurns = params.stageConfig.maxTurns * 3;
+    const remaining = sdkMaxTurns - this.totalTurnCount;
+    if (remaining < params.stageConfig.maxTurns) {
+      this.log.warn(
+        { remaining, sdkMax: sdkMaxTurns, totalUsed: this.totalTurnCount, stage: params.stageName },
+        "Turn budget tight — injecting efficiency warning",
+      );
+      parts.push(`\n> **Turn budget warning**: Only ${remaining} turns remain in this session (out of ${sdkMaxTurns} total). Be efficient and complete your work within ${Math.min(remaining, params.stageConfig.maxTurns)} turns.`);
+    }
+
     return parts.join("\n\n---\n\n");
   }
 
@@ -486,6 +497,7 @@ export class SessionManager {
 
     this.stageTurnCount = 0;
     this.turnLimitNotified = false;
+    const HARD_TURN_GRACE = 5;
     let resultText = "";
     const startTime = Date.now();
     const redFlagAccumulator = new RedFlagAccumulator();
@@ -643,6 +655,7 @@ export class SessionManager {
                     }),
                   );
                   this.stageTurnCount++;
+                  this.totalTurnCount++;
                   sseManager.pushMessage(
                     params.taskId,
                     createSSEMessage(params.taskId, "agent_progress", {
@@ -763,13 +776,25 @@ export class SessionManager {
           !this.turnLimitNotified &&
           this.stageTurnCount >= params.stageConfig.maxTurns
         ) {
-          // Queue may be closed if close() raced with us — tryEnqueue avoids throw
           this.inputQueue?.tryEnqueue(
             buildUserMessage(
               "You have exceeded the turn limit for this stage. Stop working and output your current progress as the required JSON immediately.",
             ),
           );
           this.turnLimitNotified = true;
+        }
+
+        // Hard turn limit — interrupt after grace window past soft limit
+        if (
+          this.turnLimitNotified &&
+          this.stageTurnCount >= params.stageConfig.maxTurns + HARD_TURN_GRACE
+        ) {
+          this.log.warn(
+            { stage: params.stageName, turns: this.stageTurnCount, max: params.stageConfig.maxTurns, grace: HARD_TURN_GRACE },
+            "Hard turn limit reached — interrupting agent",
+          );
+          try { this.query?.interrupt(); } catch { /* best-effort */ }
+          this.close("hardTimeout");
         }
       }
     } finally {
