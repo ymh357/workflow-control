@@ -104,6 +104,32 @@ This means:
   Fix the underlying issue instead.
 - Do not add tests to frozen modules (see §Frozen areas).
 
+## Investigate the codebase before proposing plans
+
+Before writing any design doc, evaluation, or plan that claims "X is
+missing / broken / needs to be built", **read the relevant source files
+first** and confirm the claim against actual code. The repo has evolved
+across sessions; prior-session memory is stale. Specifically:
+
+- Do not cite "what the system does" from a summary or an older design
+  doc. Open the file and read the current implementation.
+- When proposing to add a module, search for an existing module with
+  that responsibility (`Grep`/`Glob` across `apps/server/src/**`) before
+  drafting the design. Many responsibilities are already implemented
+  under different names.
+- When comparing to industry frameworks (LangGraph, Temporal, Airflow,
+  etc.), cite the specific file+line in *this* repo that exhibits the
+  pattern being compared — never assert by analogy without a code
+  reference.
+- When a doc claims a metric ("saves X% tokens", "reduces Y ms"), the
+  number must come from a measurement or explicit estimation range, not
+  from intuition. If no baseline exists, say so and propose measuring
+  before claiming.
+
+Evaluations that assume the codebase state without verification have
+historically produced fabricated gaps and wasted review cycles. Spend
+the time up front.
+
 ## When in doubt
 
 Ask. The repo author is also the primary user and reviews changes that

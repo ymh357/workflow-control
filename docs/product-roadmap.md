@@ -108,33 +108,31 @@
 
 ---
 
-## 5. 场景判断机制
+## 5. 场景判断机制 ~~（作废，2026-04-19 D5 决策）~~
 
-### 5.1 触发方式
+> **本节整体作废**。triage-as-system-router 方案不再实施——pipeline-generator
+> 在 task 创建路径上已覆盖"这个 task 该走哪个 pipeline"的职责，多套一层
+> llm_decision 只增成本不增价值。保留本节文字作为历史记录，不作为实施目标。
+> 详见 Phase 0 补做议题的 0.6 终判。
 
-- 系统强制要求每个 pipeline 的第一个 stage 是 `triage` 类型
-- 允许 pipeline 在顶层声明 `skip_triage: true` 显式豁免（`pipeline-generator`、`task_triage` 自身等需豁免）
-- `pipeline-validator` 在构建期检查：未声明 skip_triage 的 pipeline 第一个 stage 必须是 triage，否则构建失败
+### ~~5.1 触发方式~~
 
-### 5.2 载体
+- ~~系统强制要求每个 pipeline 的第一个 stage 是 `triage` 类型~~
+- ~~允许 pipeline 在顶层声明 `skip_triage: true` 显式豁免~~
+- ~~`pipeline-validator` 在构建期检查：未声明 skip_triage 的 pipeline 第一个 stage 必须是 triage~~
 
-- 新增内置 pipeline `task_triage`
-- Server 在 task 路由时先跑 task_triage，根据结果决定：
-  - fit → 派发到目标 pipeline
-  - not fit → early exit，输出 "Claude Code 指令建议"
-  - fit-with-different-pipeline → 推荐切换（具体机制 B 系列解决）
+### ~~5.2 载体~~
 
-### 5.3 实现
+- ~~新增内置 pipeline `task_triage`~~
+- ~~Server 在 task 路由时先跑 task_triage~~
 
-- 底层机制：`llm_decision` + Sonnet 中等
-- 输入：用户的 task 描述 + 目标 pipeline 名称（可选）
-- 输出：`fit` | `not_fit_recommend_claude_code` | `not_fit_recommend_other_pipeline`
-- 判断结果计入执行记录，作为 task 的第 0 个 stage
+### ~~5.3 实现~~
 
-### 5.4 豁免
+- ~~底层机制：`llm_decision` + Sonnet 中等~~
 
-- `skip_triage: true` 的 pipeline：跳过 triage，直接进入第一个业务 stage
-- task_triage 自身、pipeline-generator 等内置工具类 pipeline 默认豁免
+### ~~5.4 豁免~~
+
+- ~~`skip_triage: true` 的 pipeline：跳过 triage~~
 
 ---
 
@@ -391,18 +389,19 @@
 
 **Phase 0 里程碑**：仓库瘦 30%+，~~3 个保留 pipeline 都带 triage（或显式豁免）~~，地基干净。
 
-#### Phase 0 补做议题（2026-04-18 决策）
+#### Phase 0 补做议题（2026-04-18 决策 → 2026-04-19 D5 终判）
 
 在推进 Tier 1 补丁时发现 Phase 0.6 从未落地。经 Review B → Tier 1 评估后决定：
 
 - **0.4 补做**：实现 / 移植 `tech-research` 和 `web3-tech-research` 两个内置 pipeline。没有多个 pipeline，系统级路由无处可路由。
-- **0.6 重定义**：原"每个 pipeline 第一个 stage 强制 triage + `skip_triage` 豁免"被重定义为**系统级路由**。task 创建前跑一次 llm_decision，决定 "fit 走某 pipeline" / "not_fit 建议 Claude Code" / "fit with different pipeline"。AI 写的 pipeline **不负责** triage 逻辑。`skip_triage` 字段废除。
+- **0.6 终判（D5，2026-04-19）**：**永不实施**。pipeline-generator 是本项目**唯一**的路由层，与 §1.1 "AI 写 DSL，人不写" 的定位对齐。让系统再套一层 llm_decision 去判断 pipeline 适配度，只会与 pipeline-generator 的生成逻辑形成职责重复；而且 "task 不 fit 任何已有 pipeline" 的正确响应不是 "建议 Claude Code"，而是**让 pipeline-generator 现场生成一个新 pipeline**。triage-as-system-router 从路线图移除。
 
-**为什么重定义**：AI 写的 pipeline 要操心 triage criteria 会形成循环依赖（pipeline-generator 生成的 pipeline 自己决定自己合不合适）。系统级路由把这个责任从 per-pipeline 提到 server 路由层，AI 写 pipeline 时专注业务。
+**为什么不做**：
+1. 单用户本地工具不需要 gatekeeper——用户每次起 task 时自己知道该跑哪个 pipeline，或该让 pipeline-generator 生成新的。
+2. 多一层 llm_decision 多一次网络往返 + 多一份 prompt 要维护，ROI 不成立。
+3. 原议题解决的 "不同 task 配不同 pipeline" 需求，已由 pipeline-generator 在 task 创建路径上解决。
 
-**前置依赖**：0.4 必须先补做（至少有 2 个业务 pipeline 可供路由），否则系统级路由退化为 yes/no 开关，没价值。
-
-**触发条件**：Tier 1 补丁完成后，你决定要做 A3 或继续观察时，再开 0.4 + 0.6 补做。**Tier 1 阶段不做这两项**。
+**0.4 仍保留**：有多个内置 pipeline 供 pipeline-generator 参考 / 用户显式挑选仍有价值，但作为独立议题推进，不再绑在 triage 框架下。
 
 ---
 
@@ -654,13 +653,10 @@
 - B21 Audit：`hot_update_events` 表
 - B22 聚合：识别 pipeline 设计问题
 
-### 场景判断
+### 场景判断 ~~（作废，D5）~~
 
-- 触发：每个 pipeline 第一个 stage 强制 triage，可 skip_triage 豁免
-- 载体：新增 task_triage 内置 pipeline
-- 模型：llm_decision + Sonnet 中等
-- 不 fit 行为：early exit + Claude Code 指令建议
-- 记录：triage 决策计入执行记录作为第 0 stage
+- 不再实施系统级 triage。pipeline-generator 是唯一路由层。
+- 见 §5 与 Phase 0 补做议题 0.6 终判。
 
 ### 开发原则
 

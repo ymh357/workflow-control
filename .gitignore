@@ -37,6 +37,9 @@ apps/server/src/system-prompts/
 .claude/worktrees/
 .claude/full-review-report.md
 
+# Per-app local Claude settings (user-specific hooks, not shared)
+apps/*/.claude/
+
 # Playwright generated output
 apps/web/e2e/test-results/
 apps/web/playwright-report/
