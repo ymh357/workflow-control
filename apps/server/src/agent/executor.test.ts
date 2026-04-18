@@ -52,6 +52,31 @@ vi.mock("./context-builder.js", () => ({
   buildTier1Context: vi.fn(() => "tier1"),
 }));
 
+// Phase 1 / A1: mock the writer module so we can assert the runAgent wiring
+// without touching SQLite. createExecutionRecordWriter returns a stub that
+// records every method call.
+const writerStub = vi.hoisted(() => ({
+  attemptId: "att-test",
+  isNoop: false,
+  appendToolCall: vi.fn(),
+  completeToolCall: vi.fn(),
+  appendAgentStream: vi.fn(),
+  recordPrecompact: vi.fn(),
+  updateCost: vi.fn(),
+  updateSessionId: vi.fn(),
+  heartbeat: vi.fn(),
+  close: vi.fn(),
+  __flushForTests: vi.fn(),
+}));
+const createWriterSpy = vi.hoisted(() => vi.fn(() => writerStub));
+vi.mock("../lib/execution-record/writer.js", () => ({
+  createExecutionRecordWriter: createWriterSpy,
+}));
+
+vi.mock("../lib/config/stage-lookup.js", () => ({
+  findStageConfig: vi.fn(() => undefined),
+}));
+
 import { runAgent, runScript, createWorktreeForTask } from "./executor.js";
 import { executeStage } from "./stage-executor.js";
 import { scriptRegistry } from "../scripts/index.js";
@@ -304,5 +329,144 @@ describe("createWorktreeForTask", () => {
     await createWorktreeForTask("task-1", "my-repo", "feat/branch");
 
     expect(initRepo).not.toHaveBeenCalled();
+  });
+});
+
+// ---------- runAgent — ExecutionRecordWriter lifecycle (Phase 1 / 1.3b) ----------
+
+describe("runAgent — ExecutionRecordWriter lifecycle", () => {
+  beforeEach(() => {
+    createWriterSpy.mockClear();
+    writerStub.close.mockClear();
+    writerStub.appendAgentStream.mockClear();
+    writerStub.updateCost.mockClear();
+    vi.mocked(executeStage).mockResolvedValue({
+      resultText: '{"analysis":{"title":"T"}}',
+      sessionId: "sess-1",
+      costUsd: 0.07,
+      durationMs: 1234,
+      cwd: "/tmp/wt",
+      tokenUsage: {
+        inputTokens: 100,
+        outputTokens: 250,
+        cacheReadTokens: 0,
+        totalTokens: 350,
+      } as any,
+    } as any);
+  });
+
+  it("opens a writer with resolved reads + promptBlob, passes it to executeStage, closes on success", async () => {
+    const ctx = makeContext({
+      store: { analysis: { title: "existing-title", count: 3 } },
+    });
+
+    await runAgent("task-1", {
+      stageName: "implement",
+      worktreePath: "/tmp/wt",
+      tier1Context: "TIER1-CONTENT",
+      attempt: 2,
+      runtime: {
+        engine: "llm",
+        system_prompt: "You are an agent",
+        reads: { title: "analysis.title" },
+      } as unknown as AgentRuntimeConfig,
+      context: ctx,
+    });
+
+    expect(createWriterSpy).toHaveBeenCalledTimes(1);
+    const openInput = createWriterSpy.mock.calls[0]![0] as any;
+    expect(openInput.taskId).toBe("task-1");
+    expect(openInput.stageName).toBe("implement");
+    expect(openInput.attemptIndex).toBe(2);
+    expect(openInput.pipelineVersionHash).toBeNull();
+    expect(openInput.engine).toBe("claude");
+    expect(openInput.readsSnapshot).toEqual({ title: "existing-title" });
+    expect(openInput.promptBlob.tier1).toBe("TIER1-CONTENT");
+    expect(openInput.promptBlob.stagePrompt).toBe("You are an agent");
+
+    // executeStage received the writer
+    const stageOpts = vi.mocked(executeStage).mock.calls[0]![4]! as any;
+    expect(stageOpts.executionRecordWriter).toBe(writerStub);
+
+    // writer.close called with parsed writes + cost
+    expect(writerStub.close).toHaveBeenCalledTimes(1);
+    const closeArg = writerStub.close.mock.calls[0]![0] as any;
+    expect(closeArg.terminationReason).toBe("natural_completion");
+    expect(closeArg.writesParsed).toEqual({ analysis: { title: "T" } });
+    expect(closeArg.costUsd).toBe(0.07);
+    expect(closeArg.tokenInput).toBe(100);
+    expect(closeArg.tokenOutput).toBe(250);
+    expect(closeArg.durationMs).toBe(1234);
+    expect(closeArg.sessionId).toBe("sess-1");
+  });
+
+  it("closes writer with error_exceeded_retries and rethrows when executeStage throws", async () => {
+    const boom = new Error("stage exploded");
+    vi.mocked(executeStage).mockRejectedValueOnce(boom);
+
+    const ctx = makeContext();
+    await expect(
+      runAgent("task-1", {
+        stageName: "implement",
+        worktreePath: "/tmp/wt",
+        tier1Context: "t",
+        attempt: 1,
+        runtime: {
+          engine: "llm",
+          system_prompt: "p",
+        } as unknown as AgentRuntimeConfig,
+        context: ctx,
+      }),
+    ).rejects.toThrow("stage exploded");
+
+    expect(writerStub.close).toHaveBeenCalledTimes(1);
+    expect(writerStub.close.mock.calls[0]![0]).toMatchObject({
+      terminationReason: "error_exceeded_retries",
+    });
+  });
+
+  it("writesParsed is null when resultText is not JSON", async () => {
+    vi.mocked(executeStage).mockResolvedValue({
+      resultText: "just prose, no JSON",
+      sessionId: "sess-1",
+      costUsd: 0.01,
+      durationMs: 100,
+      cwd: "/tmp/wt",
+    } as any);
+
+    await runAgent("task-1", {
+      stageName: "implement",
+      worktreePath: "/tmp/wt",
+      tier1Context: "t",
+      attempt: 1,
+      runtime: {
+        engine: "llm",
+        system_prompt: "p",
+      } as unknown as AgentRuntimeConfig,
+      context: makeContext(),
+    });
+
+    expect(writerStub.close.mock.calls[0]![0]).toMatchObject({
+      writesParsed: null,
+    });
+  });
+
+  it("picks up engine from pipeline config when stage-level engine is absent", async () => {
+    const ctx = makeContext();
+    (ctx.config as any).pipeline.engine = "gemini";
+
+    await runAgent("task-1", {
+      stageName: "implement",
+      worktreePath: "/tmp/wt",
+      tier1Context: "t",
+      attempt: 1,
+      runtime: {
+        engine: "llm",
+        system_prompt: "p",
+      } as unknown as AgentRuntimeConfig,
+      context: ctx,
+    });
+
+    expect((createWriterSpy.mock.calls[0]![0] as any).engine).toBe("gemini");
   });
 });

@@ -16,6 +16,13 @@ import { executeStage } from "./stage-executor.js";
 import { runVerifyCommands, formatVerifyFailures } from "./verify-commands.js";
 import { getOrCreateSessionManager } from "./session-manager-registry.js";
 import { flattenStages } from "../lib/config/types.js";
+import { createExecutionRecordWriter } from "../lib/execution-record/writer.js";
+import {
+  resolveReadsSnapshot,
+  buildPromptBlob,
+  parseWritesFromResult,
+} from "../lib/execution-record/build-prompt-blob.js";
+import type { EngineName } from "../lib/execution-record/types.js";
 
 // ── Mock executor (MOCK_EXECUTOR=true only, never runs in production) ──
 const _mockCallCounts = new Map<string, number>(); // key: taskId:stageName
@@ -96,29 +103,78 @@ export async function runAgent(
     };
   }
 
-  const { stageName, worktreePath, tier1Context, enabledSteps, resumeInfo, interactive, runtime, context: inputContext } = input;
+  const { stageName, worktreePath, tier1Context, enabledSteps, resumeInfo, interactive, runtime, context: inputContext, attempt } = input;
 
-  const result = await executeStage(taskId, stageName, tier1Context, runtime.system_prompt, {
-    cwd: worktreePath,
-    interactive,
-    enabledSteps,
-    resumeSessionId: resumeInfo?.sessionId,
-    resumePrompt: resumeInfo?.feedback,
-    resumeSync: resumeInfo?.sync,
-    runtime,
-    injectedContext: inputContext,
+  // Phase 1 / A1 — open an ExecutionRecord writer for this stage attempt.
+  // Gated by ENABLE_EXECUTION_RECORD; when the flag is off createExecutionRecordWriter
+  // returns a no-op so the rest of the function is flag-agnostic.
+  const stageConfForEngine = findStageConfig(inputContext?.config?.pipeline?.stages, stageName);
+  const settings = loadSystemSettings();
+  const engine: EngineName =
+    (stageConfForEngine?.engine as EngineName | undefined) ??
+    (inputContext?.config?.pipeline?.engine as EngineName | undefined) ??
+    (settings.agent?.default_engine as EngineName | undefined) ??
+    "claude";
+  const readsSnapshot = resolveReadsSnapshot(runtime.reads, inputContext?.store as Record<string, unknown> | undefined);
+  const promptBlob = buildPromptBlob({
+    tier1: tier1Context,
+    systemPromptFull: runtime.system_prompt,
+    stagePrompt: runtime.system_prompt,
+  });
+  const writer = createExecutionRecordWriter({
+    taskId,
+    stageName,
+    attemptIndex: attempt,
+    pipelineVersionHash: null,
+    engine,
+    model: null,
+    sessionId: resumeInfo?.sessionId ?? null,
+    promptBlob,
+    readsSnapshot,
   });
 
+  let result: AgentResult;
+  try {
+    result = await executeStage(taskId, stageName, tier1Context, runtime.system_prompt, {
+      cwd: worktreePath,
+      interactive,
+      enabledSteps,
+      resumeSessionId: resumeInfo?.sessionId,
+      resumePrompt: resumeInfo?.feedback,
+      resumeSync: resumeInfo?.sync,
+      runtime,
+      injectedContext: inputContext,
+      executionRecordWriter: writer,
+    });
+  } catch (err) {
+    writer.close({
+      terminationReason: "error_exceeded_retries",
+    });
+    throw err;
+  }
+
   // Run verify commands if configured
-  const stageConf = findStageConfig(inputContext?.config?.pipeline?.stages, stageName);
+  const stageConf = stageConfForEngine;
   const verifyCommands = stageConf?.verify_commands as string[] | undefined;
   const verifyPolicy = (stageConf?.verify_policy ?? "must_pass") as string;
+
+  const writesParsed = parseWritesFromResult(result.resultText);
+  const closeFields = {
+    terminationReason: "natural_completion" as const,
+    writesParsed,
+    costUsd: result.costUsd ?? null,
+    tokenInput: result.tokenUsage?.inputTokens ?? null,
+    tokenOutput: result.tokenUsage?.outputTokens ?? null,
+    durationMs: result.durationMs ?? null,
+    sessionId: result.sessionId ?? null,
+  };
 
   if (verifyCommands?.length && verifyPolicy !== "skip") {
     const { allPassed, results: verifyResults } = await runVerifyCommands(taskId, stageName, verifyCommands, worktreePath);
     if (!allPassed) {
       const failures = formatVerifyFailures(verifyResults);
       if (verifyPolicy === "must_pass") {
+        writer.close(closeFields);
         return {
           ...result,
           verifyFailed: true,
@@ -128,10 +184,12 @@ export async function runAgent(
       // warn policy: log failures but don't block
       taskLogger(taskId, stageName).warn({ failures: failures.slice(0, 1000) }, "Verify commands failed (warn policy, continuing)");
     }
+    writer.close(closeFields);
     // Attach verify results to output regardless of policy
     return { ...result, verifyResults };
   }
 
+  writer.close(closeFields);
   return result;
 }
 

@@ -16,6 +16,7 @@ import { buildQueryOptions } from "./query-options-builder.js";
 import { processAgentStream } from "./stream-processor.js";
 import { outputSchemaToJsonSchema } from "./output-schema.js";
 import { createAskUserQuestionInterceptor, createSpecAuditHook, createPathRestrictionHook } from "./executor-hooks.js";
+import type { ExecutionRecordWriter } from "../lib/execution-record/writer.js";
 
 const appendPromptCache = new Map<string, { prompt: string; fragmentIds: string[] }>();
 
@@ -45,13 +46,19 @@ export interface StageOpts {
   runtime?: AgentRuntimeConfig;
   injectedContext?: WorkflowContext;
   _resumeDepth?: number;
+  /**
+   * Phase 1 / Step 1.3b: optional writer that collects the ExecutionRecord
+   * for this stage. Passed through to processAgentStream. Owned and
+   * closed by the caller (runAgent / runAgentSingleSession).
+   */
+  executionRecordWriter?: ExecutionRecordWriter;
 }
 
 export async function executeStage(
   taskId: string, stageName: string, prompt: string, stagePrompt: string,
   stageOpts?: StageOpts,
 ): Promise<AgentResult> {
-  const { cwd, interactive, specFiles, enabledSteps, resumeSessionId, resumePrompt, resumeSync, runtime, injectedContext, _resumeDepth = 0 } = stageOpts ?? {};
+  const { cwd, interactive, specFiles, enabledSteps, resumeSessionId, resumePrompt, resumeSync, runtime, injectedContext, _resumeDepth = 0, executionRecordWriter } = stageOpts ?? {};
   const settings = loadSystemSettings();
   const claudePath = settings.paths?.claude_executable || "claude";
   const geminiPath = settings.paths?.gemini_executable || "gemini";
@@ -287,6 +294,7 @@ export async function executeStage(
         executeStage(taskId, stageName, prompt, stagePrompt, {
           ...stageOpts, resumeSessionId: sessionId, resumePrompt: rp, _resumeDepth: _resumeDepth + 1,
         }),
+      executionRecordWriter,
     });
   } finally {
     if (absoluteTimer) clearTimeout(absoluteTimer);
