@@ -2,7 +2,7 @@
 // Per-stage allowedTools / maxTurns / maxBudgetUsd / cwd / thinking / outputFormat from stage-config.
 // SessionIds are persisted so users can resume any stage via: claude --resume <sessionId>
 
-import { createWorktree, installDepsInWorktree, resolveRepoPath, initRepo } from "../lib/git.js";
+import { createWorktree, installDepsInWorktree, resolveRepoPath, initRepo, resolveHeadRef, captureStageDiff } from "../lib/git.js";
 import { join } from "node:path";
 import { taskLogger } from "../lib/logger.js";
 import { injectWorktreeConfig } from "../lib/worktree-injector.js";
@@ -133,6 +133,11 @@ export async function runAgent(
     readsSnapshot,
   });
 
+  // Phase 1 / Step 1.4 — capture the worktree HEAD as the diff base.
+  // Captured only when the writer is real (no-op writer means flag off,
+  // no consumer for the diff). Failure is non-fatal; diff just becomes null.
+  const diffBaseRef = writer.isNoop ? null : await resolveHeadRef(worktreePath);
+
   let result: AgentResult;
   try {
     result = await executeStage(taskId, stageName, tier1Context, runtime.system_prompt, {
@@ -147,8 +152,10 @@ export async function runAgent(
       executionRecordWriter: writer,
     });
   } catch (err) {
+    const diff = writer.isNoop ? null : await captureStageDiff(worktreePath, diffBaseRef);
     writer.close({
       terminationReason: "error_exceeded_retries",
+      worktreeDiff: diff,
     });
     throw err;
   }
@@ -159,9 +166,11 @@ export async function runAgent(
   const verifyPolicy = (stageConf?.verify_policy ?? "must_pass") as string;
 
   const writesParsed = parseWritesFromResult(result.resultText);
+  const worktreeDiff = writer.isNoop ? null : await captureStageDiff(worktreePath, diffBaseRef);
   const closeFields = {
     terminationReason: "natural_completion" as const,
     writesParsed,
+    worktreeDiff,
     costUsd: result.costUsd ?? null,
     tokenInput: result.tokenUsage?.inputTokens ?? null,
     tokenOutput: result.tokenUsage?.outputTokens ?? null,
@@ -373,6 +382,7 @@ export async function runAgentSingleSession(
     promptBlob,
     readsSnapshot,
   });
+  const diffBaseRef = writer.isNoop ? null : await resolveHeadRef(worktreePath);
 
   let result: AgentResult;
   try {
@@ -391,8 +401,10 @@ export async function runAgentSingleSession(
       executionRecordWriter: writer,
     });
   } catch (err) {
+    const diff = writer.isNoop ? null : await captureStageDiff(worktreePath, diffBaseRef);
     writer.close({
       terminationReason: "error_exceeded_retries",
+      worktreeDiff: diff,
     });
     throw err;
   }
@@ -403,9 +415,11 @@ export async function runAgentSingleSession(
   const verifyPolicy = (stageConf?.verify_policy ?? "must_pass") as string;
 
   const writesParsed = parseWritesFromResult(result.resultText);
+  const worktreeDiff = writer.isNoop ? null : await captureStageDiff(worktreePath, diffBaseRef);
   const closeFields = {
     terminationReason: "natural_completion" as const,
     writesParsed,
+    worktreeDiff,
     costUsd: result.costUsd ?? null,
     tokenInput: result.tokenUsage?.inputTokens ?? null,
     tokenOutput: result.tokenUsage?.outputTokens ?? null,

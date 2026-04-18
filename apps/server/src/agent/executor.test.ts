@@ -26,6 +26,9 @@ vi.mock("../lib/git.js", () => ({
   installDepsInWorktree: vi.fn(async () => {}),
   resolveRepoPath: vi.fn(() => "/repos/my-repo"),
   initRepo: vi.fn(async () => "/repos/new-repo"),
+  resolveHeadRef: vi.fn(async () => null),
+  captureStageDiff: vi.fn(async () => null),
+  WORKTREE_DIFF_MAX_BYTES: 1024,
 }));
 
 vi.mock("../lib/worktree-injector.js", () => ({
@@ -485,6 +488,83 @@ describe("runAgent — ExecutionRecordWriter lifecycle", () => {
     });
 
     expect(((createWriterSpy.mock.calls as any[])[0][0] as any).engine).toBe("gemini");
+  });
+
+  it("skips resolveHeadRef/captureStageDiff when writer is a no-op", async () => {
+    const git = await import("../lib/git.js");
+    const resolveHead = vi.mocked(git.resolveHeadRef);
+    const capture = vi.mocked(git.captureStageDiff);
+    resolveHead.mockClear();
+    capture.mockClear();
+
+    // Flip writer to no-op for this test (flag-off shape).
+    (writerStub as any).isNoop = true;
+    try {
+      await runAgent("task-1", {
+        stageName: "implement",
+        worktreePath: "/tmp/wt",
+        tier1Context: "t",
+        attempt: 1,
+        runtime: { engine: "llm", system_prompt: "p" } as unknown as AgentRuntimeConfig,
+        context: makeContext(),
+      });
+      expect(resolveHead).not.toHaveBeenCalled();
+      expect(capture).not.toHaveBeenCalled();
+    } finally {
+      (writerStub as any).isNoop = false;
+    }
+  });
+
+  it("captures worktree diff and passes it into writer.close on success", async () => {
+    const git = await import("../lib/git.js");
+    const resolveHead = vi.mocked(git.resolveHeadRef);
+    const capture = vi.mocked(git.captureStageDiff);
+    resolveHead.mockResolvedValueOnce("deadbeef1234");
+    capture.mockResolvedValueOnce({ text: "diff --git a b\n+x", truncated: false });
+
+    await runAgent("task-1", {
+      stageName: "implement",
+      worktreePath: "/tmp/wt",
+      tier1Context: "t",
+      attempt: 1,
+      runtime: { engine: "llm", system_prompt: "p" } as unknown as AgentRuntimeConfig,
+      context: makeContext(),
+    });
+
+    expect(resolveHead).toHaveBeenCalledWith("/tmp/wt");
+    expect(capture).toHaveBeenCalledWith("/tmp/wt", "deadbeef1234");
+    const closeArg = writerStub.close.mock.calls.at(-1)![0] as any;
+    expect(closeArg.worktreeDiff).toEqual({
+      text: "diff --git a b\n+x",
+      truncated: false,
+    });
+  });
+
+  it("captures worktree diff even on executeStage failure", async () => {
+    const git = await import("../lib/git.js");
+    const resolveHead = vi.mocked(git.resolveHeadRef);
+    const capture = vi.mocked(git.captureStageDiff);
+    resolveHead.mockResolvedValueOnce("base-sha");
+    capture.mockResolvedValueOnce({ text: "partial diff", truncated: true });
+    vi.mocked(executeStage).mockRejectedValueOnce(new Error("mid-stage crash"));
+
+    await expect(
+      runAgent("task-1", {
+        stageName: "implement",
+        worktreePath: "/tmp/wt",
+        tier1Context: "t",
+        attempt: 1,
+        runtime: { engine: "llm", system_prompt: "p" } as unknown as AgentRuntimeConfig,
+        context: makeContext(),
+      }),
+    ).rejects.toThrow("mid-stage crash");
+
+    const closeArg = writerStub.close.mock.calls.at(-1)![0] as any;
+    expect(closeArg.terminationReason).toBe("error_exceeded_retries");
+    expect(closeArg.worktreeDiff).toEqual({
+      text: "partial diff",
+      truncated: true,
+    });
   });
 });
 

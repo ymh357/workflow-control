@@ -209,3 +209,89 @@ export async function cleanupWorktreeOnly(
   });
 }
 
+// ---------- ExecutionRecord worktree diff helpers (Phase 1 / Step 1.4) ----------
+
+/**
+ * Default cap for worktree_diff column (see docs/execution-record-design.md §3).
+ * Past this size the diff is truncated with a trailing marker and the
+ * worktree_diff_truncated flag is set.
+ */
+export const WORKTREE_DIFF_MAX_BYTES = 1 * 1024 * 1024;
+
+/**
+ * Resolve the current HEAD commit of a worktree. Returns null when the
+ * worktree does not exist, is not a git repo, or HEAD is unresolvable
+ * (e.g. brand-new repo with no commits). Callers must tolerate null —
+ * we treat "can't capture the base" as "no diff available" rather than
+ * as an error, because the stage can still run.
+ */
+export async function resolveHeadRef(
+  worktreePath: string,
+): Promise<string | null> {
+  try {
+    const { stdout } = await exec(
+      "git",
+      ["rev-parse", "HEAD"],
+      { cwd: worktreePath, env: getGitEnv(), timeout: GIT_TIMEOUT_MS },
+    );
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Capture the diff produced by a stage as it ran. The diff combines:
+ *   - committed changes between `baseRef` and current HEAD
+ *   - uncommitted changes in the working tree (tracked + untracked)
+ * so a stage that stages but does not commit is still represented.
+ *
+ * Returns null when `baseRef` is null, the worktree is gone, or git
+ * fails for any reason — the writer treats that as "no diff available".
+ *
+ * Output is truncated to maxBytes (default WORKTREE_DIFF_MAX_BYTES); when
+ * truncation happens, `truncated` is true and a marker `\n[truncated]\n`
+ * is appended. The marker counts against maxBytes.
+ */
+export async function captureStageDiff(
+  worktreePath: string,
+  baseRef: string | null,
+  options: { maxBytes?: number } = {},
+): Promise<{ text: string; truncated: boolean } | null> {
+  if (!baseRef) return null;
+  const maxBytes = options.maxBytes ?? WORKTREE_DIFF_MAX_BYTES;
+  const env = getGitEnv();
+
+  try {
+    // 1) committed diff baseRef..HEAD
+    const { stdout: committed } = await exec(
+      "git",
+      ["diff", `${baseRef}..HEAD`],
+      { cwd: worktreePath, env, timeout: GIT_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
+    );
+    // 2) working-tree diff vs HEAD (includes staged + unstaged tracked
+    //    changes; --no-color keeps output deterministic)
+    const { stdout: working } = await exec(
+      "git",
+      ["diff", "HEAD", "--no-color"],
+      { cwd: worktreePath, env, timeout: GIT_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 },
+    );
+    const combined = (committed || "") + (working || "");
+    if (combined.length <= maxBytes) {
+      return { text: combined, truncated: false };
+    }
+    const marker = "\n[truncated]\n";
+    const sliceBytes = Math.max(0, maxBytes - marker.length);
+    return {
+      text: combined.slice(0, sliceBytes) + marker,
+      truncated: true,
+    };
+  } catch (err) {
+    logger.debug(
+      { err, worktreePath, baseRef },
+      "captureStageDiff failed (non-fatal)",
+    );
+    return null;
+  }
+}
+
