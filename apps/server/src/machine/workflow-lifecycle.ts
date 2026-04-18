@@ -11,6 +11,8 @@ import {
   type FragmentMeta,
   getFragmentRegistry,
 } from "../lib/config-loader.js";
+import { resolveFragmentsFromSnapshot } from "../lib/config/fragments.js";
+import { canonicalHashDeep } from "../lib/pipeline-hash/deep-hash.js";
 
 export function snapshotGlobalConfig(pipelineName = "pipeline-generator"): NonNullable<WorkflowContext["config"]> {
   const pipeline = loadPipelineConfig(pipelineName);
@@ -60,6 +62,16 @@ export function snapshotGlobalConfig(pipelineName = "pipeline-generator"): NonNu
 
   const settings = loadSystemSettings();
 
+  // Phase 2 / Step 2.3 — compute the deep pipeline version hash against
+  // the exact fragments we just snapshotted. The resolver is a closure
+  // over the snapshot data, so the hash reflects what the task will
+  // actually see — not whatever is in the live registry later.
+  const pipelineVersionHash = canonicalHashDeep(
+    pipeline,
+    (stageName, enabledSteps) =>
+      resolveFragmentsFromSnapshot(stageName, enabledSteps, fragments, fragmentMeta),
+  );
+
   return {
     pipelineName,
     pipeline,
@@ -76,5 +88,6 @@ export function snapshotGlobalConfig(pipelineName = "pipeline-generator"): NonNu
     mcps: [...pipelineMcps],
     sandbox: settings.sandbox,
     agent: settings.agent,
+    pipelineVersionHash,
   };
 }

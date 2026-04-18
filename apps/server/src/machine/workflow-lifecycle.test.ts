@@ -173,4 +173,64 @@ describe("snapshotGlobalConfig", () => {
     expect(snap.sandbox).toEqual({ enabled: true });
     expect(snap.agent).toEqual({ default_engine: "claude" });
   });
+
+  // Phase 2 / Step 2.3 — pipelineVersionHash captured with the snapshot
+
+  it("captures a 64-char pipelineVersionHash", () => {
+    const snap = snapshotGlobalConfig();
+    expect(snap.pipelineVersionHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("pipelineVersionHash is stable across calls with identical inputs", () => {
+    const first = snapshotGlobalConfig();
+    const second = snapshotGlobalConfig();
+    expect(second.pipelineVersionHash).toBe(first.pipelineVersionHash);
+  });
+
+  it("pipelineVersionHash changes when pipeline structure changes", () => {
+    const before = snapshotGlobalConfig().pipelineVersionHash!;
+    mockLoadPipelineConfig.mockReturnValue({
+      name: "test",
+      stages: [
+        { name: "s1", type: "agent", mcps: ["mcp-a"] },
+        { name: "s2", type: "agent", mcps: ["mcp-b", "mcp-a"] },
+        { name: "s3", type: "agent" }, // new stage added
+      ],
+      skills: ["sk1"],
+    });
+    const after = snapshotGlobalConfig().pipelineVersionHash!;
+    expect(after).not.toBe(before);
+  });
+
+  it("pipelineVersionHash changes when an activated fragment's content changes", () => {
+    // Fragment set 1
+    mockGetFragmentRegistry.mockReturnValue({
+      getAllEntries: () =>
+        new Map([
+          [
+            "global-inv",
+            {
+              content: "v1",
+              meta: { id: "global-inv", keywords: [], stages: "*", always: true },
+            },
+          ],
+        ]),
+    });
+    const before = snapshotGlobalConfig().pipelineVersionHash!;
+    // Fragment set 2 (same id, different content)
+    mockGetFragmentRegistry.mockReturnValue({
+      getAllEntries: () =>
+        new Map([
+          [
+            "global-inv",
+            {
+              content: "v2",
+              meta: { id: "global-inv", keywords: [], stages: "*", always: true },
+            },
+          ],
+        ]),
+    });
+    const after = snapshotGlobalConfig().pipelineVersionHash!;
+    expect(after).not.toBe(before);
+  });
 });

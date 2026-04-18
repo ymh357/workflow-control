@@ -64,6 +64,14 @@ export interface WorkflowContext {
     mcps: string[];
     sandbox?: SandboxConfig;
     agent?: { default_engine?: string; claude_model?: string; gemini_model?: string; codex_model?: string };
+    /**
+     * Phase 2 / Step 2.3 — deterministic version hash of the pipeline
+     * snapshot (SHA-256 over {pipeline, activatedFragments}, see
+     * lib/pipeline-hash/deep-hash.ts). Persisted with the task so
+     * replays can reproduce the exact version without recomputing
+     * against a possibly-changed registry.
+     */
+    pipelineVersionHash?: string;
   };
 }
 
