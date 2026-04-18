@@ -1,3 +1,8 @@
+/**
+ * @deprecated Edge Runner 已冷冻（frozen）。
+ * 此模块保留代码但不再接收新功能或 bug fix。
+ * 参见 docs/product-roadmap.md §3 战略决策 S1。
+ */
 import { randomUUID } from "node:crypto";
 import type { AgentResult } from "../agent/query-tracker.js";
 import { taskLogger } from "../lib/logger.js";

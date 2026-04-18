@@ -2,6 +2,10 @@
 /**
  * Edge Runner — spawns isolated Claude/Gemini sessions per stage via node-pty.
  *
+ * @deprecated Edge Runner 已冷冻（frozen）。
+ * 此模块保留代码但不再接收新功能或 bug fix。
+ * 参见 docs/product-roadmap.md §3 战略决策 S1。
+ *
  * Usage:
  *   npx tsx src/edge/runner.ts <task-id>
  *   npx tsx src/edge/runner.ts --trigger "task description" --pipeline edge-test-claude

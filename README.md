@@ -149,9 +149,14 @@ If you need to configure it manually, add the following to your Claude Code sett
 }
 ```
 
-### Edge Runner
+### Edge Runner (frozen / unsupported)
 
-For terminal-based execution without the dashboard, the edge runner executes a pipeline directly in your shell:
+> **Status:** Edge Runner is frozen. Code is retained but no longer receives
+> new features or bug fixes. See `docs/product-roadmap.md` §3 (S1) for
+> rationale. Use the dashboard (`pnpm dev`) for all new workflows.
+
+For legacy terminal-based execution without the dashboard, the edge runner
+executes a pipeline directly in your shell:
 
 ```bash
 pnpm edge -- --trigger "Your task description" --pipeline pipeline-generator
@@ -169,7 +174,7 @@ pnpm edge -- --trigger "Your task description" --pipeline pipeline-generator
 | `pnpm --filter server preflight` | Run environment preflight checks |
 | `pnpm --filter server registry:build` | Build registry package index |
 | `pnpm --filter server registry:bootstrap` | Install default config packages |
-| `pnpm edge -- --trigger "..." --pipeline <name>` | Run a pipeline via edge runner |
+| `pnpm edge -- --trigger "..." --pipeline <name>` | Run a pipeline via edge runner (frozen — see above) |
 
 ## Documentation
 

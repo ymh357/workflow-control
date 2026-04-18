@@ -1,3 +1,8 @@
+/**
+ * @deprecated Edge Runner 已冷冻（frozen）。
+ * 此模块保留代码但不再接收新功能或 bug fix。
+ * 参见 docs/product-roadmap.md §3 战略决策 S1。
+ */
 import { Hono } from "hono";
 import { getTaskSlots, getAllSlots, addSlotListener, addTaskTerminationListener } from "./registry.js";
 import { getTaskContext } from "../actions/task-actions.js";
