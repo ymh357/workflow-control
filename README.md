@@ -1,10 +1,29 @@
 # Workflow Control
 
-Config-driven autonomous agent workflow engine. Orchestrates multi-step software engineering tasks through YAML-defined pipelines, AI agent execution (Claude / Gemini), automation scripts, human checkpoints, conditional routing, sub-pipeline calls, and foreach iteration — with real-time observability, cost tracking, and failure recovery.
+A **local, single-user** workflow engine for running AI coding agents on
+larger software tasks. Orchestrates multi-step work through YAML-defined
+pipelines, Claude Agent SDK execution, automation scripts, human checkpoints,
+conditional routing, sub-pipeline calls, and foreach iteration — with
+real-time observability, cost tracking, and failure recovery.
+
+> **Positioning.** Workflow Control runs entirely on your own machine; there
+> is no shared server, no multi-tenant model, no team scheduling layer. It is
+> designed for one engineer (possibly a small team of engineers, each on
+> their own machine) to drive Claude through tasks too large for a single
+> chat session. Pipelines and knowledge fragments can still be **shared**
+> across machines via the Registry — but execution always runs locally.
+>
+> **You don't write YAML by hand.** Pipelines are authored and iterated on
+> by AI agents themselves (see the `pipeline-generator` builtin). The YAML
+> is a durable artifact of AI output, not a manual configuration burden.
+>
+> See `docs/product-roadmap.md` for the detailed roadmap and scope.
 
 ## Why
 
-Using AI coding agents directly (Claude Code, Gemini CLI) works for small tasks. For larger efforts — analysis, implementation, review, PR creation — a single unstructured session lacks cost control, failure recovery, and reproducibility.
+Using AI coding agents directly (Claude Code CLI) works for small tasks. For
+larger efforts — analysis, implementation, review, PR creation — a single
+unstructured session lacks cost control, failure recovery, and reproducibility.
 
 Workflow Control wraps these agents in a structured pipeline:
 
@@ -12,7 +31,7 @@ Workflow Control wraps these agents in a structured pipeline:
 - **Per-stage cost caps** and **human confirmation gates** prevent runaway spending.
 - **Persistent snapshots** enable retry from any failure point without losing prior work.
 - **Real-time SSE dashboard** streams every agent message with filtering, stage timeline, and cost breakdown.
-- **YAML pipelines + versioned prompts** make workflows reproducible and shareable across teams.
+- **YAML pipelines + versioned prompts** — authored by AI, shareable via the Registry, reproducible across runs.
 - **Layered prompt system** — global constraints, project rules, knowledge fragments — guarantees consistent agent behavior.
 
 ## Architecture
@@ -66,7 +85,7 @@ pnpm dev          # Server (:3001) + Dashboard (:3000)
 
 Open `http://localhost:3000`. The **Config** page has a health panel to verify all services are reachable.
 
-> **Minimal setup**: Only `claude` or `gemini` on PATH is required to run pipelines. Notion, Figma, and GitHub integrations are all optional — leave them blank in the config and the system works without them.
+> **Minimal setup**: Only `claude` on PATH is required to run pipelines. Notion, Figma, and GitHub integrations are all optional — leave them blank in the config and the system works without them. Gemini / Codex CLIs are optional and their engines are frozen (see roadmap §3 S1).
 
 > `system-settings.yaml` supports `${ENV_VAR}` interpolation. Keep secrets in `.env.local`, not in the YAML file.
 
@@ -86,7 +105,7 @@ Stages declare explicit data flow via `reads` (inputs from store) and `writes` (
 
 Pipelines support **mixed engines** — each stage independently specifies `claude`, `gemini`, or `codex`. Claude is the primary, fully supported engine; Gemini and Codex are **frozen** (see `docs/product-roadmap.md` §3 S1) — existing pipelines continue to work, but no new features or bug fixes land. New pipelines should default to `claude`.
 
-The Config page provides an **AI Generate** button: describe your workflow in natural language, select an engine, and the system generates a complete pipeline YAML via local CLI (`claude -p` or `gemini`). No additional API keys needed.
+The Config page provides an **AI Generate** button: describe your workflow in natural language and the built-in `pipeline-generator` pipeline drives Claude to produce a complete, validated YAML. This is the primary authoring path — you describe intent, the AI writes the pipeline. No additional API keys needed.
 
 ### Task Lifecycle
 
