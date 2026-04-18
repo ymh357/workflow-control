@@ -15,6 +15,7 @@
     "registry:index": "tsx ../../registry/build-index.ts",
     "registry:build": "tsx ../../registry/generate-manifests.ts && tsx ../../registry/build-index.ts",
     "registry:bootstrap": "tsx src/cli/registry.ts bootstrap",
+    "execution-record": "tsx src/cli/execution-record.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "postinstall": "chmod +x node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true"
