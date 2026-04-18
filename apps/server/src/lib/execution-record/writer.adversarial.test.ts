@@ -16,6 +16,7 @@ testDb.exec(`
     stage_name              TEXT NOT NULL,
     attempt_index           INTEGER NOT NULL,
     pipeline_version_hash   TEXT,
+    workflow_control_version TEXT,
     started_at              TEXT NOT NULL,
     terminated_at           TEXT,
     termination_reason      TEXT,

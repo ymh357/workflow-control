@@ -56,6 +56,12 @@ export interface ExecutionRecord {
   stageName: string;
   attemptIndex: number;
   pipelineVersionHash: string | null;
+  /**
+   * T1.2 — workflow-control software version at attempt open.
+   * pipelineVersionHash covers config; this covers the code that
+   * interprets config. Format: "0.0.1+abc1234" | "0.0.1" | "unknown".
+   */
+  workflowControlVersion: string | null;
 
   startedAt: string;
   terminatedAt: string | null;

@@ -55,6 +55,11 @@ export function getDb(): DatabaseSync {
       stage_name              TEXT NOT NULL,
       attempt_index           INTEGER NOT NULL,
       pipeline_version_hash   TEXT,
+      -- T1.2 — workflow-control software version at attempt open.
+      -- Format: "0.0.1+abc1234" (pkg+shortSha) or "0.0.1" or "unknown".
+      -- Captures code-level variance (prompt builder layers, stream
+      -- processor, etc) that pipeline_version_hash doesn't cover.
+      workflow_control_version TEXT,
 
       started_at              TEXT NOT NULL,
       terminated_at           TEXT,

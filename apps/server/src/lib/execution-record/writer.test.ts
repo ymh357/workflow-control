@@ -18,6 +18,7 @@ testDb.exec(`
     stage_name              TEXT NOT NULL,
     attempt_index           INTEGER NOT NULL,
     pipeline_version_hash   TEXT,
+    workflow_control_version TEXT,
     started_at              TEXT NOT NULL,
     terminated_at           TEXT,
     termination_reason      TEXT,
@@ -141,6 +142,18 @@ describe("ExecutionRecordWriter — feature flag", () => {
     expect(row!.terminated_at).toBeNull();
     expect(row!.tool_calls).toBe("[]");
     expect(row!.agent_stream).toBe("[]");
+    writer.close({ terminationReason: "natural_completion" });
+  });
+
+  // T1.2 — software version must be captured at open time.
+  it("captures workflow_control_version on insert", () => {
+    const writer = createExecutionRecordWriter(
+      baseOpen({ attemptId: "att-wcv" }),
+    );
+    const row = readRow("att-wcv")!;
+    // Format: "0.0.1" or "0.0.1+abc1234" — never null / empty, never "unknown"
+    // when running inside the repo with the package.json present.
+    expect(row.workflow_control_version).toMatch(/^\d+\.\d+\.\d+(\+[0-9a-f]{7,40})?$/);
     writer.close({ terminationReason: "natural_completion" });
   });
 });

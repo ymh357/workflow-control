@@ -22,6 +22,7 @@ import type {
   PrecompactEvent,
   ToolCallRecord,
 } from "./types.js";
+import { getWorkflowControlVersion } from "./workflow-version.js";
 
 const FLUSH_INTERVAL_MS = 1_000;
 const HEARTBEAT_INTERVAL_MS = 10_000;
@@ -364,14 +365,18 @@ export function createExecutionRecordWriter(
   if (!isEnabled()) return new NoopWriter(attemptId);
 
   const startedAt = input.startedAt ?? new Date().toISOString();
+  // T1.2 — capture software version at open time. Never throws (falls
+  // back to "unknown" internally), so this cannot break open().
+  const workflowControlVersion = getWorkflowControlVersion();
   try {
     getDb()
       .prepare(
         `INSERT INTO execution_records (
            attempt_id, task_id, stage_name, attempt_index,
-           pipeline_version_hash, started_at, engine, model, session_id,
+           pipeline_version_hash, workflow_control_version,
+           started_at, engine, model, session_id,
            prompt_blob, reads_snapshot, last_heartbeat_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         attemptId,
@@ -379,6 +384,7 @@ export function createExecutionRecordWriter(
         input.stageName,
         input.attemptIndex,
         input.pipelineVersionHash,
+        workflowControlVersion,
         startedAt,
         input.engine,
         input.model,

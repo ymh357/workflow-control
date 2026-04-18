@@ -40,15 +40,31 @@ export async function buildSystemAppendPrompt(params: PromptBuilderParams): Prom
   }
 
   // 2. Resolve active fragments (IDs only — content is prepended to appendPrompt)
+  //
+  // T1.2 — Snapshot is the only legitimate source. Falling back to the live
+  // registry would make pipelineVersionHash a lie: two tasks with the same
+  // snapshot could resolve different fragments if the registry changed
+  // between their runs. So the fallback paths now warn loudly; they're
+  // retained only because missing privateConfig shouldn't crash the agent
+  // mid-stage (upstream config loading should have caught it).
   let resolvedFragments: { id: string; content: string }[];
   if (privateConfig?.prompts.fragmentMeta) {
     const meta = privateConfig.prompts.fragmentMeta as Record<string, FragmentMeta>;
     const contents = privateConfig.prompts.fragments as Record<string, string>;
     resolvedFragments = resolveFragmentsFromSnapshot(stageName, enabledSteps, contents, meta);
   } else if (privateConfig) {
+    console.warn(
+      `[prompt-builder] Stage "${stageName}" (task ${params.taskId.slice(0, 8)}) has privateConfig without fragmentMeta — ` +
+      `falling back to ALL fragments. This is a snapshot integrity bug and should be fixed at snapshot time.`,
+    );
     resolvedFragments = Object.entries(privateConfig.prompts.fragments as Record<string, string>)
       .map(([id, content]) => ({ id, content }));
   } else {
+    console.warn(
+      `[prompt-builder] Stage "${stageName}" (task ${params.taskId.slice(0, 8)}) has no privateConfig — ` +
+      `falling back to live FragmentRegistry. This breaks pipelineVersionHash guarantees; ` +
+      `investigate why the task has no snapshot.`,
+    );
     resolvedFragments = getFragmentRegistry().resolve(stageName, enabledSteps);
   }
 
