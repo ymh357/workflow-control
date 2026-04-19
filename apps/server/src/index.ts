@@ -175,6 +175,10 @@ async function gracefulShutdown(signal: string): Promise<void> {
     const { closeDb } = await import("./lib/db.js");
     closeDb();
   } catch { /* best-effort */ }
+  try {
+    const { closeKernelNextDb } = await import("./lib/kernel-next-db.js");
+    closeKernelNextDb();
+  } catch { /* best-effort */ }
   process.exit(0);
 }
 

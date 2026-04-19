@@ -33,6 +33,18 @@ export function getKernelNextDb(): DatabaseSync {
   return db;
 }
 
+/**
+ * Close the singleton. Called from gracefulShutdown so SQLite's WAL can
+ * checkpoint cleanly before process exit. Best-effort; errors swallowed
+ * so one failing close doesn't block other shutdown cleanup steps.
+ */
+export function closeKernelNextDb(): void {
+  if (db) {
+    try { db.close(); } catch { /* best-effort */ }
+    db = undefined;
+  }
+}
+
 /** Test helper: reset the singleton so a test can use an in-memory DB. */
 export function __setKernelNextDbForTest(override: DatabaseSync | undefined): void {
   db = override;
