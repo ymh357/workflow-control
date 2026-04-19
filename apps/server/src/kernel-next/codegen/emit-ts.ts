@@ -93,16 +93,55 @@ export function emitPipelineModule(ir: PipelineIR): EmitResult {
     const toTypeLookup = `Stages.${w.to.stage}.Inputs["${w.to.port}"]`;
     const fromTypeLookup = `Stages.${w.from.stage}.Outputs["${w.from.port}"]`;
 
+    // Design §7.3 — fanout type compatibility.
+    //   from-fanout:   producer stage has `fanout`. Kernel auto-reshapes
+    //                  each declared output T into T[] for downstream
+    //                  consumption (§6.3 / §6.4). Wire source effective
+    //                  type is Array<Outputs[port]>, declared is T.
+    //   to-fanout:     consumer stage has `fanout` AND this wire targets
+    //                  its fanout.input. Kernel iterates the source
+    //                  array and feeds ONE element per virtual attempt,
+    //                  so the declared input T is satisfied by T[][0].
+    //   neither:       plain assignment, tsc checks declared types 1:1.
+    //   both:          effects cancel — wire is T-to-T again.
+    //
+    // Without these wrap/unwrap transforms tsc would reject every fanout
+    // pipeline with TS2322 (Reviewer concern C1 / plan §3 C1).
+    const fromStage = ir.stages.find((s) => s.name === w.from.stage);
+    const toStage = ir.stages.find((s) => s.name === w.to.stage);
+    const fromIsFanout =
+      (fromStage?.type === "agent" || fromStage?.type === "script") &&
+      fromStage?.fanout != null;
+    const toIsFanout =
+      (toStage?.type === "agent" || toStage?.type === "script") &&
+      toStage?.fanout != null &&
+      toStage.fanout.input === w.to.port;
+
+    // Build the right-hand value expression. The left-hand type
+    // annotation never changes (always the declared Inputs[port]) —
+    // only the source coercion adapts to fanout semantics.
+    let rhsExpr: string;
+    if (fromIsFanout && !toIsFanout) {
+      // Producer aggregates T into T[]; downstream reads T[].
+      rhsExpr = `[null as unknown as ${fromTypeLookup}]`;
+    } else if (!fromIsFanout && toIsFanout) {
+      // Downstream fans out the array; declared T input is one element.
+      rhsExpr = `(null as unknown as ${fromTypeLookup})[0]!`;
+    } else {
+      // Plain or both-fanout (wrap + unwrap cancel).
+      rhsExpr = `null as unknown as ${fromTypeLookup}`;
+    }
+
     // Reserve the lines we're about to push and capture them for the map.
     // Keep the assignment on the next line after `export const`, matching
     // the primary signal line for tsc diagnostics on assignment.
     lines.push(`export const ${ident}: ${toTypeLookup} =`);
     const assignmentLine = lines.length + 1; // 1-based, line of the value expr
-    lines.push(`  null as unknown as ${fromTypeLookup};`);
+    lines.push(`  ${rhsExpr};`);
 
     // Resolve actual TS types from the port index for diagnostic payload.
-    const fromPort = ir.stages.find((s) => s.name === w.from.stage)?.outputs.find((p) => p.name === w.from.port);
-    const toPort = ir.stages.find((s) => s.name === w.to.stage)?.inputs.find((p) => p.name === w.to.port);
+    const fromPort = fromStage?.outputs.find((p) => p.name === w.from.port);
+    const toPort = toStage?.inputs.find((p) => p.name === w.to.port);
 
     const entry: WireMapEntry = {
       line: assignmentLine,

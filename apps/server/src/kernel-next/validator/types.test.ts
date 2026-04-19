@@ -107,4 +107,96 @@ describe("validator/types (tsc subprocess)", () => {
       });
     expect(wires.sort()).toEqual(["A.x->B.x", "A.y->B.y"]);
   });
+
+  // F4 — design §7.3 fanout type compatibility. Previously A7 worked
+  // around missing support with `skipTypeCheck: true`; production fanout
+  // pipelines would otherwise be rejected by tsc. These tests exercise
+  // the four transform cases in codegen/emit-ts: plain / from-fanout /
+  // to-fanout / both-fanout.
+
+  it("fanout consumer: SRC.T[] -> F.T (fanout.input) type-checks", { timeout: 15_000 }, () => {
+    const ir: PipelineIR = {
+      name: "fanout-in",
+      stages: [
+        { name: "SRC", type: "agent", inputs: [],
+          outputs: [{ name: "items", type: "number[]" }], config: { promptRef: "p" } },
+        { name: "F", type: "agent",
+          fanout: { input: "item" },
+          inputs: [{ name: "item", type: "number" }],
+          outputs: [{ name: "doubled", type: "number" }], config: { promptRef: "p" } },
+      ],
+      wires: [{ from: { stage: "SRC", port: "items" }, to: { stage: "F", port: "item" } }],
+    };
+    const res = validateTypes(ir, { tscPath: TSC_PATH });
+    expect(res.ok).toBe(true);
+  });
+
+  it("fanout producer: F.T -> SUM.T[] type-checks (downstream sees aggregated array)", { timeout: 15_000 }, () => {
+    const ir: PipelineIR = {
+      name: "fanout-out",
+      stages: [
+        { name: "SRC", type: "agent", inputs: [],
+          outputs: [{ name: "items", type: "number[]" }], config: { promptRef: "p" } },
+        { name: "F", type: "agent",
+          fanout: { input: "item" },
+          inputs: [{ name: "item", type: "number" }],
+          outputs: [{ name: "doubled", type: "number" }], config: { promptRef: "p" } },
+        { name: "SUM", type: "agent",
+          inputs: [{ name: "xs", type: "number[]" }],
+          outputs: [{ name: "total", type: "number" }], config: { promptRef: "p" } },
+      ],
+      wires: [
+        { from: { stage: "SRC", port: "items" }, to: { stage: "F", port: "item" } },
+        { from: { stage: "F", port: "doubled" }, to: { stage: "SUM", port: "xs" } },
+      ],
+    };
+    const res = validateTypes(ir, { tscPath: TSC_PATH });
+    expect(res.ok).toBe(true);
+  });
+
+  it("fanout→fanout chain: T-to-T wire type-checks (wrap+unwrap cancel)", { timeout: 15_000 }, () => {
+    const ir: PipelineIR = {
+      name: "fanout-chain",
+      stages: [
+        { name: "SRC", type: "agent", inputs: [],
+          outputs: [{ name: "items", type: "number[]" }], config: { promptRef: "p" } },
+        { name: "F1", type: "agent",
+          fanout: { input: "item" },
+          inputs: [{ name: "item", type: "number" }],
+          outputs: [{ name: "doubled", type: "number" }], config: { promptRef: "p" } },
+        { name: "F2", type: "agent",
+          fanout: { input: "n" },
+          inputs: [{ name: "n", type: "number" }],
+          outputs: [{ name: "tripled", type: "number" }], config: { promptRef: "p" } },
+      ],
+      wires: [
+        { from: { stage: "SRC", port: "items" }, to: { stage: "F1", port: "item" } },
+        // F1 aggregates doubled→number[]; F2 fanouts over it → single number per iter.
+        { from: { stage: "F1", port: "doubled" }, to: { stage: "F2", port: "n" } },
+      ],
+    };
+    const res = validateTypes(ir, { tscPath: TSC_PATH });
+    expect(res.ok).toBe(true);
+  });
+
+  it("fanout consumer with mismatched element type still fails with WIRE_TYPE_MISMATCH", { timeout: 15_000 }, () => {
+    // SRC emits string[]; F.item declared number — should fail because
+    // unwrapping string[][0] gives string, not number.
+    const ir: PipelineIR = {
+      name: "fanout-bad",
+      stages: [
+        { name: "SRC", type: "agent", inputs: [],
+          outputs: [{ name: "items", type: "string[]" }], config: { promptRef: "p" } },
+        { name: "F", type: "agent",
+          fanout: { input: "item" },
+          inputs: [{ name: "item", type: "number" }],
+          outputs: [{ name: "doubled", type: "number" }], config: { promptRef: "p" } },
+      ],
+      wires: [{ from: { stage: "SRC", port: "items" }, to: { stage: "F", port: "item" } }],
+    };
+    const res = validateTypes(ir, { tscPath: TSC_PATH });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.diagnostics.some((d) => d.code === "WIRE_TYPE_MISMATCH")).toBe(true);
+  });
 });
