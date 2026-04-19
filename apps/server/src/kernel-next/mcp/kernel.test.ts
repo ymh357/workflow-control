@@ -249,3 +249,182 @@ describe("KernelService", () => {
     db.close();
   });
 });
+
+// A1.2a: gate lifecycle — createGate + listGates + answerGate.
+// These tests seed a pipeline containing a gate stage, manually open a
+// stage_attempt row (bypassing the full runner), call createGate, then
+// exercise the three query/answer paths including GATE_NOT_FOUND,
+// GATE_ALREADY_ANSWERED, and GATE_ANSWER_INVALID diagnostics.
+describe("KernelService — gate lifecycle (A1.2a)", () => {
+  function seedGatePipeline(svc: KernelService) {
+    const ir = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent" as const, inputs: [],
+          outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+        {
+          name: "G", type: "gate" as const,
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [],
+          config: {
+            question: { text: "continue?", options: ["yes", "no"] },
+            routing: { routes: { yes: "A", no: "A" } },
+          },
+        },
+      ],
+      wires: [{ from: { stage: "A", port: "x" }, to: { stage: "G", port: "x" } }],
+    };
+    const submit = svc.submit(ir);
+    if (!submit.ok) throw new Error("submit failed");
+    return { ir, versionHash: submit.versionHash };
+  }
+
+  function openAttempt(db: DatabaseSync, taskId: string, versionHash: string, stageName: string): string {
+    const attemptId = "attempt-" + Math.random().toString(36).slice(2, 10);
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+       VALUES (?, ?, ?, ?, 1, ?, 'running')`,
+    ).run(attemptId, taskId, versionHash, stageName, Date.now());
+    return attemptId;
+  }
+
+  it("createGate inserts a row; listGates returns it; answerGate resolves to the target", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const { versionHash } = seedGatePipeline(svc);
+      const attemptId = openAttempt(db, "task-1", versionHash, "G");
+
+      const { gateId } = svc.createGate({
+        taskId: "task-1",
+        stageName: "G",
+        attemptId,
+        question: { text: "continue?", options: ["yes", "no"] },
+      });
+
+      // Listable, unanswered.
+      const pending = svc.listGates({ taskId: "task-1", answered: false });
+      expect(pending.map((g) => g.gateId)).toEqual([gateId]);
+      expect(pending[0]!.answer).toBeNull();
+      expect(pending[0]!.question).toEqual({ text: "continue?", options: ["yes", "no"] });
+
+      const result = svc.answerGate(gateId, "yes");
+      expect(result).toEqual({ ok: true, gateId, targetStage: "A", answer: "yes" });
+
+      const after = svc.listGates({ taskId: "task-1", answered: true });
+      expect(after[0]!.answer).toBe("yes");
+      expect(after[0]!.answeredAt).toBeTypeOf("number");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("answerGate with _default fallback routing", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      // Pipeline with _default in routing.
+      const ir = {
+        name: "t",
+        stages: [
+          { name: "A", type: "agent" as const, inputs: [], outputs: [], config: { promptRef: "p" } },
+          {
+            name: "G", type: "gate" as const,
+            inputs: [], outputs: [],
+            config: {
+              question: { text: "?" },
+              routing: { routes: { _default: "A" } },
+            },
+          },
+        ],
+        wires: [],
+      };
+      const submit = svc.submit(ir);
+      if (!submit.ok) throw new Error("submit failed");
+      const attemptId = openAttempt(db, "t1", submit.versionHash, "G");
+      const { gateId } = svc.createGate({
+        taskId: "t1", stageName: "G", attemptId, question: { text: "?" },
+      });
+      const r = svc.answerGate(gateId, "surprise");
+      expect(r).toEqual({ ok: true, gateId, targetStage: "A", answer: "surprise" });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("answerGate rejects unknown gateId", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const r = svc.answerGate("ghost-gate", "yes");
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.diagnostics[0]!.code).toBe("GATE_NOT_FOUND");
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("answerGate is idempotent: second call yields GATE_ALREADY_ANSWERED", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const { versionHash } = seedGatePipeline(svc);
+      const attemptId = openAttempt(db, "t1", versionHash, "G");
+      const { gateId } = svc.createGate({
+        taskId: "t1", stageName: "G", attemptId,
+        question: { text: "continue?", options: ["yes", "no"] },
+      });
+      const first = svc.answerGate(gateId, "yes");
+      expect(first.ok).toBe(true);
+      const second = svc.answerGate(gateId, "no");
+      expect(second.ok).toBe(false);
+      if (!second.ok) {
+        expect(second.diagnostics[0]!.code).toBe("GATE_ALREADY_ANSWERED");
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("answerGate rejects an answer not in the routing table", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const { versionHash } = seedGatePipeline(svc);
+      const attemptId = openAttempt(db, "t1", versionHash, "G");
+      const { gateId } = svc.createGate({
+        taskId: "t1", stageName: "G", attemptId,
+        question: { text: "continue?", options: ["yes", "no"] },
+      });
+      const r = svc.answerGate(gateId, "maybe");
+      expect(r.ok).toBe(false);
+      if (!r.ok) {
+        expect(r.diagnostics[0]!.code).toBe("GATE_ANSWER_INVALID");
+        expect(r.diagnostics[0]!.context?.allowedAnswers).toEqual(["yes", "no"]);
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("listGates filters by taskId correctly", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const { versionHash } = seedGatePipeline(svc);
+      const a1 = openAttempt(db, "task-A", versionHash, "G");
+      const a2 = openAttempt(db, "task-B", versionHash, "G");
+      const g1 = svc.createGate({ taskId: "task-A", stageName: "G", attemptId: a1, question: { text: "?" } });
+      const g2 = svc.createGate({ taskId: "task-B", stageName: "G", attemptId: a2, question: { text: "?" } });
+      expect(svc.listGates({ taskId: "task-A" }).map((g) => g.gateId)).toEqual([g1.gateId]);
+      expect(svc.listGates({ taskId: "task-B" }).map((g) => g.gateId)).toEqual([g2.gateId]);
+      const all = svc.listGates().map((g) => g.gateId).sort();
+      expect(all).toEqual([g1.gateId, g2.gateId].sort());
+    } finally {
+      db.close();
+    }
+  });
+});

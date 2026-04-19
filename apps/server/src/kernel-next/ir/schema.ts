@@ -180,6 +180,10 @@ export const DiagnosticSchema = z.object({
     "GATE_FANOUT_FORBIDDEN",
     "GATE_ROUTING_TARGET_MISSING",
     "FANOUT_INPUT_MISSING",
+    // A1.2 additions — gate lifecycle
+    "GATE_NOT_FOUND",
+    "GATE_ALREADY_ANSWERED",
+    "GATE_ANSWER_INVALID",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

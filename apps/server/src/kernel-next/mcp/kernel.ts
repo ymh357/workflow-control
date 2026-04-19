@@ -61,6 +61,25 @@ export type ApprovalResult =
   | { ok: true; proposalId: string; status: "approved" | "rejected" }
   | { ok: false; diagnostics: Diagnostic[] };
 
+// Gate lifecycle (§3.3 / §8.1). createGate is called by the runner when
+// a gate-type stage enters its executing substate; answerGate is called
+// via MCP answer_gate or REST when an answer arrives.
+
+export interface GateRow {
+  gateId: string;
+  taskId: string;
+  stageName: string;
+  attemptId: string;
+  question: { text: string; options?: string[] };
+  answer: string | null;
+  answeredAt: number | null;
+  createdAt: number;
+}
+
+export type AnswerGateResult =
+  | { ok: true; gateId: string; targetStage: string; answer: string }
+  | { ok: false; diagnostics: Diagnostic[] };
+
 export interface KernelServiceOptions {
   /** Override tsc binary path for tests. */
   tscPath?: string;
@@ -290,6 +309,205 @@ export class KernelService {
     }
 
     return { ok: true, proposalId, status: target };
+  }
+
+  /**
+   * Create a gate queue entry. Called by the runner when a gate-type stage
+   * enters its executing substate. The `question` is taken verbatim from
+   * the stage's IR config; callers should not mutate it.
+   */
+  createGate(args: {
+    taskId: string;
+    stageName: string;
+    attemptId: string;
+    question: { text: string; options?: string[] };
+  }): { gateId: string } {
+    const gateId = randomUUID();
+    this.db.prepare(
+      `INSERT INTO gate_queue
+       (gate_id, task_id, stage_name, attempt_id, question_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      gateId,
+      args.taskId,
+      args.stageName,
+      args.attemptId,
+      JSON.stringify(args.question),
+      Date.now(),
+    );
+    return { gateId };
+  }
+
+  /**
+   * List gates. Filters:
+   *   - taskId: narrow to a single task
+   *   - answered: true -> only answered, false -> only pending, omit -> both
+   * Ordered newest-first.
+   */
+  listGates(filter: { taskId?: string; answered?: boolean } = {}): GateRow[] {
+    const clauses: string[] = [];
+    const params: string[] = [];
+    if (filter.taskId !== undefined) {
+      clauses.push("task_id = ?");
+      params.push(filter.taskId);
+    }
+    if (filter.answered === true) {
+      clauses.push("answered_at IS NOT NULL");
+    } else if (filter.answered === false) {
+      clauses.push("answered_at IS NULL");
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = this.db.prepare(
+      `SELECT gate_id, task_id, stage_name, attempt_id, question_json,
+              answer, answered_at, created_at
+       FROM gate_queue ${where}
+       ORDER BY created_at DESC`,
+    ).all(...params) as Array<{
+      gate_id: string;
+      task_id: string;
+      stage_name: string;
+      attempt_id: string;
+      question_json: string;
+      answer: string | null;
+      answered_at: number | null;
+      created_at: number;
+    }>;
+    return rows.map((r) => ({
+      gateId: r.gate_id,
+      taskId: r.task_id,
+      stageName: r.stage_name,
+      attemptId: r.attempt_id,
+      question: JSON.parse(r.question_json) as { text: string; options?: string[] },
+      answer: r.answer,
+      answeredAt: r.answered_at,
+      createdAt: r.created_at,
+    }));
+  }
+
+  /**
+   * Answer an open gate. Validates:
+   *   - gate exists (GATE_NOT_FOUND)
+   *   - not already answered (GATE_ALREADY_ANSWERED)
+   *   - answer is accepted by the stage's routing table (GATE_ANSWER_INVALID)
+   * On success, writes answer + answered_at and returns the target stage
+   * name that the runner should advance to.
+   *
+   * Resolving the target stage requires loading the IR for the version the
+   * gate's attempt is bound to. If the version is missing (shouldn't happen
+   * in practice — FK prevents orphan attempts), a GATE_ANSWER_INVALID is
+   * raised so the error surfaces on the caller.
+   */
+  answerGate(gateId: string, answer: string): AnswerGateResult {
+    const row = this.db.prepare(
+      `SELECT gate_id, task_id, stage_name, attempt_id, question_json,
+              answered_at
+       FROM gate_queue WHERE gate_id = ?`,
+    ).get(gateId) as
+      | {
+          gate_id: string;
+          task_id: string;
+          stage_name: string;
+          attempt_id: string;
+          question_json: string;
+          answered_at: number | null;
+        }
+      | undefined;
+    if (!row) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "GATE_NOT_FOUND",
+          message: `gateId '${gateId}' not found`,
+          context: { gateId },
+        }],
+      };
+    }
+    if (row.answered_at !== null) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "GATE_ALREADY_ANSWERED",
+          message: `gate '${gateId}' is already answered`,
+          context: { gateId, answeredAt: row.answered_at },
+        }],
+      };
+    }
+
+    // Resolve routing via the attempt's pipeline version.
+    const attemptRow = this.db.prepare(
+      `SELECT version_hash FROM stage_attempts WHERE attempt_id = ?`,
+    ).get(row.attempt_id) as { version_hash: string } | undefined;
+    if (!attemptRow) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "GATE_ANSWER_INVALID",
+          message: `gate '${gateId}' references attempt '${row.attempt_id}' which no longer exists`,
+          context: { gateId, attemptId: row.attempt_id },
+        }],
+      };
+    }
+    const ir = getPipelineIR(this.db, attemptRow.version_hash);
+    if (!ir) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "GATE_ANSWER_INVALID",
+          message: `pipeline version '${attemptRow.version_hash}' not found for gate '${gateId}'`,
+          context: { gateId, versionHash: attemptRow.version_hash },
+        }],
+      };
+    }
+    const stage = ir.stages.find((s) => s.name === row.stage_name);
+    if (!stage || stage.type !== "gate") {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "GATE_ANSWER_INVALID",
+          message: `stage '${row.stage_name}' is not a gate in version '${attemptRow.version_hash}'`,
+          context: { gateId, stageName: row.stage_name },
+        }],
+      };
+    }
+    const routes = stage.config.routing.routes;
+    const targetStage = routes[answer] ?? routes["_default"];
+    if (targetStage === undefined) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "GATE_ANSWER_INVALID",
+          message:
+            `answer '${answer}' is not in gate '${row.stage_name}' routing table ` +
+            `and no '_default' route is declared`,
+          context: {
+            gateId,
+            stageName: row.stage_name,
+            answer,
+            allowedAnswers: Object.keys(routes),
+          },
+        }],
+      };
+    }
+
+    // Atomic answer write. WHERE answered_at IS NULL prevents a race with
+    // a concurrent answer_gate call (same defense as resolveProposal).
+    const res = this.db.prepare(
+      `UPDATE gate_queue
+       SET answer = ?, answered_at = ?
+       WHERE gate_id = ? AND answered_at IS NULL`,
+    ).run(answer, Date.now(), gateId);
+    if (res.changes === 0) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "GATE_ALREADY_ANSWERED",
+          message: `gate '${gateId}' was answered concurrently`,
+          context: { gateId },
+        }],
+      };
+    }
+
+    return { ok: true, gateId, targetStage, answer };
   }
 
   /**

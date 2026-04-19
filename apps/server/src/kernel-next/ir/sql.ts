@@ -86,6 +86,24 @@ CREATE TABLE IF NOT EXISTS pipeline_proposals (
 -- composite index supports the "newest pending first" hot path.
 CREATE INDEX IF NOT EXISTS idx_pp_status_created
   ON pipeline_proposals(status, created_at DESC);
+
+-- gate_queue: one row per gate activation (terminal-design §3.3 / §8.1).
+-- A gate is created when a gate-type stage enters its executing substate;
+-- answer_gate fills in answer + answered_at and the machine advances.
+CREATE TABLE IF NOT EXISTS gate_queue (
+  gate_id         TEXT PRIMARY KEY,
+  task_id         TEXT NOT NULL,
+  stage_name      TEXT NOT NULL,
+  attempt_id      TEXT NOT NULL REFERENCES stage_attempts(attempt_id),
+  question_json   TEXT NOT NULL,
+  answer          TEXT,
+  answered_at     INTEGER,
+  created_at      INTEGER NOT NULL
+);
+-- listGates filters by task_id (and optionally answered/unanswered); this
+-- index supports the get_task_status hot path.
+CREATE INDEX IF NOT EXISTS idx_gq_task_answered
+  ON gate_queue(task_id, answered_at);
 `;
 
 export function initKernelNextSchema(db: DatabaseSync): void {
