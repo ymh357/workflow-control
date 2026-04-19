@@ -383,7 +383,7 @@
 | 0.1 | 删 Slack Bridge：`apps/slack-cli-bridge/`、所有 `slack_*` SSE 事件、相关依赖 | 2-3 天 | cut | ✅ 已完成 |
 | 0.2 | 冷冻 Edge Runner：`apps/server/src/edge/` 加 `@deprecated`，文档标 unsupported，不删代码 | 0.5 天 | cut | ✅ 已完成 |
 | 0.3 | 冷冻 Gemini/Codex：`agent/gemini-executor.ts`、`agent/codex-executor.ts` 加 `@deprecated`，engine field validator 改 warning | 0.5 天 | cut | ✅ 已完成 |
-| 0.4 | 删多余内置 pipeline：~~只保留 `pipeline-generator` / `tech-research` / `web3-tech-research`~~ → 实际只保留了 `pipeline-generator`；`tech-research` 和 `web3-tech-research` 尚未实现 | 1 天 | cut | ⚠️ 部分（见下） |
+| 0.4 | 删多余内置 pipeline：~~只保留 `pipeline-generator` / `tech-research` / `web3-tech-research`~~ → 实际只保留了 `pipeline-generator`；`tech-research` 和 `web3-tech-research` 尚未实现 | 1 天 | cut | ⚠️ 部分（见下，design + installer 已就位） |
 | 0.5 | 更新 README + CLAUDE.md：反映新定位（本地单用户、Claude-first、AI 代写） | 0.5-1 天 | cut | ✅ 已完成 |
 | 0.6 | 新增 `task_triage` 内置 pipeline：~~定义 triage stage type、`skip_triage` 豁免字段、server 路由接入~~ → 重新定义为"系统级路由"，移出 Phase 0，见 Phase 0 补做议题 | 1 周 | build | ❌ 未做（已重定义） |
 
@@ -394,6 +394,9 @@
 在推进 Tier 1 补丁时发现 Phase 0.6 从未落地。经 Review B → Tier 1 评估后决定：
 
 - **0.4 补做**：实现 / 移植 `tech-research` 和 `web3-tech-research` 两个内置 pipeline。没有多个 pipeline，系统级路由无处可路由。
+  - 设计稿：`docs/builtin-pipelines-design.md`（stage 骨架、store_schema、gate 设计、生成方式）。
+  - `builtin-installer.ts` 已改为目录扫描（`discoverBuiltinPipelines`），后续新 pipeline 放入 `src/builtin-pipelines/<name>/` 即自动装载，无需改代码。
+  - 实际 YAML + prompts 不在本 session 手写，按设计稿 §4 走 `pipeline-generator` 生成后 commit。
 - **0.6 终判（D5，2026-04-19）**：**永不实施**。pipeline-generator 是本项目**唯一**的路由层，与 §1.1 "AI 写 DSL，人不写" 的定位对齐。让系统再套一层 llm_decision 去判断 pipeline 适配度，只会与 pipeline-generator 的生成逻辑形成职责重复；而且 "task 不 fit 任何已有 pipeline" 的正确响应不是 "建议 Claude Code"，而是**让 pipeline-generator 现场生成一个新 pipeline**。triage-as-system-router 从路线图移除。
 
 **为什么不做**：
