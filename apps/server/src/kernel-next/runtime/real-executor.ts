@@ -28,13 +28,15 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
-import type { PortIR, StageIR } from "../ir/schema.js";
+import type { PortIR, AgentStage } from "../ir/schema.js";
 import type {
   ExecuteStageArgs,
   ExecuteStageResult,
   StageExecutor,
 } from "./executor.js";
 import type { EventDispatcher } from "./port-runtime.js";
+import type { PromptResolver } from "./prompt-resolver.js";
+import { TrivialPromptResolver } from "./prompt-resolver.js";
 
 export interface RealStageExecutorOptions {
   /**
@@ -66,6 +68,12 @@ export interface RealStageExecutorOptions {
    * can advance once a retry succeeds.
    */
   maxRetries?: number;
+  /**
+   * Resolver turning AgentStage.promptRef into the actual user prompt.
+   * Defaults to TrivialPromptResolver (promptRef === prompt string).
+   * A registry-backed resolver arrives in A2 per design doc §2.3.
+   */
+  promptResolver?: PromptResolver;
 }
 
 const DEFAULT_MODEL = "claude-haiku-4-5";
@@ -81,6 +89,7 @@ export class RealStageExecutor implements StageExecutor {
   private readonly maxBudgetUsd: number;
   private readonly claudePath: string;
   private readonly maxRetries: number;
+  private readonly promptResolver: PromptResolver;
 
   constructor(options: RealStageExecutorOptions) {
     this.mcpServerFactory = options.mcpServerFactory;
@@ -89,6 +98,7 @@ export class RealStageExecutor implements StageExecutor {
     this.maxBudgetUsd = options.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD;
     this.claudePath = options.claudePath ?? DEFAULT_CLAUDE_PATH;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.promptResolver = options.promptResolver ?? new TrivialPromptResolver();
   }
 
   async executeStage(args: ExecuteStageArgs): Promise<ExecuteStageResult> {
@@ -99,16 +109,9 @@ export class RealStageExecutor implements StageExecutor {
 
     if (stage.type !== "agent") {
       throw new Error(
-        `RealStageExecutor only handles agent stages; stage '${stageName}' is type '${stage.type}' ` +
-          `(script/gate dispatch is A0.3 / A1 work)`,
+        `RealStageExecutor only handles agent stages; stage '${stageName}' is type '${stage.type}'. ` +
+          `Script/gate dispatch is tracked under kernel-next A1 (see design doc §3.2).`,
       );
-    }
-    // Trivial prompt resolver (A0.3 scope): treat promptRef as the prompt
-    // itself. A real resolver backed by a userland prompt registry arrives
-    // in A2 per design doc §2.3.
-    const userPrompt = stage.config.promptRef;
-    if (!userPrompt || userPrompt.trim().length === 0) {
-      throw new Error(`Stage '${stageName}' has empty config.promptRef; RealStageExecutor requires a non-empty prompt`);
     }
 
     // Retry loop. Total allowed attempts = maxRetries + 1. Intermediate
@@ -119,7 +122,7 @@ export class RealStageExecutor implements StageExecutor {
     const totalAttempts = this.maxRetries + 1;
     for (let i = 0; i < totalAttempts; i++) {
       const isFinalAttempt = i === totalAttempts - 1;
-      const result = await this.doAttempt(args, stage, userPrompt, isFinalAttempt);
+      const result = await this.doAttempt(args, stage, isFinalAttempt);
       lastResult = result;
       if (result.status === "success") return result;
     }
@@ -129,8 +132,7 @@ export class RealStageExecutor implements StageExecutor {
 
   private async doAttempt(
     args: ExecuteStageArgs,
-    stage: StageIR,
-    userPrompt: string,
+    stage: AgentStage,
     isFinalAttempt: boolean,
   ): Promise<ExecuteStageResult> {
     const { stageName, taskId, versionHash, portValues, portRuntime } = args;
@@ -156,8 +158,16 @@ export class RealStageExecutor implements StageExecutor {
       });
     }
 
-    // 3. System prompt append describing the stage contract — tool-call only.
-    const systemPromptAppend = buildSystemPromptAppend(stage, inputs, {
+    // 3. Resolve the user prompt via the configured resolver. A2 may plug
+    //    in a registry-backed resolver that looks up promptRef in a
+    //    userland fragment library; today the trivial resolver returns
+    //    promptRef verbatim.
+    const userPrompt = this.promptResolver.resolve({
+      stage, taskId, attemptId, inputs,
+    });
+
+    // 4. System prompt append describing the stage contract — tool-call only.
+    const systemPromptAppend = buildSystemPromptAppend(stage, userPrompt, inputs, {
       taskId, attemptId,
     });
 
@@ -390,7 +400,8 @@ function detectNestedJson(value: string): string | undefined {
 }
 
 function buildSystemPromptAppend(
-  stage: StageIR,
+  stage: AgentStage,
+  resolvedPrompt: string,
   inputs: Record<string, unknown>,
   ctx: { taskId: string; attemptId: string },
 ): string {
@@ -400,16 +411,10 @@ function buildSystemPromptAppend(
   const outputPortLines = stage.outputs
     .map((p) => `  - ${p.name}: ${p.type}`)
     .join("\n");
-  // buildSystemPromptAppend is called only from executeStage's agent path,
-  // so stage.type is narrowed to 'agent' at the call site; accept StageIR
-  // here and narrow defensively.
-  const resolvedPrompt =
-    stage.type === "agent" ? stage.config.promptRef : undefined;
-  const promptSummary = resolvedPrompt
-    ? resolvedPrompt.length > 400
+  const promptSummary =
+    resolvedPrompt.length > 400
       ? resolvedPrompt.slice(0, 400) + " [...]"
-      : resolvedPrompt
-    : "(no prompt supplied)";
+      : resolvedPrompt;
   const inputDump = Object.keys(inputs).length === 0
     ? "  (no inputs)"
     : Object.entries(inputs)
