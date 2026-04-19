@@ -75,6 +75,13 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
   }
 
   // --- Stage-type specific rules (gate / fanout) ---
+  // Track gate target → list of gates that route to it, so we can reject
+  // targets shared across gates (F6 / concern C3). A stage that is a
+  // routing target for two different gates would be simultaneously
+  // authorized by one gate's answer and skipped by the other's, and the
+  // runtime has no defined resolution.
+  const gateTargetOwners = new Map<string, string[]>();
+
   for (const s of ir.stages) {
     if (s.type === "gate") {
       // zod-level schema already forbids `fanout` on GateStage, but patch
@@ -97,6 +104,16 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
             context: { stage: s.name, answer, target },
           });
         }
+        // Record owner for the cross-gate conflict check below. A single
+        // gate may legitimately route multiple answers to the same target
+        // (e.g. yes → SUMMARY, confirm → SUMMARY); that's not a conflict,
+        // so we de-dupe per-gate before adding.
+        const owners = gateTargetOwners.get(target);
+        if (!owners) {
+          gateTargetOwners.set(target, [s.name]);
+        } else if (!owners.includes(s.name)) {
+          owners.push(s.name);
+        }
       }
     }
 
@@ -113,6 +130,26 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
           context: { stage: s.name, fanoutInput: fanout.input },
         });
       }
+    }
+  }
+
+  // --- Gate target cross-gate conflict (F6 / concern C3) ---
+  // Reject targets routed to by more than one gate. The runtime's
+  // GATE_ANSWERED path places the picked target into
+  // context.gateAuthorizedTargets and the non-picked siblings into
+  // gateSkippedTargets. A target shared across two gates would land
+  // on BOTH lists when each gate's answer arrives with a different
+  // selection, producing undefined behaviour (ir-to-machine compiles
+  // two mutually-exclusive transitions for the same region).
+  for (const [target, owners] of gateTargetOwners) {
+    if (owners.length > 1) {
+      diagnostics.push({
+        code: "GATE_TARGET_SHARED",
+        message:
+          `Stage '${target}' appears as a routing target for multiple gates ` +
+          `(${owners.join(", ")}). A routing target must belong to exactly one gate.`,
+        context: { target, gates: owners },
+      });
     }
   }
 

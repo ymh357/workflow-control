@@ -214,4 +214,63 @@ describe("structural validator", () => {
     };
     expect(validateStructural(ir)).toEqual({ ok: true });
   });
+
+  // F6 / concern C3 — a stage cannot be a routing target for more than
+  // one gate, since the runtime's authorize/skip bookkeeping assumes a
+  // single owning gate per target.
+  it("rejects a stage routed to by two different gates with GATE_TARGET_SHARED", () => {
+    const ir: PipelineIR = {
+      name: "t-shared",
+      stages: [
+        { name: "SRC", type: "agent", inputs: [],
+          outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+        { name: "G1", type: "gate",
+          inputs: [{ name: "x", type: "number" }], outputs: [],
+          config: {
+            question: { text: "?", options: ["a", "b"] },
+            routing: { routes: { a: "SHARED", b: "OTHER" } },
+          } },
+        { name: "G2", type: "gate",
+          inputs: [{ name: "x", type: "number" }], outputs: [],
+          config: {
+            question: { text: "?", options: ["c", "d"] },
+            routing: { routes: { c: "SHARED", d: "ELSE" } },
+          } },
+        { name: "SHARED", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+        { name: "OTHER", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+        { name: "ELSE", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+      ],
+      wires: [],
+    };
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    const shared = r.diagnostics.find((d) => d.code === "GATE_TARGET_SHARED");
+    expect(shared).toBeDefined();
+    expect(shared!.message).toContain("SHARED");
+    expect(shared!.context).toMatchObject({ target: "SHARED" });
+    const gates = (shared!.context as { gates: string[] }).gates.slice().sort();
+    expect(gates).toEqual(["G1", "G2"]);
+  });
+
+  // Corner case: one gate routing multiple answers to the same stage is
+  // NOT a conflict — it's legitimate ("yes" and "confirm" both advance
+  // to SUMMARY). Only cross-gate overlap is rejected.
+  it("accepts the same target for multiple answers of a single gate", () => {
+    const ir: PipelineIR = {
+      name: "t-same-gate",
+      stages: [
+        { name: "G", type: "gate",
+          inputs: [], outputs: [],
+          config: {
+            question: { text: "?", options: ["yes", "confirm", "no"] },
+            routing: { routes: { yes: "OK", confirm: "OK", no: "CANCEL" } },
+          } },
+        { name: "OK", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+        { name: "CANCEL", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+      ],
+      wires: [],
+    };
+    expect(validateStructural(ir)).toEqual({ ok: true });
+  });
 });

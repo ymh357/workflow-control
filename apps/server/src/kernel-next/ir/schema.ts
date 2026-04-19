@@ -179,6 +179,7 @@ export const DiagnosticSchema = z.object({
     // A0 additions — stage-type / gate / fanout constraints
     "GATE_FANOUT_FORBIDDEN",
     "GATE_ROUTING_TARGET_MISSING",
+    "GATE_TARGET_SHARED",
     "FANOUT_INPUT_MISSING",
     // A1.2 additions — gate lifecycle
     "GATE_NOT_FOUND",
