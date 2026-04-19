@@ -494,13 +494,18 @@ sub-path 选择的字段不在 schema 直接定义的范围内。
 
 **目标**：给 AI 足够工具形成"任务失败 → 分析 → 修改 → 验证"闭环。
 
-#### MVP（第一个月，must-have）
+#### MVP（第一个月，must-have）— ✅ DONE
 
-| Step | 动作 | 时间 |
+MVP 实施采用 **MCP + CLI 双前端 + 共享 core** 架构（AI 主力场景）：
+- Core：`apps/server/src/lib/debug-queries.ts`（纯查询函数，14 测试）
+- MCP 壳：`apps/server/src/lib/debug-mcp.ts`（`__debug__` SDK MCP，workflow 内 agent 自诊断用，9 测试）
+- CLI 壳：`apps/server/src/cli/debug.ts`（analyze/record/diff 子命令，默认 --json，10 测试）
+
+| Step | 动作 | 状态 |
 |---|---|---|
-| 4.1 | `analyze_task_failure(taskId)`：AI 读记录生成诊断报告 | 1-2 周 |
-| 4.2 | `get_stage_execution_record(taskId, stageName, attempt)`：精确查单次执行 | 3-4 天 |
-| 4.3 | `diff_executions(recordId_a, recordId_b)`：两次执行对比 | 3-4 天 |
+| 4.1 | `analyze_task_failure(taskId)`：AI 读记录生成诊断报告 | ✅ |
+| 4.2 | `get_stage_execution_record(taskId, stageName, attempt)`：精确查单次执行 | ✅ |
+| 4.3 | `diff_executions(recordId_a, recordId_b)`：两次执行对比 | ✅ |
 
 #### Phase 4 延展（第二个月起，should-have）
 
