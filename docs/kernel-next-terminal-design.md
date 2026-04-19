@@ -398,14 +398,28 @@ transition or one no-op. The tenth event, `INTERRUPT`, is
 kernel-originated and is handled as follows:
 
 - **From `waiting_for_claude`**: next assistant turn becomes the
-  "summary turn". After the summary assistant message (or after a
-  short timeout), AgentMachine transitions to `done` with result
-  `{ status: 'interrupted' }`.
+  "summary turn" — Claude gets one more opportunity to produce output
+  before the machine finalises. The **final status reflects that
+  turn's actual outcome**, not the fact that an INTERRUPT was
+  received:
+  - Summary turn completes with `RESULT_SUCCESS` → `{ status: 'done' }`
+    (the port writes are legitimate; the fact that we were asked to
+    stop does not invalidate them).
+  - Summary turn produces `RESULT_ERROR` or the short timeout expires
+    before completion → `{ status: 'interrupted' }` with
+    `interruptedFrom: 'waiting_for_claude'` in the diagnostic so the
+    caller can distinguish "stopped cleanly on request" from a
+    spontaneous error.
+  - AgentMachine context retains `interruptArmed: true` across the
+    summary turn, so sidecar audit rows can always tell whether an
+    INTERRUPT was the trigger even when final status is `'done'`.
 - **From `dispatching_tool` / `compacting`**: the current SDK activity
   is allowed to complete (we don't abort mid-tool-call), then the
-  INTERRUPT is processed on return to `waiting_for_claude`.
+  INTERRUPT is processed on return to `waiting_for_claude`. Same
+  final-status rules apply.
 - **From `starting`**: machine transitions directly to `done` with
-  result `interrupted` without executing any turn.
+  result `{ status: 'interrupted' }` without executing any turn — no
+  summary turn is possible because the SDK hasn't been engaged.
 
 Full event set: `SDK_INIT`, `ASSISTANT_TEXT` (no-op), `TOOL_USE_REQUESTED`,
 `TOOL_RESULT_RECEIVED`, `COMPACT_STARTED`, `COMPACT_ENDED`,
@@ -418,8 +432,13 @@ Full event set: `SDK_INIT`, `ASSISTANT_TEXT` (no-op), `TOOL_USE_REQUESTED`,
   "before turn N" → re-execute with same inputs, different randomness
 - **Precise graceful interrupt**: when kernel-level hot-update needs
   to stop an agent stage, it sends an `INTERRUPT` event on the
-  `waiting_for_claude` state, the agent gets one more turn to write
-  a summary, then transitions to `done` with a "interrupted" result
+  `waiting_for_claude` state. The agent gets one more turn to write a
+  summary; AgentMachine then transitions to `done`. Final status is
+  `'done'` if the summary turn produced RESULT_SUCCESS, `'interrupted'`
+  otherwise — see §4.2 for the full matrix. Either way the
+  `interruptArmed` flag stays in sidecar audit so the caller can
+  distinguish "ran to completion" from "ran to completion because we
+  asked it to"
 - **Debug via XState visualiser**: agent execution is inspectable
   with the same tools as the pipeline-level machine
 
@@ -914,8 +933,12 @@ stage only; do not rewind".
 Decision (Q5 → B10): **graceful interrupt.** The kernel sends
 AgentMachine an `INTERRUPT` event; AgentMachine allows one more turn
 for the agent to write a summary into scratchpad / sidecar, then
-transitions to `done` with result marked `"interrupted"`. This
-typically costs 10-60 seconds.
+transitions to `done`. The final status follows §4.2:
+RESULT_SUCCESS → `'done'` (the summary turn produced a clean result;
+port writes are legitimate and the stage is considered complete),
+timeout / RESULT_ERROR → `'interrupted'`. In both cases
+`interruptArmed` stays recorded so the migration audit can tell that
+this stage was stopped on request. This typically costs 10-60 seconds.
 
 Hard interrupt (no summary turn) is not exposed as an option in
 terminal design. Emergency termination uses `cancel_task`, not
