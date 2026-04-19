@@ -1,49 +1,32 @@
 // Mock stage executor — spike-only.
 //
-// A "real" executor (phase 2) would invoke the Claude Agent SDK with the
-// stage's prompt, consume its output, parse writes, then call port-runtime
-// to persist them. The mock version takes a hardcoded `StageHandler` per
-// stage name and calls it with the input port values.
+// A "real" executor (phase 2) invokes the Claude Agent SDK with the stage's
+// prompt, consumes its output, parses writes, and calls port-runtime to
+// persist them. See runtime/real-executor.ts.
 //
-// The executor is driven externally (not by XState): runtime/runner.ts
-// observes stage transitions to "executing" and triggers the matching
-// handler via this dispatcher.
+// The mock version takes a hardcoded `StageHandler` per stage name and calls
+// it with the input port values. runner.ts observes stage transitions to
+// `executing` and triggers the matching handler via the top-level
+// `executeStage` function (kept for back-compat with existing tests), or via
+// the `MockStageExecutor` class (new P1 surface that mirrors
+// RealStageExecutor).
 
-import type { PipelineIR } from "../ir/schema.js";
-import type { PortRuntime } from "./port-runtime.js";
+import type {
+  ExecuteStageArgs,
+  ExecuteStageResult,
+  StageExecutor,
+  StageHandlerMap,
+} from "./executor.js";
 
-export type StageHandler = (
-  inputs: Record<string, unknown>,
-  ctx: StageHandlerContext,
-) => Promise<Record<string, unknown>> | Record<string, unknown>;
-
-export interface StageHandlerContext {
-  taskId: string;
-  stageName: string;
-  attemptId: string;
-  attemptIdx: number;
-}
-
-export interface StageHandlerMap {
-  [stageName: string]: StageHandler;
-}
-
-export interface ExecuteStageArgs {
-  ir: PipelineIR;
-  stageName: string;
-  taskId: string;
-  versionHash: string;
-  portValues: Record<string, unknown>; // current in-memory view
-  handlers: StageHandlerMap;
-  portRuntime: PortRuntime;
-}
-
-export interface ExecuteStageResult {
-  attemptId: string;
-  attemptIdx: number;
-  status: "success" | "error";
-  error?: string;
-}
+// Re-export shared types so existing importers (runner.ts, tests) keep
+// working via `from "./mock-executor.js"`.
+export type {
+  StageHandler,
+  StageHandlerContext,
+  StageHandlerMap,
+  ExecuteStageArgs,
+  ExecuteStageResult,
+} from "./executor.js";
 
 export async function executeStage(args: ExecuteStageArgs): Promise<ExecuteStageResult> {
   const { ir, stageName, taskId, versionHash, portValues, handlers, portRuntime } = args;
@@ -99,4 +82,26 @@ export async function executeStage(args: ExecuteStageArgs): Promise<ExecuteStage
   // 5. Finish attempt.
   portRuntime.finishAttempt(attemptId, "success");
   return { attemptId, attemptIdx, status: "success" };
+}
+
+/**
+ * Class-form wrapper over the top-level `executeStage`. Mirrors
+ * RealStageExecutor so callers can pick between mock and real without
+ * branching on function vs class. `handlers` is captured at construction
+ * time and merged into the args before delegation — callers may still
+ * pass `handlers` in args (it takes precedence).
+ */
+export class MockStageExecutor implements StageExecutor {
+  private readonly handlers: StageHandlerMap;
+
+  constructor(options: { handlers: StageHandlerMap }) {
+    this.handlers = options.handlers;
+  }
+
+  executeStage(args: ExecuteStageArgs): Promise<ExecuteStageResult> {
+    return executeStage({
+      ...args,
+      handlers: args.handlers ?? this.handlers,
+    });
+  }
 }

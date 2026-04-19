@@ -70,6 +70,31 @@ export class PortRuntime {
   ) {}
 
   /**
+   * Expose the dispatcher so higher layers (e.g. RealStageExecutor) can
+   * hand the same machine-bound dispatcher to out-of-band writers like
+   * the MCP `write_port` tool. Without this, tool-driven port writes go
+   * to an inert dispatcher and the machine never receives PORT_WRITTEN.
+   */
+  getDispatcher(): EventDispatcher {
+    return this.dispatcher;
+  }
+
+  /**
+   * Read all direction='out' port_values rows written during a specific
+   * attempt. Used by executors to verify that agent-side tool calls (e.g.
+   * MCP `write_port`) produced the expected outputs for the attempt,
+   * without leaking the db handle.
+   */
+  readWritesForAttempt(attemptId: string): Array<{ port: string; value: unknown }> {
+    const rows = this.db.prepare(
+      `SELECT port_name, value_json FROM port_values
+       WHERE attempt_id = ? AND direction = 'out'
+       ORDER BY written_at ASC`,
+    ).all(attemptId) as Array<{ port_name: string; value_json: string }>;
+    return rows.map((r) => ({ port: r.port_name, value: JSON.parse(r.value_json) }));
+  }
+
+  /**
    * Start a new attempt for a stage. Returns the attempt_id and the
    * 1-based attempt_idx (retries bump the idx).
    */
@@ -144,17 +169,24 @@ export class PortRuntime {
    * On `error`, the runtime ALSO dispatches STAGE_FAILED so the machine can
    * transition the stage region to its error terminal. Without this event,
    * the stage would stay stuck in `executing`.
+   *
+   * Pass `options.silent: true` for intermediate-retry failures: the DB row
+   * is still updated to status='error' (lineage stays accurate), but no
+   * STAGE_FAILED event is dispatched. The machine remains in `executing`,
+   * allowing the caller to start a fresh attempt for the same stage. Used
+   * by RealStageExecutor's internal retry loop.
    */
   finishAttempt(
     attemptId: string,
     status: AttemptStatus,
     errorMessage?: string,
+    options?: { silent?: boolean },
   ): void {
     this.db.prepare(
       `UPDATE stage_attempts SET ended_at = ?, status = ? WHERE attempt_id = ?`,
     ).run(Date.now(), status, attemptId);
 
-    if (status === "error") {
+    if (status === "error" && !options?.silent) {
       // Look up the stage name for the event payload.
       const row = this.db.prepare(
         `SELECT stage_name FROM stage_attempts WHERE attempt_id = ?`,

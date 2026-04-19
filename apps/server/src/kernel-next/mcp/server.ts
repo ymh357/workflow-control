@@ -1,6 +1,6 @@
 // Kernel-next MCP server.
 //
-// Exposes 6 tools to userland (pipeline-generator and future AI-driven
+// Exposes 7 tools to userland (pipeline-generator and future AI-driven
 // pipeline authors / debuggers). Implementation is thin: each handler
 // parses args, calls through to KernelService / queries, and wraps the
 // response in the MCP text-envelope shape.
@@ -14,6 +14,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { KernelService, type KernelServiceOptions } from "./kernel.js";
 import { queryLineage, diffRuns } from "./lineage.js";
 import { IRPatchSchema } from "../ir/schema.js";
+import type { PipelineIR } from "../ir/schema.js";
+import { PortRuntime, type EventDispatcher } from "../runtime/port-runtime.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
 
@@ -39,6 +41,14 @@ function errorResponse(message: string, extra: Record<string, unknown> = {}) {
 export interface KernelMcpOptions extends KernelServiceOptions {
   /** Max bytes returned by read_port before truncating. Default 64KB. */
   defaultMaxBytes?: number;
+  /**
+   * Optional dispatcher for port_write's PORT_WRITTEN events. When the
+   * caller is running a live XState runner and wants the agent's
+   * write_port tool calls to advance the machine, pass the runner's
+   * dispatcher here. Omit (default inert) for external authoring /
+   * debugging use cases where no machine is listening.
+   */
+  writePortDispatcher?: EventDispatcher;
 }
 
 export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}) {
@@ -243,6 +253,92 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
               ok: true,
               report: diffRuns(db, String(args.taskA), String(args.taskB)),
             });
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "write_port",
+        description:
+          "Write a value to a declared output port for an in-flight stage " +
+          "attempt. The (stage, port) pair must be declared as an `out` port " +
+          "on the stage of the pipeline version associated with the attempt. " +
+          "Dispatches PORT_WRITTEN via an inert dispatcher — this tool is " +
+          "intended for authors / agents recording outputs, not for driving " +
+          "the XState runner (the runner owns its own PortRuntime).",
+        inputSchema: {
+          taskId: z.string(),
+          attemptId: z.string(),
+          stage: z.string(),
+          port: z.string(),
+          value: z.unknown(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            const taskId = String(args.taskId);
+            const attemptId = String(args.attemptId);
+            const stage = String(args.stage);
+            const port = String(args.port);
+
+            // Resolve the pipeline version this attempt belongs to, so we can
+            // validate that (stage, port) is declared as an output on that
+            // specific version (not just any version in the DB).
+            const attemptRow = db.prepare(
+              `SELECT version_hash, task_id, stage_name
+               FROM stage_attempts WHERE attempt_id = ?`,
+            ).get(attemptId) as
+              | { version_hash: string; task_id: string; stage_name: string }
+              | undefined;
+            if (!attemptRow) {
+              return errorResponse(`attemptId '${attemptId}' not found`);
+            }
+            if (attemptRow.task_id !== taskId) {
+              return errorResponse(
+                `attemptId '${attemptId}' belongs to task '${attemptRow.task_id}', not '${taskId}'`,
+              );
+            }
+            if (attemptRow.stage_name !== stage) {
+              return errorResponse(
+                `attemptId '${attemptId}' belongs to stage '${attemptRow.stage_name}', not '${stage}'`,
+              );
+            }
+
+            const versionRow = db.prepare(
+              `SELECT ir_json FROM pipeline_versions WHERE version_hash = ?`,
+            ).get(attemptRow.version_hash) as { ir_json: string } | undefined;
+            if (!versionRow) {
+              return errorResponse(
+                `pipeline version '${attemptRow.version_hash}' not found for attempt`,
+              );
+            }
+            const ir = JSON.parse(versionRow.ir_json) as PipelineIR;
+            const stageDef = ir.stages.find((s) => s.name === stage);
+            if (!stageDef) {
+              return errorResponse(`stage '${stage}' not declared in pipeline version`);
+            }
+            if (!stageDef.outputs.some((p) => p.name === port)) {
+              return errorResponse(
+                `port '${port}' is not a declared output of stage '${stage}'`,
+              );
+            }
+
+            // Dispatcher: use the caller-supplied one when provided (live
+            // runner expects PORT_WRITTEN so stage guards can advance). Fall
+            // back to inert for external / debugging callers where no actor
+            // is listening.
+            const dispatcher: EventDispatcher =
+              options.writePortDispatcher ?? { send: () => { /* inert */ } };
+            const runtime = new PortRuntime(db, dispatcher);
+            runtime.writePort({
+              attemptId,
+              stageName: stage,
+              portName: port,
+              value: args.value,
+            });
+
+            return jsonResponse({ ok: true });
           } catch (err) {
             return errorResponse(err instanceof Error ? err.message : String(err));
           }

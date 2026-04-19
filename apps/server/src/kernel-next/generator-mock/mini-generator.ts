@@ -50,21 +50,30 @@ export function diamondIR(): PipelineIR {
         type: "agent",
         inputs: [],
         outputs: [{ name: "x", type: "number" }],
-        config: { prompt: "produce a number x" },
+        config: {
+          prompt:
+            "Pick a single integer between 1 and 100 inclusive. The value of port 'x' is that integer (as a plain number, not a string, not wrapped in any object).",
+        },
       },
       {
         name: "B",
         type: "agent",
         inputs: [{ name: "x", type: "number" }],
         outputs: [{ name: "y", type: "string" }],
-        config: { prompt: "double x and stringify" },
+        config: {
+          prompt:
+            "Input port 'x' is a number. The value of port 'y' is the plain string formed by concatenating the literal prefix \"B saw \" with x. Example: if x=42, then y is the 7-character string: B saw 42. Do NOT include any braces, quotes, or JSON wrapping inside the string value itself.",
+        },
       },
       {
         name: "C",
         type: "agent",
         inputs: [{ name: "x", type: "number" }],
         outputs: [{ name: "z", type: "string" }],
-        config: { prompt: "negate x and stringify" },
+        config: {
+          prompt:
+            "Input port 'x' is a number. The value of port 'z' is the plain string formed by concatenating the literal prefix \"C saw \" with x. Example: if x=42, then z is the 7-character string: C saw 42. Do NOT include any braces, quotes, or JSON wrapping inside the string value itself.",
+        },
       },
       {
         name: "D",
@@ -74,7 +83,10 @@ export function diamondIR(): PipelineIR {
           { name: "c", type: "string" },
         ],
         outputs: [{ name: "final", type: "string" }],
-        config: { prompt: "concatenate b and c" },
+        config: {
+          prompt:
+            "Inputs are two strings b and c. The value of port 'final' is the plain string formed by concatenating exactly: the literal \"b:\", then b, then the literal \" | c:\", then c. Example: if b=\"B saw 42\" and c=\"C saw 42\", then final is the 25-character string: b:B saw 42 | c:C saw 42. Do NOT include any braces, quotes, or JSON wrapping inside the string value itself.",
+        },
       },
     ],
     wires: [

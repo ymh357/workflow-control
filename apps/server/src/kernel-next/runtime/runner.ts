@@ -18,7 +18,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { compileIRToMachine } from "../compiler/ir-to-machine.js";
 import type { MachineContext, MachineEvent } from "../compiler/ir-to-machine.js";
 import { PortRuntime, type EventDispatcher } from "./port-runtime.js";
-import { executeStage, type StageHandlerMap } from "./mock-executor.js";
+import { MockStageExecutor, type StageHandlerMap } from "./mock-executor.js";
+import type { StageExecutor } from "./executor.js";
 import type { PipelineIR } from "../ir/schema.js";
 
 export interface RunnerOptions {
@@ -27,6 +28,7 @@ export interface RunnerOptions {
   taskId: string;
   versionHash: string;
   handlers: StageHandlerMap;
+  executor?: StageExecutor;
 }
 
 export interface RunResult {
@@ -41,9 +43,15 @@ export interface RunResult {
   // Non-fatal errors captured from executor promises during drain. A
   // non-empty array implies finalState === "failed".
   drainErrors: Array<{ stage: string | null; message: string }>;
+  // Per-stage errors returned as `status: "error"` by the executor. Distinct
+  // from drainErrors: these are structured failures (schema non-compliance,
+  // no handler, etc.) not executor crashes. Empty on fully-successful runs.
+  stageErrors: Array<{ stage: string; message: string }>;
 }
 
 export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Promise<RunResult> {
+  const executor: StageExecutor =
+    opts.executor ?? new MockStageExecutor({ handlers: opts.handlers });
   const { machine } = compileIRToMachine(opts.ir, { taskId: opts.taskId });
   const actor = createActor(machine, {
     input: undefined,
@@ -74,6 +82,11 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   // cleanup code throws). Surfaced on the returned RunResult so callers
   // aren't blind.
   const drainErrors: Array<{ stage: string | null; message: string }> = [];
+  // Per-stage errors captured from executor results (status="error"). Unlike
+  // drainErrors these are the expected "agent produced bad output" path, not
+  // executor crashes. Surfacing these lets harnesses distinguish
+  // schema-non-compliant failures per stage without a second DB probe.
+  const stageErrors: Array<{ stage: string; message: string }> = [];
 
   let resolveRun: (result: RunResult) => void;
   let rejectRun: (err: Error) => void;
@@ -95,13 +108,25 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       const ctx = snapshot.context as MachineContext;
       // Drain pending executors before resolving so db writes finish.
       Promise.allSettled(executorPromises).then(() => {
-        // Promote finalState to 'failed' if any stage_attempt ended with
-        // status='error' for this task. Covers the §6.1 design intent that
-        // XState parallel.onDone alone can't distinguish (since both 'done'
-        // and 'error' are region final states).
+        // Promote finalState to 'failed' if any stage's LATEST attempt
+        // ended with status='error' for this task. Looking at the latest
+        // attempt per stage (not any attempt) is critical once retry is
+        // enabled: silent intermediate failures leave error rows in the
+        // table even when the stage ultimately succeeded.
+        //
+        // The subquery picks the row with the highest attempt_idx per
+        // (task, stage); the outer count reports stages whose final
+        // attempt ended in error. Zero => no stage failed overall.
         const errorRow = opts.db.prepare(
-          `SELECT COUNT(*) AS n FROM stage_attempts
-           WHERE task_id = ? AND status = 'error'`,
+          `SELECT COUNT(*) AS n FROM (
+             SELECT sa.status FROM stage_attempts sa
+             WHERE sa.task_id = ?
+               AND sa.attempt_idx = (
+                 SELECT MAX(sa2.attempt_idx) FROM stage_attempts sa2
+                 WHERE sa2.task_id = sa.task_id AND sa2.stage_name = sa.stage_name
+               )
+           ) t
+           WHERE t.status = 'error'`,
         ).get(opts.taskId) as { n: number };
         const finalState: "completed" | "failed" =
           snapshot.value === "failed" || errorRow.n > 0 || drainErrors.length > 0
@@ -112,6 +137,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
           portValues: ctx.portValues,
           log: ctx.log,
           drainErrors,
+          stageErrors,
         });
       });
       return;
@@ -125,7 +151,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       if (substate === "executing" && !dispatched.has(stageName)) {
         dispatched.add(stageName);
         const ctx = snapshot.context as MachineContext;
-        const p = executeStage({
+        const p = executor.executeStage({
           ir: opts.ir,
           stageName,
           taskId: opts.taskId,
@@ -133,7 +159,11 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
           portValues: ctx.portValues,
           handlers: opts.handlers,
           portRuntime,
-        }).then(() => { /* discard */ }, (err: unknown) => {
+        }).then((result) => {
+          if (result.status === "error") {
+            stageErrors.push({ stage: stageName, message: result.error ?? "unspecified" });
+          }
+        }, (err: unknown) => {
           const message = err instanceof Error ? err.message : String(err);
           if (!machineEnded) {
             // Pre-end errors reject the whole run — something went wrong
