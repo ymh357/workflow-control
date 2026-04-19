@@ -396,8 +396,8 @@
 - **0.4 补做**：实现 / 移植 `tech-research` 和 `web3-tech-research` 两个内置 pipeline。没有多个 pipeline，系统级路由无处可路由。
   - 设计稿：`docs/builtin-pipelines-design.md`（stage 骨架、store_schema、gate 设计、生成方式）。
   - `builtin-installer.ts` 已改为目录扫描（`discoverBuiltinPipelines`），后续新 pipeline 放入 `src/builtin-pipelines/<name>/` 即自动装载，无需改代码。
-  - `tech-research` 作为 bootstrap sample 手写（违反 "AI 写 YAML" 定位的合理例外：冷启动 + 为 pipeline-generator 提供对齐样本）。通过 `validatePipelineConfig`，6 stage（含 1 human_confirm gate），5 个 system prompts。
-  - `web3-tech-research` 留给 pipeline-generator 生成：输入 tech-research 作为起点 + design doc §3 作为扩展需求。
+  - 当前 builtin（5 个通过 validator，CI 锁定于 `src/lib/builtin-pipelines.test.ts`）：`pipeline-generator`、`smoke-test`（新增最小 2-stage 样本）、`tech-research-collector`、`tech-research-writer`、`web3-research-writer`。
+  - **待办（单独 session）**：从 `config/pipelines/` 搬来的 `tech-research` 和 `web3-tech-research` 顶层 pipeline 缺 `store_schema`（Phase 3.6 后成为 structural error），含约 30 个 stage writes 需要反推 schema 字段。补完后重新搬进 builtin。
 - **0.6 终判（D5，2026-04-19）**：**永不实施**。pipeline-generator 是本项目**唯一**的路由层，与 §1.1 "AI 写 DSL，人不写" 的定位对齐。让系统再套一层 llm_decision 去判断 pipeline 适配度，只会与 pipeline-generator 的生成逻辑形成职责重复；而且 "task 不 fit 任何已有 pipeline" 的正确响应不是 "建议 Claude Code"，而是**让 pipeline-generator 现场生成一个新 pipeline**。triage-as-system-router 从路线图移除。
 
 **为什么不做**：

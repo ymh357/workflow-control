@@ -1,0 +1,68 @@
+name: "Tech Research Writer"
+description: "Sub-pipeline that writes a single research deliverable. Invoked per-item by tech-research foreach."
+engine: claude
+injected_context:
+  - pipelineConfig
+  - outputPlan
+  - domainKnowledge
+  - verificationFacts
+  - sourceCodeFacts
+  - communityIntel
+  - ossHealthFacts
+  - benchmarkResults
+  - projectContext
+  - primarySources
+  - landscapeResults
+  - painPoints
+  - solutionPlan
+claude_md:
+  global: global-constraints.md
+
+store_schema:
+  deliverableResult:
+    produced_by: writeDeliverable
+    description: Written Deliverable
+    fields:
+      deliverableId:
+        type: string
+        description: Deliverable identifier
+      filePath:
+        type: string
+        description: File path where content was written
+      wordCount:
+        type: number
+        description: Approximate word count
+      sourcesLinked:
+        type: number
+        description: Number of inline source citations
+      verificationRefsCount:
+        type: number
+        description: Number of verification evidence references
+
+stages:
+  - name: writeDeliverable
+    type: agent
+    thinking:
+      type: enabled
+    effort: high
+    max_turns: 50
+    max_budget_usd: 5
+    mcps:
+      - context7
+    runtime:
+      engine: llm
+      system_prompt: write-deliverable
+      reads:
+        pipelineConfig: pipelineConfig
+        outputPlan: outputPlan
+        domainKnowledge: domainKnowledge
+        verificationFacts: verificationFacts
+        sourceCodeFacts: sourceCodeFacts
+        communityIntel: communityIntel
+        ossHealthFacts: ossHealthFacts
+        benchmarkResults: benchmarkResults
+        projectContext: projectContext
+        primarySources: primarySources
+        landscapeResults: landscapeResults
+        painPoints: painPoints
+        solutionPlan: solutionPlan

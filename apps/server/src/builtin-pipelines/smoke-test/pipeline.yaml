@@ -1,0 +1,56 @@
+name: Smoke Test
+description: Minimal two-stage pipeline used to verify the engine end-to-end — agent writes a schema-constrained object, a downstream stage reads it. Intended for installation verification and as the smallest possible reference sample for pipeline-generator.
+engine: claude
+official: true
+use_cases:
+  - Verify builtin pipeline installation after setup
+  - Exercise store_schema + reads wiring on a single-file change
+  - Serve as the smallest reference sample for pipeline-generator
+
+display:
+  title_path: greeting.subject
+  completion_summary_path: echo.message
+
+store_schema:
+  greeting:
+    produced_by: greet
+    description: Initial greeting object
+    fields:
+      subject:
+        type: string
+        description: What the user asked about (echoed back from task text)
+        required: true
+      note:
+        type: string
+        description: One short sentence acknowledging the request
+
+  echo:
+    produced_by: echoBack
+    description: Echo stage output
+    fields:
+      message:
+        type: markdown
+        description: One-paragraph confirmation that includes the original subject
+        required: true
+
+stages:
+  - name: greet
+    type: agent
+    runtime:
+      engine: llm
+      system_prompt: greet
+      reads: {}
+    effort: low
+    max_turns: 5
+    max_budget_usd: 0.5
+
+  - name: echoBack
+    type: agent
+    runtime:
+      engine: llm
+      system_prompt: echo-back
+      reads:
+        greeting: greeting
+    effort: low
+    max_turns: 5
+    max_budget_usd: 0.5

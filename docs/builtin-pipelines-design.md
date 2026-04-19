@@ -3,6 +3,22 @@
 > Phase 0.4 补做。设计文档而非 YAML —— 实际 YAML 由 `pipeline-generator`
 > 消费本文件的 use cases 与 stage 骨架现场生成，生成产物以 commit 方式
 > 纳入 `apps/server/src/builtin-pipelines/` 目录。
+>
+> **Status (2026-04-19)**：tech-research 和 web3-tech-research 的成熟版
+> 已从 `config/pipelines/` 搬到 `src/builtin-pipelines/`（跟随 5 个相关
+> sub-pipeline），但**缺 `store_schema` 声明**，不通过 Phase 3.6 引入的
+> validator。暂时撤回到 `config/pipelines/` 当本地私有配置。下一步单独
+> 开 session 给这两个顶层 pipeline 补 store_schema（~30 writes 反推
+> schema 字段），补完重新搬回 builtin。
+>
+> 当前 builtin 目录内容（5 个通过 validator）：
+> - `pipeline-generator` — 原有
+> - `smoke-test` — 两 stage 最小样本（本次新增，`docs/builtin-pipelines-design.md` §6）
+> - `tech-research-collector` — tech-research 的 foreach 子 pipeline
+> - `tech-research-writer` — tech-research 的 foreach 子 pipeline
+> - `web3-research-writer` — web3-tech-research 的 foreach 子 pipeline
+>
+> sub-pipeline 作为 builtin 先就位，等顶层补齐 schema 后就能完整跑通。
 
 ## 1. 为什么需要这两个 pipeline
 
@@ -158,9 +174,28 @@ with web3 fields as spec'd in docs/builtin-pipelines-design.md §3"。
 
 ## 5. 验收标准
 
-- `discoverBuiltinPipelines()` 报告 3 个 pipeline
-- 两个新 pipeline 通过 `pipeline-validator` 且 store_schema 与本文档对齐
+- `discoverBuiltinPipelines()` 报告完整的 pipeline 家族（当前 5 个，补
+  齐顶层 schema 后 7 个）
+- 每个 builtin 通过 `validatePipelineConfig`，由
+  `src/lib/builtin-pipelines.test.ts` 在 CI 上强制
+- 每个 llm-engine stage 的 `system_prompt` 都有对应的 prompts/system/*.md 文件
 - `tech-research` 跑一个真实话题（例："为新服务选 HTTP client 库"）能
   产出可读 brief.executiveSummary
 - `web3-tech-research` 跑一个真实话题（例："L2 Rollup 框架选型"）能
   产出 onchainSnapshot 非空
+
+## 6. smoke-test minimal sample
+
+`smoke-test` pipeline 是最小双 stage 样本：
+
+- `greet` (agent, engine=llm) → 写 `greeting.subject` + `greeting.note`
+- `echoBack` (agent, engine=llm) → 读 `greeting`，写 `echo.message`
+
+两个 prompt 各 <30 行，无 WebSearch、无 tool 调用。用途：
+
+1. **安装验证**：新安装 workflow-control 后 10 秒内能跑通一个 task 验证
+   整个 engine / MCP / store / SSE 链路没问题，成本 <$0.01
+2. **pipeline-generator 的最简参考样本**：generator 生成新 pipeline 时能
+   看到"最小合法 pipeline"长什么样，避免过度设计
+3. **CI 快速通路**（未来）：将来要做 e2e test 时，这个 pipeline 是最便宜的
+   跑通性验证载荷
