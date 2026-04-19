@@ -1,9 +1,16 @@
 // Zod schemas for kernel-next IR.
-// See docs/kernel-next-design.md §4.2 for the conceptual shape.
+// See docs/kernel-next-terminal-design.md §3.2 / §5.2.
 //
 // This module is the single source of truth for IR runtime validation.
 // submit_pipeline / validate_pipeline / propose_pipeline_change all parse
 // through here before touching SQLite or codegen.
+//
+// Terminal-design shape:
+//   - StageIR is a discriminated union keyed by `type`: agent | script | gate.
+//     Each variant has a type-specific `config`.
+//   - agent and script stages may declare `fanout` (per-element instantiation).
+//   - gate stages cannot fanout.
+//   - WireIR may carry an optional `guard` expression (runtime condition).
 
 import { z } from "zod";
 
@@ -37,21 +44,71 @@ export const PortIRSchema = z.object({
   zod: z.string().optional(),    // optional zod expression for runtime shape
 });
 
-export const StageIRSchema = z.object({
+// --- Fanout / gate supporting shapes ---
+
+export const FanoutSpecSchema = z.object({
+  input: identifier,                       // input port name to iterate
+});
+
+export const GateQuestionSchema = z.object({
+  text: z.string().min(1),
+  options: z.array(z.string().min(1)).optional(),
+});
+
+export const GateRoutingSchema = z.object({
+  // answer value → target stage name (special key '_default' for fallback).
+  routes: z.record(z.string().min(1), identifier),
+});
+
+// --- Stage variants (discriminated union on `type`) ---
+
+const StageCommon = {
   name: identifier,
-  type: z.enum(["agent", "script"]),
   inputs: z.array(PortIRSchema).default([]),
   outputs: z.array(PortIRSchema).default([]),
+};
+
+export const AgentStageSchema = z.object({
+  ...StageCommon,
+  type: z.literal("agent"),
   config: z.object({
-    engine: z.literal("claude").optional(),
-    prompt: z.string().optional(),
-    script: z.string().optional(),
-  }).default({}),
+    promptRef: z.string().min(1),         // resolved by userland prompt assembler
+  }),
+  fanout: FanoutSpecSchema.optional(),
 });
+
+export const ScriptStageSchema = z.object({
+  ...StageCommon,
+  type: z.literal("script"),
+  config: z.object({
+    moduleId: z.string().min(1),          // userland-provided module identifier
+  }),
+  fanout: FanoutSpecSchema.optional(),
+});
+
+export const GateStageSchema = z.object({
+  ...StageCommon,
+  type: z.literal("gate"),
+  config: z.object({
+    question: GateQuestionSchema,
+    routing: GateRoutingSchema,
+  }),
+  // Gates cannot fanout: the schema simply does not declare a `fanout`
+  // field, so TS narrowing prevents it at compile time. Runtime IR (loaded
+  // from JSON that may have bypassed the type system) is additionally
+  // checked by validator/structural.ts (GATE_FANOUT_FORBIDDEN).
+});
+
+export const StageIRSchema = z.discriminatedUnion("type", [
+  AgentStageSchema,
+  ScriptStageSchema,
+  GateStageSchema,
+]);
 
 export const WireIRSchema = z.object({
   from: z.object({ stage: identifier, port: identifier }),
   to:   z.object({ stage: identifier, port: identifier }),
+  guard: z.string().min(1).optional(),     // §6.2 runtime expression
 });
 
 export const PipelineIRSchema = z.object({
@@ -62,11 +119,20 @@ export const PipelineIRSchema = z.object({
 });
 
 export type PortIR = z.infer<typeof PortIRSchema>;
+export type FanoutSpec = z.infer<typeof FanoutSpecSchema>;
+export type GateQuestion = z.infer<typeof GateQuestionSchema>;
+export type GateRouting = z.infer<typeof GateRoutingSchema>;
+export type AgentStage = z.infer<typeof AgentStageSchema>;
+export type ScriptStage = z.infer<typeof ScriptStageSchema>;
+export type GateStage = z.infer<typeof GateStageSchema>;
 export type StageIR = z.infer<typeof StageIRSchema>;
 export type WireIR = z.infer<typeof WireIRSchema>;
 export type PipelineIR = z.infer<typeof PipelineIRSchema>;
 
-// IRPatch — see docs/kernel-next-design.md §7.
+// IRPatch — see docs/kernel-next-terminal-design.md §10.
+// configPatch is typed as `unknown` at the Zod layer because the valid shape
+// depends on the target stage's `type`; validator+downstream code applies
+// variant-specific rules. Concrete shape is enforced in patch application.
 export const IRPatchOpSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("add_stage"), stage: StageIRSchema }),
   z.object({ op: z.literal("remove_stage"), stageName: identifier }),
@@ -82,11 +148,7 @@ export const IRPatchOpSchema = z.discriminatedUnion("op", [
   z.object({
     op: z.literal("update_stage_config"),
     stage: identifier,
-    configPatch: z.object({
-      engine: z.literal("claude").optional(),
-      prompt: z.string().optional(),
-      script: z.string().optional(),
-    }),
+    configPatch: z.record(z.string(), z.unknown()),
   }),
 ]);
 
@@ -114,6 +176,10 @@ export const DiagnosticSchema = z.object({
     "PATCH_APPLY_ERROR",
     "PROPOSAL_NOT_FOUND",             // P2.1 approve/reject
     "PROPOSAL_ALREADY_RESOLVED",
+    // A0 additions — stage-type / gate / fanout constraints
+    "GATE_FANOUT_FORBIDDEN",
+    "GATE_ROUTING_TARGET_MISSING",
+    "FANOUT_INPUT_MISSING",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

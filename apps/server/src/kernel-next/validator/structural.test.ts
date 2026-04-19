@@ -6,8 +6,8 @@ function base(): PipelineIR {
   return {
     name: "t",
     stages: [
-      { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: {} },
-      { name: "B", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [], config: {} },
+      { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+      { name: "B", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [], config: { promptRef: "p" } },
     ],
     wires: [{ from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" } }],
   };
@@ -92,7 +92,7 @@ describe("structural validator", () => {
       type: "agent",
       inputs: [],
       outputs: [{ name: "x", type: "number" }],
-      config: {},
+      config: { promptRef: "p" },
     });
     // Both A.x and C.x drive B.x — conflict.
     ir.wires.push({ from: { stage: "C", port: "x" }, to: { stage: "B", port: "x" } });
@@ -125,5 +125,93 @@ describe("structural validator", () => {
       expect(codes).toContain("WIRE_SOURCE_PORT_MISSING");
       expect(codes).toContain("WIRE_TARGET_ALREADY_DRIVEN");
     }
+  });
+
+  // --- Stage-type specific rules (A0.1) ---
+
+  it("accepts a pipeline with a gate stage and valid routing", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+        {
+          name: "G",
+          type: "gate",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [],
+          config: {
+            question: { text: "continue?" },
+            routing: { routes: { yes: "A" } },
+          },
+        },
+      ],
+      wires: [{ from: { stage: "A", port: "x" }, to: { stage: "G", port: "x" } }],
+    };
+    expect(validateStructural(ir)).toEqual({ ok: true });
+  });
+
+  it("rejects gate routing target that is not a declared stage", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+        {
+          name: "G",
+          type: "gate",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [],
+          config: {
+            question: { text: "pick" },
+            routing: { routes: { yes: "ZZZ" } },
+          },
+        },
+      ],
+      wires: [{ from: { stage: "A", port: "x" }, to: { stage: "G", port: "x" } }],
+    };
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.diagnostics.some((d) => d.code === "GATE_ROUTING_TARGET_MISSING")).toBe(true);
+    }
+  });
+
+  it("rejects a stage whose fanout names a non-existent input port", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [],
+          config: { promptRef: "p" },
+          fanout: { input: "nope" },
+        },
+      ],
+      wires: [],
+    };
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.diagnostics.some((d) => d.code === "FANOUT_INPUT_MISSING")).toBe(true);
+    }
+  });
+
+  it("accepts a stage with fanout naming an existing input port", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [{ name: "item", type: "number" }],
+          outputs: [{ name: "out", type: "string" }],
+          config: { promptRef: "p" },
+          fanout: { input: "item" },
+        },
+      ],
+      wires: [],
+    };
+    expect(validateStructural(ir)).toEqual({ ok: true });
   });
 });

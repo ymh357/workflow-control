@@ -31,11 +31,11 @@ function validIR(): PipelineIR {
   return {
     name: "valid",
     stages: [
-      { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: {} },
+      { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
       { name: "B", type: "agent",
         inputs: [{ name: "x", type: "number" }],
         outputs: [{ name: "y", type: "string" }],
-        config: {} },
+        config: { promptRef: "p" } },
     ],
     wires: [{ from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" } }],
   };
@@ -57,11 +57,11 @@ describe("validator/types (tsc subprocess)", () => {
     const ir: PipelineIR = {
       name: "bad-types",
       stages: [
-        { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "string" }], config: {} },
+        { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "string" }], config: { promptRef: "p" } },
         { name: "B", type: "agent",
           inputs: [{ name: "x", type: "number" }],
           outputs: [],
-          config: {} },
+          config: { promptRef: "p" } },
       ],
       wires: [{ from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" } }],
     };
@@ -85,11 +85,11 @@ describe("validator/types (tsc subprocess)", () => {
       stages: [
         { name: "A", type: "agent", inputs: [],
           outputs: [{ name: "x", type: "string" }, { name: "y", type: "boolean" }],
-          config: {} },
+          config: { promptRef: "p" } },
         { name: "B", type: "agent",
           inputs: [{ name: "x", type: "number" }, { name: "y", type: "number" }],
           outputs: [],
-          config: {} },
+          config: { promptRef: "p" } },
       ],
       wires: [
         { from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" } },

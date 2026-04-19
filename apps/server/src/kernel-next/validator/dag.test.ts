@@ -6,10 +6,10 @@ function diamond(): PipelineIR {
   return {
     name: "diamond",
     stages: [
-      { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: {} },
-      { name: "B", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [{ name: "y", type: "string" }], config: {} },
-      { name: "C", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [{ name: "z", type: "string" }], config: {} },
-      { name: "D", type: "agent", inputs: [{ name: "b", type: "string" }, { name: "c", type: "string" }], outputs: [], config: {} },
+      { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+      { name: "B", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [{ name: "y", type: "string" }], config: { promptRef: "p" } },
+      { name: "C", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [{ name: "z", type: "string" }], config: { promptRef: "p" } },
+      { name: "D", type: "agent", inputs: [{ name: "b", type: "string" }, { name: "c", type: "string" }], outputs: [], config: { promptRef: "p" } },
     ],
     wires: [
       { from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" } },
@@ -43,8 +43,8 @@ describe("dag validator", () => {
     const ir: PipelineIR = {
       name: "bad",
       stages: [
-        { name: "A", type: "agent", inputs: [{ name: "i", type: "number" }], outputs: [{ name: "o", type: "number" }], config: {} },
-        { name: "B", type: "agent", inputs: [{ name: "i", type: "number" }], outputs: [{ name: "o", type: "number" }], config: {} },
+        { name: "A", type: "agent", inputs: [{ name: "i", type: "number" }], outputs: [{ name: "o", type: "number" }], config: { promptRef: "p" } },
+        { name: "B", type: "agent", inputs: [{ name: "i", type: "number" }], outputs: [{ name: "o", type: "number" }], config: { promptRef: "p" } },
       ],
       wires: [
         { from: { stage: "A", port: "o" }, to: { stage: "B", port: "i" } },
@@ -68,7 +68,7 @@ describe("dag validator", () => {
         type: "agent",
         inputs: [{ name: "i", type: "number" }],
         outputs: [{ name: "o", type: "number" }],
-        config: {},
+        config: { promptRef: "p" },
       }],
       wires: [{ from: { stage: "A", port: "o" }, to: { stage: "A", port: "i" } }],
     };
@@ -83,7 +83,7 @@ describe("dag validator", () => {
   it("accepts a single-stage pipeline with no wires", () => {
     const ir: PipelineIR = {
       name: "solo",
-      stages: [{ name: "only", type: "agent", inputs: [], outputs: [], config: {} }],
+      stages: [{ name: "only", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } }],
       wires: [],
     };
     expect(validateDag(ir)).toEqual({ ok: true });

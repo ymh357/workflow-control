@@ -19,16 +19,16 @@ function diamondIR(): PipelineIR {
     name: "diamond",
     stages: [
       { name: "A", type: "agent", inputs: [],
-        outputs: [{ name: "x", type: "number" }], config: {} },
+        outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
       { name: "B", type: "agent",
         inputs: [{ name: "x", type: "number" }],
-        outputs: [{ name: "y", type: "string" }], config: {} },
+        outputs: [{ name: "y", type: "string" }], config: { promptRef: "p" } },
       { name: "C", type: "agent",
         inputs: [{ name: "x", type: "number" }],
-        outputs: [{ name: "z", type: "string" }], config: {} },
+        outputs: [{ name: "z", type: "string" }], config: { promptRef: "p" } },
       { name: "D", type: "agent",
         inputs: [{ name: "b", type: "string" }, { name: "c", type: "string" }],
-        outputs: [{ name: "final", type: "string" }], config: {} },
+        outputs: [{ name: "final", type: "string" }], config: { promptRef: "p" } },
     ],
     wires: [
       { from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" } },
@@ -173,7 +173,7 @@ describe("M3: end-to-end diamond pipeline run", () => {
       name: "fail-only",
       stages: [
         { name: "A", type: "agent", inputs: [],
-          outputs: [{ name: "x", type: "number" }], config: {} },
+          outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
       ],
       wires: [],
     };

@@ -1,6 +1,6 @@
 // Structural validation of a PipelineIR.
 //
-// Enforces the constraints listed in docs/kernel-next-design.md §4.2:
+// Enforces the constraints listed in docs/kernel-next-terminal-design.md:
 //   - stages[].name unique
 //   - ports unique per (stage, direction)
 //   - every wire's source port exists AND is an output
@@ -8,6 +8,9 @@
 //   - each input port driven by at most one wire (also enforced at SQLite PK,
 //     but we want a clean diagnostic before touching the DB)
 //   - entry stage, if specified, exists
+//   - (§3.2) gate stages must not declare fanout
+//   - (§3.2) gate.config.routing targets must be declared stages
+//   - (§6.3) a stage declaring fanout must name one of its own input ports
 //
 // Type compatibility between wire endpoints (TS-level) is M2's job (tsc).
 
@@ -68,6 +71,48 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
       }
       seenOut.add(p.name);
       portIndex.set(`${s.name}.${p.name}.out`, { type: p.type });
+    }
+  }
+
+  // --- Stage-type specific rules (gate / fanout) ---
+  for (const s of ir.stages) {
+    if (s.type === "gate") {
+      // zod-level schema already forbids `fanout` on GateStage, but patch
+      // application or hand-crafted IR may sneak one in; surface clearly.
+      if ((s as { fanout?: unknown }).fanout !== undefined) {
+        diagnostics.push({
+          code: "GATE_FANOUT_FORBIDDEN",
+          message: `Stage '${s.name}' is a gate and cannot declare fanout.`,
+          context: { stage: s.name },
+        });
+      }
+      const routes = s.config.routing.routes;
+      for (const [answer, target] of Object.entries(routes)) {
+        if (!stageNames.has(target)) {
+          diagnostics.push({
+            code: "GATE_ROUTING_TARGET_MISSING",
+            message:
+              `Gate '${s.name}' routes answer '${answer}' to stage '${target}', ` +
+              `but '${target}' is not declared in stages[].`,
+            context: { stage: s.name, answer, target },
+          });
+        }
+      }
+    }
+
+    // Fanout input must reference one of the stage's own input ports.
+    const fanout = (s as { fanout?: { input: string } }).fanout;
+    if (fanout !== undefined) {
+      const stageInputs = new Set(s.inputs.map((p) => p.name));
+      if (!stageInputs.has(fanout.input)) {
+        diagnostics.push({
+          code: "FANOUT_INPUT_MISSING",
+          message:
+            `Stage '${s.name}' declares fanout on input '${fanout.input}', ` +
+            `but no such input port is declared.`,
+          context: { stage: s.name, fanoutInput: fanout.input },
+        });
+      }
     }
   }
 

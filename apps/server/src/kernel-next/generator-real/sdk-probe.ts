@@ -93,7 +93,7 @@ function buildScenarios(): Scenario[] {
     type: "agent",
     inputs: [],
     outputs: [{ name: "x", type: "number" }],
-    config: { engine: "claude", prompt: "Pick a number between 1 and 100." },
+    config: { promptRef: "Pick a number between 1 and 100." },
   };
 
   // Scenario B: 3 write_port calls — observe whether they batch in one
@@ -108,8 +108,7 @@ function buildScenarios(): Scenario[] {
       { name: "summary", type: "string" },
     ],
     config: {
-      engine: "claude",
-      prompt:
+      promptRef:
         "Produce a random book recommendation with a title, a score 0-10, " +
         "and a one-sentence summary.",
     },

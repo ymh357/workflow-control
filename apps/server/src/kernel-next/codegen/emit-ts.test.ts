@@ -6,19 +6,19 @@ function diamondIR(): PipelineIR {
   return {
     name: "diamond",
     stages: [
-      { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: {} },
+      { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
       { name: "B", type: "agent",
         inputs: [{ name: "x", type: "number" }],
         outputs: [{ name: "y", type: "string" }],
-        config: {} },
+        config: { promptRef: "p" } },
       { name: "C", type: "agent",
         inputs: [{ name: "x", type: "number" }],
         outputs: [{ name: "z", type: "string" }],
-        config: {} },
+        config: { promptRef: "p" } },
       { name: "D", type: "agent",
         inputs: [{ name: "b", type: "string" }, { name: "c", type: "string" }],
         outputs: [],
-        config: {} },
+        config: { promptRef: "p" } },
     ],
     wires: [
       { from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" } },
@@ -86,11 +86,11 @@ describe("emit-ts codegen", () => {
     const ir = {
       name: "collision",
       stages: [
-        { name: "a", type: "agent" as const, inputs: [], outputs: [{ name: "b_c", type: "string" }], config: {} },
-        { name: "a_b", type: "agent" as const, inputs: [], outputs: [{ name: "c", type: "string" }], config: {} },
+        { name: "a", type: "agent" as const, inputs: [], outputs: [{ name: "b_c", type: "string" }], config: { promptRef: "p" } },
+        { name: "a_b", type: "agent" as const, inputs: [], outputs: [{ name: "c", type: "string" }], config: { promptRef: "p" } },
         { name: "sink", type: "agent" as const,
           inputs: [{ name: "p", type: "string" }, { name: "q", type: "string" }],
-          outputs: [], config: {} },
+          outputs: [], config: { promptRef: "p" } },
       ],
       wires: [
         { from: { stage: "a", port: "b_c" }, to: { stage: "sink", port: "p" } },
@@ -107,7 +107,7 @@ describe("emit-ts codegen", () => {
   it("emits empty Inputs/Outputs blocks when stage has no ports", () => {
     const ir: PipelineIR = {
       name: "solo",
-      stages: [{ name: "only", type: "agent", inputs: [], outputs: [], config: {} }],
+      stages: [{ name: "only", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } }],
       wires: [],
     };
     const { source } = emitPipelineModule(ir);
@@ -124,11 +124,11 @@ describe("emit-ts codegen", () => {
         { name: "A", type: "agent",
           inputs: [],
           outputs: [{ name: "items", type: "Array<{ id: string; v: number }>" }],
-          config: {} },
+          config: { promptRef: "p" } },
         { name: "B", type: "agent",
           inputs: [{ name: "items", type: "ReadonlyArray<{ id: string; v: number }>" }],
           outputs: [],
-          config: {} },
+          config: { promptRef: "p" } },
       ],
       wires: [{ from: { stage: "A", port: "items" }, to: { stage: "B", port: "items" } }],
     };

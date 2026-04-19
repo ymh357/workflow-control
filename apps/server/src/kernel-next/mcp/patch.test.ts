@@ -6,8 +6,8 @@ function base(): PipelineIR {
   return {
     name: "t",
     stages: [
-      { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: {} },
-      { name: "B", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [], config: {} },
+      { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+      { name: "B", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [], config: { promptRef: "p" } },
     ],
     wires: [{ from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" } }],
   };
@@ -16,7 +16,7 @@ function base(): PipelineIR {
 describe("applyPatch", () => {
   it("add_stage appends a new stage", () => {
     const p: IRPatch = { ops: [
-      { op: "add_stage", stage: { name: "C", type: "agent", inputs: [], outputs: [], config: {} } },
+      { op: "add_stage", stage: { name: "C", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } } },
     ]};
     const out = applyPatch(base(), p);
     expect(out.stages.map((s) => s.name)).toEqual(["A", "B", "C"]);
@@ -24,7 +24,7 @@ describe("applyPatch", () => {
 
   it("add_stage rejects duplicate name", () => {
     const p: IRPatch = { ops: [
-      { op: "add_stage", stage: { name: "A", type: "agent", inputs: [], outputs: [], config: {} } },
+      { op: "add_stage", stage: { name: "A", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } } },
     ]};
     expect(() => applyPatch(base(), p)).toThrow(PatchApplyError);
   });
@@ -43,7 +43,7 @@ describe("applyPatch", () => {
 
   it("add_wire appends; duplicate rejected", () => {
     const ir = base();
-    ir.stages.push({ name: "C", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [], config: {} });
+    ir.stages.push({ name: "C", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [], config: { promptRef: "p" } });
     const p: IRPatch = { ops: [
       { op: "add_wire", wire: { from: { stage: "A", port: "x" }, to: { stage: "C", port: "x" } } },
     ]};
@@ -77,17 +77,19 @@ describe("applyPatch", () => {
 
   it("update_stage_config merges into existing config", () => {
     const p: IRPatch = { ops: [
-      { op: "update_stage_config", stage: "A", configPatch: { prompt: "new prompt" } },
+      { op: "update_stage_config", stage: "A", configPatch: { promptRef: "new prompt" } },
     ]};
     const out = applyPatch(base(), p);
-    expect(out.stages[0]!.config.prompt).toBe("new prompt");
+    const a = out.stages[0]!;
+    if (a.type !== "agent") throw new Error("expected agent stage");
+    expect(a.config.promptRef).toBe("new prompt");
   });
 
   it("ops apply in order: add_stage then add_wire in same patch", () => {
     const p: IRPatch = { ops: [
       { op: "add_stage", stage: {
         name: "C", type: "agent",
-        inputs: [{ name: "x", type: "number" }], outputs: [], config: {},
+        inputs: [{ name: "x", type: "number" }], outputs: [], config: { promptRef: "p" },
       } },
       { op: "add_wire", wire: { from: { stage: "A", port: "x" }, to: { stage: "C", port: "x" } } },
     ]};

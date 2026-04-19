@@ -5,8 +5,8 @@ import type { PipelineIR } from "./schema.js";
 const base: PipelineIR = {
   name: "diamond",
   stages: [
-    { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: {} },
-    { name: "B", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [{ name: "y", type: "string" }], config: {} },
+    { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+    { name: "B", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [{ name: "y", type: "string" }], config: { promptRef: "p" } },
   ],
   wires: [{ from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" } }],
 };
@@ -59,5 +59,39 @@ describe("canonical IR", () => {
   it("omits undefined optional fields (entry not serialized if absent)", () => {
     const j = canonicalJSON(base);
     expect(j).not.toContain("entry");
+  });
+
+  // --- A0.1: wire guard + stage fanout participate in hash ---
+
+  it("wire guard affects versionHash", () => {
+    const guarded: PipelineIR = {
+      ...base,
+      wires: [
+        { from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" }, guard: "value > 0" },
+      ],
+    };
+    expect(versionHash(base)).not.toBe(versionHash(guarded));
+  });
+
+  it("stage fanout affects versionHash", () => {
+    const s1: PipelineIR["stages"][number] = {
+      name: "A",
+      type: "agent",
+      inputs: [{ name: "x", type: "number" }],
+      outputs: [{ name: "y", type: "string" }],
+      config: { promptRef: "p" },
+      fanout: { input: "x" },
+    };
+    const withFanout: PipelineIR = {
+      ...base,
+      stages: [s1, base.stages[1]!],
+    };
+    expect(versionHash(base)).not.toBe(versionHash(withFanout));
+  });
+
+  it("absent guard is not serialized (hash stable after undefined-stripping)", () => {
+    const j1 = canonicalJSON(base);
+    // baseline wire has no guard; canonical JSON should not contain "guard"
+    expect(j1).not.toContain("guard");
   });
 });

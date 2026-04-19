@@ -52,12 +52,17 @@ function sortKeys(value: unknown): CanonicalValue {
 }
 
 function canonicalizeStage(s: StageIR): CanonicalValue {
+  // `fanout` is only present on agent/script variants (see schema.ts); the
+  // discriminated-union narrowing surfaces it as an extra optional key that
+  // participates in the canonical form when set.
+  const fanout = "fanout" in s ? s.fanout : undefined;
   return sortKeys({
     name: s.name,
     type: s.type,
     inputs: [...s.inputs].sort((a, b) => codepointCompare(a.name, b.name)),
     outputs: [...s.outputs].sort((a, b) => codepointCompare(a.name, b.name)),
     config: s.config,
+    fanout,
   });
 }
 
@@ -65,6 +70,7 @@ function canonicalizeWire(w: WireIR): CanonicalValue {
   return sortKeys({
     from: { stage: w.from.stage, port: w.from.port },
     to: { stage: w.to.stage, port: w.to.port },
+    guard: w.guard,
   });
 }
 

@@ -14,8 +14,8 @@ function sampleIR(): PipelineIR {
   return {
     name: "t",
     stages: [
-      { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { prompt: "p" } },
-      { name: "B", type: "agent", inputs: [{ name: "x", type: "number", zod: "z.number()" }], outputs: [], config: {} },
+      { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+      { name: "B", type: "agent", inputs: [{ name: "x", type: "number", zod: "z.number()" }], outputs: [], config: { promptRef: "p" } },
     ],
     wires: [{ from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" } }],
   };

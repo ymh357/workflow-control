@@ -97,9 +97,18 @@ export class RealStageExecutor implements StageExecutor {
     const stage = ir.stages.find((s) => s.name === stageName);
     if (!stage) throw new Error(`Stage '${stageName}' not in IR`);
 
-    const userPrompt = stage.config?.prompt;
+    if (stage.type !== "agent") {
+      throw new Error(
+        `RealStageExecutor only handles agent stages; stage '${stageName}' is type '${stage.type}' ` +
+          `(script/gate dispatch is A0.3 / A1 work)`,
+      );
+    }
+    // Trivial prompt resolver (A0.3 scope): treat promptRef as the prompt
+    // itself. A real resolver backed by a userland prompt registry arrives
+    // in A2 per design doc §2.3.
+    const userPrompt = stage.config.promptRef;
     if (!userPrompt || userPrompt.trim().length === 0) {
-      throw new Error(`Stage '${stageName}' has empty config.prompt; RealStageExecutor requires a non-empty prompt`);
+      throw new Error(`Stage '${stageName}' has empty config.promptRef; RealStageExecutor requires a non-empty prompt`);
     }
 
     // Retry loop. Total allowed attempts = maxRetries + 1. Intermediate
@@ -391,10 +400,15 @@ function buildSystemPromptAppend(
   const outputPortLines = stage.outputs
     .map((p) => `  - ${p.name}: ${p.type}`)
     .join("\n");
-  const promptSummary = stage.config?.prompt
-    ? stage.config.prompt.length > 400
-      ? stage.config.prompt.slice(0, 400) + " [...]"
-      : stage.config.prompt
+  // buildSystemPromptAppend is called only from executeStage's agent path,
+  // so stage.type is narrowed to 'agent' at the call site; accept StageIR
+  // here and narrow defensively.
+  const resolvedPrompt =
+    stage.type === "agent" ? stage.config.promptRef : undefined;
+  const promptSummary = resolvedPrompt
+    ? resolvedPrompt.length > 400
+      ? resolvedPrompt.slice(0, 400) + " [...]"
+      : resolvedPrompt
     : "(no prompt supplied)";
   const inputDump = Object.keys(inputs).length === 0
     ? "  (no inputs)"

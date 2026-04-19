@@ -126,7 +126,7 @@ export async function runDemo(options: { skipTypeCheck?: boolean; tscPath?: stri
             type: "agent",
             inputs: [{ name: "summary", type: "string" }],
             outputs: [],
-            config: { prompt: "consume the summary" },
+            config: { promptRef: "consume the summary" },
           },
         },
         {
