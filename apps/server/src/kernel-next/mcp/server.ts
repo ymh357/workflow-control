@@ -50,16 +50,50 @@ export interface KernelMcpOptions extends KernelServiceOptions {
    * debugging use cases where no machine is listening.
    */
   writePortDispatcher?: EventDispatcher;
+  /**
+   * Which tool surface to expose. Per design doc §9.1 the external
+   * surface (AI consumers, dashboards) must NOT include write_port;
+   * the internal surface (kernel's own executors) is in-process only
+   * and exposes write_port + sidecar writes. This parameter is the
+   * physical separation boundary.
+   *
+   *   "external" — AI-facing. submit/validate/propose/list/approve/
+   *                reject/get_task_status/list_gates/answer_gate/
+   *                read_port/query_lineage/diff_runs. NO write_port.
+   *   "internal" — executor-facing. write_port only (sidecar TBD).
+   *   "combined" — legacy: every tool. Default for backwards compat
+   *                while callers migrate. New code should pick a
+   *                specific surface.
+   */
+  surface?: "external" | "internal" | "combined";
 }
+
+/** Every tool name emitted by createKernelMcp across all surfaces. */
+type ToolName =
+  | "submit_pipeline" | "validate_pipeline" | "propose_pipeline_change"
+  | "list_proposals" | "approve_proposal" | "reject_proposal"
+  | "get_task_status" | "list_gates" | "answer_gate"
+  | "read_port" | "query_lineage" | "diff_runs"
+  | "write_port";
+
+const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
+  "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
+  "list_proposals", "approve_proposal", "reject_proposal",
+  "get_task_status", "list_gates", "answer_gate",
+  "read_port", "query_lineage", "diff_runs",
+]);
+const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
 export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}) {
   const kernel = new KernelService(db, options);
   const maxBytesDefault = options.defaultMaxBytes ?? MAX_VALUE_BYTES_DEFAULT;
+  const surface = options.surface ?? "combined";
+  const allow: ReadonlySet<ToolName> =
+    surface === "external" ? EXTERNAL_TOOLS :
+    surface === "internal" ? INTERNAL_TOOLS :
+    new Set([...EXTERNAL_TOOLS, ...INTERNAL_TOOLS]);
 
-  return createSdkMcpServer({
-    name: "__kernel_next__",
-    version: "0.1.0",
-    tools: [
+  const allTools = [
       {
         name: "submit_pipeline",
         description:
@@ -479,7 +513,22 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
           }
         },
       },
-    ],
+  ];
+
+  return createSdkMcpServer({
+    name:
+      surface === "internal"
+        ? "__kernel_next_internal__"
+        : surface === "external"
+          ? "__kernel_next_external__"
+          : "__kernel_next__",
+    version: "0.1.0",
+    // Physical separation per §9.1: filter the all-tools list down to
+    // what this surface is supposed to expose. An external server
+    // literally cannot emit write_port — the tool is not in its
+    // descriptor list, so the SDK won't route a matching tool call to
+    // any handler.
+    tools: allTools.filter((t) => allow.has(t.name as ToolName)),
   });
 }
 

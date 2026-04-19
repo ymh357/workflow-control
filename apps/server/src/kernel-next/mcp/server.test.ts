@@ -334,3 +334,74 @@ describe("kernel-next MCP server", () => {
     db4.close();
   });
 });
+
+describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", () => {
+  // External surface = AI-facing. Per design doc the external tools
+  // are strictly read-/submit-oriented. Specifically: write_port MUST
+  // NOT be emitted on this surface. The only way an external consumer
+  // could affect port state is via MCP tools, and write_port simply
+  // isn't in the descriptor list — the SDK can't route a tool_use
+  // whose name doesn't match any declared tool.
+  it("external surface does NOT expose write_port", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "external" });
+    const tools = getTools(mcp);
+    expect(tools.has("write_port")).toBe(false);
+    db.close();
+  });
+
+  it("external surface exposes exactly the externally-safe tools", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "external" });
+    const tools = getTools(mcp);
+    expect([...tools.keys()].sort()).toEqual([
+      "answer_gate",
+      "approve_proposal",
+      "diff_runs",
+      "get_task_status",
+      "list_gates",
+      "list_proposals",
+      "propose_pipeline_change",
+      "query_lineage",
+      "read_port",
+      "reject_proposal",
+      "submit_pipeline",
+      "validate_pipeline",
+    ]);
+    db.close();
+  });
+
+  it("internal surface exposes ONLY write_port (no external tools leak)", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "internal" });
+    const tools = getTools(mcp);
+    expect([...tools.keys()]).toEqual(["write_port"]);
+    db.close();
+  });
+
+  it("server name reflects the surface (external/internal/combined)", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const ext = createKernelMcp(db, { tscPath: TSC_PATH, surface: "external" }) as { name: string };
+    const int = createKernelMcp(db, { tscPath: TSC_PATH, surface: "internal" }) as { name: string };
+    const combined = createKernelMcp(db, { tscPath: TSC_PATH }) as { name: string };
+    expect(ext.name).toBe("__kernel_next_external__");
+    expect(int.name).toBe("__kernel_next_internal__");
+    expect(combined.name).toBe("__kernel_next__");
+    db.close();
+  });
+
+  it("combined surface still includes every tool (backwards compat)", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH }); // default = combined
+    const tools = getTools(mcp);
+    expect(tools.size).toBe(13);
+    expect(tools.has("write_port")).toBe(true);
+    expect(tools.has("submit_pipeline")).toBe(true);
+    db.close();
+  });
+});
