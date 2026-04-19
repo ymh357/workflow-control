@@ -345,8 +345,20 @@ async function generateStagePrompt(
     .map((w: WriteDeclaration) => `  ${wKey(w)}`)
     .join("\n") || "  (none)";
 
-  const outputsStr = stage.outputs
-    ? JSON.stringify(stage.outputs, null, 2)
+  // Derive the output shape hint from store_schema entries produced by this
+  // stage (Phase 3.6: stage.outputs retired). Falling back to a plain marker
+  // when no schema is declared for this stage keeps the prompt template
+  // working on schema-less pipelines (rare post-3.3-hard, but still legal
+  // when writes are empty).
+  const schemaForStage = pipelineObj.store_schema
+    ? Object.fromEntries(
+        Object.entries(pipelineObj.store_schema as Record<string, { produced_by?: string }>).filter(
+          ([, v]) => v?.produced_by === stage.name,
+        ),
+      )
+    : {};
+  const outputsStr = Object.keys(schemaForStage).length > 0
+    ? JSON.stringify(schemaForStage, null, 2)
     : "  (not specified)";
 
   const prompt = `You are an expert at writing system prompts for AI agents in workflow pipelines.

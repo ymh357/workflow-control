@@ -467,12 +467,26 @@
 - ✅ 3.3-hard（D1）：validator warn→error + 强制 store_schema（commit `78ce67e`）
 - ✅ 3.5（D2）：agent 输出的 shape 校验 + retry feedback（commit `76ee9cc`）
 - ✅ 3.7（部分）：`context-builder.baseline.test.ts` 锁 token 数与结构契约
-- ⏸ 3.6 推迟：investigate-first 后发现"5 级 fallback"不是单一结构。真正需要
-  删的 legacy fallback（无 reads 路径）仍会在某些 stage 合法触发；reads 内部
-  的 inline JSON / semantic summary / keys preview 3 级是 token budget
-  触发的 graceful degradation，不是"fallback"。完整 schema-driven tier1
-  重写需单独 session（1 周）+ 3.7 剩余回归测试。baseline 已在位作护栏。
+- ✅ 3.6（schema-driven tier1 重写）：`schema-renderer.ts` 纯函数 +
+  `buildTier1Context(..., storeSchema)` 注入 + 删 legacy 路径 B +
+  删 `stage.outputs` 字段。实测 tier1 token 下降见下表。
 - ⏸ 3.4 等 Phase 0 补做
+
+**Phase 3.6 tier1 token 实测（with vs without storeSchema）**：
+
+| scenario | without | with | delta |
+|---|---:|---:|---:|
+| small scalar entry | 62 | 54 | -13% |
+| markdown-heavy entry | 131 | 118 | -10% |
+| object[] entry | 319 | 163 | **-49%** |
+| string[] entry | 62 | 47 | -24% |
+| subpath read | 40 | 40 | 0%（故意 bypass） |
+
+测试锁位：`context-builder.3.6-measurement.test.ts`。未来任何回归
+（delta 降到更差）会直接失败。object[] 是最大红利来源（JSON 每项字段
+都要 key 引号 + 转义），markdown 在长内容场景红利更大，scalar/string[]
+稳定小幅改进。subpath reads 故意不走 schema——schema 描述根 entry，
+sub-path 选择的字段不在 schema 直接定义的范围内。
 
 ---
 

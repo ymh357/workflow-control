@@ -183,7 +183,6 @@ export interface PipelineStageConfig {
   interactive?: boolean;
   execution_mode?: "auto" | "edge" | "any";
   runtime?: StageRuntimeConfig;
-  outputs?: StageOutputSchema;
   on_complete?: {
     notify?: string;
   };

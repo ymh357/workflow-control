@@ -113,7 +113,9 @@ async function buildStageContext(taskId: string, stageName: string, compact = fa
     tier1Context,
     systemPrompt,
     ...(staticPrefix !== undefined ? { staticPromptPrefix: staticPrefix } : {}),
-    outputSchema: stageConfig.outputs ?? null,
+    // Frozen module (edge runner): tolerate the absence of the retired
+    // stage.outputs field post Phase 3.6. Never populated for new pipelines.
+    outputSchema: (stageConfig as unknown as { outputs?: unknown }).outputs ?? null,
     storeReads,
     mcps: mcpList,
     worktreePath: context.worktreePath ?? "",
@@ -308,7 +310,7 @@ export function createEdgeMcpServer(): McpServer {
         stageName,
         writes: agentRuntime?.writes ?? [],
         reads: agentRuntime?.reads ? Object.keys(agentRuntime.reads) : [],
-        outputSchema: stageConf.outputs ?? null,
+        outputSchema: (stageConf as unknown as { outputs?: unknown }).outputs ?? null,
         nonce: nonce ?? null,
       };
 

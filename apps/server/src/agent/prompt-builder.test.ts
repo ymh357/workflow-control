@@ -400,23 +400,21 @@ describe("buildSystemAppendPrompt", () => {
     expect(result).not.toContain("gemini instructions");
   });
 
-  it("generates schema output section when stage has outputs", async () => {
+  it("generates schema output section from store_schema for the current stage", async () => {
     const params = {
       ...baseParams,
       privateConfig: {
         ...baseParams.privateConfig,
         pipeline: {
-          stages: [
-            {
-              name: "coding",
-              outputs: {
-                result: {
-                  type: "object",
-                  fields: [{ key: "summary", type: "string", description: "Summary" }],
-                },
+          stages: [{ name: "coding" }],
+          store_schema: {
+            result: {
+              produced_by: "coding",
+              fields: {
+                summary: { type: "string", description: "Summary" },
               },
             },
-          ],
+          },
         },
       },
     };

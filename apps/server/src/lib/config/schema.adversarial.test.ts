@@ -10,8 +10,6 @@ import {
   PipelineCallRuntimeConfigSchema,
   ForeachRuntimeConfigSchema,
   StageRuntimeConfigSchema,
-  OutputFieldSchema,
-  StageOutputSchemaSchema,
   McpRegistryEntrySchema,
   SandboxConfigSchema,
   SystemSettingsSchema,
@@ -122,81 +120,6 @@ describe("schema adversarial: StageRuntimeConfigSchema discriminated union", () 
       engine: "script",
       script_id: "x",
       timeout_sec: -10,
-    });
-    expect(result.success).toBe(true);
-  });
-});
-
-describe("schema adversarial: OutputFieldSchema recursive", () => {
-  it("accepts deeply nested fields (3 levels)", () => {
-    const result = OutputFieldSchema.safeParse({
-      key: "root",
-      type: "object",
-      description: "root",
-      fields: [{
-        key: "mid",
-        type: "object",
-        description: "mid",
-        fields: [{
-          key: "leaf",
-          type: "string",
-          description: "leaf",
-        }],
-      }],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects fields with non-array fields value", () => {
-    const result = OutputFieldSchema.safeParse({
-      key: "x",
-      type: "object",
-      description: "x",
-      fields: "not-an-array",
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects invalid display_hint value", () => {
-    const result = OutputFieldSchema.safeParse({
-      key: "x",
-      type: "string",
-      description: "x",
-      display_hint: "table",
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("accepts empty fields array for object type", () => {
-    const result = OutputFieldSchema.safeParse({
-      key: "x",
-      type: "object",
-      description: "x",
-      fields: [],
-    });
-    expect(result.success).toBe(true);
-  });
-});
-
-describe("schema adversarial: StageOutputSchemaSchema", () => {
-  it("rejects output with type other than 'object'", () => {
-    const result = StageOutputSchemaSchema.safeParse({
-      store1: { type: "array", fields: [] },
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("rejects output missing fields array", () => {
-    const result = StageOutputSchemaSchema.safeParse({
-      store1: { type: "object" },
-    });
-    expect(result.success).toBe(false);
-  });
-
-  it("accepts multiple stores in one schema", () => {
-    const result = StageOutputSchemaSchema.safeParse({
-      store1: { type: "object", fields: [{ key: "a", type: "string", description: "a" }] },
-      store2: { type: "object", fields: [], hidden: true },
     });
     expect(result.success).toBe(true);
   });

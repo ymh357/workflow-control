@@ -57,7 +57,6 @@ describe("autofixPipeline", () => {
           name: "analyze",
           type: "agent" as const,
           runtime: { engine: "llm" as const, system_prompt: "x", writes: ["analysis"], reads: {} },
-          outputs: { analysis: { type: "object" as const, fields: [] } },
         },
       ],
     };

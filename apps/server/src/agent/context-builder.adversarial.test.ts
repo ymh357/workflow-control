@@ -124,45 +124,6 @@ describe("adversarial: empty reads object produces no Required Context section",
   });
 });
 
-describe("adversarial: legacy fallback with duplicate store keys across stages", () => {
-  it("renders a store key only once even if multiple stages reference it", () => {
-    const ctx = makeContext({
-      store: { analysis: { summary: "ok" } },
-      config: {
-        pipeline: {
-          stages: [
-            { outputs: { analysis: { label: "First", fields: [{ key: "summary", type: "string", description: "" }] } } },
-            { outputs: { analysis: { label: "Second", fields: [{ key: "summary", type: "string", description: "" }] } } },
-          ],
-        },
-      },
-    });
-    const result = buildTier1Context(ctx);
-    // renderedKeys Set prevents double rendering
-    const matches = result.split("## First").length - 1;
-    expect(matches).toBe(1);
-    expect(result).not.toContain("## Second");
-  });
-});
-
-describe("adversarial: legacy fallback with array store values", () => {
-  it("renders array store values as strings in legacy path", () => {
-    const ctx = makeContext({
-      store: { analysis: [1, 2, 3] },
-      config: {
-        pipeline: {
-          stages: [
-            { outputs: { analysis: { label: "Arr", fields: [{ key: "x", type: "string", description: "" }] } } },
-          ],
-        },
-      },
-    });
-    const result = buildTier1Context(ctx);
-    // Array is not "object" || Array.isArray => true, so it goes to String(data)
-    expect(result).toContain("1,2,3");
-  });
-});
-
 describe("adversarial: number and boolean values in reads path", () => {
   it("renders number values in JSON format", () => {
     const ctx = makeContext({

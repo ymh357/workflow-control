@@ -1,7 +1,9 @@
 import type { WorkflowContext } from "../machine/types.js";
-import { type AgentRuntimeConfig, getNestedValue, flattenStages } from "../lib/config-loader.js";
+import { type AgentRuntimeConfig, getNestedValue } from "../lib/config-loader.js";
 import { getCachedSummary } from "./semantic-summary-cache.js";
 import { stableHash } from "../lib/stable-hash.js";
+import type { StoreSchema } from "../lib/config/types.js";
+import { renderBySchema } from "./schema-renderer.js";
 
 // Compact Tier 1 context injected into systemPrompt for each stage.
 // Full Tier 2 context lives in .workflow/ files that the agent reads on demand.
@@ -78,6 +80,7 @@ export function buildTier1Context(
   runtime?: AgentRuntimeConfig,
   maxTokens: number = DEFAULT_TIER1_MAX_TOKENS,
   currentStage?: string,
+  storeSchema?: StoreSchema,
 ): string {
   const parts: string[] = [];
   const store = context.store ?? {};
@@ -126,6 +129,23 @@ export function buildTier1Context(
       renderedKeys.add(storeKey);
 
       if (typeof val === "object" && val !== null) {
+        // Schema-driven rendering only fires for top-level store keys
+        // (e.g. reads: "analysis"). Sub-path reads (e.g. "analysis.summary")
+        // stay on the JSON path — the schema describes the root entry, not
+        // arbitrary sub-selections.
+        const isTopLevelRead = storePath === storeKey;
+        const schemaEntry = storeSchema && isTopLevelRead
+          ? storeSchema[storeKey]
+          : undefined;
+
+        if (schemaEntry && schemaEntry.fields && Object.keys(schemaEntry.fields).length > 0) {
+          const rendered = renderBySchema(val, schemaEntry, label);
+          if (addPart(rendered.body)) continue;
+          // Schema block too large — fall through to the budget-degradation
+          // ladder below (semantic summary → keys preview). Reuse the same
+          // JSON ladder logic so budget handling is consistent.
+        }
+
         // Compact JSON: truncate arrays beyond 20 elements to save tokens
         const truncated = Array.isArray(val) && val.length > 20
           ? [...val.slice(0, 20), `... (${val.length} total items)`]
@@ -176,38 +196,15 @@ export function buildTier1Context(
     return parts.join("\n");
   }
 
-  // Fallback: Legacy full injection (for backward compat if 'reads' is missing)
-  const stages = (context.config?.pipeline?.stages ? flattenStages(context.config.pipeline.stages) : []) as Array<{
-    outputs?: Record<string, { label?: string; fields: Array<{ key: string }> }>;
-  }>;
-  const renderedKeys = new Set<string>();
-  for (const stage of stages) {
-    if (!stage.outputs) continue;
-    for (const [storeKey, schema] of Object.entries(stage.outputs)) {
-      if (!(storeKey in store) || renderedKeys.has(storeKey)) continue;
-      renderedKeys.add(storeKey);
-      parts.push(`\n## ${schema.label ?? storeKey}`);
-      const data = store[storeKey];
-      if (typeof data !== "object" || Array.isArray(data) || data === null) {
-        parts.push(String(data));
-        continue;
-      }
-      for (const field of schema.fields) {
-        const val = data[field.key];
-        if (val === undefined || val === null) continue;
-        if (Array.isArray(val)) {
-          parts.push(`${field.key}: ${val.slice(0, 5).join("; ")}`);
-        } else {
-          parts.push(`${field.key}: ${val}`);
-        }
-      }
-    }
-  }
-
-  for (const [key, val] of Object.entries(store)) {
-    if (renderedKeys.has(key) || val === undefined) continue;
-    parts.push(`\n## ${key}`);
-    parts.push(typeof val === "string" ? val : JSON.stringify(val));
+  // No `reads` declared on the stage — agents without a reads contract get a
+  // minimal context: task identification + a keys index so they can pull
+  // specific values via get_store_value(). This path is rare post Phase 3.5
+  // (schema-backed pipelines declare reads); it exists as a safety net for
+  // pipelines that predate the schema era or were built without store_schema.
+  const availableKeys = Object.keys(store).filter((k) => !k.startsWith("__"));
+  if (availableKeys.length > 0) {
+    parts.push("\n## Available Store Keys (use get_store_value tool to read any of these)");
+    parts.push(availableKeys.map((k) => `- ${k}`).join("\n"));
   }
 
   return parts.join("\n");

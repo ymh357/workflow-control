@@ -6,6 +6,7 @@ import {
   type FragmentMeta, type AgentRuntimeConfig, type StageOutputSchema, type OutputFieldSchema,
 } from "../lib/config-loader.js";
 import { findStageConfig } from "../lib/config/stage-lookup.js";
+import { deriveStageOutputs } from "../lib/config/store-schema.js";
 import { buildCapabilitySummary, formatCapabilityPrompt } from "../lib/capability-registry.js";
 import { taskLogger } from "../lib/logger.js";
 
@@ -125,9 +126,18 @@ Rules:
     appendParts.push(buildStepHints(enabledSteps, (pipelineStage as any).runtime.available_steps));
   }
 
-  // 8. Schema-driven output format
-  if (pipelineStage?.outputs) {
-    appendParts.push(generateSchemaPrompt(pipelineStage.outputs));
+  // 8. Schema-driven output format — derived from pipeline.store_schema
+  // entries whose produced_by matches the current stage. Phase 3.6 retired
+  // stage.outputs; store_schema is the single source of truth for "what
+  // shape must this stage write".
+  if (privateConfig?.pipeline?.store_schema) {
+    const derivedOutputs = deriveStageOutputs(
+      privateConfig.pipeline.store_schema,
+      stageName,
+    );
+    if (derivedOutputs) {
+      appendParts.push(generateSchemaPrompt(derivedOutputs));
+    }
   }
 
   // NOTE: Project instructions (CLAUDE.md / GEMINI.md / CODEX.md) are prepended to appendPrompt as a static prefix.

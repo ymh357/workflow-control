@@ -6,7 +6,7 @@ import { taskLogger } from "../lib/logger.js";
 import type { StateNode } from "./state-builders.js";
 import { buildParallelGroupState, buildSingleSessionParallelState } from "./state-builders.js";
 import { getStageBuilder } from "./stage-registry.js";
-import { deriveStageWrites, deriveStageOutputs } from "../lib/config/store-schema.js";
+import { deriveStageWrites } from "../lib/config/store-schema.js";
 
 const exprParser = new Parser();
 
@@ -114,47 +114,40 @@ export function buildPipelineStates(pipeline: PipelineConfig): Record<string, St
     }
   }
 
-  // When store_schema is present, auto-populate runtime.writes and stage.outputs
-  // from the schema. This is a one-time derivation at build time — runtime code
-  // continues to read runtime.writes and stage.outputs as before.
+  // When store_schema is present, auto-populate runtime.writes from the schema.
+  // This is a one-time derivation at build time so runtime code has a single
+  // source of truth (runtime.writes). Phase 3.6 retired stage.outputs — tier1
+  // rendering now pulls from store_schema directly via schema-renderer.
   //
   // IMPORTANT: stage objects can be shared across snapshots (YAML cache, persisted
   // pipeline embedded in context.config). We MUST NOT mutate the caller's objects.
-  // Clone runtime and the stage entry before assigning derived fields.
+  // Clone runtime and the stage entry before assigning derived writes.
   if (pipeline.store_schema) {
     const clonedStages: PipelineStageEntry[] = [];
     for (const entry of transformed.stages) {
       if (isParallelGroup(entry)) {
         const clonedChildren = entry.parallel.stages.map((stage) => {
           const derivedWrites = deriveStageWrites(pipeline.store_schema!, stage.name);
-          const derivedOutputs = deriveStageOutputs(pipeline.store_schema!, stage.name);
           const rt = stage.runtime as any;
           const needWrites = derivedWrites.length > 0 && rt && (!rt.writes || rt.writes.length === 0);
-          const needOutputs = derivedOutputs && !stage.outputs;
-          if (!needWrites && !needOutputs) return stage;
-          const nextRuntime = needWrites ? { ...rt, writes: derivedWrites } : rt;
+          if (!needWrites) return stage;
           return {
             ...stage,
-            ...(needWrites ? { runtime: nextRuntime } : {}),
-            ...(needOutputs ? { outputs: derivedOutputs } : {}),
+            runtime: { ...rt, writes: derivedWrites },
           } as PipelineStageConfig;
         });
         clonedStages.push({ parallel: { ...entry.parallel, stages: clonedChildren } });
       } else {
         const stage = entry as PipelineStageConfig;
         const derivedWrites = deriveStageWrites(pipeline.store_schema, stage.name);
-        const derivedOutputs = deriveStageOutputs(pipeline.store_schema, stage.name);
         const rt = stage.runtime as any;
         const needWrites = derivedWrites.length > 0 && rt && (!rt.writes || rt.writes.length === 0);
-        const needOutputs = derivedOutputs && !stage.outputs;
-        if (!needWrites && !needOutputs) {
+        if (!needWrites) {
           clonedStages.push(stage);
         } else {
-          const nextRuntime = needWrites ? { ...rt, writes: derivedWrites } : rt;
           clonedStages.push({
             ...stage,
-            ...(needWrites ? { runtime: nextRuntime } : {}),
-            ...(needOutputs ? { outputs: derivedOutputs } : {}),
+            runtime: { ...rt, writes: derivedWrites },
           } as PipelineStageConfig);
         }
       }

@@ -162,36 +162,6 @@ export const StageRuntimeConfigSchema = z.discriminatedUnion("engine", [
   LlmDecisionRuntimeConfigSchema,
 ]);
 
-// --- Output Schema ---
-
-export const OutputFieldSchema: z.ZodType<{
-  key: string;
-  type: "string" | "number" | "boolean" | "string[]" | "object" | "object[]" | "markdown";
-  description: string;
-  fields?: unknown[];
-  display_hint?: "link" | "badge" | "code";
-  hidden?: boolean;
-}> = z.lazy(() =>
-  z.object({
-    key: z.string(),
-    type: z.enum(["string", "number", "boolean", "string[]", "object", "object[]", "markdown"]),
-    description: z.string(),
-    fields: z.array(OutputFieldSchema).optional(),
-    display_hint: z.enum(["link", "badge", "code"]).optional(),
-    hidden: z.boolean().optional(),
-  })
-);
-
-export const StageOutputSchemaSchema = z.record(
-  z.string(),
-  z.object({
-    type: z.literal("object"),
-    label: z.string().optional(),
-    fields: z.array(OutputFieldSchema),
-    hidden: z.boolean().optional(),
-  })
-);
-
 // --- Pipeline Stage ---
 
 export const PipelineStageConfigSchema = z.object({
@@ -223,7 +193,6 @@ export const PipelineStageConfigSchema = z.object({
   interactive: z.boolean().optional(),
   execution_mode: z.enum(["auto", "edge", "any"]).optional(),
   runtime: StageRuntimeConfigSchema.optional(),
-  outputs: StageOutputSchemaSchema.optional(),
   on_complete: z
     .object({
       notify: z.string().optional(),

@@ -10,8 +10,6 @@ import {
   PipelineCallRuntimeConfigSchema,
   ForeachRuntimeConfigSchema,
   StageRuntimeConfigSchema,
-  OutputFieldSchema,
-  StageOutputSchemaSchema,
   McpRegistryEntrySchema,
   SandboxConfigSchema,
   SystemSettingsSchema,
@@ -692,73 +690,6 @@ describe("ForeachRuntimeConfigSchema", () => {
       item_var: "item",
       pipeline_name: "child",
       max_concurrency: 0,
-    });
-    expect(result.success).toBe(false);
-  });
-});
-
-// ---------- OutputFieldSchema ----------
-
-describe("OutputFieldSchema", () => {
-  it("accepts basic field", () => {
-    const result = OutputFieldSchema.safeParse({
-      key: "title",
-      type: "string",
-      description: "The title",
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts nested fields", () => {
-    const result = OutputFieldSchema.safeParse({
-      key: "details",
-      type: "object",
-      description: "Details",
-      fields: [
-        { key: "sub", type: "number", description: "Num" },
-      ],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts display_hint and hidden", () => {
-    const result = OutputFieldSchema.safeParse({
-      key: "url",
-      type: "string",
-      description: "Link",
-      display_hint: "link",
-      hidden: true,
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts object[] type", () => {
-    const result = OutputFieldSchema.safeParse({
-      key: "items",
-      type: "object[]",
-      description: "List of items",
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("accepts object[] with nested fields", () => {
-    const result = OutputFieldSchema.safeParse({
-      key: "files",
-      type: "object[]",
-      description: "File list",
-      fields: [
-        { key: "path", type: "string", description: "File path" },
-        { key: "size", type: "number", description: "File size" },
-      ],
-    });
-    expect(result.success).toBe(true);
-  });
-
-  it("rejects invalid type", () => {
-    const result = OutputFieldSchema.safeParse({
-      key: "x",
-      type: "date",
-      description: "Date field",
     });
     expect(result.success).toBe(false);
   });

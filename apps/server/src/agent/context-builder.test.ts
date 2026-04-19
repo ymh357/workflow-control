@@ -198,117 +198,32 @@ describe("buildTier1Context - selective reads (runtime.reads)", () => {
   });
 });
 
-describe("buildTier1Context - legacy fallback (no runtime.reads)", () => {
-  it("renders store data using stage output schemas", () => {
+describe("buildTier1Context - no reads declared (Phase 3.6: keys index only)", () => {
+  it("emits Available Store Keys index when runtime.reads is absent", () => {
     const ctx = makeContext({
-      store: {
-        analysis: { summary: "great", items: ["a", "b", "c", "d", "e", "f"] },
-      },
-      config: {
-        pipeline: {
-          stages: [
-            {
-              outputs: {
-                analysis: {
-                  label: "Analysis Output",
-                  fields: [
-                    { key: "summary", type: "string", description: "" },
-                    { key: "items", type: "string[]", description: "" },
-                  ],
-                },
-              },
-            },
-          ],
-        },
-      },
+      store: { analysis: { summary: "ok" }, plan: { steps: [] } },
     });
     const result = buildTier1Context(ctx);
-    expect(result).toContain("## Analysis Output");
-    expect(result).toContain("summary: great");
-    // Legacy also slices arrays to 5
-    expect(result).toContain("items: a; b; c; d; e");
+    expect(result).toContain("## Available Store Keys");
+    expect(result).toContain("- analysis");
+    expect(result).toContain("- plan");
+    // Full content is NOT injected — agents pull via get_store_value.
+    expect(result).not.toContain("summary: ok");
   });
 
-  it("falls back to store key as header when no label", () => {
+  it("filters __-prefixed store keys from the index", () => {
     const ctx = makeContext({
-      store: { analysis: { summary: "ok" } },
-      config: {
-        pipeline: {
-          stages: [
-            {
-              outputs: {
-                analysis: {
-                  fields: [{ key: "summary", type: "string", description: "" }],
-                },
-              },
-            },
-          ],
-        },
-      },
+      store: { public: "v", __private: "secret" },
     });
     const result = buildTier1Context(ctx);
-    expect(result).toContain("## analysis");
+    expect(result).toContain("- public");
+    expect(result).not.toContain("__private");
   });
 
-  it("renders un-schematized store keys at the end", () => {
-    const ctx = makeContext({
-      store: {
-        extra: "some extra data",
-        nested: { a: 1 },
-      },
-      config: { pipeline: { name: "", stages: [] } },
-    });
+  it("omits the keys index when store is empty", () => {
+    const ctx = makeContext({ store: {} });
     const result = buildTier1Context(ctx);
-    expect(result).toContain("## extra");
-    expect(result).toContain("some extra data");
-    expect(result).toContain("## nested");
-    expect(result).toContain(JSON.stringify({ a: 1 }));
-  });
-
-  it("handles non-object store values in legacy mode", () => {
-    const ctx = makeContext({
-      store: { analysis: "plain text" },
-      config: {
-        pipeline: {
-          stages: [
-            {
-              outputs: {
-                analysis: {
-                  label: "Analysis",
-                  fields: [{ key: "summary", type: "string", description: "" }],
-                },
-              },
-            },
-          ],
-        },
-      },
-    });
-    const result = buildTier1Context(ctx);
-    expect(result).toContain("## Analysis");
-    expect(result).toContain("plain text");
-  });
-
-  it("skips null/undefined field values", () => {
-    const ctx = makeContext({
-      store: { analysis: { summary: null, detail: undefined, name: "test" } },
-      config: {
-        pipeline: {
-          stages: [
-            {
-              outputs: {
-                analysis: {
-                  fields: [{ key: "summary", type: "string", description: "" }, { key: "detail", type: "string", description: "" }, { key: "name", type: "string", description: "" }],
-                },
-              },
-            },
-          ],
-        },
-      },
-    });
-    const result = buildTier1Context(ctx);
-    expect(result).toContain("name: test");
-    expect(result).not.toMatch(/summary:/);
-    expect(result).not.toMatch(/detail:/);
+    expect(result).not.toContain("Available Store Keys");
   });
 });
 
@@ -335,54 +250,6 @@ describe("buildTier1Context - large value preview", () => {
     const result = buildTier1Context(ctx, runtime, 500);
     expect(result).toContain("summarized");
     expect(result).toContain('get_store_value("huge")');
-  });
-});
-
-describe("buildTier1Context - parallel group stages", () => {
-  it("renders store data from parallel group child stage outputs", () => {
-    const ctx = makeContext({
-      store: {
-        designReview: { feedback: "needs contrast fix", severity: "medium" },
-        codeReview: { issues: ["lint error", "missing type"], passed: false },
-      },
-      config: {
-        pipeline: {
-          stages: [
-            {
-              parallel: {
-                stages: [
-                  {
-                    name: "design-review",
-                    outputs: {
-                      designReview: {
-                        label: "Design Review",
-                        fields: [{ key: "feedback", type: "string", description: "" }, { key: "severity", type: "string", description: "" }],
-                      },
-                    },
-                  },
-                  {
-                    name: "code-review",
-                    outputs: {
-                      codeReview: {
-                        label: "Code Review",
-                        fields: [{ key: "issues", type: "string[]", description: "" }, { key: "passed", type: "boolean", description: "" }],
-                      },
-                    },
-                  },
-                ],
-              },
-            },
-          ],
-        },
-      },
-    });
-    const result = buildTier1Context(ctx);
-    expect(result).toContain("## Design Review");
-    expect(result).toContain("needs contrast fix");
-    expect(result).toContain("medium");
-    expect(result).toContain("## Code Review");
-    expect(result).toContain("lint error");
-    expect(result).toContain("false");
   });
 });
 

@@ -16,6 +16,7 @@ import { buildSystemAppendPrompt, buildEffectivePrompt, buildStaticPromptPrefix 
 import { buildQueryOptions } from "./query-options-builder.js";
 import { processAgentStream } from "./stream-processor.js";
 import { outputSchemaToJsonSchema } from "./output-schema.js";
+import { deriveStageOutputs } from "../lib/config/store-schema.js";
 import { createAskUserQuestionInterceptor, createSpecAuditHook, createPathRestrictionHook } from "./executor-hooks.js";
 import type { ExecutionRecordWriter } from "../lib/execution-record/writer.js";
 
@@ -246,8 +247,14 @@ export async function executeStage(
     const pipelineStage = privateConfig?.pipeline?.stages
       ? flattenStages(privateConfig.pipeline.stages).find((s) => s.name === stageName)
       : undefined;
-    const outputFormat = pipelineStage?.outputs
-      ? { type: "json_schema" as const, schema: outputSchemaToJsonSchema(pipelineStage.outputs) }
+    // Phase 3.6: derive the agent output JSON schema from pipeline.store_schema
+    // at call time, rather than relying on stage.outputs (which has been
+    // retired). store_schema is the single source of truth for shape.
+    const derivedOutputsForJson = privateConfig?.pipeline?.store_schema
+      ? deriveStageOutputs(privateConfig.pipeline.store_schema, stageName)
+      : undefined;
+    const outputFormat = derivedOutputsForJson
+      ? { type: "json_schema" as const, schema: outputSchemaToJsonSchema(derivedOutputsForJson) }
       : undefined;
 
     const agentDefs = runtime?.agents as Record<string, SubAgentDefinition> | undefined;
