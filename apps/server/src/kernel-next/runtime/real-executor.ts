@@ -28,6 +28,7 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
+import { createActor, waitFor } from "xstate";
 import type { PortIR, AgentStage } from "../ir/schema.js";
 import type {
   ExecuteStageArgs,
@@ -37,6 +38,8 @@ import type {
 import type { EventDispatcher } from "./port-runtime.js";
 import type { PromptResolver } from "./prompt-resolver.js";
 import { TrivialPromptResolver } from "./prompt-resolver.js";
+import { createAgentMachine, type AgentMachineOutput } from "./agent-machine.js";
+import { createSdkAdapter, type SdkMessageLike } from "./sdk-adapter.js";
 
 export interface RealStageExecutorOptions {
   /**
@@ -74,6 +77,13 @@ export interface RealStageExecutorOptions {
    * A registry-backed resolver arrives in A2 per design doc §2.3.
    */
   promptResolver?: PromptResolver;
+  /**
+   * Injection point for the SDK's `query` function. Tests override this
+   * with a mock async iterable of SDK messages so RealStageExecutor can
+   * be exercised end-to-end through AgentMachine without spawning the
+   * Claude CLI. Production callers omit it (the real SDK query is used).
+   */
+  queryFn?: typeof query;
 }
 
 const DEFAULT_MODEL = "claude-haiku-4-5";
@@ -90,6 +100,7 @@ export class RealStageExecutor implements StageExecutor {
   private readonly claudePath: string;
   private readonly maxRetries: number;
   private readonly promptResolver: PromptResolver;
+  private readonly queryFn: typeof query;
 
   constructor(options: RealStageExecutorOptions) {
     this.mcpServerFactory = options.mcpServerFactory;
@@ -99,6 +110,7 @@ export class RealStageExecutor implements StageExecutor {
     this.claudePath = options.claudePath ?? DEFAULT_CLAUDE_PATH;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.promptResolver = options.promptResolver ?? new TrivialPromptResolver();
+    this.queryFn = options.queryFn ?? query;
   }
 
   async executeStage(args: ExecuteStageArgs): Promise<ExecuteStageResult> {
@@ -199,26 +211,46 @@ export class RealStageExecutor implements StageExecutor {
         env: buildChildEnv(),
       };
 
-      const stream = query({ prompt: userPrompt, options });
+      const stream = this.queryFn({ prompt: userPrompt, options });
 
-      let resultSubtype: string | undefined;
-      let resultError: string | undefined;
+      // A2.2 — drive an AgentMachine via the SDK adapter instead of ad-hoc
+      // result scanning. Every SDK message → 0+ AgentEvents → actor.send().
+      // The machine reaches `done` (ok) or `error` (SDK returned non-success
+      // or an error occurred mid-stream); final state's output carries the
+      // diagnostic we surface as stage_attempt error text.
+      const agentActor = createActor(createAgentMachine());
+      agentActor.start();
+      const adapter = createSdkAdapter();
 
-      for await (const message of stream) {
-        const msg = message as Record<string, unknown>;
-        if (msg.type !== "result") continue;
-        resultSubtype = typeof msg.subtype === "string" ? msg.subtype : undefined;
-        if (resultSubtype !== "success") {
-          resultError = typeof msg.error_message === "string"
-            ? msg.error_message
-            : typeof msg.result === "string"
-              ? msg.result
-              : `result subtype: ${resultSubtype ?? "unknown"}`;
+      let agentOutput: AgentMachineOutput;
+      try {
+        for await (const message of stream) {
+          const events = adapter.translate(message as SdkMessageLike);
+          for (const ev of events) agentActor.send(ev);
         }
+        // Wait for the machine to reach a final state. The SDK stream has
+        // already ended, so the terminal event should already be in the
+        // actor's snapshot; waitFor below short-circuits if already-final.
+        const finalSnap = await waitFor(
+          agentActor,
+          (s) => s.status === "done",
+          { timeout: 5_000 },
+        );
+        agentOutput = finalSnap.output as AgentMachineOutput;
+      } finally {
+        // Always stop the actor — even on adapter/stream errors or waitFor
+        // timeout. Otherwise XState keeps a subscription alive and a later
+        // test iteration's actor may race with this one.
+        agentActor.stop();
       }
 
-      if (resultSubtype !== "success") {
-        const msg = resultError ?? `agent did not return success (subtype=${resultSubtype ?? "none"})`;
+      if (agentOutput.status !== "done") {
+        const diag = agentOutput.diagnostic;
+        const msg = diag
+          ? diag.message || `result subtype: ${diag.subtype}`
+          : agentOutput.status === "interrupted"
+            ? `agent interrupted (from=${agentOutput.interruptedFrom ?? "unknown"})`
+            : "agent did not complete successfully";
         portRuntime.finishAttempt(attemptId, "error", msg, { silent: failSilently });
         return { attemptId, attemptIdx, status: "error", error: msg };
       }
