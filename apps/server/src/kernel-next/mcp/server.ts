@@ -401,6 +401,49 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
           }
         },
       },
+      {
+        name: "list_gates",
+        description:
+          "List gates in the queue. Optional taskId narrows to a single task; " +
+          "optional `answered` filters to pending (false) or resolved (true).",
+        inputSchema: {
+          taskId: z.string().optional(),
+          answered: z.boolean().optional(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            const filter: { taskId?: string; answered?: boolean } = {};
+            if (typeof args.taskId === "string") filter.taskId = args.taskId;
+            if (typeof args.answered === "boolean") filter.answered = args.answered;
+            return jsonResponse({ ok: true, gates: kernel.listGates(filter) });
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "answer_gate",
+        description:
+          "Answer an open gate. The answer is validated against the gate " +
+          "stage's routing table (exact match, falling back to '_default'). " +
+          "On success returns { ok: true, gateId, targetStage, answer } — the " +
+          "runner uses targetStage to advance the machine (A1.2b).",
+        inputSchema: {
+          gateId: z.string(),
+          answer: z.string().min(1).max(4096),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            return jsonResponse(
+              kernel.answerGate(String(args.gateId), String(args.answer)),
+            );
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
     ],
   });
 }

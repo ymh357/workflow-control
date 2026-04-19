@@ -60,14 +60,16 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("exposes 10 tools with expected names", () => {
+  it("exposes 12 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
     const tools = getTools(mcp);
     expect([...tools.keys()].sort()).toEqual([
+      "answer_gate",
       "approve_proposal",
       "diff_runs",
+      "list_gates",
       "list_proposals",
       "propose_pipeline_change",
       "query_lineage",
