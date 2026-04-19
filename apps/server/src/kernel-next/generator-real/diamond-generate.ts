@@ -37,7 +37,7 @@ const DIAMOND_TASK = [
   "- Stage D takes two inputs: `b: string` from B.y, and `c: string`",
   "  from C.z. It produces `final: string`. Prompt: \"Concatenate the",
   "  two inputs as <b>+<c>.\"",
-  "- All four stages have type 'agent' and engine 'claude'.",
+  "- All four stages have type 'agent' with config { promptRef: <the prompt string above> }.",
   "- Name the pipeline 'diamond-gen'.",
   "",
   "Submit the IR via submit_pipeline when ready.",
