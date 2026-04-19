@@ -1,0 +1,102 @@
+// Mock stage executor — spike-only.
+//
+// A "real" executor (phase 2) would invoke the Claude Agent SDK with the
+// stage's prompt, consume its output, parse writes, then call port-runtime
+// to persist them. The mock version takes a hardcoded `StageHandler` per
+// stage name and calls it with the input port values.
+//
+// The executor is driven externally (not by XState): runtime/runner.ts
+// observes stage transitions to "executing" and triggers the matching
+// handler via this dispatcher.
+
+import type { PipelineIR } from "../ir/schema.js";
+import type { PortRuntime } from "./port-runtime.js";
+
+export type StageHandler = (
+  inputs: Record<string, unknown>,
+  ctx: StageHandlerContext,
+) => Promise<Record<string, unknown>> | Record<string, unknown>;
+
+export interface StageHandlerContext {
+  taskId: string;
+  stageName: string;
+  attemptId: string;
+  attemptIdx: number;
+}
+
+export interface StageHandlerMap {
+  [stageName: string]: StageHandler;
+}
+
+export interface ExecuteStageArgs {
+  ir: PipelineIR;
+  stageName: string;
+  taskId: string;
+  versionHash: string;
+  portValues: Record<string, unknown>; // current in-memory view
+  handlers: StageHandlerMap;
+  portRuntime: PortRuntime;
+}
+
+export interface ExecuteStageResult {
+  attemptId: string;
+  attemptIdx: number;
+  status: "success" | "error";
+  error?: string;
+}
+
+export async function executeStage(args: ExecuteStageArgs): Promise<ExecuteStageResult> {
+  const { ir, stageName, taskId, versionHash, portValues, handlers, portRuntime } = args;
+  const stage = ir.stages.find((s) => s.name === stageName);
+  if (!stage) throw new Error(`Stage '${stageName}' not in IR`);
+
+  // 1. Start attempt.
+  const { attemptId, attemptIdx } = portRuntime.startAttempt({
+    taskId, versionHash, stageName,
+  });
+
+  // 2. Gather inputs from wire sources. For each input port, find the wire
+  //    whose `to` is (stage, inputPort) and read the source port value.
+  const inputs: Record<string, unknown> = {};
+  for (const p of stage.inputs) {
+    const wire = ir.wires.find(
+      (w) => w.to.stage === stageName && w.to.port === p.name,
+    );
+    if (!wire) continue; // dangling input; real validator catches this, tolerate here
+    const srcKey = `${wire.from.stage}.${wire.from.port}`;
+    const value = portValues[srcKey];
+    inputs[p.name] = value;
+    // Record lineage: this stage read this input.
+    portRuntime.recordRead({
+      attemptId, stageName, portName: p.name, value,
+    });
+  }
+
+  // 3. Invoke handler.
+  const handler = handlers[stageName];
+  if (!handler) {
+    portRuntime.finishAttempt(attemptId, "error", `No handler for stage '${stageName}'`);
+    return { attemptId, attemptIdx, status: "error", error: `No handler for stage '${stageName}'` };
+  }
+
+  let outputs: Record<string, unknown>;
+  try {
+    outputs = await handler(inputs, { taskId, stageName, attemptId, attemptIdx });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    portRuntime.finishAttempt(attemptId, "error", msg);
+    return { attemptId, attemptIdx, status: "error", error: msg };
+  }
+
+  // 4. Write declared outputs. Any undeclared key in `outputs` is ignored
+  //    (same stance as legacy kernel's filterStoreWrites).
+  const declaredOutPorts = new Set(stage.outputs.map((p) => p.name));
+  for (const [key, value] of Object.entries(outputs)) {
+    if (!declaredOutPorts.has(key)) continue;
+    portRuntime.writePort({ attemptId, stageName, portName: key, value });
+  }
+
+  // 5. Finish attempt.
+  portRuntime.finishAttempt(attemptId, "success");
+  return { attemptId, attemptIdx, status: "success" };
+}
