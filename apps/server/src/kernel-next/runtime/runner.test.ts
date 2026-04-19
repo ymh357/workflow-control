@@ -584,8 +584,21 @@ describe("A3.1: wire guards + NO_ACTIVE_WIRE", () => {
 
     expect(result.finalState).toBe("failed");
     expect(result.stageErrors).toHaveLength(1);
-    expect(result.stageErrors[0]?.stage).toBe("DST");
-    expect(result.stageErrors[0]?.message).toMatch(/NO_ACTIVE_WIRE/);
+    const err = result.stageErrors[0]!;
+    expect(err.stage).toBe("DST");
+    expect(err.message).toMatch(/NO_ACTIVE_WIRE/);
+    // F3 — NO_ACTIVE_WIRE carries structured context per §6.2.
+    expect(err.context?.failedWires).toEqual([
+      {
+        wire: {
+          from: { stage: "SRC", port: "x" },
+          to: { stage: "DST", port: "v" },
+        },
+        guardExpr: "value > 100",
+        valuePreview: "5",
+        reason: "guard-false",
+      },
+    ]);
     db.close();
   });
 
@@ -630,6 +643,120 @@ describe("A3.1: wire guards + NO_ACTIVE_WIRE", () => {
 
     expect(result.finalState).toBe("completed");
     expect(result.portValues["DST.out"]).toBe(84);
+    db.close();
+  });
+
+  // F3 — Reviewer critical #3: diagnostics must explain WHICH wire died
+  // and WHY, not just "none delivered". These tests exercise the three
+  // non-deliverable reasons the compiler can produce at runtime.
+  it("guard that throws → context.failedWires records reason='guard-threw'", async () => {
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "guard-threw",
+      stages: [
+        {
+          name: "SRC",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "obj", type: "unknown" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "DST",
+          type: "agent",
+          inputs: [{ name: "v", type: "unknown" }],
+          outputs: [{ name: "out", type: "unknown" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        {
+          from: { stage: "SRC", port: "obj" },
+          to: { stage: "DST", port: "v" },
+          // value is null → value.nested.deep throws TypeError.
+          guard: "value.nested.deep > 0",
+        },
+      ],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const handlers: StageHandlerMap = {
+      SRC: () => ({ obj: null }),
+      DST: () => ({ out: null }),
+    };
+    const result = await runPipeline({
+      db, ir, taskId: "t1", versionHash: hash, handlers,
+    });
+
+    expect(result.finalState).toBe("failed");
+    expect(result.stageErrors).toHaveLength(1);
+    const err = result.stageErrors[0]!;
+    expect(err.stage).toBe("DST");
+    expect(err.context?.failedWires).toHaveLength(1);
+    const fw = err.context!.failedWires[0]!;
+    expect(fw.reason).toBe("guard-threw");
+    expect(fw.guardExpr).toBe("value.nested.deep > 0");
+    expect(fw.valuePreview).toBe("null");
+    expect(fw.guardError).toBeTruthy();
+    db.close();
+  });
+
+  // Multi-inbound with mixed outcomes: the delivering wire is omitted
+  // from failedWires; only the non-deliverable ones are surfaced. The
+  // compiler also treats "at least one settled + at least one dropped"
+  // as NO_ACTIVE_WIRE only when the dropped guards aren't opt-in
+  // gate-routed suppressions (they aren't here).
+  it("multi-inbound stage: failedWires lists only the non-deliverable wires", async () => {
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "multi-wire-diag",
+      stages: [
+        { name: "SRC1", type: "agent", inputs: [],
+          outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+        { name: "SRC2", type: "agent", inputs: [],
+          outputs: [{ name: "y", type: "number" }], config: { promptRef: "p" } },
+        { name: "DST", type: "agent",
+          inputs: [
+            { name: "a", type: "number" },
+            { name: "b", type: "number" },
+          ],
+          outputs: [{ name: "o", type: "number" }], config: { promptRef: "p" } },
+      ],
+      wires: [
+        // SRC1.x → DST.a with guard that PASSES (value 5 > 0).
+        { from: { stage: "SRC1", port: "x" }, to: { stage: "DST", port: "a" }, guard: "value > 0" },
+        // SRC2.y → DST.b with guard that FAILS (value 0 not > 100).
+        { from: { stage: "SRC2", port: "y" }, to: { stage: "DST", port: "b" }, guard: "value > 100" },
+      ],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const handlers: StageHandlerMap = {
+      SRC1: () => ({ x: 5 }),
+      SRC2: () => ({ y: 0 }),
+      DST: () => ({ o: 1 }),
+    };
+    const result = await runPipeline({
+      db, ir, taskId: "t1", versionHash: hash, handlers,
+    });
+
+    expect(result.finalState).toBe("failed");
+    const err = result.stageErrors.find((e) => e.stage === "DST");
+    expect(err).toBeDefined();
+    // Delivering wire SRC1→DST.a absent; only failing SRC2→DST.b listed.
+    expect(err!.context?.failedWires).toEqual([
+      {
+        wire: {
+          from: { stage: "SRC2", port: "y" },
+          to: { stage: "DST", port: "b" },
+        },
+        guardExpr: "value > 100",
+        valuePreview: "0",
+        reason: "guard-false",
+      },
+    ]);
     db.close();
   });
 });

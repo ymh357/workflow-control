@@ -16,13 +16,16 @@
 import { createActor } from "xstate";
 import type { DatabaseSync } from "node:sqlite";
 import { compileIRToMachine } from "../compiler/ir-to-machine.js";
-import type { MachineContext, MachineEvent } from "../compiler/ir-to-machine.js";
+import type {
+  MachineContext, MachineEvent, StageMeta, InboundWireMeta,
+} from "../compiler/ir-to-machine.js";
 import { PortRuntime, type EventDispatcher } from "./port-runtime.js";
 import { MockStageExecutor, type StageHandlerMap } from "./mock-executor.js";
 import type { StageExecutor } from "./executor.js";
 import type { PipelineIR, GateStage } from "../ir/schema.js";
 import { KernelService } from "../mcp/kernel.js";
 import { taskRegistry } from "./task-registry.js";
+import { evaluateGuard } from "./guard-evaluator.js";
 
 export interface RunnerOptions {
   db: DatabaseSync;
@@ -31,6 +34,38 @@ export interface RunnerOptions {
   versionHash: string;
   handlers: StageHandlerMap;
   executor?: StageExecutor;
+}
+
+// Design §6.2 — why the inbound wire to a stage failed. NO_ACTIVE_WIRE
+// diagnostics attach an array of these so the AI author can see which
+// wire was the culprit (which source port, which guard, what value,
+// what reason). Kept flat + JSON-serializable for MCP / REST transport.
+export interface GuardFailure {
+  wire: {
+    from: { stage: string; port: string };
+    to: { stage: string; port: string };
+  };
+  // The wire's guard expression. null when the upstream port was never
+  // written (so there was no guard to evaluate — the wire is simply
+  // dead because its source never fired).
+  guardExpr: string | null;
+  // JSON-stringified source port value, truncated to 200 bytes so the
+  // diagnostic stays inline-friendly. When the upstream never wrote,
+  // this is "<never written>".
+  valuePreview: string;
+  reason:
+    | "upstream-not-written"
+    | "guard-false"
+    | "guard-threw";
+  // Present when reason === 'guard-threw'. The Error.message as-is.
+  guardError?: string;
+}
+
+export interface StageErrorContext {
+  // All wires that had an issue. A stage fails NO_ACTIVE_WIRE when EVERY
+  // inbound wire is non-deliverable — so the array contains one entry
+  // per inbound wire on the stage.
+  failedWires: GuardFailure[];
 }
 
 export interface RunResult {
@@ -48,13 +83,15 @@ export interface RunResult {
   // Per-stage errors returned as `status: "error"` by the executor. Distinct
   // from drainErrors: these are structured failures (schema non-compliance,
   // no handler, etc.) not executor crashes. Empty on fully-successful runs.
-  stageErrors: Array<{ stage: string; message: string }>;
+  // NO_ACTIVE_WIRE entries additionally carry structured context per §6.2;
+  // executor-originated errors (bad handler, schema mismatch) omit context.
+  stageErrors: Array<{ stage: string; message: string; context?: StageErrorContext }>;
 }
 
 export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Promise<RunResult> {
   const executor: StageExecutor =
     opts.executor ?? new MockStageExecutor({ handlers: opts.handlers });
-  const { machine } = compileIRToMachine(opts.ir, { taskId: opts.taskId });
+  const { machine, stageMeta } = compileIRToMachine(opts.ir, { taskId: opts.taskId });
   const actor = createActor(machine, {
     input: undefined,
   });
@@ -132,10 +169,9 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
         const stageName = m[1]!;
         if (dispatched.has(stageName)) continue;
         dispatched.add(stageName);
-        stageErrors.push({
-          stage: stageName,
-          message: `NO_ACTIVE_WIRE: every inbound wire to '${stageName}' resolved false — stage cannot activate`,
-        });
+        stageErrors.push(
+          buildNoActiveWireError(stageName, stageMeta, ctx.portValues),
+        );
       }
       // Drain pending executors before resolving so db writes finish.
       Promise.allSettled(executorPromises).then(() => {
@@ -192,10 +228,10 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       // a stage that never executed won't be in it.
       if (substate === "error" && !dispatched.has(stageName)) {
         dispatched.add(stageName);
-        stageErrors.push({
-          stage: stageName,
-          message: `NO_ACTIVE_WIRE: every inbound wire to '${stageName}' resolved false — stage cannot activate`,
-        });
+        const ctx = snapshot.context as MachineContext;
+        stageErrors.push(
+          buildNoActiveWireError(stageName, stageMeta, ctx.portValues),
+        );
         continue;
       }
       if (substate === "executing" && !dispatched.has(stageName)) {
@@ -452,4 +488,80 @@ async function runFanoutStage(args: RunFanoutArgs): Promise<FanoutResult> {
   }
 
   return { status: "success" };
+}
+
+// NO_ACTIVE_WIRE diagnostic builder (design §6.2). When a stage's parallel
+// region reaches its `error` final, the compiler has already concluded that
+// every inbound wire is non-deliverable. To let the AI author debug it,
+// we re-walk the stage's inbound wires here and record, per wire, WHY it
+// failed: upstream unwritten, guard evaluated false, or guard threw.
+// Stages with no inbound wires never hit this path (they don't have a
+// "wires died" failure mode).
+const PREVIEW_BYTES = 200;
+
+function buildNoActiveWireError(
+  stageName: string,
+  stageMeta: Map<string, StageMeta>,
+  portValues: Record<string, unknown>,
+): { stage: string; message: string; context: StageErrorContext } {
+  const meta = stageMeta.get(stageName);
+  const failedWires: GuardFailure[] = [];
+  if (meta) {
+    for (const w of meta.inbound) {
+      const desc = describeWireFailure(w, portValues);
+      // Deliverable wires (guard true) are not recorded — the AI is
+      // debugging the wires that DID NOT deliver. A stage in NO_ACTIVE_
+      // WIRE has at least one such wire; we expose them all.
+      if (desc) failedWires.push(desc);
+    }
+  }
+  return {
+    stage: stageName,
+    message: `NO_ACTIVE_WIRE: every inbound wire to '${stageName}' resolved false — stage cannot activate`,
+    context: { failedWires },
+  };
+}
+
+// Returns null when the wire DELIVERED (source written + guard true, or
+// guardless + source written); otherwise returns a GuardFailure record
+// explaining why it didn't.
+function describeWireFailure(
+  wire: InboundWireMeta,
+  portValues: Record<string, unknown>,
+): GuardFailure | null {
+  const base = {
+    wire: { from: wire.from, to: wire.to },
+    guardExpr: wire.guard ?? null,
+  };
+  if (!(wire.sourceKey in portValues)) {
+    return { ...base, valuePreview: "<never written>", reason: "upstream-not-written" };
+  }
+  const raw = portValues[wire.sourceKey];
+  const valuePreview = truncateJson(raw);
+  if (!wire.guard) {
+    // Guardless + settled → wire delivered. Not a failure.
+    return null;
+  }
+  let threw: Error | undefined;
+  const ok = evaluateGuard(wire.guard, raw,
+    { wireFrom: wire.from, wireTo: wire.to },
+    { onError: (err) => { threw = err instanceof Error ? err : new Error(String(err)); } },
+  );
+  if (threw) {
+    return { ...base, valuePreview, reason: "guard-threw", guardError: threw.message };
+  }
+  return ok ? null : { ...base, valuePreview, reason: "guard-false" };
+}
+
+function truncateJson(v: unknown): string {
+  let s: string;
+  try {
+    s = JSON.stringify(v);
+  } catch {
+    // Circular or non-JSON values: stringify-coerce.
+    s = String(v);
+  }
+  if (s === undefined) s = "undefined";
+  if (s.length <= PREVIEW_BYTES) return s;
+  return s.slice(0, PREVIEW_BYTES);
 }

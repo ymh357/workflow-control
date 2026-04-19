@@ -65,7 +65,7 @@ export type MachineEvent =
   | { type: "STAGE_FAILED"; stage: string; error: string }
   | { type: "GATE_ANSWERED"; gateId: string; stageName: string; answer: string; targetStage: string };
 
-interface InboundWireMeta {
+export interface InboundWireMeta {
   // "<from.stage>.<from.port>" — the source port whose value activates the wire.
   sourceKey: string;
   // Original wire endpoints, used for guard evaluation error context + the
@@ -77,7 +77,7 @@ interface InboundWireMeta {
   guard?: string;
 }
 
-interface StageMeta {
+export interface StageMeta {
   stageType: StageIR["type"];
   // A3.1: inbound is now per-wire (not per source port key), because a
   // single source port may feed multiple downstream ports and each carries
