@@ -43,6 +43,11 @@ export function queryLineage(
   db: DatabaseSync,
   args: { stage: string; port: string; taskId?: string } & QueryLineageOptions,
 ): LineageReport {
+  // Secondary ORDER BY sa.attempt_idx DESC: within the same millisecond
+  // written_at tie-breaks to the highest attempt_idx. This matters for
+  // fanout, whose per-element attempts and aggregate attempt all land in
+  // a single ms in tests; the aggregate (highest idx) is the "current
+  // value" that downstream stages consumed.
   const latestRow = args.taskId
     ? db.prepare(
         `SELECT pv.value_json, pv.attempt_id, pv.written_at, sa.task_id, sa.attempt_idx
@@ -50,14 +55,14 @@ export function queryLineage(
          JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
          WHERE pv.stage_name = ? AND pv.port_name = ? AND pv.direction = 'out'
            AND sa.task_id = ?
-         ORDER BY pv.written_at DESC LIMIT 1`,
+         ORDER BY pv.written_at DESC, sa.attempt_idx DESC LIMIT 1`,
       ).get(args.stage, args.port, args.taskId)
     : db.prepare(
         `SELECT pv.value_json, pv.attempt_id, pv.written_at, sa.task_id, sa.attempt_idx
          FROM port_values pv
          JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
          WHERE pv.stage_name = ? AND pv.port_name = ? AND pv.direction = 'out'
-         ORDER BY pv.written_at DESC LIMIT 1`,
+         ORDER BY pv.written_at DESC, sa.attempt_idx DESC LIMIT 1`,
       ).get(args.stage, args.port);
 
   let latestWrite: LineageReport["latestWrite"] = null;

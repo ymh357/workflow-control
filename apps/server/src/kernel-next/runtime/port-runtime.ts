@@ -213,18 +213,22 @@ export function readLatestPort(
   portName: string,
   taskId?: string,
 ): { value: unknown; attemptId: string; attemptIdx: number; writtenAt: number } | null {
+  // Secondary ORDER BY sa.attempt_idx DESC tie-breaks same-ms writes to
+  // the highest attempt_idx. Critical for fanout: per-element +
+  // aggregate attempts may share a millisecond; the aggregate (highest
+  // idx) is the current value that downstream stages consumed.
   const sql = taskId
     ? `SELECT pv.value_json, pv.attempt_id, pv.written_at, sa.attempt_idx
        FROM port_values pv
        JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
        WHERE pv.stage_name = ? AND pv.port_name = ? AND pv.direction = 'out'
          AND sa.task_id = ?
-       ORDER BY pv.written_at DESC LIMIT 1`
+       ORDER BY pv.written_at DESC, sa.attempt_idx DESC LIMIT 1`
     : `SELECT pv.value_json, pv.attempt_id, pv.written_at, sa.attempt_idx
        FROM port_values pv
        JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
        WHERE pv.stage_name = ? AND pv.port_name = ? AND pv.direction = 'out'
-       ORDER BY pv.written_at DESC LIMIT 1`;
+       ORDER BY pv.written_at DESC, sa.attempt_idx DESC LIMIT 1`;
   const row = taskId
     ? (db.prepare(sql).get(stageName, portName, taskId) as { value_json: string; attempt_id: string; written_at: number; attempt_idx: number } | undefined)
     : (db.prepare(sql).get(stageName, portName) as { value_json: string; attempt_id: string; written_at: number; attempt_idx: number } | undefined);

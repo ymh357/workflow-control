@@ -276,12 +276,13 @@ describe("A7: tech-research-style end-to-end pipeline", () => {
       expect(result.finalState).toBe("completed");
       expect(result.stageErrors).toEqual([]);
 
-      // Fanout produced 4 EVAL attempts (one per candidate).
+      // Fanout produced 4 EVAL attempts (one per candidate) + 1
+      // aggregate attempt that persists the T[] to port_values.
       const evalAttempts = db.prepare(
         `SELECT COUNT(*) AS n FROM stage_attempts
          WHERE task_id = ? AND stage_name = 'EVAL'`,
       ).get(taskId) as { n: number };
-      expect(evalAttempts.n).toBe(4);
+      expect(evalAttempts.n).toBe(5);
 
       // FILTER.selected holds the aggregated top candidates.
       const selected = result.portValues["FILTER.selected"] as Array<{

@@ -80,11 +80,25 @@ describe("A3.3: fanout — happy path", () => {
       // Downstream consumer sees the array.
       expect(result.portValues["SUM.total"]).toBe(20);
 
-      // Lineage: 4 attempts for stage F, each with its own row.
+      // Lineage: 4 per-element attempts for stage F + 1 aggregate attempt
+      // written by the runner after aggregation (Reviewer critical #2 fix:
+      // the aggregate T[] must land in port_values so read_port /
+      // query_lineage return it). attempt_idx 5 is the aggregate.
       const rows = db.prepare(
         `SELECT attempt_idx FROM stage_attempts WHERE stage_name = 'F' ORDER BY attempt_idx`,
       ).all() as Array<{ attempt_idx: number }>;
-      expect(rows.map((r) => r.attempt_idx)).toEqual([1, 2, 3, 4]);
+      expect(rows.map((r) => r.attempt_idx)).toEqual([1, 2, 3, 4, 5]);
+
+      // The aggregate attempt's F.doubled row must hold the T[] array,
+      // not a scalar. Pick the latest direction='out' write for F.doubled.
+      const agg = db.prepare(
+        `SELECT pv.value_json FROM port_values pv
+         JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
+         WHERE pv.stage_name = 'F' AND pv.port_name = 'doubled'
+           AND pv.direction = 'out'
+         ORDER BY sa.attempt_idx DESC LIMIT 1`,
+      ).get() as { value_json: string };
+      expect(JSON.parse(agg.value_json)).toEqual([2, 4, 6, 8]);
     } finally {
       db.close();
     }
@@ -131,10 +145,23 @@ describe("A3.3: fanout — happy path", () => {
       expect(result.finalState).toBe("completed");
       expect(result.portValues["F.doubled"]).toEqual([]);
 
+      // Empty input → 0 per-element attempts + 1 aggregate attempt that
+      // still writes the empty array to port_values. Downstream readers
+      // (not present in this pipeline) would otherwise never see any
+      // write for F.doubled.
       const rows = db.prepare(
-        `SELECT COUNT(*) AS n FROM stage_attempts WHERE stage_name = 'F'`,
-      ).get() as { n: number };
-      expect(rows.n).toBe(0);
+        `SELECT attempt_idx FROM stage_attempts WHERE stage_name = 'F' ORDER BY attempt_idx`,
+      ).all() as Array<{ attempt_idx: number }>;
+      expect(rows.map((r) => r.attempt_idx)).toEqual([1]);
+
+      const agg = db.prepare(
+        `SELECT pv.value_json FROM port_values pv
+         JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
+         WHERE pv.stage_name = 'F' AND pv.port_name = 'doubled'
+           AND pv.direction = 'out'
+         ORDER BY sa.attempt_idx DESC LIMIT 1`,
+      ).get() as { value_json: string };
+      expect(JSON.parse(agg.value_json)).toEqual([]);
     } finally {
       db.close();
     }

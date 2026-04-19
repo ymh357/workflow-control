@@ -251,7 +251,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
             basePortValues: ctx.portValues,
             handlers: opts.handlers,
             db: opts.db,
-            liveDispatcher: dispatcher,
+            livePortRuntime: portRuntime,
             executor,
           }).then((result) => {
             if (result.status === "error") {
@@ -325,7 +325,11 @@ interface RunFanoutArgs {
   basePortValues: Record<string, unknown>;
   handlers: StageHandlerMap;
   db: DatabaseSync;
-  liveDispatcher: EventDispatcher;
+  // Live PortRuntime — used to open an aggregate attempt and write the
+  // aggregated array to port_values (so read_port / query_lineage see it)
+  // AND dispatch PORT_WRITTEN to the machine. Per-element attempts still
+  // go through a silent runtime to avoid premature downstream dispatch.
+  livePortRuntime: PortRuntime;
   executor: StageExecutor;
 }
 
@@ -344,7 +348,7 @@ type FanoutResult =
  * attempt writes its own port_values rows normally).
  */
 async function runFanoutStage(args: RunFanoutArgs): Promise<FanoutResult> {
-  const { ir, stageDef, taskId, versionHash, basePortValues, handlers, db, liveDispatcher, executor } = args;
+  const { ir, stageDef, taskId, versionHash, basePortValues, handlers, db, livePortRuntime, executor } = args;
   const fanout = stageDef.fanout;
   if (!fanout) {
     return { status: "error", error: `stage '${stageDef.name}' has no fanout config` };
@@ -418,14 +422,33 @@ async function runFanoutStage(args: RunFanoutArgs): Promise<FanoutResult> {
     }
   }
 
-  // Dispatch aggregated arrays to the live machine so downstream
-  // stages' guards re-evaluate against T[].
-  for (const name of declaredOutputs) {
-    liveDispatcher.send({
-      type: "PORT_WRITTEN",
-      key: `${stageDef.name}.${name}`,
-      value: aggregated[name]!,
-    });
+  // Open an "aggregate attempt" on the live PortRuntime and write each
+  // declared output's aggregated array. This does two things in one call
+  // (writePort): (a) persists the T[] to port_values so read_port /
+  // query_lineage / diff_runs return the aggregate, and (b) dispatches
+  // PORT_WRITTEN to the live machine so downstream stages' guards
+  // re-evaluate against T[]. Prior to this fix the aggregate only
+  // reached machine context and was invisible to external observers
+  // (Reviewer critical #2 / plan §2.2).
+  const aggregateAttempt = livePortRuntime.startAttempt({
+    taskId,
+    versionHash,
+    stageName: stageDef.name,
+  });
+  try {
+    for (const name of declaredOutputs) {
+      livePortRuntime.writePort({
+        attemptId: aggregateAttempt.attemptId,
+        stageName: stageDef.name,
+        portName: name,
+        value: aggregated[name]!,
+      });
+    }
+    livePortRuntime.finishAttempt(aggregateAttempt.attemptId, "success");
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    livePortRuntime.finishAttempt(aggregateAttempt.attemptId, "error", message, { silent: true });
+    return { status: "error", error: `fanout aggregate failed: ${message}` };
   }
 
   return { status: "success" };

@@ -209,6 +209,10 @@ describe("A5: lineage in parallel + fanout scenarios", () => {
       db, ir, taskId: "fo", versionHash: hash, handlers,
     });
 
+    // 3 per-element attempts (attempt_idx 1..3, each with a scalar
+    // doubled value) + 1 aggregate attempt (attempt_idx 4, holding the
+    // T[] array). The aggregate row is what read_port / query_lineage
+    // return for the "current value" of F.doubled.
     const fWrites = db.prepare(
       `SELECT pv.value_json, sa.attempt_idx
        FROM port_values pv JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
@@ -216,16 +220,17 @@ describe("A5: lineage in parallel + fanout scenarios", () => {
          AND sa.task_id = 'fo'
        ORDER BY sa.attempt_idx ASC`,
     ).all() as Array<{ value_json: string; attempt_idx: number }>;
-    expect(fWrites.map((r) => JSON.parse(r.value_json))).toEqual([2, 4, 6]);
-    expect(fWrites.map((r) => r.attempt_idx)).toEqual([1, 2, 3]);
+    expect(fWrites.map((r) => r.attempt_idx)).toEqual([1, 2, 3, 4]);
+    expect(fWrites.slice(0, 3).map((r) => JSON.parse(r.value_json))).toEqual([2, 4, 6]);
+    expect(JSON.parse(fWrites[3]!.value_json)).toEqual([2, 4, 6]);
 
-    // queryLineage orders by written_at DESC. Within a single millisecond
-    // (tests run fast) ordering is not stable, so we check membership
-    // rather than tie-break to a specific element.
+    // queryLineage's latestWrite must surface the aggregate array, not
+    // any individual element — external observers need the same value
+    // that downstream stages consumed.
     const report = queryLineage(db, { stage: "F", port: "doubled", taskId: "fo" });
     expect(report.latestWrite).not.toBeNull();
-    expect(["2", "4", "6"]).toContain(report.latestWrite!.valuePreview);
-    expect([1, 2, 3]).toContain(report.latestWrite!.attemptIdx);
+    expect(report.latestWrite!.attemptIdx).toBe(4);
+    expect(JSON.parse(report.latestWrite!.valuePreview)).toEqual([2, 4, 6]);
 
     const sumReads = db.prepare(
       `SELECT pv.value_json FROM port_values pv
