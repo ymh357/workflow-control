@@ -143,9 +143,12 @@ describe("compileIRToMachine — gate routing (A1.2b.1)", () => {
 
     const after = readRunningValue(actor.getSnapshot());
     // (2) TGT_YES: authorized + inbound delivered → executing.
-    // (3) TGT_NO: inbound delivered but not authorized → still waiting.
+    // (3) TGT_NO: answered gate's OTHER branch → transitions to `done`
+    //     (skipped, never runs). This is the A7 update to A3.2
+    //     exclusivity: unpicked branches must close so the parallel
+    //     region's onDone can fire.
     expect(after?.TGT_YES).toBe("executing");
-    expect(after?.TGT_NO).toBe("waiting");
+    expect(after?.TGT_NO).toBe("done");
     actor.stop();
   });
 

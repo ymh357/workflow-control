@@ -50,6 +50,13 @@ export interface MachineContext {
   // activates once this set contains its name AND its inbound wires have
   // delivered. Non-gate-targeted stages ignore this set.
   gateAuthorizedTargets: string[];
+  // A3.2/A7 — stage names that a gate answer decided NOT to take. These
+  // stages transition directly to `done` (vacuously skipped) so the
+  // parallel region's onDone can fire without the unpicked branches
+  // blocking forever. Populated by the root-level GATE_ANSWERED action:
+  // for the answered gate, every routing target that is not the picked
+  // branch gets added here.
+  gateSkippedTargets: string[];
 }
 
 export type MachineEvent =
@@ -145,11 +152,21 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
 
   const stageMeta = indexStages(ir);
 
+  // Map of gate stage name → list of all routing-target stage names.
+  // Used at runtime by the root-level GATE_ANSWERED handler: the
+  // picked target goes into gateAuthorizedTargets; the unpicked ones
+  // into gateSkippedTargets so their regions terminate cleanly.
+  const gateRoutingMap = new Map<string, string[]>();
+  for (const s of ir.stages) {
+    if (s.type !== "gate") continue;
+    gateRoutingMap.set(s.name, Object.values(s.config.routing.routes));
+  }
+
   // Build parallel region children.
   const parallelChildren: Record<string, unknown> = {};
   for (const s of ir.stages) {
     const meta = stageMeta.get(s.name)!;
-    parallelChildren[s.name] = buildStageRegion(s.name, meta);
+    parallelChildren[s.name] = buildStageRegion(s.name, meta, gateRoutingMap);
   }
 
   const machine = createMachine({
@@ -161,6 +178,7 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
       portValues: {},
       log: [],
       gateAuthorizedTargets: [],
+      gateSkippedTargets: [],
     },
     initial: "idle",
     on: {
@@ -176,15 +194,35 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
         }),
       },
       // Root-level GATE_ANSWERED: record the routed target on the context
-      // so gate-routed stages can evaluate the authorization guard. The
-      // stage regions also observe GATE_ANSWERED (for routing/gate-resolve
+      // so gate-routed stages can evaluate the authorization guard; AND
+      // mark every OTHER routing-target of the answered gate as skipped,
+      // so the unpicked branches transition to `done` without running.
+      // Stage regions also observe GATE_ANSWERED (for routing/gate-resolve
       // transitions), unaffected by this root-level assign.
       GATE_ANSWERED: {
-        actions: assign({
-          gateAuthorizedTargets: ({ context, event }) =>
-            context.gateAuthorizedTargets.includes(event.targetStage)
-              ? context.gateAuthorizedTargets
-              : [...context.gateAuthorizedTargets, event.targetStage],
+        actions: assign(({ context, event }) => {
+          const authorized = context.gateAuthorizedTargets.includes(event.targetStage)
+            ? context.gateAuthorizedTargets
+            : [...context.gateAuthorizedTargets, event.targetStage];
+          // The answered gate's stageName tells us which routing table
+          // to consult; the picked target is event.targetStage. Only
+          // skip siblings when the answer routed to a KNOWN sibling —
+          // otherwise the answer was malformed and we leave every
+          // branch untouched (symmetric with the waiting.GATE_ANSWERED
+          // guard above).
+          const siblings = gateRoutingMap.get(event.stageName) ?? [];
+          const pickedIsKnown = siblings.includes(event.targetStage);
+          const newSkips = pickedIsKnown
+            ? siblings.filter(
+                (t) =>
+                  t !== event.targetStage &&
+                  !context.gateSkippedTargets.includes(t),
+              )
+            : [];
+          const skipped = newSkips.length === 0
+            ? context.gateSkippedTargets
+            : [...context.gateSkippedTargets, ...newSkips];
+          return { gateAuthorizedTargets: authorized, gateSkippedTargets: skipped };
         }),
       },
     },
@@ -204,7 +242,20 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
 }
 
 // Per-stage region: waiting -> executing -> done.
-function buildStageRegion(stageName: string, meta: StageMeta) {
+//
+// gateSiblingsByGate maps gate.stageName -> list of its routing target
+// stage names. Used by the GATE_ANSWERED `on:` transition of
+// gate-routed stages to detect "this gate was answered and we are a
+// non-picked sibling → transition to `done` without running." Without
+// reading this closure, the region would have to wait for the
+// root-level assign to update context.gateSkippedTargets and for a
+// downstream event to re-evaluate the always guard — which never
+// happens if the picked branch is the last thing to run.
+function buildStageRegion(
+  stageName: string,
+  meta: StageMeta,
+  gateSiblingsByGate: Map<string, string[]>,
+) {
   // A wire is "settled" when its source port has been written.
   const wireSettled = (
     wire: InboundWireMeta,
@@ -332,24 +383,50 @@ function buildStageRegion(stageName: string, meta: StageMeta) {
                 event.type === "STAGE_FAILED" && event.stage === stageName,
             },
           ],
-          // A3.2 — GATE_ANSWERED composes with inbound delivery. The
-          // root-level handler assigns gateAuthorizedTargets but XState
+          // A3.2 — GATE_ANSWERED composes with inbound delivery. XState
           // evaluates transition guards BEFORE running root-level
-          // actions on the same event, so the sub-region guard checks
-          // event.targetStage directly (in lieu of the not-yet-updated
-          // context) combined with inbound delivery. We still route to
-          // executing only when this stage is the named target AND
-          // inbound has delivered — gate authorization is an addition
-          // to, not a replacement for, wire delivery.
+          // actions on the same event, so sub-region guards cannot
+          // rely on context.gateAuthorizedTargets / gateSkippedTargets
+          // being up to date yet. We match on event fields directly.
+          //
+          // Priority:
+          //   1. This stage is a NON-picked routing target of the
+          //      answered gate → transition straight to `done`. This
+          //      closes the region cleanly so the parallel region's
+          //      onDone can fire even though the unpicked branch never
+          //      runs. Without this, unpicked branches would stay
+          //      `waiting` forever and the pipeline would hang.
+          //   2. This stage IS the picked target → transition to
+          //      executing iff inbound wires have delivered (gate
+          //      authorization is an addition to, not a replacement
+          //      for, wire delivery).
+          //   3. This stage IS the picked target but inbound has a
+          //      dropped wire → NO_ACTIVE_WIRE error.
           GATE_ANSWERED: [
+            {
+              target: "done",
+              guard: ({ event }: { event: MachineEvent }) => {
+                if (event.type !== "GATE_ANSWERED") return false;
+                const siblings = gateSiblingsByGate.get(event.stageName) ?? [];
+                // Only skip when the answered gate picked a KNOWN sibling
+                // other than this stage. If the targetStage isn't a real
+                // sibling (malformed answer that slipped past answerGate
+                // validation), don't terminate any branch — leave the
+                // pipeline state untouched so diagnostics surface via
+                // other paths. This keeps the "unknown target is a
+                // no-op" invariant.
+                return (
+                  siblings.includes(stageName) &&
+                  siblings.includes(event.targetStage) &&
+                  event.targetStage !== stageName
+                );
+              },
+            },
             {
               target: "executing",
               guard: ({ context, event }: { context: MachineContext; event: MachineEvent }) => {
                 if (event.type !== "GATE_ANSWERED") return false;
                 if (event.targetStage !== stageName) return false;
-                // Inline the non-gate part of allInboundDelivered: since
-                // this event IS the authorization, skip the gateRouted
-                // check and just verify every inbound wire delivers.
                 return meta.inbound.every((w) => wireDelivers(w, context.portValues));
               },
             },
@@ -367,9 +444,20 @@ function buildStageRegion(stageName: string, meta: StageMeta) {
         },
         // Entry: if deps already met (entry stage or late entry), go
         // directly. Also catches the "already dead on entry" edge case
-        // where portValues arrive before the region even starts (rare,
-        // but possible with hot-update).
+        // where portValues arrive before the region even starts.
+        //
+        // Priority ordering:
+        //   1. gateSkipped — we already know this branch is not taken;
+        //      terminate directly so the parallel region can converge.
+        //   2. executing — normal activation.
+        //   3. error — NO_ACTIVE_WIRE dead-end (suppressed for
+        //      gate-routed stages until they're authorised).
         always: [
+          {
+            target: "done",
+            guard: ({ context }: { context: MachineContext }) =>
+              context.gateSkippedTargets.includes(stageName),
+          },
           { target: "executing", guard: allInboundDelivered },
           { target: "error", guard: noDeliverableWire },
         ],
