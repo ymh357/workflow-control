@@ -284,6 +284,108 @@ describe("A1.1: CompositeStageExecutor routes mixed agent + script pipeline", ()
     }
   });
 
+  // A1.2b.2 end-to-end: a pipeline containing a gate stage pauses until
+  // answerGate is called externally, which fires GATE_ANSWERED and lets
+  // the gate transition to `done` so the pipeline can complete.
+  //
+  // Scope note: this test covers the gate's own lifecycle (pause on
+  // entry, resolve on answer). The separate concern of "gate routing
+  // targets activate exclusively" (i.e. non-target branches should NOT
+  // run when the gate picks the other route) requires extending the
+  // compiler with wire-guard-like gating on target waiting transitions.
+  // That is deferred to the A3 wire-guards work; here we simply build
+  // an IR where the gate is the last stage so routing targets don't
+  // need to compete.
+  it("gate pauses the pipeline; external answerGate resolves via GATE_ANSWERED and pipeline completes", async () => {
+    const db = makeDb();
+    try {
+      const ir: PipelineIR = {
+        name: "gated",
+        stages: [
+          {
+            name: "SRC",
+            type: "agent",
+            inputs: [],
+            outputs: [{ name: "x", type: "number" }],
+            config: { promptRef: "p" },
+          },
+          {
+            name: "G",
+            type: "gate",
+            inputs: [{ name: "x", type: "number" }],
+            outputs: [],
+            // routing targets SRC (already done) as a self-referential
+            // no-op — we care only about gate resolving to `done`, not
+            // about target activation.
+            config: {
+              question: { text: "continue?", options: ["yes"] },
+              routing: { routes: { yes: "SRC" } },
+            },
+          },
+        ],
+        wires: [{ from: { stage: "SRC", port: "x" }, to: { stage: "G", port: "x" } }],
+      };
+      const hash = versionHash(ir);
+      insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+      const handlers: StageHandlerMap = {
+        SRC: () => ({ x: 42 }),
+      };
+
+      const { KernelService } = await import("../mcp/kernel.js");
+      const { taskRegistry } = await import("./task-registry.js");
+
+      // runPipeline will block until gate is answered. Fire the answer
+      // after a short delay while polling for the gate_queue row.
+      const runPromise = runPipeline(
+        { db, ir, taskId: "gate-1", versionHash: hash, handlers },
+        30_000,
+      );
+
+      const kernel = new KernelService(db, { skipTypeCheck: true });
+      let gateId: string | undefined;
+      for (let i = 0; i < 50 && !gateId; i++) {
+        const gates = kernel.listGates({ taskId: "gate-1", answered: false });
+        if (gates.length > 0) gateId = gates[0]!.gateId;
+        else await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(gateId).toBeDefined();
+
+      // Taskregistry should have the dispatcher registered while the
+      // machine is still running (mid-gate).
+      expect(taskRegistry.get("gate-1")).toBeDefined();
+
+      const answer = kernel.answerGate(gateId!, "yes");
+      expect(answer.ok).toBe(true);
+      if (!answer.ok) return;
+      expect(answer.taskId).toBe("gate-1");
+      expect(answer.stageName).toBe("G");
+
+      // Simulate what the MCP / REST handler does: dispatch via registry.
+      const dispatcher = taskRegistry.get("gate-1");
+      expect(dispatcher).toBeDefined();
+      dispatcher!.send({
+        type: "GATE_ANSWERED",
+        gateId: answer.gateId,
+        stageName: answer.stageName,
+        answer: answer.answer,
+        targetStage: answer.targetStage,
+      });
+
+      const result = await runPromise;
+      expect(result.finalState).toBe("completed");
+
+      // After run ends, dispatcher should be unregistered.
+      expect(taskRegistry.get("gate-1")).toBeUndefined();
+
+      // gate_queue row is answered.
+      const answered = kernel.listGates({ taskId: "gate-1", answered: true });
+      expect(answered.map((g) => g.gateId)).toEqual([gateId]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("surfaces a script-stage error on the runner result when script module throws", async () => {
     const db = makeDb();
     try {

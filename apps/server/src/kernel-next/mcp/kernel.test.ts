@@ -310,11 +310,22 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
       expect(pending[0]!.question).toEqual({ text: "continue?", options: ["yes", "no"] });
 
       const result = svc.answerGate(gateId, "yes");
-      expect(result).toEqual({ ok: true, gateId, targetStage: "A", answer: "yes" });
+      expect(result).toEqual({
+        ok: true, gateId, taskId: "task-1", stageName: "G",
+        targetStage: "A", answer: "yes",
+      });
 
       const after = svc.listGates({ taskId: "task-1", answered: true });
       expect(after[0]!.answer).toBe("yes");
       expect(after[0]!.answeredAt).toBeTypeOf("number");
+
+      // Stage attempt should be finalized as success alongside the gate
+      // answer write (same transaction).
+      const attemptRow = db.prepare(
+        `SELECT status, ended_at FROM stage_attempts WHERE attempt_id = ?`,
+      ).get(attemptId) as { status: string; ended_at: number | null };
+      expect(attemptRow.status).toBe("success");
+      expect(attemptRow.ended_at).toBeTypeOf("number");
     } finally {
       db.close();
     }
@@ -347,7 +358,10 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
         taskId: "t1", stageName: "G", attemptId, question: { text: "?" },
       });
       const r = svc.answerGate(gateId, "surprise");
-      expect(r).toEqual({ ok: true, gateId, targetStage: "A", answer: "surprise" });
+      expect(r).toEqual({
+        ok: true, gateId, taskId: "t1", stageName: "G",
+        targetStage: "A", answer: "surprise",
+      });
     } finally {
       db.close();
     }

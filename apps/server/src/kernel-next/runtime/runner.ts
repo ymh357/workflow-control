@@ -20,7 +20,9 @@ import type { MachineContext, MachineEvent } from "../compiler/ir-to-machine.js"
 import { PortRuntime, type EventDispatcher } from "./port-runtime.js";
 import { MockStageExecutor, type StageHandlerMap } from "./mock-executor.js";
 import type { StageExecutor } from "./executor.js";
-import type { PipelineIR } from "../ir/schema.js";
+import type { PipelineIR, GateStage } from "../ir/schema.js";
+import { KernelService } from "../mcp/kernel.js";
+import { taskRegistry } from "./task-registry.js";
 
 export interface RunnerOptions {
   db: DatabaseSync;
@@ -65,6 +67,17 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   };
 
   const portRuntime = new PortRuntime(opts.db, dispatcher);
+
+  // Register this run's dispatcher so answer_gate (MCP/REST) can route
+  // GATE_ANSWERED events back into our actor. Unregistered in the
+  // .finally() below so we never leak across runs even if the machine
+  // throws mid-flight.
+  taskRegistry.register(opts.taskId, dispatcher);
+
+  // Kernel service used for gate_queue writes when a gate stage activates.
+  // skipTypeCheck is fine — the IR was already validated before runPipeline
+  // was called and we're only writing gate rows, not re-validating pipelines.
+  const kernel = new KernelService(opts.db, { skipTypeCheck: true });
 
   // Track which stages we've already dispatched an executor for, to avoid
   // double-launching when the actor emits multiple snapshots with the same
@@ -150,6 +163,33 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
     for (const [stageName, substate] of Object.entries(running)) {
       if (substate === "executing" && !dispatched.has(stageName)) {
         dispatched.add(stageName);
+
+        const stageDef = opts.ir.stages.find((s) => s.name === stageName);
+        if (stageDef?.type === "gate") {
+          // Gate stages: open a stage_attempt, register a gate_queue row,
+          // and do NOT invoke any executor. The machine stays in
+          // `executing` until answer_gate fires a GATE_ANSWERED event
+          // (dispatched to us via TaskRegistry).
+          const gateStage = stageDef as GateStage;
+          const { attemptId } = portRuntime.startAttempt({
+            taskId: opts.taskId,
+            versionHash: opts.versionHash,
+            stageName,
+          });
+          kernel.createGate({
+            taskId: opts.taskId,
+            stageName,
+            attemptId,
+            question: gateStage.config.question,
+          });
+          // The attempt row stays status='running' until answerGate marks
+          // it success. That finalization is handled out-of-band (A1.2b.2
+          // answer path + later phases); during A1 we leave the row in
+          // 'running' and let the machine continue once GATE_ANSWERED
+          // arrives.
+          continue;
+        }
+
         const ctx = snapshot.context as MachineContext;
         const p = executor.executeStage({
           ir: opts.ir,
@@ -184,5 +224,8 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
 
   actor.start();
   actor.send({ type: "START" });
-  return done.finally(() => actor.stop());
+  return done.finally(() => {
+    actor.stop();
+    taskRegistry.unregister(opts.taskId);
+  });
 }

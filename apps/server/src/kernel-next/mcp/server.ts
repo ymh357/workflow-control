@@ -16,6 +16,7 @@ import { queryLineage, diffRuns } from "./lineage.js";
 import { IRPatchSchema } from "../ir/schema.js";
 import type { PipelineIR } from "../ir/schema.js";
 import { PortRuntime, type EventDispatcher } from "../runtime/port-runtime.js";
+import { taskRegistry } from "../runtime/task-registry.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
 
@@ -427,8 +428,11 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
         description:
           "Answer an open gate. The answer is validated against the gate " +
           "stage's routing table (exact match, falling back to '_default'). " +
-          "On success returns { ok: true, gateId, targetStage, answer } — the " +
-          "runner uses targetStage to advance the machine (A1.2b).",
+          "On success dispatches GATE_ANSWERED to the live runner (if the " +
+          "task is still running in this process) and returns the resolved " +
+          "targetStage. If the task's runner is not registered (process " +
+          "restart, task already completed), the gate answer is persisted " +
+          "but no machine event is dispatched.",
         inputSchema: {
           gateId: z.string(),
           answer: z.string().min(1).max(4096),
@@ -436,9 +440,18 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         handler: async (args: any) => {
           try {
-            return jsonResponse(
-              kernel.answerGate(String(args.gateId), String(args.answer)),
-            );
+            const result = kernel.answerGate(String(args.gateId), String(args.answer));
+            if (result.ok) {
+              const dispatcher = taskRegistry.get(result.taskId);
+              dispatcher?.send({
+                type: "GATE_ANSWERED",
+                gateId: result.gateId,
+                stageName: result.stageName,
+                answer: result.answer,
+                targetStage: result.targetStage,
+              });
+            }
+            return jsonResponse(result);
           } catch (err) {
             return errorResponse(err instanceof Error ? err.message : String(err));
           }

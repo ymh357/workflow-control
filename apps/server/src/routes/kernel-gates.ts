@@ -15,6 +15,7 @@ import type { Context } from "hono";
 import { z } from "zod";
 import { KernelService } from "../kernel-next/mcp/kernel.js";
 import { getKernelNextDb } from "../lib/kernel-next-db.js";
+import { taskRegistry } from "../kernel-next/runtime/task-registry.js";
 
 export const kernelGatesRoute = new Hono();
 
@@ -88,7 +89,20 @@ kernelGatesRoute.post("/kernel/gates/:id/answer", async (c) => {
 
   const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
   const result = svc.answerGate(id, parsed.data.answer);
-  if (result.ok) return c.json(result);
+  if (result.ok) {
+    // Dispatch GATE_ANSWERED to the live runner if present. If not (task
+    // already completed / process restarted), the persisted answer will
+    // be picked up by any rehydration path; REST just returns ok.
+    const dispatcher = taskRegistry.get(result.taskId);
+    dispatcher?.send({
+      type: "GATE_ANSWERED",
+      gateId: result.gateId,
+      stageName: result.stageName,
+      answer: result.answer,
+      targetStage: result.targetStage,
+    });
+    return c.json(result);
+  }
   return c.json(result, statusForDiagnostic(result.diagnostics[0]?.code));
 });
 

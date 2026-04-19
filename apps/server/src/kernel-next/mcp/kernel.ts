@@ -77,7 +77,7 @@ export interface GateRow {
 }
 
 export type AnswerGateResult =
-  | { ok: true; gateId: string; targetStage: string; answer: string }
+  | { ok: true; gateId: string; taskId: string; stageName: string; targetStage: string; answer: string }
   | { ok: false; diagnostics: Diagnostic[] };
 
 export interface KernelServiceOptions {
@@ -489,14 +489,34 @@ export class KernelService {
       };
     }
 
-    // Atomic answer write. WHERE answered_at IS NULL prevents a race with
-    // a concurrent answer_gate call (same defense as resolveProposal).
-    const res = this.db.prepare(
-      `UPDATE gate_queue
-       SET answer = ?, answered_at = ?
-       WHERE gate_id = ? AND answered_at IS NULL`,
-    ).run(answer, Date.now(), gateId);
-    if (res.changes === 0) {
+    // Atomic answer write + concurrent-answer defense. Both updates live
+    // in a single transaction so the gate row and the attempt row stay
+    // consistent — if the gate was resolved concurrently the UPDATE
+    // returns changes=0 and we roll back the attempt finalization.
+    const now = Date.now();
+    this.db.exec("BEGIN");
+    let gateChanges: number;
+    try {
+      const res = this.db.prepare(
+        `UPDATE gate_queue
+         SET answer = ?, answered_at = ?
+         WHERE gate_id = ? AND answered_at IS NULL`,
+      ).run(answer, now, gateId);
+      gateChanges = res.changes as number;
+      if (gateChanges > 0) {
+        // Finalize the stage_attempt that was opened when the gate entered
+        // `executing`. Gate answering is the attempt's natural completion.
+        this.db.prepare(
+          `UPDATE stage_attempts SET ended_at = ?, status = 'success'
+           WHERE attempt_id = ?`,
+        ).run(now, row.attempt_id);
+      }
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+    if (gateChanges === 0) {
       return {
         ok: false,
         diagnostics: [{
@@ -507,7 +527,14 @@ export class KernelService {
       };
     }
 
-    return { ok: true, gateId, targetStage, answer };
+    return {
+      ok: true,
+      gateId,
+      taskId: row.task_id,
+      stageName: row.stage_name,
+      targetStage,
+      answer,
+    };
   }
 
   /**
