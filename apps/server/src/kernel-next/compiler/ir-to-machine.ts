@@ -45,6 +45,11 @@ export interface MachineContext {
   // Ordered audit log of state entries. Used for tests to assert execution
   // ordering without a custom observer.
   log: string[];
+  // A3.2 — stage names that have been authorized by a gate routing answer.
+  // A stage that is referenced as a routing target by any gate stage only
+  // activates once this set contains its name AND its inbound wires have
+  // delivered. Non-gate-targeted stages ignore this set.
+  gateAuthorizedTargets: string[];
 }
 
 export type MachineEvent =
@@ -74,15 +79,37 @@ interface StageMeta {
   // source has been written AND its guard (if any) evaluated true.
   inbound: InboundWireMeta[];
   outbound: string[]; // "<stage>.<port>" outbound port keys
+  // A3.2 — whether this stage appears in any gate's routing table as a
+  // target. Gate-routed stages additionally require GATE_ANSWERED to
+  // authorize them before they can activate (see guard composition in
+  // buildStageRegion). This prevents a routing target from executing
+  // purely on upstream wire delivery while the gate is still pending.
+  gateRouted: boolean;
 }
 
 function indexStages(ir: PipelineIR): Map<string, StageMeta> {
   const index = new Map<string, StageMeta>();
 
+  // First pass: compute the set of stages that appear as a target in any
+  // gate's routing table. These stages are "gate-routed" — activation
+  // requires GATE_ANSWERED authorization in addition to inbound delivery.
+  const gateRoutedTargets = new Set<string>();
+  for (const s of ir.stages) {
+    if (s.type !== "gate") continue;
+    for (const target of Object.values(s.config.routing.routes)) {
+      gateRoutedTargets.add(target);
+    }
+  }
+
   // Start by declaring all stages with empty inbound/outbound.
   for (const s of ir.stages) {
     const outbound = s.outputs.map((p) => `${s.name}.${p.name}`);
-    index.set(s.name, { stageType: s.type, inbound: [], outbound });
+    index.set(s.name, {
+      stageType: s.type,
+      inbound: [],
+      outbound,
+      gateRouted: gateRoutedTargets.has(s.name),
+    });
   }
 
   // Populate inbound via wires. Preserve guard per wire.
@@ -133,6 +160,7 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
       versionHash: "", // filled by runner before starting
       portValues: {},
       log: [],
+      gateAuthorizedTargets: [],
     },
     initial: "idle",
     on: {
@@ -145,6 +173,18 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
             ...context.portValues,
             [event.key]: event.value,
           }),
+        }),
+      },
+      // Root-level GATE_ANSWERED: record the routed target on the context
+      // so gate-routed stages can evaluate the authorization guard. The
+      // stage regions also observe GATE_ANSWERED (for routing/gate-resolve
+      // transitions), unaffected by this root-level assign.
+      GATE_ANSWERED: {
+        actions: assign({
+          gateAuthorizedTargets: ({ context, event }) =>
+            context.gateAuthorizedTargets.includes(event.targetStage)
+              ? context.gateAuthorizedTargets
+              : [...context.gateAuthorizedTargets, event.targetStage],
         }),
       },
     },
@@ -193,16 +233,35 @@ function buildStageRegion(stageName: string, meta: StageMeta) {
   // guarantees each inbound port has at most one wire (WIRE_TARGET_
   // ALREADY_DRIVEN), so "one slot per wire" maps 1:1 to the design's
   // "one wire per inbound port".
-  const allInboundDelivered = ({ context }: { context: MachineContext }) =>
-    meta.inbound.every((w) => wireDelivers(w, context.portValues));
+  //
+  // A3.2 — gate-routed stages additionally require the stage's name to
+  // appear in context.gateAuthorizedTargets. A gate routing target never
+  // executes on upstream-wire delivery alone; it waits for GATE_ANSWERED
+  // to authorise it. Non-gate-routed stages skip this extra check.
+  const allInboundDelivered = ({ context }: { context: MachineContext }) => {
+    if (meta.gateRouted && !context.gateAuthorizedTargets.includes(stageName)) {
+      return false;
+    }
+    return meta.inbound.every((w) => wireDelivers(w, context.portValues));
+  };
 
   // Dead stage: every source has fired, but at least one wire has been
   // dropped by a false guard. That wire can never deliver — the stage
   // cannot activate. §6.2 specifies this is a pipeline authoring bug
   // (NO_ACTIVE_WIRE). We detect it compile-free at runtime and surface
   // it as STAGE_FAILED via a transient `always` branch from `waiting`.
+  //
+  // A3.2 — gate-routed stages suppress this diagnostic until they have
+  // been authorised. A routing target that is not the selected branch
+  // (e.g. the "no" branch when the answer was "yes") is expected to
+  // remain waiting without its wires ever firing; that is not a bug.
+  // Only once the stage is authorised do we consider dropped wires a
+  // real dead-end.
   const noDeliverableWire = ({ context }: { context: MachineContext }) => {
     if (meta.inbound.length === 0) return false;
+    if (meta.gateRouted && !context.gateAuthorizedTargets.includes(stageName)) {
+      return false;
+    }
     if (!meta.inbound.every((w) => wireSettled(w, context.portValues))) return false;
     return meta.inbound.some((w) => !wireDelivers(w, context.portValues));
   };
@@ -214,15 +273,9 @@ function buildStageRegion(stageName: string, meta: StageMeta) {
 
   const isGate = meta.stageType === "gate";
 
-  // Guard matching a GATE_ANSWERED whose targetStage names this stage. Used
-  // in every stage's `waiting` substate so gate routing can activate
-  // downstream stages even when they don't have all inbound wires ready.
-  const gateAnsweredTargetsMe = ({ event }: { event: MachineEvent }) =>
-    event.type === "GATE_ANSWERED" && event.targetStage === stageName;
-
   // Guard for a gate stage leaving `executing` on its own GATE_ANSWERED
-  // event. Distinguished from the `waiting` activation guard above — here
-  // we match on stageName (the answered gate) rather than targetStage.
+  // event (not to be confused with gate-routed *targets*, which use the
+  // context.gateAuthorizedTargets list composed with allInboundDelivered).
   const gateAnsweredIsMe = ({ event }: { event: MachineEvent }) =>
     event.type === "GATE_ANSWERED" && event.stageName === stageName;
 
@@ -279,10 +332,37 @@ function buildStageRegion(stageName: string, meta: StageMeta) {
                 event.type === "STAGE_FAILED" && event.stage === stageName,
             },
           ],
-          // Gate routing: any stage may be activated by a GATE_ANSWERED
-          // whose targetStage names it, regardless of inbound-wire state.
+          // A3.2 — GATE_ANSWERED composes with inbound delivery. The
+          // root-level handler assigns gateAuthorizedTargets but XState
+          // evaluates transition guards BEFORE running root-level
+          // actions on the same event, so the sub-region guard checks
+          // event.targetStage directly (in lieu of the not-yet-updated
+          // context) combined with inbound delivery. We still route to
+          // executing only when this stage is the named target AND
+          // inbound has delivered — gate authorization is an addition
+          // to, not a replacement for, wire delivery.
           GATE_ANSWERED: [
-            { target: "executing", guard: gateAnsweredTargetsMe },
+            {
+              target: "executing",
+              guard: ({ context, event }: { context: MachineContext; event: MachineEvent }) => {
+                if (event.type !== "GATE_ANSWERED") return false;
+                if (event.targetStage !== stageName) return false;
+                // Inline the non-gate part of allInboundDelivered: since
+                // this event IS the authorization, skip the gateRouted
+                // check and just verify every inbound wire delivers.
+                return meta.inbound.every((w) => wireDelivers(w, context.portValues));
+              },
+            },
+            {
+              target: "error",
+              guard: ({ context, event }: { context: MachineContext; event: MachineEvent }) => {
+                if (event.type !== "GATE_ANSWERED") return false;
+                if (event.targetStage !== stageName) return false;
+                if (meta.inbound.length === 0) return false;
+                if (!meta.inbound.every((w) => wireSettled(w, context.portValues))) return false;
+                return meta.inbound.some((w) => !wireDelivers(w, context.portValues));
+              },
+            },
           ],
         },
         // Entry: if deps already met (entry stage or late entry), go

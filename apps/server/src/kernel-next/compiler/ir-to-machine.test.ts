@@ -110,14 +110,25 @@ describe("compileIRToMachine — gate routing (A1.2b.1)", () => {
     actor.stop();
   });
 
-  it("GATE_ANSWERED activates the target stage out-of-band", () => {
+  it("GATE_ANSWERED authorises the target; inbound delivery then activates it", () => {
+    // A3.2 semantics: a gate routing target is NOT activated by the gate
+    // answer alone — it must also have its inbound wires delivered. This
+    // test asserts BOTH halves:
+    //   (1) writing SRC.y with no prior GATE_ANSWERED leaves TGT_YES in
+    //       waiting (wires alone are not enough);
+    //   (2) sending GATE_ANSWERED(targetStage=TGT_YES) then activates it
+    //       (the authorization picks it up with already-delivered wires);
+    //   (3) TGT_NO, never authorised, stays in waiting.
     const { machine } = compileIRToMachine(gateIR, { taskId: "t" });
     const actor = createActor(machine);
     actor.start();
     actor.send({ type: "START" });
     actor.send({ type: "PORT_WRITTEN", key: "SRC.x", value: 1 });
+    actor.send({ type: "PORT_WRITTEN", key: "SRC.y", value: "Y" });
+    actor.send({ type: "PORT_WRITTEN", key: "SRC.z", value: "Z" });
 
-    // Prior to GATE_ANSWERED, both target branches are still `waiting`.
+    // (1) Both TGT stages still waiting — inbound delivered, but no
+    // gate authorization yet.
     const before = readRunningValue(actor.getSnapshot());
     expect(before?.TGT_YES).toBe("waiting");
     expect(before?.TGT_NO).toBe("waiting");
@@ -131,9 +142,27 @@ describe("compileIRToMachine — gate routing (A1.2b.1)", () => {
     });
 
     const after = readRunningValue(actor.getSnapshot());
-    // TGT_YES advanced to executing; TGT_NO remains waiting.
+    // (2) TGT_YES: authorized + inbound delivered → executing.
+    // (3) TGT_NO: inbound delivered but not authorized → still waiting.
     expect(after?.TGT_YES).toBe("executing");
     expect(after?.TGT_NO).toBe("waiting");
+    actor.stop();
+  });
+
+  it("gate target waits when only inbound delivered (no authorization)", () => {
+    // Regression guard for the A3.2 exclusivity invariant: a routing
+    // target with all inbound wires delivered but no GATE_ANSWERED must
+    // NOT execute.
+    const { machine } = compileIRToMachine(gateIR, { taskId: "t" });
+    const actor = createActor(machine);
+    actor.start();
+    actor.send({ type: "START" });
+    actor.send({ type: "PORT_WRITTEN", key: "SRC.x", value: 1 });
+    actor.send({ type: "PORT_WRITTEN", key: "SRC.y", value: "Y" });
+    actor.send({ type: "PORT_WRITTEN", key: "SRC.z", value: "Z" });
+    const running = readRunningValue(actor.getSnapshot());
+    expect(running?.TGT_YES).toBe("waiting");
+    expect(running?.TGT_NO).toBe("waiting");
     actor.stop();
   });
 
