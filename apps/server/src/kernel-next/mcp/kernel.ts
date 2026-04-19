@@ -55,10 +55,29 @@ export interface ProposalRow {
   status: ProposalStatus;
   diagnosticJson: string | null;
   createdAt: number;
+  // A8 additions (§10.5 step 1 / §10.1). Present on proposals that
+  // opted into migration; null/"none" otherwise.
+  rerunFrom: string | null;
+  migrateRunning: "all" | "none" | string[];
 }
 
 export type ApprovalResult =
   | { ok: true; proposalId: string; status: "approved" | "rejected" }
+  | { ok: false; diagnostics: Diagnostic[] };
+
+export type MigrateTaskResult =
+  | {
+      ok: true;
+      eventId: string;
+      taskId: string;
+      fromVersion: string;
+      toVersion: string;
+      rerunFrom: string | null;
+      // Stage names whose existing attempts were marked superseded on
+      // the OLD version. The caller is expected to kick off fresh
+      // attempts for these on toVersion.
+      supersededStages: string[];
+    }
   | { ok: false; diagnostics: Diagnostic[] };
 
 // Gate lifecycle (§3.3 / §8.1). createGate is called by the runner when
@@ -177,6 +196,20 @@ export class KernelService {
     currentVersion: string;
     patch: IRPatch;
     actor: string;
+    /**
+     * A8 / §10.5 step 1 — the stage to rewind to when this proposal
+     * is approved and migrated. Must name a stage that exists in the
+     * PROPOSED IR (validated in this method, not at approve time —
+     * fails fast rather than silently producing an un-mergeable
+     * proposal). null / undefined means "no rewind" (forward-only).
+     */
+    rerunFrom?: string | null;
+    /**
+     * A8 / §10.1 — opt-in list of running taskIds to migrate. 'none'
+     * (default), 'all', or an explicit taskId array. kernel-next does
+     * not migrate running tasks by default; callers must opt in.
+     */
+    migrateRunningTasks?: "all" | "none" | string[];
   }): ProposeResult {
     // Optimistic lock check.
     const base = getPipelineIR(this.db, args.currentVersion);
@@ -211,6 +244,23 @@ export class KernelService {
     const validate = this.validate(proposedIR);
     if (!validate.ok) return { ok: false, diagnostics: validate.diagnostics };
 
+    // A8 step 1 — rerunFrom, if provided, must name a stage that exists
+    // in the PROPOSED IR. Otherwise we'd accept a proposal that can
+    // never actually migrate anyone.
+    if (args.rerunFrom !== undefined && args.rerunFrom !== null) {
+      const targetStage = proposedIR.stages.find((s) => s.name === args.rerunFrom);
+      if (!targetStage) {
+        return {
+          ok: false,
+          diagnostics: [{
+            code: "PATCH_APPLY_ERROR",
+            message: `rerunFrom '${args.rerunFrom}' is not a stage in the proposed pipeline`,
+            context: { rerunFrom: args.rerunFrom },
+          }],
+        };
+      }
+    }
+
     const proposedHash = versionHash(proposedIR);
 
     // Persist new version (idempotent) and proposal row.
@@ -224,11 +274,25 @@ export class KernelService {
     }
 
     const proposalId = randomUUID();
+    const migrateRunning = args.migrateRunningTasks === undefined
+      ? "none"
+      : Array.isArray(args.migrateRunningTasks)
+        ? JSON.stringify(args.migrateRunningTasks)
+        : args.migrateRunningTasks;
     this.db.prepare(
       `INSERT INTO pipeline_proposals
-       (proposal_id, base_version, proposed_version, actor, status, diagnostic_json, created_at)
-       VALUES (?, ?, ?, ?, 'pending', NULL, ?)`,
-    ).run(proposalId, args.currentVersion, proposedHash, args.actor, Date.now());
+       (proposal_id, base_version, proposed_version, actor, status,
+        diagnostic_json, created_at, rerun_from, migrate_running)
+       VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`,
+    ).run(
+      proposalId,
+      args.currentVersion,
+      proposedHash,
+      args.actor,
+      Date.now(),
+      args.rerunFrom ?? null,
+      migrateRunning,
+    );
 
     return {
       ok: true,
@@ -622,12 +686,12 @@ export class KernelService {
     const rows = filter.status
       ? this.db.prepare(
           `SELECT proposal_id, base_version, proposed_version, actor, status,
-                  diagnostic_json, created_at
+                  diagnostic_json, created_at, rerun_from, migrate_running
            FROM pipeline_proposals WHERE status = ? ORDER BY created_at DESC`,
         ).all(filter.status)
       : this.db.prepare(
           `SELECT proposal_id, base_version, proposed_version, actor, status,
-                  diagnostic_json, created_at
+                  diagnostic_json, created_at, rerun_from, migrate_running
            FROM pipeline_proposals ORDER BY created_at DESC`,
         ).all();
     return (rows as Array<{
@@ -638,6 +702,8 @@ export class KernelService {
       status: string;
       diagnostic_json: string | null;
       created_at: number;
+      rerun_from: string | null;
+      migrate_running: string | null;
     }>).map((r) => ({
       proposalId: r.proposal_id,
       baseVersion: r.base_version,
@@ -646,6 +712,203 @@ export class KernelService {
       status: r.status as ProposalStatus,
       diagnosticJson: r.diagnostic_json,
       createdAt: r.created_at,
+      rerunFrom: r.rerun_from,
+      migrateRunning: parseMigrateRunning(r.migrate_running),
     }));
   }
+
+  /**
+   * A8 forward migration happy path (§10.5 step 1-5 simplified):
+   *
+   *   1. Load the proposal. Must be status='approved' AND this task must
+   *      be in its migrateRunning list (opt-in, §10.1).
+   *   2. Validate rerunFrom exists on the proposed pipeline version.
+   *   3. Mark every stage_attempt AT OR DOWNSTREAM OF rerunFrom on the
+   *      OLD version as status='superseded'. Lineage (port_values) for
+   *      those attempts stays in place — §1.3 "never regress
+   *      already-executed information" — but those attempts no longer
+   *      count when get_task_status computes the verdict.
+   *   4. Write a hot_update_events row with the outcome. This is the
+   *      §10.8 audit trail.
+   *   5. Return the proposed version hash; the caller is responsible
+   *      for kicking off new stage_attempts on that version (A8 min
+   *      scope does not wire the runner — an A2.3 TaskMachine nest
+   *      would be needed to interrupt an in-flight AgentMachine).
+   *
+   * The happy path tested here: taskId is NOT running — it has ended
+   * cleanly or is idle between stages. Mid-stage graceful INTERRUPT
+   * requires AgentMachine nesting (A2.3) and is explicitly out of
+   * A8-min scope.
+   */
+  migrateTask(taskId: string, proposalId: string): MigrateTaskResult {
+    const proposalRow = this.db.prepare(
+      `SELECT proposal_id, base_version, proposed_version, status,
+              rerun_from, migrate_running, actor
+       FROM pipeline_proposals WHERE proposal_id = ?`,
+    ).get(proposalId) as
+      | {
+          proposal_id: string;
+          base_version: string;
+          proposed_version: string | null;
+          status: string;
+          rerun_from: string | null;
+          migrate_running: string | null;
+          actor: string;
+        }
+      | undefined;
+
+    if (!proposalRow) {
+      return {
+        ok: false,
+        diagnostics: [{ code: "PROPOSAL_NOT_FOUND", message: `proposal '${proposalId}' not found` }],
+      };
+    }
+    if (proposalRow.status !== "approved") {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "PROPOSAL_ALREADY_RESOLVED",
+          message: `proposal '${proposalId}' status is '${proposalRow.status}', not 'approved'`,
+        }],
+      };
+    }
+    if (!proposalRow.proposed_version) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "PATCH_APPLY_ERROR",
+          message: `proposal '${proposalId}' has no proposed_version`,
+        }],
+      };
+    }
+
+    const mig = parseMigrateRunning(proposalRow.migrate_running);
+    const inList =
+      mig === "all" ||
+      (Array.isArray(mig) && mig.includes(taskId));
+    if (!inList) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "PATCH_APPLY_ERROR",
+          message: `task '${taskId}' is not in the proposal's migrateRunningTasks (${mig === "none" ? "none" : JSON.stringify(mig)})`,
+        }],
+      };
+    }
+
+    // Discover the task's current baseline version from its attempts.
+    const attemptRows = this.db.prepare(
+      `SELECT version_hash FROM stage_attempts WHERE task_id = ? GROUP BY version_hash`,
+    ).all(taskId) as Array<{ version_hash: string }>;
+    if (attemptRows.length === 0) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "PATCH_APPLY_ERROR",
+          message: `task '${taskId}' has no stage_attempts — nothing to migrate`,
+        }],
+      };
+    }
+
+    const fromVersion = proposalRow.base_version;
+    const toVersion = proposalRow.proposed_version;
+
+    // Determine downstream stages of rerunFrom in the PROPOSED IR.
+    // Strictly forward: rerunFrom itself + everything reachable via
+    // wires. Parallel siblings that happen to come later are NOT
+    // automatically re-run unless they have a wire-dependency on
+    // something from rerunFrom onward. A3/§10.5 fine-grained parallel
+    // migration is deferred.
+    const proposedIR = getPipelineIR(this.db, toVersion);
+    if (!proposedIR) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "PATCH_APPLY_ERROR",
+          message: `proposed version '${toVersion}' not found — orphan proposal`,
+        }],
+      };
+    }
+
+    const rerun = proposalRow.rerun_from;
+    const supersedeStages = rerun === null
+      ? new Set<string>()
+      : computeDownstream(proposedIR, rerun);
+
+    // Mark stage_attempts superseded. Lineage rows stay (§1.3 invariant).
+    const eventId = randomUUID();
+    const startedAt = Date.now();
+    try {
+      this.db.exec("BEGIN");
+      if (supersedeStages.size > 0) {
+        const stmt = this.db.prepare(
+          `UPDATE stage_attempts SET status = 'superseded'
+           WHERE task_id = ? AND stage_name = ? AND status IN ('success', 'running', 'error')`,
+        );
+        for (const s of supersedeStages) stmt.run(taskId, s);
+      }
+      this.db.prepare(
+        `INSERT INTO hot_update_events
+         (event_id, task_id, from_version, to_version, actor, proposal_id,
+          rerun_from_stage, status, started_at, finished_at, diagnostic_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, NULL)`,
+      ).run(
+        eventId,
+        taskId,
+        fromVersion,
+        toVersion,
+        proposalRow.actor,
+        proposalId,
+        rerun,
+        startedAt,
+        Date.now(),
+      );
+      this.db.exec("COMMIT");
+    } catch (err) {
+      this.db.exec("ROLLBACK");
+      throw err;
+    }
+
+    return {
+      ok: true,
+      eventId,
+      taskId,
+      fromVersion,
+      toVersion,
+      rerunFrom: rerun,
+      supersededStages: [...supersedeStages].sort(),
+    };
+  }
+}
+
+/**
+ * Forward-reachable stages from a root via ir.wires. Includes root.
+ */
+function computeDownstream(ir: PipelineIR, root: string): Set<string> {
+  const reachable = new Set<string>([root]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const w of ir.wires) {
+      if (reachable.has(w.from.stage) && !reachable.has(w.to.stage)) {
+        reachable.add(w.to.stage);
+        changed = true;
+      }
+    }
+  }
+  return reachable;
+}
+
+function parseMigrateRunning(raw: string | null): "all" | "none" | string[] {
+  if (raw === null || raw === "none") return "none";
+  if (raw === "all") return "all";
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed) && parsed.every((v) => typeof v === "string")) {
+      return parsed as string[];
+    }
+  } catch {
+    // fall through to 'none' — invalid stored value
+  }
+  return "none";
 }

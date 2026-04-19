@@ -80,7 +80,16 @@ CREATE TABLE IF NOT EXISTS pipeline_proposals (
   actor            TEXT NOT NULL,
   status           TEXT NOT NULL CHECK (status IN ('pending','approved','rejected')),
   diagnostic_json  TEXT,
-  created_at       INTEGER NOT NULL
+  created_at       INTEGER NOT NULL,
+  -- A8 (§10.5 step 1): the stage name to rewind to when the proposal
+  -- is approved + migrated. NULL means "apply to future work only;
+  -- do not rewind". Populated by propose_pipeline_change.
+  rerun_from       TEXT,
+  -- A8 (§10.1): optional opt-in list of running taskIds to migrate.
+  -- Stored as JSON — either "all" (string), "none" (string, default),
+  -- or a JSON array of taskIds. kernel-next defaults to 'none' per
+  -- §10.1; callers must explicitly opt in.
+  migrate_running  TEXT
 );
 -- listProposals filters by status and orders by created_at DESC; this
 -- composite index supports the "newest pending first" hot path.
@@ -104,6 +113,27 @@ CREATE TABLE IF NOT EXISTS gate_queue (
 -- index supports the get_task_status hot path.
 CREATE INDEX IF NOT EXISTS idx_gq_task_answered
   ON gate_queue(task_id, answered_at);
+
+-- hot_update_events (A8 / §10.8): audit trail for every forward and
+-- rollback migration. Written on migrateTask; supports debugging
+-- ("what changed when?") and meta-analysis ("which pipelines get
+-- revised frequently"). Independent of the proposal row — one
+-- proposal may drive multiple migrations across different tasks.
+CREATE TABLE IF NOT EXISTS hot_update_events (
+  event_id         TEXT PRIMARY KEY,
+  task_id          TEXT NOT NULL,
+  from_version     TEXT NOT NULL,
+  to_version       TEXT NOT NULL,
+  actor            TEXT NOT NULL,
+  proposal_id      TEXT REFERENCES pipeline_proposals(proposal_id),
+  rerun_from_stage TEXT,
+  status           TEXT NOT NULL CHECK (status IN ('success','failed','rolled_back')),
+  started_at       INTEGER NOT NULL,
+  finished_at      INTEGER,
+  diagnostic_json  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_hue_task_started
+  ON hot_update_events(task_id, started_at DESC);
 `;
 
 export function initKernelNextSchema(db: DatabaseSync): void {
