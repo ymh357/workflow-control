@@ -202,3 +202,133 @@ describe("M3: end-to-end diamond pipeline run", () => {
     db.close();
   });
 });
+
+// A1.1: mixed agent + script pipeline routed through CompositeStageExecutor.
+// Agent stages run via MockStageExecutor (handler map, the existing test
+// surface); script stages run via the real ScriptStageExecutor backed by a
+// TrivialScriptModuleResolver. Composite binds them together.
+describe("A1.1: CompositeStageExecutor routes mixed agent + script pipeline", () => {
+  it("runs an agent stage upstream of a script stage and reaches completed", async () => {
+    const db = makeDb();
+    try {
+      const ir: PipelineIR = {
+        name: "mixed",
+        stages: [
+          {
+            name: "A",
+            type: "agent",
+            inputs: [],
+            outputs: [{ name: "x", type: "number" }],
+            config: { promptRef: "p" },
+          },
+          {
+            name: "S",
+            type: "script",
+            inputs: [{ name: "x", type: "number" }],
+            outputs: [{ name: "y", type: "number" }],
+            config: { moduleId: "double" },
+          },
+        ],
+        wires: [{ from: { stage: "A", port: "x" }, to: { stage: "S", port: "x" } }],
+      };
+
+      const hash = versionHash(ir);
+      insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+      // Late-bind to avoid circular imports in the header.
+      const { MockStageExecutor } = await import("./mock-executor.js");
+      const { ScriptStageExecutor } = await import("./script-executor.js");
+      const { TrivialScriptModuleResolver } = await import("./script-module-resolver.js");
+      const { CompositeStageExecutor } = await import("./composite-executor.js");
+
+      const handlers: StageHandlerMap = {
+        A: () => ({ x: 21 }),
+      };
+      const resolver = new TrivialScriptModuleResolver({
+        modules: {
+          double: { run: (inputs) => ({ y: (inputs.x as number) * 2 }) },
+        },
+      });
+
+      const composite = new CompositeStageExecutor({
+        agent: new MockStageExecutor({ handlers }),
+        script: new ScriptStageExecutor({ resolver }),
+      });
+
+      const result = await runPipeline({
+        db,
+        ir,
+        taskId: "mix-1",
+        versionHash: hash,
+        handlers,
+        executor: composite,
+      });
+
+      expect(result.finalState).toBe("completed");
+      expect(result.portValues).toMatchObject({ "A.x": 21, "S.y": 42 });
+
+      // Attempts: one per stage, both success.
+      const rows = db.prepare(
+        `SELECT stage_name, status FROM stage_attempts WHERE task_id = ? ORDER BY stage_name`,
+      ).all("mix-1") as Array<{ stage_name: string; status: string }>;
+      expect(rows).toEqual([
+        { stage_name: "A", status: "success" },
+        { stage_name: "S", status: "success" },
+      ]);
+
+      // readLatestPort + PortRuntime basic sanity
+      void readLatestPort;
+      void PortRuntime;
+    } finally {
+      db.close();
+    }
+  });
+
+  it("surfaces a script-stage error on the runner result when script module throws", async () => {
+    const db = makeDb();
+    try {
+      const ir: PipelineIR = {
+        name: "mixed-fail",
+        stages: [
+          {
+            name: "S",
+            type: "script",
+            inputs: [],
+            outputs: [{ name: "y", type: "number" }],
+            config: { moduleId: "boom" },
+          },
+        ],
+        wires: [],
+      };
+      const hash = versionHash(ir);
+      insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+      const { ScriptStageExecutor } = await import("./script-executor.js");
+      const { TrivialScriptModuleResolver } = await import("./script-module-resolver.js");
+      const { CompositeStageExecutor } = await import("./composite-executor.js");
+
+      const resolver = new TrivialScriptModuleResolver({
+        modules: { boom: { run: () => { throw new Error("kaboom"); } } },
+      });
+      const composite = new CompositeStageExecutor({
+        script: new ScriptStageExecutor({ resolver }),
+      });
+
+      const result = await runPipeline({
+        db,
+        ir,
+        taskId: "mix-fail",
+        versionHash: hash,
+        handlers: {},
+        executor: composite,
+      });
+
+      expect(result.finalState).toBe("failed");
+      expect(result.stageErrors).toEqual([
+        { stage: "S", message: "kaboom" },
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+});
