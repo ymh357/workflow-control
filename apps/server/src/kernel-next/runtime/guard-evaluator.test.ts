@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { evaluateGuard } from "./guard-evaluator.js";
+import { evaluateGuard, GuardDeniedError } from "./guard-evaluator.js";
 
 const ctx = {
   wireFrom: { stage: "A", port: "x" },
@@ -55,5 +55,37 @@ describe("evaluateGuard", () => {
   it("non-boolean truthy expression result still returns true (Boolean coerce)", () => {
     expect(evaluateGuard("value + 1", 1, ctx)).toBe(true); // 2
     expect(evaluateGuard("value + 1", -1, ctx)).toBe(false); // 0
+  });
+
+  // F8 / Reviewer concern C6 — defense-in-depth against misauthored
+  // guard expressions that try to reach outside the port-value sandbox.
+  describe("deny-list", () => {
+    it.each([
+      "require('fs').readFileSync('/etc/passwd')",
+      "import('./secret.js')",
+      "process.env.SECRET",
+      "globalThis.fetch('http://evil')",
+      "global.x",
+      "eval('1+1')",
+      "new Function('return 1')()",
+      "value.constructor.prototype.x",
+      "({}).__proto__",
+    ])("rejects %s with GuardDeniedError (result=false)", (expr) => {
+      const errors: unknown[] = [];
+      const result = evaluateGuard(expr, {}, ctx, { onError: (e) => errors.push(e) });
+      expect(result).toBe(false);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toBeInstanceOf(GuardDeniedError);
+    });
+
+    it("does NOT reject identifiers that happen to contain a denied substring", () => {
+      // 'processingTime', 'importance', 'evaluate', 'requires_review' are
+      // all legitimate object properties that share a prefix/infix with
+      // a denied token. The word-boundary regex keeps them passing.
+      expect(evaluateGuard("value.processingTime > 0", { processingTime: 5 }, ctx)).toBe(true);
+      expect(evaluateGuard("value.importance > 3", { importance: 9 }, ctx)).toBe(true);
+      expect(evaluateGuard("value.evaluated === true", { evaluated: true }, ctx)).toBe(true);
+      expect(evaluateGuard("value.requires_review", { requires_review: true }, ctx)).toBe(true);
+    });
   });
 });
