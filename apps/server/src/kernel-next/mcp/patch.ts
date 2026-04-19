@@ -1,6 +1,6 @@
 // Apply an IRPatch to a base PipelineIR, producing a new IR. Pure function.
 // The caller (propose_pipeline_change) is responsible for re-validating the
-// result. See docs/kernel-next-design.md §7 semantics:
+// result. See docs/kernel-next-terminal-design.md §10 semantics:
 //
 //   1. remove_stage cascades to delete wires touching that stage.
 //   2. Ops applied in order to a deep-copy of the base IR; validation happens
@@ -8,8 +8,22 @@
 //      allowed — e.g. add_stage now, add_wire in a later op.)
 //   3. update_port_type may cascade to type mismatches reported at codegen +
 //      tsc layer; this module doesn't anticipate them.
+//   4. update_stage_config merges configPatch keys into stage.config. Since
+//      StageIR is a discriminated union keyed by `type`, only keys that the
+//      target stage's variant allows are retained in the shallow merge;
+//      keys outside that set raise PatchApplyError. This is stricter than
+//      the legacy flat-config merge and surfaces invalid patches early.
 
-import type { PipelineIR, IRPatch, IRPatchOp } from "../ir/schema.js";
+import type { PipelineIR, IRPatch, IRPatchOp, StageIR } from "../ir/schema.js";
+
+// Permitted config keys per stage variant, kept in lockstep with
+// ir/schema.ts. If schema.ts grows new variants or fields, this table
+// must be updated.
+const ALLOWED_CONFIG_KEYS: Record<StageIR["type"], readonly string[]> = {
+  agent:  ["promptRef"],
+  script: ["moduleId"],
+  gate:   ["question", "routing"],
+};
 
 export class PatchApplyError extends Error {
   constructor(message: string, public readonly op: IRPatchOp) {
@@ -108,7 +122,20 @@ export function applyPatch(base: PipelineIR, patch: IRPatch): PipelineIR {
             `update_stage_config: stage '${op.stage}' not found`, op,
           );
         }
-        stage.config = { ...stage.config, ...op.configPatch };
+        const allowed = ALLOWED_CONFIG_KEYS[stage.type];
+        const unknownKeys = Object.keys(op.configPatch).filter(
+          (k) => !allowed.includes(k),
+        );
+        if (unknownKeys.length > 0) {
+          throw new PatchApplyError(
+            `update_stage_config: stage '${op.stage}' is type '${stage.type}' and does not accept config keys [${unknownKeys.join(", ")}]; allowed keys: [${allowed.join(", ")}]`,
+            op,
+          );
+        }
+        // TypeScript can't narrow `stage.config` through the dynamic
+        // `allowed` key list, so we re-assign through a typed cast. The
+        // runtime guard above keeps the assignment type-safe in practice.
+        stage.config = { ...stage.config, ...op.configPatch } as StageIR["config"];
         break;
       }
     }

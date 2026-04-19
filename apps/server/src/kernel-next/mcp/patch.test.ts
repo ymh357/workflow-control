@@ -85,6 +85,14 @@ describe("applyPatch", () => {
     expect(a.config.promptRef).toBe("new prompt");
   });
 
+  it("update_stage_config rejects keys not allowed for the target stage variant", () => {
+    // agent stage; `moduleId` is a script-only field.
+    const p: IRPatch = { ops: [
+      { op: "update_stage_config", stage: "A", configPatch: { moduleId: "x" } },
+    ]};
+    expect(() => applyPatch(base(), p)).toThrow(PatchApplyError);
+  });
+
   it("ops apply in order: add_stage then add_wire in same patch", () => {
     const p: IRPatch = { ops: [
       { op: "add_stage", stage: {
