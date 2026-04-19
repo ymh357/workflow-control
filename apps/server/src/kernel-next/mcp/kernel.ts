@@ -80,6 +80,20 @@ export type AnswerGateResult =
   | { ok: true; gateId: string; taskId: string; stageName: string; targetStage: string; answer: string }
   | { ok: false; diagnostics: Diagnostic[] };
 
+export type TaskStatus = "not_found" | "running" | "gated" | "completed" | "failed";
+
+export interface PendingGate {
+  gateId: string;
+  stageName: string;
+  question: { text: string; options?: string[] };
+  createdAt: number;
+}
+
+export type TaskStatusReport =
+  | { ok: true; status: "not_found"; taskId: string }
+  | { ok: true; status: "running" | "completed" | "failed"; taskId: string }
+  | { ok: true; status: "gated"; taskId: string; pending: PendingGate[] };
+
 export interface KernelServiceOptions {
   /** Override tsc binary path for tests. */
   tscPath?: string;
@@ -535,6 +549,70 @@ export class KernelService {
       targetStage,
       answer,
     };
+  }
+
+  /**
+   * Aggregate task status from stage_attempts + gate_queue. Kernel-next
+   * has no `tasks` table — a task exists iff it has at least one row in
+   * stage_attempts (keyed by taskId). Priority order when multiple
+   * signals are present:
+   *
+   *   1. unanswered gate_queue row exists  → 'gated' (+ pending questions)
+   *   2. any stage_attempt has status 'error' (latest per stage_name)
+   *                                        → 'failed'
+   *   3. any stage_attempt has status 'running'
+   *                                        → 'running'
+   *   4. every stage_attempt is 'success' (or 'superseded')
+   *                                        → 'completed'
+   *   5. no rows for this taskId           → 'not_found'
+   *
+   * Rationale: 'gated' trumps 'running'/'error' because the gate stage's
+   * attempt is kept in status 'running' while it waits, and an error on
+   * a sibling stage is still useful to see — but the caller needs to
+   * know the gate needs answering first (that is §3.3's primary
+   * observation path).
+   */
+  getTaskStatus(taskId: string): TaskStatusReport {
+    const attempts = this.db.prepare(
+      `SELECT stage_name, attempt_idx, status FROM stage_attempts
+       WHERE task_id = ?`,
+    ).all(taskId) as Array<{ stage_name: string; attempt_idx: number; status: string }>;
+
+    if (attempts.length === 0) {
+      return { ok: true, status: "not_found", taskId };
+    }
+
+    const pendingGates = this.listGates({ taskId, answered: false });
+    if (pendingGates.length > 0) {
+      return {
+        ok: true,
+        status: "gated",
+        taskId,
+        pending: pendingGates.map((g) => ({
+          gateId: g.gateId,
+          stageName: g.stageName,
+          question: g.question,
+          createdAt: g.createdAt,
+        })),
+      };
+    }
+
+    // Latest attempt per stage_name decides per-stage verdict.
+    const latestByStage = new Map<string, { attempt_idx: number; status: string }>();
+    for (const a of attempts) {
+      const cur = latestByStage.get(a.stage_name);
+      if (!cur || a.attempt_idx > cur.attempt_idx) {
+        latestByStage.set(a.stage_name, { attempt_idx: a.attempt_idx, status: a.status });
+      }
+    }
+    const statuses = Array.from(latestByStage.values()).map((v) => v.status);
+    if (statuses.some((s) => s === "error")) {
+      return { ok: true, status: "failed", taskId };
+    }
+    if (statuses.some((s) => s === "running")) {
+      return { ok: true, status: "running", taskId };
+    }
+    return { ok: true, status: "completed", taskId };
   }
 
   /**

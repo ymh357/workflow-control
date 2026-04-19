@@ -403,6 +403,28 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
         },
       },
       {
+        name: "get_task_status",
+        description:
+          "Aggregate status of a running / completed task from stage_attempts " +
+          "and gate_queue. Returns one of 'not_found' | 'running' | 'gated' | " +
+          "'completed' | 'failed'. When status is 'gated', `pending` lists the " +
+          "open gate(s) with their questionJson so the caller can answer via " +
+          "answer_gate. 'gated' takes priority over 'running' — a task with an " +
+          "unanswered gate is reported as gated even though the gate's stage " +
+          "attempt row is still in status 'running'.",
+        inputSchema: {
+          taskId: z.string(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            return jsonResponse(kernel.getTaskStatus(String(args.taskId)));
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
         name: "list_gates",
         description:
           "List gates in the queue. Optional taskId narrows to a single task; " +

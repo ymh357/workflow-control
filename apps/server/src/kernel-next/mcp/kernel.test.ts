@@ -442,3 +442,187 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
     }
   });
 });
+
+describe("KernelService — getTaskStatus (A4)", () => {
+  function seedSmallPipeline(svc: KernelService): string {
+    const ir = {
+      name: "mini",
+      stages: [
+        { name: "A", type: "agent" as const, inputs: [],
+          outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+        {
+          name: "G", type: "gate" as const,
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [],
+          config: {
+            question: { text: "continue?", options: ["yes"] },
+            routing: { routes: { yes: "A" } },
+          },
+        },
+      ],
+      wires: [{ from: { stage: "A", port: "x" }, to: { stage: "G", port: "x" } }],
+    };
+    const submit = svc.submit(ir);
+    if (!submit.ok) throw new Error("submit failed");
+    return submit.versionHash;
+  }
+
+  function openAttempt(
+    db: DatabaseSync,
+    taskId: string,
+    versionHash: string,
+    stageName: string,
+    status: "running" | "success" | "error" = "running",
+    attemptIdx = 1,
+  ): string {
+    const attemptId = "att-" + Math.random().toString(36).slice(2, 10);
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, ended_at, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      attemptId,
+      taskId,
+      versionHash,
+      stageName,
+      attemptIdx,
+      Date.now(),
+      status === "running" ? null : Date.now(),
+      status,
+    );
+    return attemptId;
+  }
+
+  it("not_found when no stage_attempts exist", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      expect(svc.getTaskStatus("ghost")).toEqual({
+        ok: true, status: "not_found", taskId: "ghost",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("gated when any pending gate_queue row exists, with pending list", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const hash = seedSmallPipeline(svc);
+      openAttempt(db, "t1", hash, "A", "success");
+      const gAttempt = openAttempt(db, "t1", hash, "G", "running");
+      const { gateId } = svc.createGate({
+        taskId: "t1", stageName: "G", attemptId: gAttempt,
+        question: { text: "continue?", options: ["yes"] },
+      });
+      const s = svc.getTaskStatus("t1");
+      if (s.status !== "gated") throw new Error(`unexpected status ${s.status}`);
+      expect(s.status).toBe("gated");
+      expect(s.pending).toHaveLength(1);
+      expect(s.pending[0]).toMatchObject({
+        gateId,
+        stageName: "G",
+        question: { text: "continue?", options: ["yes"] },
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("running when at least one attempt is running and no pending gates", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const hash = seedSmallPipeline(svc);
+      openAttempt(db, "t1", hash, "A", "running");
+      expect(svc.getTaskStatus("t1")).toEqual({
+        ok: true, status: "running", taskId: "t1",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("completed when every stage's latest attempt is success and no pending gates", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const hash = seedSmallPipeline(svc);
+      openAttempt(db, "t1", hash, "A", "success");
+      openAttempt(db, "t1", hash, "G", "success");
+      expect(svc.getTaskStatus("t1")).toEqual({
+        ok: true, status: "completed", taskId: "t1",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("failed when any stage's latest attempt is error", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const hash = seedSmallPipeline(svc);
+      openAttempt(db, "t1", hash, "A", "success");
+      openAttempt(db, "t1", hash, "G", "error");
+      expect(svc.getTaskStatus("t1")).toEqual({
+        ok: true, status: "failed", taskId: "t1",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("'gated' trumps 'running' — gate-stage attempt stays running while gated", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const hash = seedSmallPipeline(svc);
+      const att = openAttempt(db, "t1", hash, "G", "running");
+      svc.createGate({
+        taskId: "t1", stageName: "G", attemptId: att,
+        question: { text: "q" },
+      });
+      const s = svc.getTaskStatus("t1");
+      expect(s.status).toBe("gated");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("answered gates don't keep a task in 'gated' status", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const hash = seedSmallPipeline(svc);
+      const att = openAttempt(db, "t1", hash, "G", "success");
+      const { gateId } = svc.createGate({
+        taskId: "t1", stageName: "G", attemptId: att,
+        question: { text: "?", options: ["yes"] },
+      });
+      svc.answerGate(gateId, "yes");
+      // No more pending — status derives from attempt rows alone.
+      // (A stage remains status='running' only until answerGate; see A1.2a
+      // transactional update.) Here the attempt is 'success' after answer.
+      const s = svc.getTaskStatus("t1");
+      expect(s.status).toBe("completed");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("latest attempt wins — a retry that succeeds masks an earlier error", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const hash = seedSmallPipeline(svc);
+      openAttempt(db, "t1", hash, "A", "error", 1);
+      openAttempt(db, "t1", hash, "A", "success", 2);
+      openAttempt(db, "t1", hash, "G", "success");
+      expect(svc.getTaskStatus("t1").status).toBe("completed");
+    } finally {
+      db.close();
+    }
+  });
+});

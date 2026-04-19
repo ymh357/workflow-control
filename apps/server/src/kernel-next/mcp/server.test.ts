@@ -60,7 +60,7 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("exposes 12 tools with expected names", () => {
+  it("exposes 13 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
@@ -69,6 +69,7 @@ describe("kernel-next MCP server", () => {
       "answer_gate",
       "approve_proposal",
       "diff_runs",
+      "get_task_status",
       "list_gates",
       "list_proposals",
       "propose_pipeline_change",

@@ -17,6 +17,7 @@ import { configRoute } from "./routes/config.js";
 import { registryRoute } from "./routes/registry.js";
 import { kernelProposalsRoute } from "./routes/kernel-proposals.js";
 import { kernelGatesRoute } from "./routes/kernel-gates.js";
+import { kernelTasksRoute } from "./routes/kernel-tasks.js";
 import { edgeMcpRoute } from "./edge/route.js";
 import { buildWrapperRoute } from "./edge/wrapper-api.js";
 import { runPreflight, printPreflightResults } from "./lib/preflight.js";
@@ -156,6 +157,7 @@ app.route("/api", configRoute);
 app.route("/api", registryRoute);
 app.route("/api", kernelProposalsRoute);
 app.route("/api", kernelGatesRoute);
+app.route("/api", kernelTasksRoute);
 app.route("/mcp", edgeMcpRoute);
 app.route("/api/edge", buildWrapperRoute());
 
