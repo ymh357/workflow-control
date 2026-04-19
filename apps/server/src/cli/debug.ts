@@ -17,9 +17,11 @@ import {
   analyzeTaskFailure,
   diffExecutions,
   getStageExecutionRecord,
+  listTaskRecords,
   type TaskFailureReport,
   type GetStageRecordResult,
   type ExecutionDiffResult,
+  type ListTaskRecordsResult,
 } from "../lib/debug-queries.js";
 
 const HELP = `
@@ -32,6 +34,9 @@ Usage:
   debug record <taskId> <stageName> [--attempt=N] [--pretty]
     Fetch a full ExecutionRecord for one stage attempt.
     Omit --attempt for the latest.
+
+  debug list <taskId> [--pretty]
+    List every attempt row for a task as a lightweight index.
 
   debug diff <attemptIdA> <attemptIdB> [--pretty]
     Compare two ExecutionRecords by attempt_id.
@@ -119,6 +124,25 @@ function printRecordPretty(r: GetStageRecordResult): void {
   console.log(`decisions:    ${rec.decisions.length}`);
   console.log(`tool_calls:   ${rec.toolCalls.length}`);
   console.log(`stream lines: ${rec.agentStream.length}`);
+}
+
+function printListPretty(r: ListTaskRecordsResult): void {
+  if (!r.found) {
+    console.log(`Task ${r.taskId}: no execution_records rows found.`);
+    return;
+  }
+  console.log(`Task ${r.taskId} — ${r.total} attempt(s)`);
+  for (const rec of r.records) {
+    const flag = rec.isOpen ? " [OPEN]" : "";
+    const cost = rec.costUsd !== null ? rec.costUsd.toFixed(4) : "-";
+    const tokens = `${rec.tokenInput ?? 0}in/${rec.tokenOutput ?? 0}out`;
+    console.log(
+      `  ${rec.startedAt}  ${rec.attemptId}  ` +
+        `${rec.stageName}@${rec.attemptIndex}${flag}  ` +
+        `${rec.terminationReason ?? "open"}  ` +
+        `cost=${cost} tokens=${tokens}`,
+    );
+  }
 }
 
 function printDiffPretty(r: ExecutionDiffResult): void {
@@ -230,6 +254,21 @@ export async function runRecord(
   return 0;
 }
 
+export async function runList(positional: string[], flags: CommonFlags): Promise<number> {
+  const taskId = positional[0];
+  if (!taskId) {
+    console.error("Error: debug list <taskId>");
+    return 1;
+  }
+  const result = listTaskRecords(taskId);
+  if (flags.pretty) {
+    printListPretty(result);
+  } else {
+    console.log(JSON.stringify(result, null, 2));
+  }
+  return 0;
+}
+
 export async function runDiff(positional: string[], flags: CommonFlags): Promise<number> {
   const [aId, bId] = positional;
   if (!aId || !bId) {
@@ -263,6 +302,10 @@ export async function main(): Promise<void> {
       }
       case "record": {
         process.exit(await runRecord(positional, flags, extra));
+        break;
+      }
+      case "list": {
+        process.exit(await runList(positional, flags));
         break;
       }
       case "diff": {

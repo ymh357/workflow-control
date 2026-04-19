@@ -15,6 +15,7 @@ vi.mock("./debug-queries.js", () => ({
   analyzeTaskFailure: vi.fn(),
   getStageExecutionRecord: vi.fn(),
   diffExecutions: vi.fn(),
+  listTaskRecords: vi.fn(),
 }));
 
 import { createDebugMcp } from "./debug-mcp.js";
@@ -22,6 +23,7 @@ import {
   analyzeTaskFailure,
   diffExecutions,
   getStageExecutionRecord,
+  listTaskRecords,
 } from "./debug-queries.js";
 
 function getTool(mcp: { tools: unknown[] }, name: string): {
@@ -45,14 +47,43 @@ function getTool(mcp: { tools: unknown[] }, name: string): {
 }
 
 describe("createDebugMcp", () => {
-  it("registers the three debug tools", () => {
+  it("registers the four debug tools", () => {
     const mcp = createDebugMcp() as unknown as { name: string; tools: Array<{ name: string }> };
     expect(mcp.name).toBe("__debug__");
     expect(mcp.tools.map((t) => t.name).sort()).toEqual([
       "analyze_task_failure",
       "diff_executions",
       "get_stage_execution_record",
+      "list_task_records",
     ]);
+  });
+
+  it("list_task_records returns JSON envelope", async () => {
+    vi.mocked(listTaskRecords).mockReturnValue({
+      taskId: "t1",
+      found: true,
+      total: 1,
+      records: [{
+        attemptId: "a1", stageName: "s", attemptIndex: 0,
+        startedAt: "t", terminatedAt: "t", terminationReason: "natural_completion",
+        engine: "claude", model: "sonnet", pipelineVersionHash: null,
+        costUsd: 0.01, tokenInput: 10, tokenOutput: 5, durationMs: 100,
+        isOpen: false,
+      }],
+    });
+    const mcp = createDebugMcp() as unknown as { tools: unknown[] };
+    const tool = getTool(mcp, "list_task_records");
+    const res = await tool.handler({ taskId: "t1" });
+    const parsed = JSON.parse(res.content[0]!.text);
+    expect(parsed.total).toBe(1);
+    expect(parsed.records[0].attemptId).toBe("a1");
+  });
+
+  it("list_task_records rejects empty taskId", async () => {
+    const mcp = createDebugMcp() as unknown as { tools: unknown[] };
+    const tool = getTool(mcp, "list_task_records");
+    const res = await tool.handler({ taskId: "" });
+    expect(res.isError).toBe(true);
   });
 
   it("analyze_task_failure returns JSON envelope", async () => {

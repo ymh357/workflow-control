@@ -3,13 +3,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const analyzeMock = vi.hoisted(() => vi.fn());
 const recordMock = vi.hoisted(() => vi.fn());
 const diffMock = vi.hoisted(() => vi.fn());
+const listMock = vi.hoisted(() => vi.fn());
 vi.mock("../lib/debug-queries.js", () => ({
   analyzeTaskFailure: analyzeMock,
   getStageExecutionRecord: recordMock,
   diffExecutions: diffMock,
+  listTaskRecords: listMock,
 }));
 
-import { runAnalyze, runDiff, runRecord } from "./debug.js";
+import { runAnalyze, runDiff, runList, runRecord } from "./debug.js";
 
 let logSpy: ReturnType<typeof vi.spyOn>;
 let errSpy: ReturnType<typeof vi.spyOn>;
@@ -20,6 +22,7 @@ beforeEach(() => {
   analyzeMock.mockReset();
   recordMock.mockReset();
   diffMock.mockReset();
+  listMock.mockReset();
 });
 
 afterEach(() => {
@@ -87,6 +90,48 @@ describe("runRecord", () => {
     recordMock.mockReturnValue({ taskId: "t1", stageName: "s", attempt: null, found: false, record: null, availableAttempts: [] });
     await runRecord(["t1", "s"], { pretty: false }, {});
     expect(recordMock).toHaveBeenCalledWith("t1", "s", {});
+  });
+});
+
+describe("runList", () => {
+  it("rejects missing taskId", async () => {
+    expect(await runList([], { pretty: false })).toBe(1);
+  });
+
+  it("JSON by default", async () => {
+    listMock.mockReturnValue({ taskId: "t1", found: true, total: 0, records: [] });
+    const code = await runList(["t1"], { pretty: false });
+    expect(code).toBe(0);
+    const parsed = JSON.parse(logSpy.mock.calls[0]![0] as string);
+    expect(parsed.taskId).toBe("t1");
+  });
+
+  it("pretty mode prints row summary with [OPEN] flag", async () => {
+    listMock.mockReturnValue({
+      taskId: "t1", found: true, total: 2,
+      records: [
+        {
+          attemptId: "a1", stageName: "analyze", attemptIndex: 0,
+          startedAt: "s1", terminatedAt: "t1", terminationReason: "natural_completion",
+          engine: "claude", model: "sonnet", pipelineVersionHash: null,
+          costUsd: 0.01, tokenInput: 10, tokenOutput: 5, durationMs: 100,
+          isOpen: false,
+        },
+        {
+          attemptId: "a2", stageName: "implement", attemptIndex: 0,
+          startedAt: "s2", terminatedAt: null, terminationReason: null,
+          engine: "claude", model: "sonnet", pipelineVersionHash: null,
+          costUsd: null, tokenInput: null, tokenOutput: null, durationMs: null,
+          isOpen: true,
+        },
+      ],
+    });
+    await runList(["t1"], { pretty: true });
+    const joined = logSpy.mock.calls.flat().join("\n");
+    expect(joined).toContain("Task t1");
+    expect(joined).toContain("2 attempt(s)");
+    expect(joined).toContain("a1");
+    expect(joined).toContain("[OPEN]");
   });
 });
 

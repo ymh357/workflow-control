@@ -48,6 +48,7 @@ import {
   analyzeTaskFailure,
   diffExecutions,
   getStageExecutionRecord,
+  listTaskRecords,
 } from "./debug-queries.js";
 
 interface InsertRowOptions {
@@ -350,6 +351,71 @@ describe("getStageExecutionRecord", () => {
     expect(r.record?.writesCommitted).toEqual({ out: { x: 1 } });
     expect(r.record?.decisions).toHaveLength(1);
     expect(r.record?.toolCalls).toHaveLength(1);
+  });
+});
+
+describe("listTaskRecords", () => {
+  it("returns found=false and empty array when no rows", () => {
+    const r = listTaskRecords("unknown");
+    expect(r.found).toBe(false);
+    expect(r.total).toBe(0);
+    expect(r.records).toEqual([]);
+  });
+
+  it("orders by started_at then stage then attempt, marks open rows", () => {
+    insertRow({
+      attemptId: "a3",
+      taskId: "t1",
+      stageName: "implement",
+      attemptIndex: 0,
+      startedAt: "2026-01-01T00:02:00Z",
+      terminationReason: null,
+      terminatedAt: null,
+    });
+    insertRow({
+      attemptId: "a1",
+      taskId: "t1",
+      stageName: "analyze",
+      attemptIndex: 0,
+      startedAt: "2026-01-01T00:00:00Z",
+      terminationReason: "natural_completion",
+      terminatedAt: "2026-01-01T00:01:00Z",
+      costUsd: 0.01,
+      tokenInput: 100,
+      tokenOutput: 50,
+      durationMs: 60000,
+    });
+    insertRow({
+      attemptId: "a2",
+      taskId: "t1",
+      stageName: "analyze",
+      attemptIndex: 1,
+      startedAt: "2026-01-01T00:01:30Z",
+      terminationReason: "error_exceeded_retries",
+      terminatedAt: "2026-01-01T00:01:45Z",
+    });
+    const r = listTaskRecords("t1");
+    expect(r.found).toBe(true);
+    expect(r.total).toBe(3);
+    expect(r.records.map((x) => x.attemptId)).toEqual(["a1", "a2", "a3"]);
+    expect(r.records[2]!.isOpen).toBe(true);
+    expect(r.records[0]!.costUsd).toBe(0.01);
+    expect(r.records[0]!.durationMs).toBe(60000);
+  });
+
+  it("does not pull prompt_blob / tool_calls (lightweight)", () => {
+    insertRow({
+      attemptId: "a1",
+      taskId: "t1",
+      stageName: "s",
+      attemptIndex: 0,
+      terminationReason: "natural_completion",
+      toolCalls: [{ id: "x", name: "Read", input: {}, result: null, isError: false, tokenIn: null, tokenOut: null, durationMs: null, startedAt: "t", finishedAt: null }],
+    });
+    const r = listTaskRecords("t1");
+    const entry = r.records[0]!;
+    expect(Object.keys(entry)).not.toContain("toolCalls");
+    expect(Object.keys(entry)).not.toContain("promptBlob");
   });
 });
 

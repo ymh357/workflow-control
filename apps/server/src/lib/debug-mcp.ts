@@ -16,6 +16,7 @@ import {
   analyzeTaskFailure,
   diffExecutions,
   getStageExecutionRecord,
+  listTaskRecords,
 } from "./debug-queries.js";
 
 const MAX_RESPONSE_BYTES = 200 * 1024;
@@ -127,6 +128,40 @@ export function createDebugMcp() {
               content: [{
                 type: "text" as const,
                 text: `Error fetching record: ${err instanceof Error ? err.message : String(err)}`,
+              }],
+              isError: true,
+            };
+          }
+        },
+      },
+      {
+        name: "list_task_records",
+        description:
+          "List every attempt row for a task as a lightweight index: " +
+          "attempt_id, stage, attempt_index, started_at, terminated_at, " +
+          "termination_reason, engine/model, pipeline_version_hash, " +
+          "cost, tokens, duration. Does NOT include prompt_blob or " +
+          "tool_calls — use get_stage_execution_record for those. " +
+          "Use this to pick which attemptId to diff or zoom into.",
+        inputSchema: {
+          taskId: z.string().min(1).describe("Task ID."),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          const taskId = String(args.taskId ?? "");
+          if (!taskId) {
+            return {
+              content: [{ type: "text" as const, text: "Error: taskId is required" }],
+              isError: true,
+            };
+          }
+          try {
+            return jsonResponse(listTaskRecords(taskId));
+          } catch (err) {
+            return {
+              content: [{
+                type: "text" as const,
+                text: `Error listing records: ${err instanceof Error ? err.message : String(err)}`,
               }],
               isError: true,
             };

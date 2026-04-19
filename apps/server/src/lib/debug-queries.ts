@@ -349,6 +349,90 @@ export function analyzeTaskFailure(taskId: string): TaskFailureReport {
 }
 
 // ---------------------------------------------------------------------------
+// 4.5 listTaskRecords
+// ---------------------------------------------------------------------------
+//
+// Returns a lightweight index of every attempt for a task — no prompt_blob,
+// no agent_stream, no tool_calls. Use when you need to pick an attemptId to
+// feed into get_stage_execution_record or diff_executions without pulling
+// the full payloads of every row.
+
+export interface TaskRecordEntry {
+  attemptId: string;
+  stageName: string;
+  attemptIndex: number;
+  startedAt: string;
+  terminatedAt: string | null;
+  terminationReason: string | null;
+  engine: string;
+  model: string | null;
+  pipelineVersionHash: string | null;
+  costUsd: number | null;
+  tokenInput: number | null;
+  tokenOutput: number | null;
+  durationMs: number | null;
+  isOpen: boolean;
+}
+
+export interface ListTaskRecordsResult {
+  taskId: string;
+  found: boolean;
+  total: number;
+  records: TaskRecordEntry[];
+}
+
+export function listTaskRecords(taskId: string): ListTaskRecordsResult {
+  const rows = getDb()
+    .prepare(
+      `SELECT attempt_id, stage_name, attempt_index, started_at, terminated_at,
+              termination_reason, engine, model, pipeline_version_hash,
+              cost_usd, token_input, token_output, duration_ms
+         FROM execution_records
+        WHERE task_id = ?
+        ORDER BY started_at, stage_name, attempt_index`,
+    )
+    .all(taskId) as unknown as Array<{
+      attempt_id: string;
+      stage_name: string;
+      attempt_index: number;
+      started_at: string;
+      terminated_at: string | null;
+      termination_reason: string | null;
+      engine: string;
+      model: string | null;
+      pipeline_version_hash: string | null;
+      cost_usd: number | null;
+      token_input: number | null;
+      token_output: number | null;
+      duration_ms: number | null;
+    }>;
+
+  const records: TaskRecordEntry[] = rows.map((r) => ({
+    attemptId: r.attempt_id,
+    stageName: r.stage_name,
+    attemptIndex: r.attempt_index,
+    startedAt: r.started_at,
+    terminatedAt: r.terminated_at,
+    terminationReason: r.termination_reason,
+    engine: r.engine,
+    model: r.model,
+    pipelineVersionHash: r.pipeline_version_hash,
+    costUsd: r.cost_usd,
+    tokenInput: r.token_input,
+    tokenOutput: r.token_output,
+    durationMs: r.duration_ms,
+    isOpen: r.terminated_at === null,
+  }));
+
+  return {
+    taskId,
+    found: rows.length > 0,
+    total: rows.length,
+    records,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // 4.2 getStageExecutionRecord
 // ---------------------------------------------------------------------------
 
