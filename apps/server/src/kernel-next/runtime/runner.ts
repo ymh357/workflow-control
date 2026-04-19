@@ -228,6 +228,56 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
         }
 
         const ctx = snapshot.context as MachineContext;
+
+        // A3.3 — fanout dispatch. When a stage declares `fanout.input`,
+        // the runner iterates the source port's array value, running
+        // the executor N times (one virtual attempt per element) with
+        // a silent PortRuntime so intermediate writes don't advance
+        // the machine. After all elements complete, the runner
+        // aggregates each declared output into an array and dispatches
+        // a single PORT_WRITTEN per output via the live dispatcher.
+        // Minimum-viable scope: sequential execution, no concurrency
+        // pool, first element error fails the entire stage.
+        if (
+          (stageDef?.type === "agent" || stageDef?.type === "script") &&
+          stageDef?.fanout
+        ) {
+          const fanoutStage = stageDef;
+          const p = runFanoutStage({
+            ir: opts.ir,
+            stageDef: fanoutStage,
+            taskId: opts.taskId,
+            versionHash: opts.versionHash,
+            basePortValues: ctx.portValues,
+            handlers: opts.handlers,
+            db: opts.db,
+            liveDispatcher: dispatcher,
+            executor,
+          }).then((result) => {
+            if (result.status === "error") {
+              stageErrors.push({ stage: stageName, message: result.error });
+              // Tell the machine this stage failed so the region can
+              // reach its `error` final — otherwise the parallel region
+              // never converges and the run times out.
+              dispatcher.send({
+                type: "STAGE_FAILED",
+                stage: stageName,
+                error: result.error,
+              });
+            }
+          }, (err: unknown) => {
+            const message = err instanceof Error ? err.message : String(err);
+            if (!machineEnded) {
+              clearTimeout(timer);
+              rejectRun(err instanceof Error ? err : new Error(message));
+            } else {
+              drainErrors.push({ stage: stageName, message });
+            }
+          });
+          executorPromises.push(p);
+          continue;
+        }
+
         const p = executor.executeStage({
           ir: opts.ir,
           stageName,
@@ -265,4 +315,118 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
     actor.stop();
     taskRegistry.unregister(opts.taskId);
   });
+}
+
+interface RunFanoutArgs {
+  ir: PipelineIR;
+  stageDef: import("../ir/schema.js").AgentStage | import("../ir/schema.js").ScriptStage;
+  taskId: string;
+  versionHash: string;
+  basePortValues: Record<string, unknown>;
+  handlers: StageHandlerMap;
+  db: DatabaseSync;
+  liveDispatcher: EventDispatcher;
+  executor: StageExecutor;
+}
+
+type FanoutResult =
+  | { status: "success" }
+  | { status: "error"; error: string };
+
+/**
+ * Run a fanout stage: iterate the source port's array, execute the
+ * stage once per element against a silent PortRuntime, then aggregate
+ * every declared output into an array and dispatch one PORT_WRITTEN
+ * per output via the live dispatcher.
+ *
+ * Scope (A3.3): sequential execution, no concurrency pool, first
+ * element error fails the stage. Preserves existing lineage (each
+ * attempt writes its own port_values rows normally).
+ */
+async function runFanoutStage(args: RunFanoutArgs): Promise<FanoutResult> {
+  const { ir, stageDef, taskId, versionHash, basePortValues, handlers, db, liveDispatcher, executor } = args;
+  const fanout = stageDef.fanout;
+  if (!fanout) {
+    return { status: "error", error: `stage '${stageDef.name}' has no fanout config` };
+  }
+
+  // Locate the fanout input port and its source wire.
+  const fanoutPort = stageDef.inputs.find((p) => p.name === fanout.input);
+  if (!fanoutPort) {
+    return {
+      status: "error",
+      error: `fanout.input '${fanout.input}' is not a declared input port on stage '${stageDef.name}'`,
+    };
+  }
+  const wire = ir.wires.find(
+    (w) => w.to.stage === stageDef.name && w.to.port === fanout.input,
+  );
+  if (!wire) {
+    return {
+      status: "error",
+      error: `no inbound wire to '${stageDef.name}.${fanout.input}' — cannot fan out`,
+    };
+  }
+
+  const sourceKey = `${wire.from.stage}.${wire.from.port}`;
+  const sourceValue = basePortValues[sourceKey];
+  if (!Array.isArray(sourceValue)) {
+    return {
+      status: "error",
+      error: `fanout source '${sourceKey}' is not an array (got ${typeof sourceValue})`,
+    };
+  }
+
+  // Silent dispatcher: writes go to DB lineage but do NOT advance the
+  // machine. The machine only learns about this fanout stage's outputs
+  // after aggregation (below).
+  const silentDispatcher: EventDispatcher = { send: () => { /* inert */ } };
+  const silentRuntime = new PortRuntime(db, silentDispatcher);
+
+  const declaredOutputs = stageDef.outputs.map((p) => p.name);
+  const aggregated: Record<string, unknown[]> = {};
+  for (const name of declaredOutputs) aggregated[name] = [];
+
+  for (let i = 0; i < sourceValue.length; i++) {
+    // Override the fanout source in the executor's portValues view so
+    // the executor reads a single element (typed T) instead of T[].
+    const elementPortValues = { ...basePortValues, [sourceKey]: sourceValue[i] };
+
+    const result = await executor.executeStage({
+      ir,
+      stageName: stageDef.name,
+      taskId,
+      versionHash,
+      portValues: elementPortValues,
+      handlers,
+      portRuntime: silentRuntime,
+    });
+
+    if (result.status === "error") {
+      return {
+        status: "error",
+        error: `fanout element ${i}/${sourceValue.length} failed: ${result.error ?? "unspecified"}`,
+      };
+    }
+
+    // Collect this attempt's output port values from the DB.
+    const rows = silentRuntime.readWritesForAttempt(result.attemptId);
+    const byPort = new Map<string, unknown>();
+    for (const r of rows) byPort.set(r.port, r.value);
+    for (const name of declaredOutputs) {
+      aggregated[name]!.push(byPort.get(name));
+    }
+  }
+
+  // Dispatch aggregated arrays to the live machine so downstream
+  // stages' guards re-evaluate against T[].
+  for (const name of declaredOutputs) {
+    liveDispatcher.send({
+      type: "PORT_WRITTEN",
+      key: `${stageDef.name}.${name}`,
+      value: aggregated[name]!,
+    });
+  }
+
+  return { status: "success" };
 }
