@@ -72,6 +72,7 @@ export interface KernelMcpOptions extends KernelServiceOptions {
 type ToolName =
   | "submit_pipeline" | "validate_pipeline" | "propose_pipeline_change"
   | "list_proposals" | "approve_proposal" | "reject_proposal"
+  | "migrate_task"
   | "get_task_status" | "list_gates" | "answer_gate"
   | "read_port" | "query_lineage" | "diff_runs"
   | "write_port";
@@ -79,6 +80,7 @@ type ToolName =
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
   "list_proposals", "approve_proposal", "reject_proposal",
+  "migrate_task",
   "get_task_status", "list_gates", "answer_gate",
   "read_port", "query_lineage", "diff_runs",
 ]);
@@ -139,11 +141,20 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
           "Patch is applied to a deep-copy of the IR, validated, and (if ok) " +
           "persisted with a pending proposal row. autoApplied is always " +
           "false in spike — proposals require human confirm before migrating " +
-          "running tasks.",
+          "running tasks. `rerunFrom` optionally names a stage on the " +
+          "proposed pipeline to rewind to on migration (null / omitted = " +
+          "forward-only). `migrateRunningTasks` is the opt-in list — 'none' " +
+          "(default), 'all', or an explicit array of taskIds.",
         inputSchema: {
           currentVersion: z.string(),
           patch: z.unknown(),
           actor: z.string().default("unknown"),
+          rerunFrom: z.string().optional(),
+          migrateRunningTasks: z.union([
+            z.literal("all"),
+            z.literal("none"),
+            z.array(z.string()),
+          ]).optional(),
         },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         handler: async (args: any) => {
@@ -159,11 +170,21 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
                 })),
               });
             }
+            const rerunFrom =
+              typeof args.rerunFrom === "string" ? args.rerunFrom : undefined;
+            const migrateRunningTasks: "all" | "none" | string[] | undefined =
+              args.migrateRunningTasks === "all" || args.migrateRunningTasks === "none"
+                ? args.migrateRunningTasks
+                : Array.isArray(args.migrateRunningTasks)
+                  ? args.migrateRunningTasks.map((x: unknown) => String(x))
+                  : undefined;
             return jsonResponse(
               kernel.propose({
                 currentVersion: String(args.currentVersion),
                 patch: parsedPatch.data,
                 actor: String(args.actor ?? "unknown"),
+                rerunFrom,
+                migrateRunningTasks,
               }),
             );
           } catch (err) {
@@ -431,6 +452,31 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
           try {
             const reason = typeof args.reason === "string" ? args.reason : undefined;
             return jsonResponse(kernel.rejectProposal(String(args.proposalId), reason));
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "migrate_task",
+        description:
+          "Migrate a task onto an approved proposal's proposedVersion " +
+          "(A8 forward-migration happy path, §10.5). The task must be in " +
+          "the proposal's migrateRunningTasks opt-in list; the proposal " +
+          "must be status='approved'. Marks rerunFrom + downstream stage " +
+          "attempts as 'superseded' on the OLD version (lineage retained) " +
+          "and writes a hot_update_events audit row. Returns eventId + " +
+          "supersededStages; callers kick off fresh attempts on toVersion.",
+        inputSchema: {
+          taskId: z.string(),
+          proposalId: z.string(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            return jsonResponse(
+              kernel.migrateTask(String(args.taskId), String(args.proposalId)),
+            );
           } catch (err) {
             return errorResponse(err instanceof Error ? err.message : String(err));
           }

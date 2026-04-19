@@ -60,7 +60,7 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("exposes 13 tools with expected names", () => {
+  it("exposes 14 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
@@ -72,6 +72,7 @@ describe("kernel-next MCP server", () => {
       "get_task_status",
       "list_gates",
       "list_proposals",
+      "migrate_task",
       "propose_pipeline_change",
       "query_lineage",
       "read_port",
@@ -363,6 +364,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
       "get_task_status",
       "list_gates",
       "list_proposals",
+      "migrate_task",
       "propose_pipeline_change",
       "query_lineage",
       "read_port",
@@ -399,9 +401,10 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH }); // default = combined
     const tools = getTools(mcp);
-    expect(tools.size).toBe(13);
+    expect(tools.size).toBe(14);
     expect(tools.has("write_port")).toBe(true);
     expect(tools.has("submit_pipeline")).toBe(true);
+    expect(tools.has("migrate_task")).toBe(true);
     db.close();
   });
 });
