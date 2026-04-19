@@ -33,7 +33,42 @@
 
 import { setup, assign } from "xstate";
 
+/**
+ * Input accepted by AgentMachine when created via XState's `input` mechanism
+ * (A2.3.1). Parent TaskMachine's `invoke` passes this so each agent-stage
+ * invocation carries the kernel identifiers the parent `onDone` handler
+ * needs to correlate with stage_attempts rows. Machine itself does not
+ * branch on these — they are pure passthrough from context → output.
+ *
+ * stageName is required because a parallel TaskMachine may have multiple
+ * AgentMachine children active simultaneously (A2.3.3 stage-specific
+ * INTERRUPT routing uses this to disambiguate); attemptId / taskId are
+ * carried so the runner-side subscriber can log and correlate without
+ * re-threading them through every onDone action.
+ *
+ * When createActor is called without input (tests, legacy real-executor
+ * path before A2.3.2), all three fields default to empty strings; the
+ * machine still behaves correctly because it never branches on them.
+ */
+export interface AgentMachineInput {
+  stageName: string;
+  taskId: string;
+  attemptId: string;
+  /** Optional label forwarded into context/output for debug only. */
+  label?: string;
+}
+
 export interface AgentContext {
+  /**
+   * Identifiers captured from the XState `input` at actor creation time.
+   * Frozen — actions never reassign these. Surfaced in output so the
+   * parent TaskMachine's `onDone` can see which stage/attempt finished
+   * without re-reading from stage_attempts.
+   */
+  stageName: string;
+  taskId: string;
+  attemptId: string;
+  label: string | null;
   /**
    * Monotonically increasing count of observed SDK "turns" (assistant
    * messages that are NOT inside a pending tool loop). Used by the
@@ -103,6 +138,12 @@ export interface AgentMachineOutput {
   // Present on status='interrupted'. Which state the INTERRUPT was processed from.
   interruptedFrom?: "starting" | "waiting_for_claude" | "dispatching_tool" | "compacting";
   turns: number;
+  // Identifiers forwarded from input — lets a parent TaskMachine's onDone
+  // correlate this final output with the stage/attempt it invoked for,
+  // without threading extra state through the invoke wiring.
+  stageName: string;
+  taskId: string;
+  attemptId: string;
 }
 
 /**
@@ -115,6 +156,7 @@ export function createAgentMachine() {
       context: AgentContext;
       events: AgentEvent;
       output: AgentMachineOutput;
+      input: AgentMachineInput | undefined;
     },
     guards: {
       noPendingTools: ({ context }) => context.pendingToolUseIds.length === 0,
@@ -179,36 +221,46 @@ export function createAgentMachine() {
   }).createMachine({
     id: "agent",
     initial: "starting",
-    context: {
+    context: ({ input }) => ({
+      stageName: input?.stageName ?? "",
+      taskId: input?.taskId ?? "",
+      attemptId: input?.attemptId ?? "",
+      label: input?.label ?? null,
       turns: 0,
       pendingToolUseIds: [],
       compactMetadata: null,
       result: null,
       interruptArmed: false,
       summaryTurnUsed: false,
-    },
+    }),
     output: ({ context }): AgentMachineOutput => {
+      const base = {
+        turns: context.turns,
+        stageName: context.stageName,
+        taskId: context.taskId,
+        attemptId: context.attemptId,
+      };
       const r = context.result;
       if (!r) {
         // Reaching a final state without a result set is a programming error
         // in the machine definition — surface it explicitly instead of
         // silently shipping status='done'.
         return {
+          ...base,
           status: "error",
           diagnostic: { subtype: "internal", message: "final state reached without result" },
-          turns: context.turns,
         };
       }
       if (r.kind === "success") {
-        return { status: "done", turns: context.turns };
+        return { ...base, status: "done" };
       }
       if (r.kind === "interrupted") {
-        return { status: "interrupted", interruptedFrom: r.from, turns: context.turns };
+        return { ...base, status: "interrupted", interruptedFrom: r.from };
       }
       return {
+        ...base,
         status: "error",
         diagnostic: { subtype: r.subtype, message: r.message },
-        turns: context.turns,
       };
     },
     states: {

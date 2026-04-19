@@ -40,6 +40,7 @@ import type { PromptResolver } from "./prompt-resolver.js";
 import { TrivialPromptResolver } from "./prompt-resolver.js";
 import { createAgentMachine, type AgentMachineOutput } from "./agent-machine.js";
 import { createSdkAdapter, type SdkMessageLike } from "./sdk-adapter.js";
+import { pumpSdkStream } from "./stream-pump.js";
 
 export interface RealStageExecutorOptions {
   /**
@@ -218,25 +219,36 @@ export class RealStageExecutor implements StageExecutor {
       // The machine reaches `done` (ok) or `error` (SDK returned non-success
       // or an error occurred mid-stream); final state's output carries the
       // diagnostic we surface as stage_attempt error text.
-      const agentActor = createActor(createAgentMachine());
+      //
+      // A2.3.1 — pass kernel identifiers as XState `input` so the machine's
+      // final output carries stage/task/attempt correlation IDs. When this
+      // executor is later invoked by TaskMachine (A2.3.2), the parent's
+      // `invoke.input` factory will populate the same fields; keeping the
+      // wiring consistent on both call paths simplifies the migration.
+      const agentActor = createActor(createAgentMachine(), {
+        input: { stageName, taskId, attemptId },
+      });
       agentActor.start();
       const adapter = createSdkAdapter();
 
       let agentOutput: AgentMachineOutput;
       try {
-        for await (const message of stream) {
-          const events = adapter.translate(message as SdkMessageLike);
-          for (const ev of events) agentActor.send(ev);
-        }
-        // Wait for the machine to reach a final state. The SDK stream has
-        // already ended, so the terminal event should already be in the
-        // actor's snapshot; waitFor below short-circuits if already-final.
-        const finalSnap = await waitFor(
-          agentActor,
-          (s) => s.status === "done",
-          { timeout: 5_000 },
-        );
-        agentOutput = finalSnap.output as AgentMachineOutput;
+        // Stream pump extracted to stream-pump.ts so A2.3.2 can reuse it
+        // when the AgentMachine is spawned as a TaskMachine invoked child.
+        // Stop the actor in the finally below regardless of pump outcome.
+        agentOutput = await pumpSdkStream({
+          stream: stream as AsyncIterable<SdkMessageLike>,
+          adapter,
+          send: (ev) => agentActor.send(ev),
+          waitForFinal: async () => {
+            const finalSnap = await waitFor(
+              agentActor,
+              (s) => s.status === "done",
+              { timeout: 5_000 },
+            );
+            return finalSnap.output as AgentMachineOutput;
+          },
+        });
       } finally {
         // Always stop the actor — even on adapter/stream errors or waitFor
         // timeout. Otherwise XState keeps a subscription alive and a later

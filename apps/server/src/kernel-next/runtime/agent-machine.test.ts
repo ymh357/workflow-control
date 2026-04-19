@@ -5,8 +5,12 @@ import { describe, it, expect } from "vitest";
 import { createActor, waitFor } from "xstate";
 import { createAgentMachine, type AgentMachineOutput } from "./agent-machine.js";
 
+// A2.3.1 — machine now declares `input: AgentMachineInput | undefined` so
+// every createActor call must pass an `input` option (undefined is valid).
+// Legacy tests use undefined; the dedicated correlation-id suite below
+// exercises the non-undefined path.
 function start() {
-  const actor = createActor(createAgentMachine());
+  const actor = createActor(createAgentMachine(), { input: undefined });
   actor.start();
   return actor;
 }
@@ -162,6 +166,50 @@ describe("AgentMachine — INTERRUPT (§4.2)", () => {
     a.send({ type: "RESULT_SUCCESS" });
     const out = await runToFinal(a);
     expect(out.status).toBe("done");
+  });
+});
+
+// A2.3.1 — XState `input` wiring. These tests lock the contract that the
+// machine accepts an AgentMachineInput (stageName/taskId/attemptId/label)
+// and passes it through context → output so a parent TaskMachine's
+// `invoke.onDone` can correlate the final output with the attempt it
+// started. Without input the machine still works (legacy test path) and
+// the output carries empty-string identifiers.
+describe("AgentMachine — input → context → output correlation", () => {
+  it("input identifiers land in context at actor creation", () => {
+    const actor = createActor(createAgentMachine(), {
+      input: { stageName: "analysis", taskId: "t-1", attemptId: "a-7", label: "ad-hoc" },
+    });
+    actor.start();
+    const ctx = actor.getSnapshot().context;
+    expect(ctx.stageName).toBe("analysis");
+    expect(ctx.taskId).toBe("t-1");
+    expect(ctx.attemptId).toBe("a-7");
+    expect(ctx.label).toBe("ad-hoc");
+  });
+
+  it("input identifiers surface on AgentMachineOutput", async () => {
+    const actor = createActor(createAgentMachine(), {
+      input: { stageName: "build", taskId: "task-9", attemptId: "att-3" },
+    });
+    actor.start();
+    actor.send({ type: "SDK_INIT" });
+    actor.send({ type: "RESULT_SUCCESS" });
+    const out = await runToFinal(actor);
+    expect(out.status).toBe("done");
+    expect(out.stageName).toBe("build");
+    expect(out.taskId).toBe("task-9");
+    expect(out.attemptId).toBe("att-3");
+  });
+
+  it("missing input defaults to empty strings (legacy createActor path)", async () => {
+    const a = start();
+    a.send({ type: "SDK_INIT" });
+    a.send({ type: "RESULT_SUCCESS" });
+    const out = await runToFinal(a);
+    expect(out.stageName).toBe("");
+    expect(out.taskId).toBe("");
+    expect(out.attemptId).toBe("");
   });
 });
 
