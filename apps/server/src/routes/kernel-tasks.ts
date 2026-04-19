@@ -88,10 +88,16 @@ kernelTasksRoute.post("/kernel/tasks/:taskId/migrate", async (c) => {
 // PATCH_APPLY_ERROR → 409 (migrate-specific: task not opted in, no
 //   attempts yet, orphan proposed version, etc. — all are "conflict
 //   between requested action and current state", not server faults)
+// MIGRATION_IN_PROGRESS → 409 (another migration is already running for
+//   this taskId; caller should retry after a backoff)
+// MIGRATION_FAILED → 500 (DB / execution fault — an audit row with
+//   status='failed' has already been written to hot_update_events)
 // anything else → 500
 function statusForMigrateDiagnostic(code: string | undefined): 404 | 409 | 500 {
   if (code === "PROPOSAL_NOT_FOUND") return 404;
   if (code === "PROPOSAL_ALREADY_RESOLVED") return 409;
   if (code === "PATCH_APPLY_ERROR") return 409;
+  if (code === "MIGRATION_IN_PROGRESS") return 409;
+  if (code === "MIGRATION_FAILED") return 500;
   return 500;
 }

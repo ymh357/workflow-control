@@ -17,6 +17,33 @@ import { versionHash } from "../ir/canonical.js";
 import { insertPipelineVersion, getPipelineIR } from "../ir/sql.js";
 import { applyPatch, PatchApplyError } from "./patch.js";
 
+// Process-local in-progress migration set (design §10.2: "a task can be
+// migrated to at most one new version at a time"). Keyed by taskId; the
+// value carries the acquiring proposalId so we can surface a useful
+// diagnostic when a second caller is rejected.
+//
+// Module-level because KernelService is constructed per-request by the
+// MCP / REST handlers — instance-level state wouldn't serialize across
+// concurrent invocations within the same process.
+const migrationInProgress = new Map<string, { proposalId: string; acquiredAt: number }>();
+
+/** Test hook: force-release every held migration lock. Not exported
+ *  for production callers — used only by migrate-task.test to reset
+ *  state between tests where an assertion interrupted the finally block.
+ */
+export function __resetMigrationLocksForTest(): void {
+  migrationInProgress.clear();
+}
+
+/** Test hook: manually seed the lock as if another call had already
+ *  acquired it. Used to exercise the MIGRATION_IN_PROGRESS path without
+ *  contriving a real concurrent caller (migrateTask is synchronous;
+ *  there's no natural in-test re-entry).
+ */
+export function __acquireMigrationLockForTest(taskId: string, proposalId: string): void {
+  migrationInProgress.set(taskId, { proposalId, acquiredAt: Date.now() });
+}
+
 export interface ValidateResponse {
   ok: boolean;
   diagnostics: Diagnostic[];
@@ -835,38 +862,106 @@ export class KernelService {
       ? new Set<string>()
       : computeDownstream(proposedIR, rerun);
 
+    // §10.2 serial-per-task lock. Acquired here after every pre-check
+    // has passed so that a rejected proposal / non-opted-in task /
+    // orphan version returns the structural error without ever
+    // contending for the lock (less confusing for retries).
+    const held = migrationInProgress.get(taskId);
+    if (held) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "MIGRATION_IN_PROGRESS",
+          message:
+            `task '${taskId}' is already migrating under proposal ` +
+            `'${held.proposalId}' (acquired ${Date.now() - held.acquiredAt}ms ago)`,
+          context: {
+            holdingProposalId: held.proposalId,
+            acquiredAt: held.acquiredAt,
+          },
+        }],
+      };
+    }
+    migrationInProgress.set(taskId, { proposalId, acquiredAt: Date.now() });
+
     // Mark stage_attempts superseded. Lineage rows stay (§1.3 invariant).
     const eventId = randomUUID();
     const startedAt = Date.now();
     try {
-      this.db.exec("BEGIN");
-      if (supersedeStages.size > 0) {
-        const stmt = this.db.prepare(
-          `UPDATE stage_attempts SET status = 'superseded'
-           WHERE task_id = ? AND stage_name = ? AND status IN ('success', 'running', 'error')`,
+      try {
+        this.db.exec("BEGIN");
+        if (supersedeStages.size > 0) {
+          const stmt = this.db.prepare(
+            `UPDATE stage_attempts SET status = 'superseded'
+             WHERE task_id = ? AND stage_name = ? AND status IN ('success', 'running', 'error')`,
+          );
+          for (const s of supersedeStages) stmt.run(taskId, s);
+        }
+        this.db.prepare(
+          `INSERT INTO hot_update_events
+           (event_id, task_id, from_version, to_version, actor, proposal_id,
+            rerun_from_stage, status, started_at, finished_at, diagnostic_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, NULL)`,
+        ).run(
+          eventId,
+          taskId,
+          fromVersion,
+          toVersion,
+          proposalRow.actor,
+          proposalId,
+          rerun,
+          startedAt,
+          Date.now(),
         );
-        for (const s of supersedeStages) stmt.run(taskId, s);
+        this.db.exec("COMMIT");
+      } catch (err) {
+        // Rollback the half-applied supersede + audit; then write a
+        // SEPARATE `status='failed'` audit row OUTSIDE the aborted tx
+        // so operators can see the failure. §10.8 requires every
+        // migration attempt to leave an audit trail regardless of
+        // outcome; without this row, a DB error would leave no
+        // observable evidence that someone tried to migrate.
+        try {
+          this.db.exec("ROLLBACK");
+        } catch {
+          // Ignore — the tx may already be rolled back if BEGIN itself failed.
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        try {
+          const failEventId = randomUUID();
+          this.db.prepare(
+            `INSERT INTO hot_update_events
+             (event_id, task_id, from_version, to_version, actor, proposal_id,
+              rerun_from_stage, status, started_at, finished_at, diagnostic_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?)`,
+          ).run(
+            failEventId,
+            taskId,
+            fromVersion,
+            toVersion,
+            proposalRow.actor,
+            proposalId,
+            rerun,
+            startedAt,
+            Date.now(),
+            JSON.stringify({ error: message }),
+          );
+        } catch {
+          // DB is in an unusable state; nothing actionable here beyond
+          // the rethrown diagnostic below.
+        }
+        return {
+          ok: false,
+          diagnostics: [{
+            code: "MIGRATION_FAILED",
+            message: `migrateTask failed for '${taskId}': ${message}`,
+            context: { error: message, proposalId },
+          }],
+        };
       }
-      this.db.prepare(
-        `INSERT INTO hot_update_events
-         (event_id, task_id, from_version, to_version, actor, proposal_id,
-          rerun_from_stage, status, started_at, finished_at, diagnostic_json)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, NULL)`,
-      ).run(
-        eventId,
-        taskId,
-        fromVersion,
-        toVersion,
-        proposalRow.actor,
-        proposalId,
-        rerun,
-        startedAt,
-        Date.now(),
-      );
-      this.db.exec("COMMIT");
-    } catch (err) {
-      this.db.exec("ROLLBACK");
-      throw err;
+    } finally {
+      // Always release the lock, whether we committed or rolled back.
+      migrationInProgress.delete(taskId);
     }
 
     return {

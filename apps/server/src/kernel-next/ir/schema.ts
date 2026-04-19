@@ -186,6 +186,9 @@ export const DiagnosticSchema = z.object({
     "GATE_ANSWER_INVALID",
     // A3.1 addition — wire guard runtime failure
     "NO_ACTIVE_WIRE",
+    // A8 / F5 — hot-update migration lifecycle
+    "MIGRATION_IN_PROGRESS",
+    "MIGRATION_FAILED",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),
