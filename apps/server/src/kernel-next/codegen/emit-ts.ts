@@ -10,6 +10,7 @@
 // See docs/kernel-next-design.md §5.2 + §5.3 for the rationale (why dummy
 // assignments instead of `extends ? true : never`).
 
+import { createHash } from "node:crypto";
 import type { PipelineIR, StageIR, PortIR } from "../ir/schema.js";
 
 export interface WireMapEntry {
@@ -32,8 +33,17 @@ export interface EmitResult {
   wireByLine: Map<number, WireMapEntry>;
 }
 
+// Wire identifier must be unambiguous: stage and port names may contain
+// underscores, so the join-with-underscore form can collide (e.g. stage
+// `a_b` port `c` vs stage `a` port `b_c` both encode to `a_b_c`). Append a
+// short hash of the 4-tuple as disambiguator. The prefix keeps the name
+// human-readable in tsc diagnostics; the hash guarantees uniqueness.
 function wireIdentifier(fromStage: string, fromPort: string, toStage: string, toPort: string): string {
-  return `__wire__${fromStage}_${fromPort}__TO__${toStage}_${toPort}`;
+  const disambiguator = createHash("sha256")
+    .update([fromStage, fromPort, toStage, toPort].join("\u0001"))
+    .digest("hex")
+    .slice(0, 8);
+  return `__wire__${fromStage}_${fromPort}__TO__${toStage}_${toPort}__${disambiguator}`;
 }
 
 function emitPortBlock(ports: PortIR[], kind: "Inputs" | "Outputs"): string[] {

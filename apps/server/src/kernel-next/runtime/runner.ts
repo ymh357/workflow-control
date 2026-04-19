@@ -30,9 +30,17 @@ export interface RunnerOptions {
 }
 
 export interface RunResult {
-  finalState: "completed" | "failed" | "timeout";
+  // "completed" = machine reached parallel onDone with no erroring stages.
+  // "failed"    = at least one stage recorded status='error'; runner covers
+  //              the design-doc §6.1 `failed` intent at the runner layer
+  //              because XState parallel `onDone` fires even when a region
+  //              ends in its `error` final — see §5.2 review note.
+  finalState: "completed" | "failed";
   portValues: Record<string, unknown>;
   log: string[];
+  // Non-fatal errors captured from executor promises during drain. A
+  // non-empty array implies finalState === "failed".
+  drainErrors: Array<{ stage: string | null; message: string }>;
 }
 
 export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Promise<RunResult> {
@@ -61,10 +69,15 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   // what made the machine enter completed in the first place), causing
   // db writes to race with db.close() in tests.
   const executorPromises: Array<Promise<void>> = [];
+  // Drain-time errors: executor promises that reject after finalResult is
+  // already set (typical: final writePort -> machine completed -> executor
+  // cleanup code throws). Surfaced on the returned RunResult so callers
+  // aren't blind.
+  const drainErrors: Array<{ stage: string | null; message: string }> = [];
 
   let resolveRun: (result: RunResult) => void;
   let rejectRun: (err: Error) => void;
-  let finalResult: RunResult | null = null;
+  let machineEnded = false;
   const done = new Promise<RunResult>((resolve, reject) => {
     resolveRun = resolve;
     rejectRun = reject;
@@ -76,17 +89,30 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
 
   actor.subscribe((snapshot) => {
     // Top-level final states -> capture, drain executors, then resolve.
-    if ((snapshot.value === "completed" || snapshot.value === "failed") && !finalResult) {
+    if ((snapshot.value === "completed" || snapshot.value === "failed") && !machineEnded) {
+      machineEnded = true;
       clearTimeout(timer);
       const ctx = snapshot.context as MachineContext;
-      finalResult = {
-        finalState: snapshot.value,
-        portValues: ctx.portValues,
-        log: ctx.log,
-      };
       // Drain pending executors before resolving so db writes finish.
       Promise.allSettled(executorPromises).then(() => {
-        resolveRun(finalResult!);
+        // Promote finalState to 'failed' if any stage_attempt ended with
+        // status='error' for this task. Covers the §6.1 design intent that
+        // XState parallel.onDone alone can't distinguish (since both 'done'
+        // and 'error' are region final states).
+        const errorRow = opts.db.prepare(
+          `SELECT COUNT(*) AS n FROM stage_attempts
+           WHERE task_id = ? AND status = 'error'`,
+        ).get(opts.taskId) as { n: number };
+        const finalState: "completed" | "failed" =
+          snapshot.value === "failed" || errorRow.n > 0 || drainErrors.length > 0
+            ? "failed"
+            : "completed";
+        resolveRun({
+          finalState,
+          portValues: ctx.portValues,
+          log: ctx.log,
+          drainErrors,
+        });
       });
       return;
     }
@@ -107,13 +133,18 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
           portValues: ctx.portValues,
           handlers: opts.handlers,
           portRuntime,
-        }).then(() => { /* discard */ }, (err) => {
-          // Swallow here: we surface errors via the finalResult drain.
-          // Individual stage failures are already recorded as
-          // stage_attempts.status='error' by mock-executor.
-          if (!finalResult) {
+        }).then(() => { /* discard */ }, (err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err);
+          if (!machineEnded) {
+            // Pre-end errors reject the whole run — something went wrong
+            // before the pipeline had a chance to converge.
             clearTimeout(timer);
-            rejectRun(err);
+            rejectRun(err instanceof Error ? err : new Error(message));
+          } else {
+            // Post-end (drain) errors: machine already finalized. Collect
+            // for the RunResult.drainErrors payload so callers can act on
+            // them (tests, observability). Do NOT swallow silently.
+            drainErrors.push({ stage: stageName, message });
           }
         });
         executorPromises.push(p);

@@ -27,9 +27,21 @@ export interface LineageReport {
 
 const PREVIEW_BYTES = 200;
 
+export interface QueryLineageOptions {
+  /**
+   * Optional: if provided, `downstream` only includes reads made by input
+   * ports that are wired from (args.stage, args.port) in this version's IR.
+   * Without it, downstream falls back to reporting all 'in' reads in the
+   * task scope — an upper-bound approximation (the value read on those
+   * inputs might have come from a different writer in a pipeline with
+   * multiple wires sharing the same port name).
+   */
+  wiredInputs?: Array<{ stage: string; port: string }>;
+}
+
 export function queryLineage(
   db: DatabaseSync,
-  args: { stage: string; port: string; taskId?: string },
+  args: { stage: string; port: string; taskId?: string } & QueryLineageOptions,
 ): LineageReport {
   const latestRow = args.taskId
     ? db.prepare(
@@ -67,18 +79,11 @@ export function queryLineage(
     };
   }
 
-  // Downstream: every attempt that read a port whose value was sourced from
-  // (stage, port). In M3 we record direction='in' with the downstream stage's
-  // input port name; the wire from (stage, port) to that input port is IR
-  // metadata the query doesn't have. We return all 'in' reads whose source is
-  // (stage, port) by joining to stages/wires via IR, BUT for spike simplicity
-  // we report all 'in' reads that happened AFTER the latestWrite and share the
-  // same taskId.
-  //
-  // A more precise impl needs the IR to resolve the wire target; that's
-  // acceptable post-spike. For now this is a "readers that could have seen
-  // this value" upper-bound — sufficient for diamond verification.
-  const downstreamRows = (args.taskId
+  // Downstream: if caller passed wiredInputs (derived from the pipeline IR's
+  // wires table), filter to reads of exactly those (stage, port) input ports.
+  // Otherwise return all 'in' reads in the task scope as an upper-bound
+  // approximation — see QueryLineageOptions doc above.
+  const rawRows = (args.taskId
     ? db.prepare(
         `SELECT pv.attempt_id, sa.task_id, pv.stage_name, pv.port_name,
                 sa.attempt_idx, pv.written_at
@@ -100,10 +105,18 @@ export function queryLineage(
     port_name: string; attempt_idx: number; written_at: number;
   }>;
 
+  const filteredRows = args.wiredInputs
+    ? rawRows.filter((r) =>
+        args.wiredInputs!.some(
+          (w) => w.stage === r.stage_name && w.port === r.port_name,
+        ),
+      )
+    : rawRows;
+
   return {
     port: { stage: args.stage, port: args.port },
     latestWrite,
-    downstream: downstreamRows.map((r) => ({
+    downstream: filteredRows.map((r) => ({
       attemptId: r.attempt_id,
       taskId: r.task_id,
       stageName: r.stage_name,
@@ -132,6 +145,11 @@ export interface DiffReport {
   }>;
 }
 
+// NOTE: diffRuns compares the latest SUCCESSFUL attempt per stage. A stage
+// that only has status='error' attempts will not appear in
+// stageComparison. This matches the "compare pipeline results" use case; to
+// compare execution traces including failures, query stage_attempts
+// directly.
 export function diffRuns(db: DatabaseSync, taskA: string, taskB: string): DiffReport {
   const versionHash = (taskId: string): string | null => {
     const row = db.prepare(

@@ -14,7 +14,6 @@ import type { DatabaseSync } from "node:sqlite";
 import { KernelService, type KernelServiceOptions } from "./kernel.js";
 import { queryLineage, diffRuns } from "./lineage.js";
 import { IRPatchSchema } from "../ir/schema.js";
-import { readLatestPort } from "../runtime/port-runtime.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
 
@@ -156,12 +155,18 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
             const encoded = JSON.stringify(row.value);
             const bytes = Buffer.byteLength(encoded, "utf8");
             if (bytes > maxBytes) {
+              // UTF-8-safe truncation: slice at byte boundary via Buffer so
+              // partial multi-byte sequences become a single U+FFFD rather
+              // than a lone surrogate corrupting later JSON.stringify.
+              const preview = Buffer.from(encoded, "utf8")
+                .subarray(0, maxBytes)
+                .toString("utf8");
               return jsonResponse({
                 ok: true,
                 truncated: true,
-                preview: encoded.slice(0, maxBytes),
+                preview,
                 totalBytes: bytes,
-                valueId: row.attemptId,
+                valueId: row.valueId,
                 writtenAt: row.writtenAt,
                 attemptId: row.attemptId,
               });
@@ -170,6 +175,7 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
               ok: true,
               truncated: false,
               value: row.value,
+              valueId: row.valueId,
               writtenAt: row.writtenAt,
               attemptId: row.attemptId,
             });
@@ -181,23 +187,39 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
       {
         name: "query_lineage",
         description:
-          "Return the latest write for a port plus all downstream reads. " +
+          "Return the latest write for a port plus its precise downstream " +
+          "readers (filtered via the pipeline's wires when versionHash is " +
+          "supplied, else a task-scope upper-bound approximation). " +
           "valuePreview is capped to 200 bytes; use read_port for full value.",
         inputSchema: {
           stage: z.string(),
           port: z.string(),
           taskId: z.string().optional(),
+          versionHash: z.string().optional(),
         },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         handler: async (args: any) => {
           try {
+            const stage = String(args.stage);
+            const port = String(args.port);
+            const taskId = typeof args.taskId === "string" ? args.taskId : undefined;
+            const versionHash = typeof args.versionHash === "string" ? args.versionHash : undefined;
+
+            // If versionHash provided, look up wires whose source is
+            // (stage, port) and pass the precise consumer (stage, port)
+            // list to queryLineage for filtering.
+            let wiredInputs: Array<{ stage: string; port: string }> | undefined;
+            if (versionHash) {
+              const rows = db.prepare(
+                `SELECT to_stage, to_port FROM wires
+                 WHERE version_hash = ? AND from_stage = ? AND from_port = ?`,
+              ).all(versionHash, stage, port) as Array<{ to_stage: string; to_port: string }>;
+              wiredInputs = rows.map((r) => ({ stage: r.to_stage, port: r.to_port }));
+            }
+
             return jsonResponse({
               ok: true,
-              report: queryLineage(db, {
-                stage: String(args.stage),
-                port: String(args.port),
-                taskId: typeof args.taskId === "string" ? args.taskId : undefined,
-              }),
+              report: queryLineage(db, { stage, port, taskId, wiredInputs }),
             });
           } catch (err) {
             return errorResponse(err instanceof Error ? err.message : String(err));
@@ -232,20 +254,42 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
 
 // Helper for read_port when `attempt` is provided. readLatestPort in
 // port-runtime.ts only returns the latest; this variant picks a specific one.
+// Returns port_values.value_id so callers can reference the individual row
+// (distinct from attempt_id which groups all port_values for one attempt).
 function readPortSpecific(
   db: DatabaseSync,
   stage: string,
   port: string,
   taskId: string | undefined,
   attemptIdx: number | undefined,
-): { value: unknown; attemptId: string; writtenAt: number } | null {
+): { value: unknown; valueId: string; attemptId: string; writtenAt: number } | null {
   if (attemptIdx === undefined) {
-    const r = readLatestPort(db, stage, port, taskId);
-    return r ? { value: r.value, attemptId: r.attemptId, writtenAt: r.writtenAt } : null;
+    const sql = taskId
+      ? `SELECT pv.value_json, pv.value_id, pv.attempt_id, pv.written_at
+         FROM port_values pv
+         JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
+         WHERE pv.stage_name = ? AND pv.port_name = ? AND pv.direction = 'out'
+           AND sa.task_id = ?
+         ORDER BY pv.written_at DESC LIMIT 1`
+      : `SELECT pv.value_json, pv.value_id, pv.attempt_id, pv.written_at
+         FROM port_values pv
+         WHERE pv.stage_name = ? AND pv.port_name = ? AND pv.direction = 'out'
+         ORDER BY pv.written_at DESC LIMIT 1`;
+    const row = taskId
+      ? db.prepare(sql).get(stage, port, taskId)
+      : db.prepare(sql).get(stage, port);
+    if (!row) return null;
+    const r = row as { value_json: string; value_id: string; attempt_id: string; written_at: number };
+    return {
+      value: JSON.parse(r.value_json),
+      valueId: r.value_id,
+      attemptId: r.attempt_id,
+      writtenAt: r.written_at,
+    };
   }
   const row = taskId
     ? db.prepare(
-        `SELECT pv.value_json, pv.attempt_id, pv.written_at
+        `SELECT pv.value_json, pv.value_id, pv.attempt_id, pv.written_at
          FROM port_values pv
          JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
          WHERE pv.stage_name = ? AND pv.port_name = ? AND pv.direction = 'out'
@@ -253,7 +297,7 @@ function readPortSpecific(
          ORDER BY pv.written_at DESC LIMIT 1`,
       ).get(stage, port, taskId, attemptIdx)
     : db.prepare(
-        `SELECT pv.value_json, pv.attempt_id, pv.written_at
+        `SELECT pv.value_json, pv.value_id, pv.attempt_id, pv.written_at
          FROM port_values pv
          JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
          WHERE pv.stage_name = ? AND pv.port_name = ? AND pv.direction = 'out'
@@ -261,9 +305,10 @@ function readPortSpecific(
          ORDER BY pv.written_at DESC LIMIT 1`,
       ).get(stage, port, attemptIdx);
   if (!row) return null;
-  const r = row as { value_json: string; attempt_id: string; written_at: number };
+  const r = row as { value_json: string; value_id: string; attempt_id: string; written_at: number };
   return {
     value: JSON.parse(r.value_json),
+    valueId: r.value_id,
     attemptId: r.attempt_id,
     writtenAt: r.written_at,
   };

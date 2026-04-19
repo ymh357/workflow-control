@@ -79,12 +79,15 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
     const fromOutKey: PortKey = `${w.from.stage}.${w.from.port}.out`;
     const fromExistsAsOut = portIndex.has(fromOutKey);
     const fromExistsAsIn  = portIndex.has(fromInKey);
+    const fromStageExists = stageNames.has(w.from.stage);
 
     if (!fromExistsAsOut && !fromExistsAsIn) {
       diagnostics.push({
         code: "WIRE_SOURCE_PORT_MISSING",
-        message: `Wire source '${w.from.stage}.${w.from.port}' does not exist.`,
-        context: { from: w.from },
+        message: fromStageExists
+          ? `Wire source '${w.from.stage}.${w.from.port}' does not exist on stage '${w.from.stage}'.`
+          : `Wire source stage '${w.from.stage}' does not exist (port '${w.from.port}' unreachable).`,
+        context: { from: w.from, stageExists: fromStageExists },
       });
     } else if (!fromExistsAsOut && fromExistsAsIn) {
       diagnostics.push({
@@ -99,12 +102,15 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
     const toOutKey: PortKey = `${w.to.stage}.${w.to.port}.out`;
     const toExistsAsIn  = portIndex.has(toInKey);
     const toExistsAsOut = portIndex.has(toOutKey);
+    const toStageExists = stageNames.has(w.to.stage);
 
     if (!toExistsAsIn && !toExistsAsOut) {
       diagnostics.push({
         code: "WIRE_TARGET_PORT_MISSING",
-        message: `Wire target '${w.to.stage}.${w.to.port}' does not exist.`,
-        context: { to: w.to },
+        message: toStageExists
+          ? `Wire target '${w.to.stage}.${w.to.port}' does not exist on stage '${w.to.stage}'.`
+          : `Wire target stage '${w.to.stage}' does not exist (port '${w.to.port}' unreachable).`,
+        context: { to: w.to, stageExists: toStageExists },
       });
     } else if (!toExistsAsIn && toExistsAsOut) {
       diagnostics.push({

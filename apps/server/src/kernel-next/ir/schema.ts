@@ -7,11 +7,29 @@
 
 import { z } from "zod";
 
+// Stage/port names must not collide with TS/JS reserved words: codegen
+// emits `export namespace <name>` and reserved words produce TS1128/2819
+// which the type validator can't map back to a wire.
+const TS_RESERVED = new Set([
+  "any", "as", "boolean", "break", "case", "catch", "class", "const",
+  "constructor", "continue", "debugger", "declare", "default", "delete",
+  "do", "else", "enum", "export", "extends", "false", "finally", "for",
+  "from", "function", "get", "if", "implements", "import", "in",
+  "instanceof", "interface", "let", "module", "namespace", "never", "new",
+  "null", "number", "of", "package", "private", "protected", "public",
+  "readonly", "require", "return", "set", "static", "string", "super",
+  "switch", "symbol", "this", "throw", "true", "try", "type", "typeof",
+  "undefined", "unknown", "var", "void", "while", "with", "yield",
+]);
+
 const identifier = z
   .string()
   .min(1)
   .max(64)
-  .regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, "must be a valid JS identifier");
+  .regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/, "must be a valid JS identifier")
+  .refine((s) => !TS_RESERVED.has(s), {
+    message: "must not be a TS/JS reserved word",
+  });
 
 export const PortIRSchema = z.object({
   name: identifier,

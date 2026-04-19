@@ -42,27 +42,32 @@ describe("emit-ts codegen", () => {
 
   it("emits one __wire__ dummy assignment per wire", () => {
     const { source } = emitPipelineModule(diamondIR());
-    const matches = source.match(/export const __wire__/g) ?? [];
+    // Identifier format: __wire__<from>_<port>__TO__<to>_<port>__<8-hex-hash>
+    const matches = source.match(/export const __wire__[A-Za-z0-9_]+__TO__[A-Za-z0-9_]+__[0-9a-f]{8}/g) ?? [];
     expect(matches.length).toBe(4);
-    expect(source).toContain("__wire__A_x__TO__B_x");
-    expect(source).toContain("__wire__A_x__TO__C_x");
-    expect(source).toContain("__wire__B_y__TO__D_b");
-    expect(source).toContain("__wire__C_z__TO__D_c");
+    // Human-readable prefix still present (the hash just disambiguates).
+    expect(source).toContain("__wire__A_x__TO__B_x__");
+    expect(source).toContain("__wire__A_x__TO__C_x__");
+    expect(source).toContain("__wire__B_y__TO__D_b__");
+    expect(source).toContain("__wire__C_z__TO__D_c__");
   });
 
   it("wire assertion direction: target Input type = source Output type", () => {
     const { source } = emitPipelineModule(diamondIR());
-    // Expected shape:
-    //   export const __wire__A_x__TO__B_x: Stages.B.Inputs["x"] =
+    // Expected shape (hash suffix elided):
+    //   export const __wire__A_x__TO__B_x__<hash>: Stages.B.Inputs["x"] =
     //     null as unknown as Stages.A.Outputs["x"];
-    expect(source).toContain(`export const __wire__A_x__TO__B_x: Stages.B.Inputs["x"] =`);
+    expect(source).toMatch(/export const __wire__A_x__TO__B_x__[0-9a-f]{8}: Stages\.B\.Inputs\["x"\] =/);
     expect(source).toContain(`null as unknown as Stages.A.Outputs["x"];`);
   });
 
   it("wire map contains one entry per wire with from/to metadata", () => {
     const { wireByIdentifier, wireByLine } = emitPipelineModule(diamondIR());
     expect(wireByIdentifier.size).toBe(4);
-    const ab = wireByIdentifier.get("__wire__A_x__TO__B_x");
+    // Look up by prefix match since hash suffix is content-derived.
+    const abKey = [...wireByIdentifier.keys()].find((k) => k.startsWith("__wire__A_x__TO__B_x__"));
+    expect(abKey).toBeDefined();
+    const ab = wireByIdentifier.get(abKey!);
     expect(ab?.fromStage).toBe("A");
     expect(ab?.fromPort).toBe("x");
     expect(ab?.toStage).toBe("B");
@@ -72,6 +77,31 @@ describe("emit-ts codegen", () => {
     // Line-indexed map has at least as many entries as wires
     // (we index both declaration and assignment lines).
     expect(wireByLine.size).toBeGreaterThanOrEqual(4);
+  });
+
+  it("wire identifier disambiguates name-collision cases via hash suffix", () => {
+    // Stage 'a_b' port 'c' vs stage 'a' port 'b_c' both encode to a_b_c
+    // under the naive join-with-underscore scheme. Verify the hash suffix
+    // makes them distinct.
+    const ir = {
+      name: "collision",
+      stages: [
+        { name: "a", type: "agent" as const, inputs: [], outputs: [{ name: "b_c", type: "string" }], config: {} },
+        { name: "a_b", type: "agent" as const, inputs: [], outputs: [{ name: "c", type: "string" }], config: {} },
+        { name: "sink", type: "agent" as const,
+          inputs: [{ name: "p", type: "string" }, { name: "q", type: "string" }],
+          outputs: [], config: {} },
+      ],
+      wires: [
+        { from: { stage: "a", port: "b_c" }, to: { stage: "sink", port: "p" } },
+        { from: { stage: "a_b", port: "c" }, to: { stage: "sink", port: "q" } },
+      ],
+    };
+    const { wireByIdentifier } = emitPipelineModule(ir);
+    expect(wireByIdentifier.size).toBe(2);
+    const idents = [...wireByIdentifier.keys()];
+    // Both identifiers share the same human prefix up to the hash suffix.
+    expect(idents[0]!.slice(0, -8)).not.toBe(idents[1]!.slice(0, -8));
   });
 
   it("emits empty Inputs/Outputs blocks when stage has no ports", () => {

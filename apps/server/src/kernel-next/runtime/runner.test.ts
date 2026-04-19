@@ -188,14 +188,11 @@ describe("M3: end-to-end diamond pipeline run", () => {
       db, ir, taskId: "t3", versionHash: hash, handlers,
     });
 
-    // The machine transitions to failed because A's region entered 'error'
-    // and 'error' is not a normal 'final' target of the parallel onDone.
-    // NB: parallel onDone fires only when ALL regions reach their
-    // declared final ('done' OR 'error' — both are final:true). That
-    // means our current machine treats an erroring stage as "region done"
-    // and still fires onDone -> completed. We assert the data-level signals
-    // (attempt row status='error') regardless of the final state.
-    expect(["completed", "failed"]).toContain(result.finalState);
+    // XState parallel onDone fires even when a region ends in its `error`
+    // final — so the XState value transitions to 'completed'. Runner
+    // covers this by post-checking stage_attempts for status='error' and
+    // promoting finalState to 'failed' (see runner.ts).
+    expect(result.finalState).toBe("failed");
 
     const row = db.prepare(
       `SELECT status FROM stage_attempts WHERE task_id = ?`,

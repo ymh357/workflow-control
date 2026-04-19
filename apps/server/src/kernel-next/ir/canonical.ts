@@ -22,6 +22,15 @@ type CanonicalValue =
   | CanonicalValue[]
   | { [key: string]: CanonicalValue };
 
+// Locale-independent string comparison. Node's String.prototype.localeCompare
+// uses ICU with the process default locale, which varies across machines
+// (e.g. en_US vs tr_TR produce different orderings for same-case-insensitive
+// letters). We rely on canonical ordering for version_hash stability — use
+// a pure codepoint comparison instead.
+function codepointCompare(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 function sortKeys(value: unknown): CanonicalValue {
   if (value === null) return null;
   if (Array.isArray(value)) {
@@ -30,7 +39,7 @@ function sortKeys(value: unknown): CanonicalValue {
   if (typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>)
       .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b));
+      .sort(([a], [b]) => codepointCompare(a, b));
     const out: Record<string, CanonicalValue> = {};
     for (const [k, v] of entries) out[k] = sortKeys(v);
     return out;
@@ -46,8 +55,8 @@ function canonicalizeStage(s: StageIR): CanonicalValue {
   return sortKeys({
     name: s.name,
     type: s.type,
-    inputs: [...s.inputs].sort((a, b) => a.name.localeCompare(b.name)),
-    outputs: [...s.outputs].sort((a, b) => a.name.localeCompare(b.name)),
+    inputs: [...s.inputs].sort((a, b) => codepointCompare(a.name, b.name)),
+    outputs: [...s.outputs].sort((a, b) => codepointCompare(a.name, b.name)),
     config: s.config,
   });
 }
@@ -61,13 +70,13 @@ function canonicalizeWire(w: WireIR): CanonicalValue {
 
 export function canonicalizeIR(ir: PipelineIR): CanonicalValue {
   const stages = [...ir.stages]
-    .sort((a, b) => a.name.localeCompare(b.name))
+    .sort((a, b) => codepointCompare(a.name, b.name))
     .map(canonicalizeStage);
   const wires = [...ir.wires]
     .sort((a, b) => {
       const ak = `${a.to.stage}.${a.to.port}`;
       const bk = `${b.to.stage}.${b.to.port}`;
-      return ak.localeCompare(bk);
+      return codepointCompare(ak, bk);
     })
     .map(canonicalizeWire);
 

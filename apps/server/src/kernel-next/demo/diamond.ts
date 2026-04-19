@@ -98,12 +98,20 @@ export async function runDemo(options: { skipTypeCheck?: boolean; tscPath?: stri
       detail: `state=${run.finalState} order=${["A","B","C","D"].map((s)=>`${s}@${idx(s)}`).join(" ")} final=${run.portValues["D.final"]}`,
     });
 
-    // Step 4 (§8.2 #4): query_lineage returns B/C as downstream of A.x.
-    const lineage = queryLineage(db, { stage: "A", port: "x", taskId: "demo-t1" });
+    // Step 4 (§8.2 #4): query_lineage returns exactly B/C as downstream of A.x.
+    // We pass wiredInputs derived from the IR so the result is precise
+    // (without it, the query is an upper-bound over all reads in the task).
+    const wiredFromAx = gen.ir.wires
+      .filter((w) => w.from.stage === "A" && w.from.port === "x")
+      .map((w) => ({ stage: w.to.stage, port: w.to.port }));
+    const lineage = queryLineage(db, {
+      stage: "A", port: "x", taskId: "demo-t1", wiredInputs: wiredFromAx,
+    });
     const downstreamStages = new Set(lineage.downstream.map((d) => d.stageName));
+    const onlyBC = downstreamStages.size === 2 && downstreamStages.has("B") && downstreamStages.has("C");
     log({
       step: "4. query_lineage",
-      ok: downstreamStages.has("B") && downstreamStages.has("C"),
+      ok: onlyBC,
       detail: `latestWrite=${lineage.latestWrite?.valuePreview} downstream=${[...downstreamStages].sort().join(",")}`,
     });
 
