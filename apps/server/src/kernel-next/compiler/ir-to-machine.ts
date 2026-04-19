@@ -33,6 +33,7 @@ import { createMachine, assign } from "xstate";
 import type { AnyStateMachine } from "xstate";
 import type { PipelineIR, StageIR } from "../ir/schema.js";
 import { buildDag } from "../validator/dag.js";
+import { evaluateGuard } from "../runtime/guard-evaluator.js";
 
 export interface MachineContext {
   taskId: string;
@@ -52,9 +53,26 @@ export type MachineEvent =
   | { type: "STAGE_FAILED"; stage: string; error: string }
   | { type: "GATE_ANSWERED"; gateId: string; stageName: string; answer: string; targetStage: string };
 
+interface InboundWireMeta {
+  // "<from.stage>.<from.port>" — the source port whose value activates the wire.
+  sourceKey: string;
+  // Original wire endpoints, used for guard evaluation error context + the
+  // NO_ACTIVE_WIRE diagnostic payload.
+  from: { stage: string; port: string };
+  to: { stage: string; port: string };
+  // Optional runtime guard expression (§6.2). When set, the wire delivers
+  // only if evaluateGuard(expr, source port value) returns true.
+  guard?: string;
+}
+
 interface StageMeta {
   stageType: StageIR["type"];
-  inbound: string[];  // "<stage>.<port>" inbound port keys
+  // A3.1: inbound is now per-wire (not per source port key), because a
+  // single source port may feed multiple downstream ports and each carries
+  // its own guard. `allInboundWiresSettled` means every wire's source has
+  // been written; `anyInboundWireDelivered` means at least one wire's
+  // source has been written AND its guard (if any) evaluated true.
+  inbound: InboundWireMeta[];
   outbound: string[]; // "<stage>.<port>" outbound port keys
 }
 
@@ -67,11 +85,16 @@ function indexStages(ir: PipelineIR): Map<string, StageMeta> {
     index.set(s.name, { stageType: s.type, inbound: [], outbound });
   }
 
-  // Populate inbound via wires.
+  // Populate inbound via wires. Preserve guard per wire.
   for (const w of ir.wires) {
     const entry = index.get(w.to.stage);
     if (!entry) continue;
-    entry.inbound.push(`${w.from.stage}.${w.from.port}`);
+    entry.inbound.push({
+      sourceKey: `${w.from.stage}.${w.from.port}`,
+      from: { stage: w.from.stage, port: w.from.port },
+      to: { stage: w.to.stage, port: w.to.port },
+      guard: w.guard,
+    });
   }
 
   return index;
@@ -142,8 +165,47 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
 
 // Per-stage region: waiting -> executing -> done.
 function buildStageRegion(stageName: string, meta: StageMeta) {
-  const allInboundPresent = ({ context }: { context: MachineContext }) =>
-    meta.inbound.every((k) => k in context.portValues);
+  // A wire is "settled" when its source port has been written.
+  const wireSettled = (
+    wire: InboundWireMeta,
+    portValues: Record<string, unknown>,
+  ): boolean => wire.sourceKey in portValues;
+
+  // A wire "delivers" when it is settled AND its guard (if any) evaluates
+  // true. Wires without a guard deliver as soon as they settle.
+  const wireDelivers = (
+    wire: InboundWireMeta,
+    portValues: Record<string, unknown>,
+  ): boolean => {
+    if (!wireSettled(wire, portValues)) return false;
+    if (!wire.guard) return true;
+    const value = portValues[wire.sourceKey];
+    return evaluateGuard(wire.guard, value, {
+      wireFrom: wire.from,
+      wireTo: wire.to,
+    });
+  };
+
+  // Stage activates when every wire (slot) has delivered. Equivalent to
+  // legacy `allInboundPresent` when no guards are attached; with guards,
+  // an unguarded wire still requires its source to be written, and a
+  // guarded wire additionally requires the guard to pass. Validator
+  // guarantees each inbound port has at most one wire (WIRE_TARGET_
+  // ALREADY_DRIVEN), so "one slot per wire" maps 1:1 to the design's
+  // "one wire per inbound port".
+  const allInboundDelivered = ({ context }: { context: MachineContext }) =>
+    meta.inbound.every((w) => wireDelivers(w, context.portValues));
+
+  // Dead stage: every source has fired, but at least one wire has been
+  // dropped by a false guard. That wire can never deliver — the stage
+  // cannot activate. §6.2 specifies this is a pipeline authoring bug
+  // (NO_ACTIVE_WIRE). We detect it compile-free at runtime and surface
+  // it as STAGE_FAILED via a transient `always` branch from `waiting`.
+  const noDeliverableWire = ({ context }: { context: MachineContext }) => {
+    if (meta.inbound.length === 0) return false;
+    if (!meta.inbound.every((w) => wireSettled(w, context.portValues))) return false;
+    return meta.inbound.some((w) => !wireDelivers(w, context.portValues));
+  };
 
   const allOutboundPresent = ({ context }: { context: MachineContext }) =>
     meta.outbound.length === 0
@@ -202,7 +264,14 @@ function buildStageRegion(stageName: string, meta: StageMeta) {
     states: {
       waiting: {
         on: {
-          PORT_WRITTEN: [{ target: "executing", guard: allInboundPresent }],
+          PORT_WRITTEN: [
+            { target: "executing", guard: allInboundDelivered },
+            // NO_ACTIVE_WIRE: every source has fired but at least one wire
+            // was dropped by a false guard. Emit via `error` final; the
+            // runner interprets the `error` substate + meta.inbound to
+            // produce the structured diagnostic.
+            { target: "error", guard: noDeliverableWire },
+          ],
           STAGE_FAILED: [
             {
               target: "error",
@@ -216,8 +285,14 @@ function buildStageRegion(stageName: string, meta: StageMeta) {
             { target: "executing", guard: gateAnsweredTargetsMe },
           ],
         },
-        // Entry: if deps already met (entry stage or late entry), go directly.
-        always: [{ target: "executing", guard: allInboundPresent }],
+        // Entry: if deps already met (entry stage or late entry), go
+        // directly. Also catches the "already dead on entry" edge case
+        // where portValues arrive before the region even starts (rare,
+        // but possible with hot-update).
+        always: [
+          { target: "executing", guard: allInboundDelivered },
+          { target: "error", guard: noDeliverableWire },
+        ],
       },
       executing: executingBody,
       done: {

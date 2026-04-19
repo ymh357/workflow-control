@@ -434,3 +434,96 @@ describe("A1.1: CompositeStageExecutor routes mixed agent + script pipeline", ()
     }
   });
 });
+
+describe("A3.1: wire guards + NO_ACTIVE_WIRE", () => {
+  it("runPipeline returns failed + stageErrors when all inbound guards drop", async () => {
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "guard-fail",
+      stages: [
+        {
+          name: "SRC",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "DST",
+          type: "agent",
+          inputs: [{ name: "v", type: "number" }],
+          outputs: [{ name: "out", type: "number" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        {
+          from: { stage: "SRC", port: "x" },
+          to: { stage: "DST", port: "v" },
+          guard: "value > 100",
+        },
+      ],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const handlers: StageHandlerMap = {
+      SRC: () => ({ x: 5 }),
+      // Never invoked — DST should never execute.
+      DST: () => ({ out: 999 }),
+    };
+    const result = await runPipeline({
+      db, ir, taskId: "t1", versionHash: hash, handlers,
+    });
+
+    expect(result.finalState).toBe("failed");
+    expect(result.stageErrors).toHaveLength(1);
+    expect(result.stageErrors[0]?.stage).toBe("DST");
+    expect(result.stageErrors[0]?.message).toMatch(/NO_ACTIVE_WIRE/);
+    db.close();
+  });
+
+  it("guard-passing wire activates downstream normally", async () => {
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "guard-ok",
+      stages: [
+        {
+          name: "SRC",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "DST",
+          type: "agent",
+          inputs: [{ name: "v", type: "number" }],
+          outputs: [{ name: "out", type: "number" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        {
+          from: { stage: "SRC", port: "x" },
+          to: { stage: "DST", port: "v" },
+          guard: "value > 0",
+        },
+      ],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const handlers: StageHandlerMap = {
+      SRC: () => ({ x: 42 }),
+      DST: (inputs) => ({ out: (inputs.v as number) * 2 }),
+    };
+    const result = await runPipeline({
+      db, ir, taskId: "t1", versionHash: hash, handlers,
+    });
+
+    expect(result.finalState).toBe("completed");
+    expect(result.portValues["DST.out"]).toBe(84);
+    db.close();
+  });
+});

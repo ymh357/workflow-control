@@ -184,6 +184,8 @@ export const DiagnosticSchema = z.object({
     "GATE_NOT_FOUND",
     "GATE_ALREADY_ANSWERED",
     "GATE_ANSWER_INVALID",
+    // A3.1 addition — wire guard runtime failure
+    "NO_ACTIVE_WIRE",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

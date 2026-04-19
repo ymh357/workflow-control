@@ -119,6 +119,24 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       machineEnded = true;
       clearTimeout(timer);
       const ctx = snapshot.context as MachineContext;
+      // Scan the log for stage-region error entries that we never observed
+      // via the substate path. When parallel.onDone fires synchronously
+      // with a child's final transition (e.g. NO_ACTIVE_WIRE on a short
+      // pipeline), the top-level value jumps to `completed` in the same
+      // snapshot that the child reached `error`, so we never see an
+      // "error" substate. The per-region `entry: log += <stage>:error`
+      // is the stable signal.
+      for (const entry of ctx.log) {
+        const m = /^([A-Za-z_][A-Za-z0-9_]*):error$/.exec(entry);
+        if (!m) continue;
+        const stageName = m[1]!;
+        if (dispatched.has(stageName)) continue;
+        dispatched.add(stageName);
+        stageErrors.push({
+          stage: stageName,
+          message: `NO_ACTIVE_WIRE: every inbound wire to '${stageName}' resolved false — stage cannot activate`,
+        });
+      }
       // Drain pending executors before resolving so db writes finish.
       Promise.allSettled(executorPromises).then(() => {
         // Promote finalState to 'failed' if any stage's LATEST attempt
@@ -142,7 +160,13 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
            WHERE t.status = 'error'`,
         ).get(opts.taskId) as { n: number };
         const finalState: "completed" | "failed" =
-          snapshot.value === "failed" || errorRow.n > 0 || drainErrors.length > 0
+          snapshot.value === "failed" ||
+          errorRow.n > 0 ||
+          drainErrors.length > 0 ||
+          // NO_ACTIVE_WIRE and similar runner-captured errors never touch
+          // stage_attempts (no attempt was opened), so they only appear on
+          // the stageErrors array; include them in the fail verdict.
+          stageErrors.length > 0
             ? "failed"
             : "completed";
         resolveRun({
@@ -161,6 +185,19 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
     if (!running) return;
 
     for (const [stageName, substate] of Object.entries(running)) {
+      // NO_ACTIVE_WIRE surfaces as a stage region reaching `error` without
+      // a corresponding executor dispatch. Capture as a stageError once per
+      // stage so the RunResult reports it (and promotes finalState to
+      // 'failed'). We reuse the `dispatched` set as a seen-marker because
+      // a stage that never executed won't be in it.
+      if (substate === "error" && !dispatched.has(stageName)) {
+        dispatched.add(stageName);
+        stageErrors.push({
+          stage: stageName,
+          message: `NO_ACTIVE_WIRE: every inbound wire to '${stageName}' resolved false — stage cannot activate`,
+        });
+        continue;
+      }
       if (substate === "executing" && !dispatched.has(stageName)) {
         dispatched.add(stageName);
 
