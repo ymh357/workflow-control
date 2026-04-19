@@ -115,6 +115,120 @@ describe("KernelService", () => {
     db.close();
   });
 
+  it("approveProposal flips pending → approved", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR());
+    if (!submitted.ok) throw new Error("setup failed");
+    const proposed = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: { ops: [{ op: "remove_stage", stageName: "D" }] },
+      actor: "test",
+    });
+    if (!proposed.ok) throw new Error("propose failed");
+
+    const r = svc.approveProposal(proposed.proposalId);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.status).toBe("approved");
+
+    const row = db.prepare(
+      `SELECT status, diagnostic_json FROM pipeline_proposals WHERE proposal_id = ?`,
+    ).get(proposed.proposalId) as { status: string; diagnostic_json: string | null };
+    expect(row.status).toBe("approved");
+    expect(row.diagnostic_json).toBeNull();
+    db.close();
+  });
+
+  it("rejectProposal flips pending → rejected and persists reason", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR());
+    if (!submitted.ok) throw new Error("setup failed");
+    const proposed = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: { ops: [{ op: "remove_stage", stageName: "D" }] },
+      actor: "test",
+    });
+    if (!proposed.ok) throw new Error("propose failed");
+
+    const r = svc.rejectProposal(proposed.proposalId, "not needed");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.status).toBe("rejected");
+
+    const row = db.prepare(
+      `SELECT status, diagnostic_json FROM pipeline_proposals WHERE proposal_id = ?`,
+    ).get(proposed.proposalId) as { status: string; diagnostic_json: string };
+    expect(row.status).toBe("rejected");
+    expect(JSON.parse(row.diagnostic_json)).toEqual({ reason: "not needed" });
+    db.close();
+  });
+
+  it("approveProposal rejects unknown proposalId", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const r = svc.approveProposal("nonexistent");
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics[0]!.code).toBe("PROPOSAL_NOT_FOUND");
+    db.close();
+  });
+
+  it("approveProposal rejects an already-resolved proposal", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR());
+    if (!submitted.ok) throw new Error("setup failed");
+    const proposed = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: { ops: [{ op: "remove_stage", stageName: "D" }] },
+      actor: "test",
+    });
+    if (!proposed.ok) throw new Error("propose failed");
+
+    const first = svc.approveProposal(proposed.proposalId);
+    expect(first.ok).toBe(true);
+    const second = svc.rejectProposal(proposed.proposalId);
+    expect(second.ok).toBe(false);
+    if (second.ok) return;
+    expect(second.diagnostics[0]!.code).toBe("PROPOSAL_ALREADY_RESOLVED");
+    expect(second.diagnostics[0]!.context).toEqual({
+      proposalId: proposed.proposalId,
+      currentStatus: "approved",
+    });
+    db.close();
+  });
+
+  it("listProposals returns newest-first and filters by status", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR());
+    if (!submitted.ok) throw new Error("setup failed");
+    const p1 = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: { ops: [{ op: "remove_stage", stageName: "D" }] },
+      actor: "ai:a",
+    });
+    const p2 = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: { ops: [{ op: "remove_stage", stageName: "B" }] },
+      actor: "ai:b",
+    });
+    if (!p1.ok || !p2.ok) throw new Error("propose failed");
+
+    svc.rejectProposal(p1.proposalId);
+
+    const all = svc.listProposals();
+    expect(all.map((r) => r.proposalId)).toEqual([p2.proposalId, p1.proposalId]);
+    expect(all[0]!.actor).toBe("ai:b");
+    expect(all[1]!.status).toBe("rejected");
+
+    const pending = svc.listProposals({ status: "pending" });
+    expect(pending.map((r) => r.proposalId)).toEqual([p2.proposalId]);
+    db.close();
+  });
+
   it("propose fails validation when patch produces structurally invalid IR", () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });

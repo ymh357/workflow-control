@@ -1,6 +1,7 @@
 // KernelService — orchestrates validation pipeline + persistence for
-// submit_pipeline / validate_pipeline / propose_pipeline_change. MCP tool
-// handlers are thin wrappers over this class.
+// submit_pipeline / validate_pipeline / propose_pipeline_change /
+// approve_proposal / reject_proposal / list_proposals. MCP tool handlers
+// and REST routes are thin wrappers over this class.
 
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
@@ -43,6 +44,22 @@ export type ProposeResult = ProposeResponse | {
   ok: false;
   diagnostics: Diagnostic[];
 };
+
+export type ProposalStatus = "pending" | "approved" | "rejected";
+
+export interface ProposalRow {
+  proposalId: string;
+  baseVersion: string;
+  proposedVersion: string | null;
+  actor: string;
+  status: ProposalStatus;
+  diagnosticJson: string | null;
+  createdAt: number;
+}
+
+export type ApprovalResult =
+  | { ok: true; proposalId: string; status: "approved" | "rejected" }
+  | { ok: false; diagnostics: Diagnostic[] };
 
 export interface KernelServiceOptions {
   /** Override tsc binary path for tests. */
@@ -186,5 +203,126 @@ export class KernelService {
       proposedVersion: proposedHash,
       autoApplied: false,
     };
+  }
+
+  /**
+   * Approve a pending proposal. Spike-scope: only flips `status` to
+   * 'approved'. Does NOT migrate running tasks — task migration is a
+   * Phase 2 P3+ concern (see kernel-next-design.md §13). Running
+   * tasks remain bound to their original `stage_attempts.version_hash`;
+   * only new tasks may reference the approved proposedVersion.
+   *
+   * Legal transition: pending → approved. Already-resolved proposals
+   * (approved/rejected) return PROPOSAL_ALREADY_RESOLVED.
+   */
+  approveProposal(proposalId: string): ApprovalResult {
+    return this.resolveProposal(proposalId, "approved");
+  }
+
+  /**
+   * Reject a pending proposal. Optional `reason` is persisted in
+   * `diagnostic_json` for audit.
+   *
+   * Legal transition: pending → rejected.
+   */
+  rejectProposal(proposalId: string, reason?: string): ApprovalResult {
+    return this.resolveProposal(proposalId, "rejected", reason);
+  }
+
+  private resolveProposal(
+    proposalId: string,
+    target: "approved" | "rejected",
+    reason?: string,
+  ): ApprovalResult {
+    const row = this.db.prepare(
+      `SELECT status FROM pipeline_proposals WHERE proposal_id = ?`,
+    ).get(proposalId) as { status: string } | undefined;
+    if (!row) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "PROPOSAL_NOT_FOUND",
+          message: `proposalId '${proposalId}' not found`,
+          context: { proposalId },
+        }],
+      };
+    }
+    if (row.status !== "pending") {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "PROPOSAL_ALREADY_RESOLVED",
+          message: `proposal '${proposalId}' is already ${row.status}`,
+          context: { proposalId, currentStatus: row.status },
+        }],
+      };
+    }
+
+    const diagnostic = target === "rejected" && reason
+      ? JSON.stringify({ reason })
+      : null;
+    // WHERE clause re-checks status='pending' so an interleaved approve
+    // between the SELECT above and this UPDATE cannot double-resolve.
+    // Inspect `changes` to surface that race as PROPOSAL_ALREADY_RESOLVED
+    // instead of a false-success. Today node:sqlite is synchronous so
+    // the SELECT-UPDATE pair cannot be preempted within a single
+    // KernelService call; this guard is defense for (a) out-of-band
+    // writers mutating the row (tests, migration tooling) and (b)
+    // future async DB adapters.
+    const res = this.db.prepare(
+      `UPDATE pipeline_proposals SET status = ?, diagnostic_json = ?
+       WHERE proposal_id = ? AND status = 'pending'`,
+    ).run(target, diagnostic, proposalId);
+    if (res.changes === 0) {
+      // The pending row was resolved by a concurrent caller. Read the
+      // current status back for the diagnostic context.
+      const after = this.db.prepare(
+        `SELECT status FROM pipeline_proposals WHERE proposal_id = ?`,
+      ).get(proposalId) as { status: string } | undefined;
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "PROPOSAL_ALREADY_RESOLVED",
+          message: `proposal '${proposalId}' was resolved concurrently`,
+          context: { proposalId, currentStatus: after?.status ?? "unknown" },
+        }],
+      };
+    }
+
+    return { ok: true, proposalId, status: target };
+  }
+
+  /**
+   * List proposals, optionally filtered by status. Ordered newest-first.
+   */
+  listProposals(filter: { status?: ProposalStatus } = {}): ProposalRow[] {
+    const rows = filter.status
+      ? this.db.prepare(
+          `SELECT proposal_id, base_version, proposed_version, actor, status,
+                  diagnostic_json, created_at
+           FROM pipeline_proposals WHERE status = ? ORDER BY created_at DESC`,
+        ).all(filter.status)
+      : this.db.prepare(
+          `SELECT proposal_id, base_version, proposed_version, actor, status,
+                  diagnostic_json, created_at
+           FROM pipeline_proposals ORDER BY created_at DESC`,
+        ).all();
+    return (rows as Array<{
+      proposal_id: string;
+      base_version: string;
+      proposed_version: string | null;
+      actor: string;
+      status: string;
+      diagnostic_json: string | null;
+      created_at: number;
+    }>).map((r) => ({
+      proposalId: r.proposal_id,
+      baseVersion: r.base_version,
+      proposedVersion: r.proposed_version,
+      actor: r.actor,
+      status: r.status as ProposalStatus,
+      diagnosticJson: r.diagnostic_json,
+      createdAt: r.created_at,
+    }));
   }
 }

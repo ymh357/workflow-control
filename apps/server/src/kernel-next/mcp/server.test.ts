@@ -60,16 +60,19 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("exposes 7 tools with expected names", () => {
+  it("exposes 10 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
     const tools = getTools(mcp);
     expect([...tools.keys()].sort()).toEqual([
+      "approve_proposal",
       "diff_runs",
+      "list_proposals",
       "propose_pipeline_change",
       "query_lineage",
       "read_port",
+      "reject_proposal",
       "submit_pipeline",
       "validate_pipeline",
       "write_port",
@@ -244,5 +247,87 @@ describe("kernel-next MCP server", () => {
     expect(stageA!.outputsDiffer).toEqual(["x"]);
     expect(stageA!.outputsEqual).toBe(false);
     db2.close();
+  });
+
+  it("proposal lifecycle: propose -> list -> approve -> list (filtered)", async () => {
+    const db3 = new DatabaseSync(":memory:");
+    initKernelNextSchema(db3);
+    const mcp = createKernelMcp(db3, { tscPath: TSC_PATH, skipTypeCheck: true });
+    const t = getTools(mcp);
+
+    const ir = diamondIR();
+    const submit = parsePayload(
+      await t.get("submit_pipeline")!.handler({ ir }),
+    ) as { ok: true; versionHash: string };
+
+    const proposed = parsePayload(
+      await t.get("propose_pipeline_change")!.handler({
+        currentVersion: submit.versionHash,
+        patch: { ops: [{ op: "remove_stage", stageName: "D" }] },
+        actor: "ai:test",
+      }),
+    ) as { ok: true; proposalId: string; proposedVersion: string; autoApplied: false };
+    expect(proposed.autoApplied).toBe(false);
+
+    const listed = parsePayload(
+      await t.get("list_proposals")!.handler({ status: "pending" }),
+    ) as { ok: true; proposals: Array<{ proposalId: string; status: string; actor: string }> };
+    expect(listed.proposals).toHaveLength(1);
+    expect(listed.proposals[0]!.proposalId).toBe(proposed.proposalId);
+    expect(listed.proposals[0]!.status).toBe("pending");
+
+    const approved = parsePayload(
+      await t.get("approve_proposal")!.handler({ proposalId: proposed.proposalId }),
+    ) as { ok: true; status: string };
+    expect(approved.status).toBe("approved");
+
+    const afterPending = parsePayload(
+      await t.get("list_proposals")!.handler({ status: "pending" }),
+    ) as { ok: true; proposals: unknown[] };
+    expect(afterPending.proposals).toHaveLength(0);
+
+    const afterAll = parsePayload(
+      await t.get("list_proposals")!.handler({}),
+    ) as { ok: true; proposals: Array<{ status: string }> };
+    expect(afterAll.proposals).toHaveLength(1);
+    expect(afterAll.proposals[0]!.status).toBe("approved");
+
+    db3.close();
+  });
+
+  it("reject_proposal persists reason and blocks second approve", async () => {
+    const db4 = new DatabaseSync(":memory:");
+    initKernelNextSchema(db4);
+    const mcp = createKernelMcp(db4, { tscPath: TSC_PATH, skipTypeCheck: true });
+    const t = getTools(mcp);
+
+    const ir = diamondIR();
+    const submit = parsePayload(
+      await t.get("submit_pipeline")!.handler({ ir }),
+    ) as { ok: true; versionHash: string };
+
+    const proposed = parsePayload(
+      await t.get("propose_pipeline_change")!.handler({
+        currentVersion: submit.versionHash,
+        patch: { ops: [{ op: "remove_stage", stageName: "D" }] },
+        actor: "ai:test",
+      }),
+    ) as { ok: true; proposalId: string };
+
+    const rejected = parsePayload(
+      await t.get("reject_proposal")!.handler({
+        proposalId: proposed.proposalId,
+        reason: "breaks contract",
+      }),
+    ) as { ok: true; status: string };
+    expect(rejected.status).toBe("rejected");
+
+    const reApprove = parsePayload(
+      await t.get("approve_proposal")!.handler({ proposalId: proposed.proposalId }),
+    ) as { ok: false; diagnostics: Array<{ code: string }> };
+    expect(reApprove.ok).toBe(false);
+    expect(reApprove.diagnostics[0]!.code).toBe("PROPOSAL_ALREADY_RESOLVED");
+
+    db4.close();
   });
 });

@@ -78,10 +78,14 @@ CREATE TABLE IF NOT EXISTS pipeline_proposals (
   base_version     TEXT NOT NULL REFERENCES pipeline_versions(version_hash),
   proposed_version TEXT REFERENCES pipeline_versions(version_hash),
   actor            TEXT NOT NULL,
-  status           TEXT NOT NULL,
+  status           TEXT NOT NULL CHECK (status IN ('pending','approved','rejected')),
   diagnostic_json  TEXT,
   created_at       INTEGER NOT NULL
 );
+-- listProposals filters by status and orders by created_at DESC; this
+-- composite index supports the "newest pending first" hot path.
+CREATE INDEX IF NOT EXISTS idx_pp_status_created
+  ON pipeline_proposals(status, created_at DESC);
 `;
 
 export function initKernelNextSchema(db: DatabaseSync): void {

@@ -112,6 +112,8 @@ export const DiagnosticSchema = z.object({
     "ENTRY_STAGE_MISSING",
     "WIRE_TYPE_MISMATCH",             // reserved for M2 tsc diagnostics
     "PATCH_APPLY_ERROR",
+    "PROPOSAL_NOT_FOUND",             // P2.1 approve/reject
+    "PROPOSAL_ALREADY_RESOLVED",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

@@ -344,6 +344,63 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
           }
         },
       },
+      {
+        name: "list_proposals",
+        description:
+          "List pipeline-change proposals, newest first. Optionally filter " +
+          "by status ('pending' | 'approved' | 'rejected').",
+        inputSchema: {
+          status: z.enum(["pending", "approved", "rejected"]).optional(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            const filter = args.status ? { status: args.status } : {};
+            return jsonResponse({ ok: true, proposals: kernel.listProposals(filter) });
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "approve_proposal",
+        description:
+          "Approve a pending proposal. Spike scope: flips status to 'approved' " +
+          "only — does NOT migrate running tasks. New task submissions can " +
+          "then reference the approved proposedVersion.",
+        inputSchema: {
+          proposalId: z.string(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            return jsonResponse(kernel.approveProposal(String(args.proposalId)));
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "reject_proposal",
+        description:
+          "Reject a pending proposal. Optional reason is persisted to " +
+          "diagnostic_json for audit.",
+        inputSchema: {
+          proposalId: z.string(),
+          // Mirror REST's 4096 cap to avoid oversize payloads bloating
+          // pipeline_proposals.diagnostic_json.
+          reason: z.string().max(4096).optional(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            const reason = typeof args.reason === "string" ? args.reason : undefined;
+            return jsonResponse(kernel.rejectProposal(String(args.proposalId), reason));
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
     ],
   });
 }
