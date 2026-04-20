@@ -28,9 +28,12 @@ export type AttemptStatus = "running" | "success" | "error" | "superseded";
 // per-element silent attempts opened by runner.orchestrateFanoutStage; they
 // write lineage but do not advance the machine. `fanout_aggregate` tags
 // the single aggregate attempt that writes the fanout stage's declared
-// output arrays. Callers that care about fanout provenance (diff_runs,
-// future UI) filter on this column instead of inferring from stage shape.
-export type AttemptKind = "regular" | "fanout_element" | "fanout_aggregate";
+// output arrays. `external` tags the single seed-phase attempt opened by
+// runner before actor.start(), whose port_values rows carry the
+// externalInputs values (§4.7 of the legacy-yaml-converter spec). Callers
+// that care about attempt provenance (diff_runs, future UI) filter on
+// this column instead of inferring from stage shape.
+export type AttemptKind = "regular" | "fanout_element" | "fanout_aggregate" | "external";
 
 export interface StartAttemptArgs {
   taskId: string;

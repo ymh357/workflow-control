@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS stage_attempts (
   status         TEXT NOT NULL
     CHECK (status IN ('running','success','error','superseded')),
   kind           TEXT NOT NULL DEFAULT 'regular'
-    CHECK (kind IN ('regular','fanout_element','fanout_aggregate'))
+    CHECK (kind IN ('regular','fanout_element','fanout_aggregate','external'))
 );
 CREATE INDEX IF NOT EXISTS idx_sa_task_stage     ON stage_attempts(task_id, stage_name, attempt_idx DESC);
 CREATE INDEX IF NOT EXISTS idx_sa_version_stage  ON stage_attempts(version_hash, stage_name);
