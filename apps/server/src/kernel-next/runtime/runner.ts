@@ -540,9 +540,11 @@ async function runFanoutStage(args: RunFanoutArgs): Promise<FanoutResult> {
 
   // Silent dispatcher: writes go to DB lineage but do NOT advance the
   // machine. The machine only learns about this fanout stage's outputs
-  // after aggregation (below).
+  // after aggregation (below). defaultKind='fanout_element' (Debt #7)
+  // tags every per-element attempt so provenance is queryable without
+  // inferring it from stage shape.
   const silentDispatcher: EventDispatcher = { send: () => { /* inert */ } };
-  const silentRuntime = new PortRuntime(db, silentDispatcher);
+  const silentRuntime = new PortRuntime(db, silentDispatcher, "fanout_element");
 
   const declaredOutputs = stageDef.outputs.map((p) => p.name);
   const aggregated: Record<string, unknown[]> = {};
@@ -591,6 +593,7 @@ async function runFanoutStage(args: RunFanoutArgs): Promise<FanoutResult> {
     taskId,
     versionHash,
     stageName: stageDef.name,
+    kind: "fanout_aggregate",
   });
   try {
     for (const name of declaredOutputs) {

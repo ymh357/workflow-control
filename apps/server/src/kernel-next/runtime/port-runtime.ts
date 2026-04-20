@@ -23,10 +23,22 @@ import type { MachineEvent } from "../compiler/ir-to-machine.js";
 
 export type AttemptStatus = "running" | "success" | "error" | "superseded";
 
+// Debt #7 — attempt provenance. `regular` is the default (single-execution
+// stage attempt, including gates and retries). `fanout_element` tags the
+// per-element silent attempts opened by runner.orchestrateFanoutStage; they
+// write lineage but do not advance the machine. `fanout_aggregate` tags
+// the single aggregate attempt that writes the fanout stage's declared
+// output arrays. Callers that care about fanout provenance (diff_runs,
+// future UI) filter on this column instead of inferring from stage shape.
+export type AttemptKind = "regular" | "fanout_element" | "fanout_aggregate";
+
 export interface StartAttemptArgs {
   taskId: string;
   versionHash: string;
   stageName: string;
+  // Optional per-call override. When unset, the PortRuntime's
+  // constructor-supplied `defaultKind` (or 'regular' if none) is used.
+  kind?: AttemptKind;
 }
 
 export interface StartAttemptResult {
@@ -67,6 +79,11 @@ export class PortRuntime {
   constructor(
     private readonly db: DatabaseSync,
     private readonly dispatcher: EventDispatcher,
+    // Debt #7 — per-runtime default for stage_attempts.kind. runner's
+    // orchestrateFanoutStage constructs a silent PortRuntime with
+    // defaultKind='fanout_element' so every per-element attempt carries
+    // the tag without each executor having to thread it through.
+    private readonly defaultKind: AttemptKind = "regular",
   ) {}
 
   /**
@@ -107,12 +124,13 @@ export class PortRuntime {
 
     const attemptIdx = row.max_idx + 1;
     const attemptId = randomUUID();
+    const kind = args.kind ?? this.defaultKind;
 
     this.db.prepare(
       `INSERT INTO stage_attempts
-       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'running')`,
-    ).run(attemptId, args.taskId, args.versionHash, args.stageName, attemptIdx, Date.now());
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status, kind)
+       VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
+    ).run(attemptId, args.taskId, args.versionHash, args.stageName, attemptIdx, Date.now(), kind);
 
     return { attemptId, attemptIdx };
   }
