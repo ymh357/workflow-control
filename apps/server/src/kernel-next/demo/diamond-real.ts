@@ -88,6 +88,10 @@ export async function runOnce(opts: RunOnceOptions): Promise<RunOnceResult> {
       // PORT_WRITTEN and advance the runner's state machine.
       mcpServerFactory: (dispatcher) =>
         createKernelMcp(db, {
+          // Execution path: the agent needs `write_port` to deliver
+          // stage outputs. Explicit 'combined' after the default flip
+          // to 'external' (Debt #2 retire).
+          surface: "combined",
           tscPath: opts.tscPath,
           writePortDispatcher: dispatcher,
         }),

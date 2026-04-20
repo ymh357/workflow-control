@@ -60,10 +60,10 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("exposes 14 tools with expected names", () => {
+  it("combined surface exposes 14 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
-    const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
     const tools = getTools(mcp);
     expect([...tools.keys()].sort()).toEqual([
       "answer_gate",
@@ -389,7 +389,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const ext = createKernelMcp(db, { tscPath: TSC_PATH, surface: "external" }) as { name: string };
     const int = createKernelMcp(db, { tscPath: TSC_PATH, surface: "internal" }) as { name: string };
-    const combined = createKernelMcp(db, { tscPath: TSC_PATH }) as { name: string };
+    const combined = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" }) as { name: string };
     expect(ext.name).toBe("__kernel_next_external__");
     expect(int.name).toBe("__kernel_next_internal__");
     expect(combined.name).toBe("__kernel_next__");
@@ -399,12 +399,24 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
   it("combined surface still includes every tool (backwards compat)", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
-    const mcp = createKernelMcp(db, { tscPath: TSC_PATH }); // default = combined
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
     const tools = getTools(mcp);
     expect(tools.size).toBe(14);
     expect(tools.has("write_port")).toBe(true);
     expect(tools.has("submit_pipeline")).toBe(true);
     expect(tools.has("migrate_task")).toBe(true);
+    db.close();
+  });
+
+  it("default surface (no explicit argument) is 'external'", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
+    const tools = getTools(mcp);
+    // 'external' = EXTERNAL_TOOLS only (13 tools; excludes write_port).
+    expect(tools.size).toBe(13);
+    expect(tools.has("write_port")).toBe(false);
+    expect(tools.has("submit_pipeline")).toBe(true);
     db.close();
   });
 });

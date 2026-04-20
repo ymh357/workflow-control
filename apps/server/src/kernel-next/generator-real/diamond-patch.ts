@@ -159,7 +159,10 @@ async function runOnce(
     if (!submit.ok) throw new Error("failed to seed baseline diamond");
     const baseVersion = submit.versionHash;
 
-    const mcpServer = createKernelMcp(db, { tscPath });
+    // Authoring-only: the agent proposes a pipeline patch; no
+    // write_port needed. Explicit 'external' (Debt #2 retire) —
+    // matches the new default.
+    const mcpServer = createKernelMcp(db, { surface: "external", tscPath });
     const result = await generatePatch({
       baseVersion,
       taskDescription: PATCH_TASK,

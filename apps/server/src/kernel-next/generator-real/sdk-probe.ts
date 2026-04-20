@@ -190,6 +190,11 @@ async function runScenario(
       systemPrompt: { type: "preset", preset: "claude_code", append: systemPromptAppend },
       mcpServers: {
         __kernel_next__: createKernelMcp(db, {
+          // Probe observes end-to-end SDK behaviour against the full
+          // tool surface; explicit 'combined' after the default flip to
+          // 'external' (Debt #2 retire) so the agent's tool-discovery
+          // behaviour is unchanged by this refactor.
+          surface: "combined",
           tscPath,
           writePortDispatcher: INERT_DISPATCHER,
         }) as NonNullable<SdkOptions["mcpServers"]>[string],

@@ -149,7 +149,10 @@ async function runOnce(runIdx: number, model: string, tscPath: string | undefine
   const db = new DatabaseSync(":memory:");
   initKernelNextSchema(db);
   try {
-    const mcpServer = createKernelMcp(db, { tscPath });
+    // Authoring-only: the agent submits a pipeline IR; no write_port
+    // needed. Explicit 'external' (Debt #2 retire) to make intent
+    // readable — also happens to match the new default.
+    const mcpServer = createKernelMcp(db, { surface: "external", tscPath });
     const result = await generateSubmit({
       taskDescription: DIAMOND_TASK,
       mcpServer,

@@ -89,7 +89,12 @@ const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}) {
   const kernel = new KernelService(db, options);
   const maxBytesDefault = options.defaultMaxBytes ?? MAX_VALUE_BYTES_DEFAULT;
-  const surface = options.surface ?? "combined";
+  // Debt #2 retire — default is 'external' (AI-facing authoring + read
+  // surface only). 'combined' remains opt-in for in-process callers that
+  // also need `write_port` (real-executor dispatch path, sdk-probe).
+  // Narrowing the default prevents new callers from accidentally handing
+  // runner-internal tools to external agents.
+  const surface = options.surface ?? "external";
   const allow: ReadonlySet<ToolName> =
     surface === "external" ? EXTERNAL_TOOLS :
     surface === "internal" ? INTERNAL_TOOLS :
