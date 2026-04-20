@@ -137,3 +137,57 @@ describe("emit-ts codegen", () => {
     expect(source).toContain("items: ReadonlyArray<{ id: string; v: number }>");
   });
 });
+
+describe("emitPipelineModule with externalInputs", () => {
+  it("emits __external__ namespace for external inputs", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent",
+          inputs: [{ name: "ctx", type: "unknown" }],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" } },
+      ],
+      externalInputs: [{ name: "ctx", type: "unknown" }],
+      wires: [{ from: { source: "external", port: "ctx" }, to: { stage: "A", port: "ctx" } }],
+    };
+    const { source } = emitPipelineModule(ir);
+    expect(source).toContain("export namespace __external__");
+    expect(source).toContain("Outputs");
+    expect(source).toContain(`__external__.Outputs["ctx"]`);
+    expect(source).not.toContain("Stages.__external__");
+  });
+
+  it("does not emit __external__ namespace when externalInputs is empty", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+      ],
+      wires: [],
+    };
+    const { source } = emitPipelineModule(ir);
+    expect(source).not.toContain("__external__");
+  });
+
+  it("skips fanout wrap/unwrap for external wires (seed passes through)", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent",
+          inputs: [{ name: "ctx", type: "unknown" }],
+          outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "p" },
+          fanout: { input: "ctx" },
+        },
+      ],
+      externalInputs: [{ name: "ctx", type: "unknown" }],
+      wires: [{ from: { source: "external", port: "ctx" }, to: { stage: "A", port: "ctx" } }],
+    };
+    const { source } = emitPipelineModule(ir);
+    expect(source).toContain(`__external__.Outputs["ctx"]`);
+    // External seed wire must NOT receive [0]! unwrap or [...] wrap.
+    expect(source).not.toMatch(/__external__\.Outputs\["ctx"\]\)\[0\]/);
+    expect(source).not.toMatch(/\[null as unknown as __external__/);
+  });
+});

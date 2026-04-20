@@ -79,6 +79,23 @@ export function emitPipelineModule(ir: PipelineIR): EmitResult {
   lines.push(`}`);
   lines.push(``);
 
+  // External inputs namespace (§externalInputs extension).
+  // When the pipeline declares externalInputs, emit a parallel `__external__`
+  // namespace whose Outputs block mirrors the declared external port shape.
+  // External-source wires then reference `__external__.Outputs[port]` for
+  // their type assertion — the type system treats the seed as a first-class
+  // producer without needing a real stage.
+  if (ir.externalInputs && ir.externalInputs.length > 0) {
+    lines.push(`export namespace __external__ {`);
+    lines.push(`  export interface Outputs {`);
+    for (const p of ir.externalInputs) {
+      lines.push(`    ${JSON.stringify(p.name)}: ${p.type};`);
+    }
+    lines.push(`  }`);
+    lines.push(`}`);
+    lines.push(``);
+  }
+
   // Wire assertions. Each assignment forces tsc to verify that the source
   // output type is assignable to the target input type.
   // Declaration shape:
@@ -89,13 +106,27 @@ export function emitPipelineModule(ir: PipelineIR): EmitResult {
   const wireByLine = new Map<number, WireMapEntry>();
 
   for (const w of ir.wires) {
-    // Bridge: Task 1.2 introduced WireSource discriminated union. Task 1.6
-    // will emit codegen for external-source wires (reading from an external
-    // inputs namespace) and replace this sentinel with an explicit branch.
-    const fromStageName = w.from.source === "external" ? "__external__" : w.from.stage;
-    const ident = wireIdentifier(fromStageName, w.from.port, w.to.stage, w.to.port);
+    // WireSource discriminated union (Task 1.2 / schema): stage vs external.
+    //   stage:    Stages.<name>.Outputs[port]    (normal producer)
+    //   external: __external__.Outputs[port]    (pipeline seed, no stage)
+    // Narrow via a direct check on `w.from.source` (TS does not propagate
+    // narrowing through an intermediate boolean).
+    let fromStageId: string;
+    let fromTypeLookup: string;
+    const fromIsExternal = w.from.source === "external";
+    if (w.from.source === "external") {
+      fromStageId = "__external__";
+      fromTypeLookup = `__external__.Outputs["${w.from.port}"]`;
+    } else {
+      // Legacy-compat: WireIR's optional `source` discriminant defeats
+      // narrowing to the stage-member in this else-branch even though both
+      // non-external members carry `stage`. Assert the stage-member shape.
+      const fromStageName = (w.from as { stage: string }).stage;
+      fromStageId = fromStageName;
+      fromTypeLookup = `Stages.${fromStageName}.Outputs["${w.from.port}"]`;
+    }
+    const ident = wireIdentifier(fromStageId, w.from.port, w.to.stage, w.to.port);
     const toTypeLookup = `Stages.${w.to.stage}.Inputs["${w.to.port}"]`;
-    const fromTypeLookup = `Stages.${fromStageName}.Outputs["${w.from.port}"]`;
 
     // Design §7.3 — fanout type compatibility.
     //   from-fanout:   producer stage has `fanout`. Kernel auto-reshapes
@@ -111,9 +142,25 @@ export function emitPipelineModule(ir: PipelineIR): EmitResult {
     //
     // Without these wrap/unwrap transforms tsc would reject every fanout
     // pipeline with TS2322 (Reviewer concern C1 / plan §3 C1).
-    const fromStage = ir.stages.find((s) => s.name === fromStageName);
+    //
+    // External seed wires pass through as-is: they are scalar pipeline
+    // inputs, never a fanned-out array. Forcing fromIsFanout=false here
+    // prevents the codegen from wrapping an external seed in `[...]`.
+    // Lookup producer stage for non-external wires. The cast is safe because
+    // the WireIR type keeps legacy `{ source?: "stage", stage, port }` and
+    // modern `{ source: "stage", stage, port }` as the same runtime shape;
+    // the optional discriminant blocks TS's narrowing in the else-branch
+    // even though both members carry `stage`.
+    let fromStage: StageIR | undefined;
+    if (w.from.source === "external") {
+      fromStage = undefined;
+    } else {
+      const fromStageName = (w.from as { stage: string }).stage;
+      fromStage = ir.stages.find((s) => s.name === fromStageName);
+    }
     const toStage = ir.stages.find((s) => s.name === w.to.stage);
     const fromIsFanout =
+      !fromIsExternal &&
       (fromStage?.type === "agent" || fromStage?.type === "script") &&
       fromStage?.fanout != null;
     const toIsFanout =
@@ -124,8 +171,15 @@ export function emitPipelineModule(ir: PipelineIR): EmitResult {
     // Build the right-hand value expression. The left-hand type
     // annotation never changes (always the declared Inputs[port]) —
     // only the source coercion adapts to fanout semantics.
+    //
+    // External seed wires bypass fanout wrap/unwrap entirely: the seed is
+    // a plain user-supplied value whose declared type already matches the
+    // target input 1:1. Auto-wrapping/unwrapping here would synthesize a
+    // false type mismatch or silently coerce a non-array seed.
     let rhsExpr: string;
-    if (fromIsFanout && !toIsFanout) {
+    if (fromIsExternal) {
+      rhsExpr = `null as unknown as ${fromTypeLookup}`;
+    } else if (fromIsFanout && !toIsFanout) {
       // Producer aggregates T into T[]; downstream reads T[].
       rhsExpr = `[null as unknown as ${fromTypeLookup}]`;
     } else if (!fromIsFanout && toIsFanout) {
@@ -144,12 +198,15 @@ export function emitPipelineModule(ir: PipelineIR): EmitResult {
     lines.push(`  ${rhsExpr};`);
 
     // Resolve actual TS types from the port index for diagnostic payload.
-    const fromPort = fromStage?.outputs.find((p) => p.name === w.from.port);
+    // External sources look up their declared type in `externalInputs`.
+    const fromPort = fromIsExternal
+      ? ir.externalInputs?.find((p) => p.name === w.from.port)
+      : fromStage?.outputs.find((p) => p.name === w.from.port);
     const toPort = toStage?.inputs.find((p) => p.name === w.to.port);
 
     const entry: WireMapEntry = {
       line: assignmentLine,
-      fromStage: fromStageName,
+      fromStage: fromStageId,
       fromPort: w.from.port,
       toStage: w.to.stage,
       toPort: w.to.port,
