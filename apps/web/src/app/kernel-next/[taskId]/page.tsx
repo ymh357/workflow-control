@@ -6,8 +6,9 @@
 // fetch-streaming (same pattern as the legacy task page so we stay
 // consistent and benefit from auto-reconnect). Renders:
 //   - top-level TaskMachine state
+//   - seed inputs written by the runner under the __external__ sentinel
 //   - per-stage table (executing/done/error + attemptId if known)
-//   - recent port writes (last 20)
+//   - recent port writes (last 20, excluding __external__ seeds)
 //   - final run diagnostics (run_final payload)
 //
 // Deliberately minimal. The goal is end-to-end verification that
@@ -35,6 +36,17 @@ interface PortWriteRow {
   at: string;
 }
 
+interface SeedPortEntry {
+  value: string;
+  timestamp: string;
+}
+
+// Sentinel stage name emitted by the runner when it seeds external
+// inputs into the task store before any real stage runs. It is not a
+// real pipeline stage — surface it separately so the stages table stays
+// clean.
+const EXTERNAL_STAGE = "__external__";
+
 interface RunFinalPayload {
   finalState: "completed" | "failed";
   stageErrors: Array<{ stage: string; message: string }>;
@@ -55,6 +67,7 @@ export default function KernelNextTaskPage() {
   const [topState, setTopState] = useState<TopLevelState>("unknown");
   const [stages, setStages] = useState<Map<string, StageRow>>(new Map());
   const [ports, setPorts] = useState<PortWriteRow[]>([]);
+  const [seedPorts, setSeedPorts] = useState<Map<string, SeedPortEntry>>(new Map());
   const [finalResult, setFinalResult] = useState<RunFinalPayload | null>(null);
   const [connected, setConnected] = useState(false);
   const eventCountRef = useRef(0);
@@ -82,16 +95,21 @@ export default function KernelNextTaskPage() {
       }
       case "stage_executing": {
         const d = event.data as { stage: string; attemptId?: string };
+        // Defensive: runner should never emit stage lifecycle events for
+        // the __external__ sentinel, but drop them if it ever does.
+        if (d.stage === EXTERNAL_STAGE) break;
         upsertStage({ stage: d.stage, state: "executing", attemptId: d.attemptId });
         break;
       }
       case "stage_done": {
         const d = event.data as { stage: string; attemptId?: string };
+        if (d.stage === EXTERNAL_STAGE) break;
         upsertStage({ stage: d.stage, state: "done", attemptId: d.attemptId });
         break;
       }
       case "stage_error": {
         const d = event.data as { stage: string; attemptId?: string; message: string };
+        if (d.stage === EXTERNAL_STAGE) break;
         upsertStage({
           stage: d.stage,
           state: "error",
@@ -102,6 +120,17 @@ export default function KernelNextTaskPage() {
       }
       case "port_written": {
         const d = event.data as { stage: string; port: string; valuePreview: string };
+        if (d.stage === EXTERNAL_STAGE) {
+          // Seed inputs are write-once values set by the runner before
+          // any stage runs. Render them in the dedicated Seed block
+          // instead of the rolling ports feed / stages table.
+          setSeedPorts((prev) => {
+            const next = new Map(prev);
+            next.set(d.port, { value: d.valuePreview, timestamp: event.timestamp });
+            return next;
+          });
+          break;
+        }
         appendPort({
           stage: d.stage,
           port: d.port,
@@ -185,6 +214,7 @@ export default function KernelNextTaskPage() {
   }, [taskId, handleEvent]);
 
   const stageRows = Array.from(stages.values()).sort((a, b) => a.stage.localeCompare(b.stage));
+  const seedRows = Array.from(seedPorts.entries()).sort(([a], [b]) => a.localeCompare(b));
 
   return (
     <div className="mx-auto max-w-5xl p-6 font-mono text-sm">
@@ -207,6 +237,36 @@ export default function KernelNextTaskPage() {
           </span>
         </span>
       </div>
+
+      {seedRows.length > 0 && (
+        <section className="mb-6">
+          <h2 className="mb-2 font-semibold">
+            Seed Inputs ({seedRows.length})
+          </h2>
+          <table className="w-full border-collapse border border-gray-300">
+            <thead className="bg-gray-100">
+              <tr>
+                <th className="border border-gray-300 px-2 py-1 text-left">Port</th>
+                <th className="border border-gray-300 px-2 py-1 text-left">Value</th>
+                <th className="border border-gray-300 px-2 py-1 text-left">Written at</th>
+              </tr>
+            </thead>
+            <tbody>
+              {seedRows.map(([port, { value, timestamp }]) => (
+                <tr key={port}>
+                  <td className="border border-gray-300 px-2 py-1 font-semibold">{port}</td>
+                  <td className="border border-gray-300 px-2 py-1 break-all text-gray-700">
+                    <code>{value}</code>
+                  </td>
+                  <td className="border border-gray-300 px-2 py-1 text-xs text-gray-500">
+                    {new Date(timestamp).toLocaleTimeString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
 
       <section className="mb-6">
         <h2 className="mb-2 font-semibold">Stages</h2>
