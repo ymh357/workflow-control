@@ -274,3 +274,60 @@ describe("structural validator", () => {
     expect(validateStructural(ir)).toEqual({ ok: true });
   });
 });
+
+describe("structural validator — externalInputs", () => {
+  function baseWithExt(): PipelineIR {
+    return {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent", inputs: [{ name: "ctx", type: "unknown" }], outputs: [], config: { promptRef: "p" } },
+      ],
+      externalInputs: [{ name: "ctx", type: "unknown" }],
+      wires: [{ from: { source: "external", port: "ctx" }, to: { stage: "A", port: "ctx" } }],
+    };
+  }
+
+  it("accepts a valid external wire", () => {
+    expect(validateStructural(baseWithExt())).toEqual({ ok: true });
+  });
+
+  it("rejects external wire pointing at an undeclared external port", () => {
+    const ir = baseWithExt();
+    ir.wires[0]!.from = { source: "external", port: "ghost" };
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.diagnostics.some((d) => d.code === "WIRE_EXTERNAL_SOURCE_PORT_MISSING")).toBe(true);
+  });
+
+  it("rejects duplicate externalInputs name", () => {
+    const ir = baseWithExt();
+    ir.externalInputs!.push({ name: "ctx", type: "string" });
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.diagnostics.some((d) => d.code === "DUPLICATE_EXTERNAL_INPUT_NAME")).toBe(true);
+  });
+
+  it("rejects external port name colliding with stage name", () => {
+    const ir = baseWithExt();
+    ir.externalInputs!.push({ name: "A", type: "string" });
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.diagnostics.some((d) => d.code === "EXTERNAL_INPUT_COLLIDES_WITH_STAGE")).toBe(true);
+  });
+
+  it("rejects stage named __external__", () => {
+    const ir = baseWithExt();
+    ir.stages.push({ name: "__external__", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } });
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.diagnostics.some((d) => d.code === "RESERVED_STAGE_NAME")).toBe(true);
+  });
+
+  it("rejects externalInputs named __external__", () => {
+    const ir = baseWithExt();
+    ir.externalInputs!.push({ name: "__external__", type: "string" });
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.diagnostics.some((d) => d.code === "RESERVED_STAGE_NAME")).toBe(true);
+  });
+});

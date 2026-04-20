@@ -4,6 +4,7 @@
 //   - stages[].name unique
 //   - ports unique per (stage, direction)
 //   - every wire's source port exists AND is an output
+//     (external-source wires instead target a declared external input)
 //   - every wire's target port exists AND is an input
 //   - each input port driven by at most one wire (also enforced at SQLite PK,
 //     but we want a clean diagnostic before touching the DB)
@@ -11,6 +12,9 @@
 //   - (§3.2) gate stages must not declare fanout
 //   - (§3.2) gate.config.routing targets must be declared stages
 //   - (§6.3) a stage declaring fanout must name one of its own input ports
+//   - (§4.15) no stage or external input may be named "__external__" (reserved
+//     sentinel for kernel-next seed lineage)
+//   - (§4.4) externalInputs[] names unique and distinct from stage names
 //
 // Type compatibility between wire endpoints (TS-level) is M2's job (tsc).
 
@@ -40,6 +44,54 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
       message: `Entry stage '${ir.entry}' is not declared in stages[].`,
       context: { entry: ir.entry },
     });
+  }
+
+  // --- Reserved stage name ---
+  // The sentinel "__external__" is carved out of the stage-name space so
+  // kernel-next's execution record layer can mint synthetic seed lineage
+  // entries (ExecutionAttempt.stage = "__external__") without colliding
+  // with a real stage. Any user-declared stage or external input using
+  // this name would violate that invariant.
+  const RESERVED = "__external__";
+  for (const s of ir.stages) {
+    if (s.name === RESERVED) {
+      diagnostics.push({
+        code: "RESERVED_STAGE_NAME",
+        message: `Stage name '${s.name}' is reserved for kernel-next seed lineage.`,
+        context: { stage: s.name },
+      });
+    }
+  }
+
+  // --- External inputs: reserved / duplicate / stage-collision ---
+  const externalInputs = ir.externalInputs ?? [];
+  const externalNames = new Set<string>();
+  for (const p of externalInputs) {
+    if (p.name === RESERVED) {
+      diagnostics.push({
+        code: "RESERVED_STAGE_NAME",
+        message: `External input '${p.name}' uses the reserved sentinel name.`,
+        context: { port: p.name },
+      });
+      // Skip further checks for a reserved-name port — subsequent
+      // duplicate/collision diagnostics would just echo the same problem.
+      continue;
+    }
+    if (externalNames.has(p.name)) {
+      diagnostics.push({
+        code: "DUPLICATE_EXTERNAL_INPUT_NAME",
+        message: `External input '${p.name}' is declared more than once.`,
+        context: { port: p.name },
+      });
+    }
+    if (stageNames.has(p.name)) {
+      diagnostics.push({
+        code: "EXTERNAL_INPUT_COLLIDES_WITH_STAGE",
+        message: `External input '${p.name}' collides with a stage of the same name.`,
+        context: { port: p.name },
+      });
+    }
+    externalNames.add(p.name);
   }
 
   // --- Port uniqueness per (stage, direction) ---
@@ -156,32 +208,39 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
   // --- Wire validity ---
   const drivenInputs = new Set<string>();
   for (const w of ir.wires) {
-    // Bridge: Task 1.2 introduced WireSource discriminated union. Task 1.4
-    // will short-circuit external-source wires at the loop head and remove
-    // this sentinel. Until then, treat "__external__" as a non-stage; the
-    // existing fixtures never set source=external so this branch is dead.
-    const fromStageName = w.from.source === "external" ? "__external__" : w.from.stage;
-    // Source must exist and be an output.
-    const fromInKey: PortKey = `${fromStageName}.${w.from.port}.in`;
-    const fromOutKey: PortKey = `${fromStageName}.${w.from.port}.out`;
-    const fromExistsAsOut = portIndex.has(fromOutKey);
-    const fromExistsAsIn  = portIndex.has(fromInKey);
-    const fromStageExists = stageNames.has(fromStageName);
+    // Source validity — discriminated on WireSource.source. External
+    // sources are validated against ir.externalInputs[]; stage sources
+    // against portIndex.
+    if (w.from.source === "external") {
+      if (!externalNames.has(w.from.port)) {
+        diagnostics.push({
+          code: "WIRE_EXTERNAL_SOURCE_PORT_MISSING",
+          message: `Wire external source '${w.from.port}' is not declared in externalInputs[].`,
+          context: { from: w.from },
+        });
+      }
+    } else {
+      const fromInKey: PortKey = `${w.from.stage}.${w.from.port}.in`;
+      const fromOutKey: PortKey = `${w.from.stage}.${w.from.port}.out`;
+      const fromExistsAsOut = portIndex.has(fromOutKey);
+      const fromExistsAsIn  = portIndex.has(fromInKey);
+      const fromStageExists = stageNames.has(w.from.stage);
 
-    if (!fromExistsAsOut && !fromExistsAsIn) {
-      diagnostics.push({
-        code: "WIRE_SOURCE_PORT_MISSING",
-        message: fromStageExists
-          ? `Wire source '${fromStageName}.${w.from.port}' does not exist on stage '${fromStageName}'.`
-          : `Wire source stage '${fromStageName}' does not exist (port '${w.from.port}' unreachable).`,
-        context: { from: w.from, stageExists: fromStageExists },
-      });
-    } else if (!fromExistsAsOut && fromExistsAsIn) {
-      diagnostics.push({
-        code: "WIRE_SOURCE_DIRECTION_WRONG",
-        message: `Wire source '${fromStageName}.${w.from.port}' is an input port; must be output.`,
-        context: { from: w.from },
-      });
+      if (!fromExistsAsOut && !fromExistsAsIn) {
+        diagnostics.push({
+          code: "WIRE_SOURCE_PORT_MISSING",
+          message: fromStageExists
+            ? `Wire source '${w.from.stage}.${w.from.port}' does not exist on stage '${w.from.stage}'.`
+            : `Wire source stage '${w.from.stage}' does not exist (port '${w.from.port}' unreachable).`,
+          context: { from: w.from, stageExists: fromStageExists },
+        });
+      } else if (!fromExistsAsOut && fromExistsAsIn) {
+        diagnostics.push({
+          code: "WIRE_SOURCE_DIRECTION_WRONG",
+          message: `Wire source '${w.from.stage}.${w.from.port}' is an input port; must be output.`,
+          context: { from: w.from },
+        });
+      }
     }
 
     // Target must exist and be an input.
