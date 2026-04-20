@@ -143,6 +143,13 @@ type AttemptVerdict =
   | { verdict: "completed" | "failed"; snapshot: unknown }
   | {
       verdict: "retry";
+      // The actor's context snapshot at the moment of retry — captured
+      // synchronously in the inspector before the actor is stopped. The
+      // outer loop uses this to populate persistentPortValues /
+      // persistentFinalizedStages / etc. so that non-reset stages carry
+      // their outputs into the rebuilt machine (e.g. a gate that was
+      // already answered doesn't need re-answering).
+      contextAtRetry: MachineContext;
       event: {
         failedStageName: string;
         backToStage: string;
@@ -245,6 +252,12 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   let persistentFinalizedStages: MachineContext["finalizedStages"] = [];
   let isRetryRebuild = false; // drives initialContext.portValues override
 
+  // The most recent machine context from the subscriber. Updated on
+  // every snapshot so the retry inspector can read the latest context
+  // without relying on getSnapshot() (which may return a stale snapshot
+  // during a microstep). Per-attempt; reset before each attempt.
+  let latestContext: MachineContext | null = null;
+
   // ---- Publishing + run-level coordination --------------------------
   const publish = (event: AnyKernelNextSSEEvent): void => {
     if (!opts.broadcaster) return;
@@ -328,6 +341,11 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       // verdict.verdict === "retry": apply the transformations and loop.
       const { failedStageName, backToStage, retryIdx, maxRetries, errorMessage } =
         verdict.event;
+      // contextAtRetry carries the machine context at the moment the retry
+      // was triggered — captured in the inspector before actor.stop(). Use
+      // it to seed the persistent variables so non-reset stages (upstream
+      // agents, already-answered gates) carry their state into the rebuild.
+      const retryCtx = verdict.contextAtRetry;
 
       publish({
         type: "stage_retry",
@@ -352,25 +370,31 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       const toReset = new Set<string>([backToStage, ...downstream]);
 
       persistentRetryCounts = {
-        ...persistentRetryCounts,
+        ...retryCtx.retryCounts,
         [failedStageName]:
-          (persistentRetryCounts[failedStageName] ?? 0) + 1,
+          (retryCtx.retryCounts[failedStageName] ?? 0) + 1,
       };
 
-      // Drop portValues for reset stages. Keys are `<stageName>.<port>`
-      // so prefix-match on the stage part.
+      // Seed from the current actor's portValues, then drop reset stages.
+      // Keys are `<stageName>.<port>` so prefix-match on the stage part.
       persistentPortValues = Object.fromEntries(
-        Object.entries(persistentPortValues).filter(([key]) => {
+        Object.entries(retryCtx.portValues).filter(([key]) => {
           const [stageName] = key.split(".");
           return !toReset.has(stageName ?? "");
         }),
       );
 
-      // Drop finalizedStages for reset stages so the audit log
-      // reflects only the terminal attempt's outcomes per stage.
-      persistentFinalizedStages = persistentFinalizedStages.filter(
+      // Seed from the current actor's finalizedStages, then drop reset stages.
+      persistentFinalizedStages = retryCtx.finalizedStages.filter(
         (f) => !toReset.has(f.name),
       );
+
+      // Seed gate authorization from the current context (already preserved
+      // across retries by design §4.3 — gates don't need re-answering when
+      // a downstream script fails). We take it from retryCtx so it's
+      // consistent with the rest of the captured state.
+      persistentGateAuthorized = [...retryCtx.gateAuthorizedTargets];
+      persistentGateSkipped = [...retryCtx.gateSkippedTargets];
 
       // stageErrors: keep entries for stages NOT being reset (they
       // won't re-run and so are terminal in their own right).
@@ -387,17 +411,10 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
         dispatched.delete(name);
       }
 
-      // Keep gateAuthorizedTargets / gateSkippedTargets intact — an
-      // already-approved gate does not need a second approval when
-      // a downstream script retries. (Per design §4.3.)
-
-      // Log-continuity: the compiler will append new entries on the
-      // next attempt, but prior log entries for reset stages are no
-      // longer meaningful. Filter them out to match the finalizedStages
-      // cleanup above.
-      persistentLog = persistentLog.filter((entry) => {
-        // Log entries look like `<stageName>:<substate>`; the leading
-        // token up to `:` is the stage name.
+      // Log-continuity: seed from the current context, then filter reset
+      // stages. Log entries look like `<stageName>:<substate>`; the
+      // leading token up to `:` is the stage name.
+      persistentLog = retryCtx.log.filter((entry) => {
         const colonIdx = entry.indexOf(":");
         if (colonIdx < 0) return true;
         const stageName = entry.slice(0, colonIdx);
@@ -628,6 +645,19 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
         const ev = inspEvent.event as Record<string, unknown> | undefined;
         if (!ev || ev.type !== "RETRY_TO_STAGE") return;
         retryTriggered = true;
+        // Capture the current machine context BEFORE stopping the actor.
+        // This snapshot includes portValues / finalizedStages / gate
+        // authorizations for every stage that ran successfully up to
+        // this point — the outer loop uses it to seed persistentPortValues
+        // so non-reset stages (e.g. an already-answered gate, upstream
+        // agents) carry their outputs into the rebuilt machine without
+        // having to re-run.
+        // Use the subscriber-tracked latestContext rather than getSnapshot().
+        // The subscriber fires on every committed snapshot and captures the
+        // most recent machine context; getSnapshot() during a microstep can
+        // return a stale snapshot that predates GATE_ANSWERED / other events
+        // processed in the same event-loop tick.
+        const contextAtRetry = latestContext ?? (thisActor!.getSnapshot() as { context: MachineContext }).context;
         // Stop the outgoing actor SYNCHRONOUSLY. The compiler's retry
         // transition targets `waiting`, so the moment this inspector
         // returns, XState will continue the microstep chain:
@@ -641,6 +671,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
         }
         resolveAttempt({
           verdict: "retry",
+          contextAtRetry,
           event: {
             failedStageName: String(ev.failedStageName),
             backToStage: String(ev.backToStage),
@@ -655,7 +686,15 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       thisActor = actor;
       currentActor = actor;
 
+      // Reset per-attempt latest context tracker.
+      latestContext = null;
+
       actor.subscribe((snapshot) => {
+        // Always update latestContext, even when retryTriggered — the
+        // inspector fires during microstep processing and needs the most
+        // recent committed snapshot context.
+        latestContext = snapshot.context as MachineContext;
+
         if (retryTriggered || attemptEnded) return;
         if (timedOut) {
           attemptEnded = true;
@@ -871,6 +910,58 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
 
       actor.start();
       actor.send({ type: "START" });
+
+      // Retry-rebuild: re-answer gates that were already resolved in the
+      // previous attempt. On the rebuilt machine, every gate stage starts
+      // fresh in `waiting` → `executing` regardless of context. A gate
+      // in `executing` will block the pipeline until it receives
+      // GATE_ANSWERED. For gates already in persistentFinalizedStages,
+      // we synthesize the answer from gateAuthorizedTargets so the rebuilt
+      // machine can proceed without requiring external re-answering.
+      //
+      // A gate's "picked" targetStage is recovered by finding the route
+      // entry whose value(s) all appear in persistentGateAuthorized.
+      // If no route matches (malformed IR), we skip — the gate will
+      // block and eventually time out, which is the safe-fail behavior.
+      if (isRetryRebuild) {
+        for (const finalized of persistentFinalizedStages) {
+          if (finalized.outcome !== "done") continue;
+          const gateStage = opts.ir.stages.find(
+            (s) => s.name === finalized.name && s.type === "gate",
+          ) as GateStage | undefined;
+          if (!gateStage) continue;
+          // Find the route that was taken: all targets are in
+          // persistentGateAuthorized.
+          let pickedAnswer: string | undefined;
+          let pickedTarget: string | string[] | undefined;
+          const authorized = new Set(persistentGateAuthorized);
+          for (const [answer, target] of Object.entries(
+            gateStage.config.routing.routes,
+          )) {
+            const targets = Array.isArray(target) ? target : [target];
+            if (targets.every((t) => authorized.has(t))) {
+              pickedAnswer = answer;
+              pickedTarget = target;
+              break;
+            }
+          }
+          if (pickedAnswer === undefined || pickedTarget === undefined) continue;
+          // Dispatch a synthetic GATE_ANSWERED. The gate region will
+          // transition to `done`; the root-level handler updates
+          // gateAuthorizedTargets (idempotent — targets are already there).
+          // We use a deterministic synthetic gateId since the gate_queue
+          // row for this rebuilt attempt is not created (dispatched still
+          // has the gate's stageName). This id is never stored in the DB.
+          logger.debug({ taskId: opts.taskId, stageName: gateStage.name, pickedAnswer }, "runner: dispatching synthetic GATE_ANSWERED for retry rebuild");
+          dispatcher.send({
+            type: "GATE_ANSWERED",
+            gateId: `__retry_synthetic__${gateStage.name}`,
+            stageName: gateStage.name,
+            answer: pickedAnswer,
+            targetStage: pickedTarget,
+          });
+        }
+      }
     }).finally(() => {
       if (currentActor) {
         try { currentActor.stop(); } catch { /* ignore */ }
