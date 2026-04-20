@@ -16,6 +16,7 @@ import { emitPipelineModule } from "../codegen/emit-ts.js";
 import { versionHash } from "../ir/canonical.js";
 import { insertPipelineVersion, getPipelineIR } from "../ir/sql.js";
 import { applyPatch, PatchApplyError } from "./patch.js";
+import { taskRegistry } from "../runtime/task-registry.js";
 
 // Process-local in-progress migration set (design §10.2: "a task can be
 // migrated to at most one new version at a time"). Keyed by taskId; the
@@ -884,6 +885,17 @@ export class KernelService {
     }
     migrationInProgress.set(taskId, { proposalId, acquiredAt: Date.now() });
 
+    // A2.3.4 — snapshot running stages BEFORE the supersede tx flips
+    // their status. These are the stages that need INTERRUPT after the
+    // DB commits; taking the snapshot here avoids querying a moving
+    // target once the UPDATE has run.
+    const runningBeforeSupersede = (
+      this.db.prepare(
+        `SELECT DISTINCT stage_name FROM stage_attempts
+         WHERE task_id = ? AND status = 'running'`,
+      ).all(taskId) as Array<{ stage_name: string }>
+    ).map((r) => r.stage_name);
+
     // Mark stage_attempts superseded. Lineage rows stay (§1.3 invariant).
     const eventId = randomUUID();
     const startedAt = Date.now();
@@ -962,6 +974,34 @@ export class KernelService {
     } finally {
       // Always release the lock, whether we committed or rolled back.
       migrationInProgress.delete(taskId);
+    }
+
+    // A2.3.4 — broadcast INTERRUPT to every stage that was in-flight
+    // (status='running') when migrateTask started. We captured the list
+    // BEFORE the supersede tx flipped their status, so it's the accurate
+    // pre-migration state. Stages not in supersedeStages (e.g. an
+    // unrelated parallel branch) are also included — they should still
+    // receive INTERRUPT because the migration semantically means "stop
+    // the current pipeline version"; if a running stage doesn't need to
+    // re-run on the new version, the runner's §4.2 matrix will let its
+    // summary turn land cleanly and it'll keep its 'success' outcome.
+    //
+    // Why after the tx commits: DB-level state is the source of truth
+    // for lineage. The runner's in-memory machine is a derived view —
+    // we notify it AFTER DB consistency, so a partial failure that
+    // rolls back the tx doesn't leave runners reacting to events for
+    // migrations that never landed.
+    //
+    // Why best-effort (no await, no error propagation): dispatcher.send
+    // is fire-and-forget by design — the XState actor queues events
+    // synchronously. If the taskId isn't registered (task already
+    // unregistered, process restarted mid-flight, etc.), the broadcast
+    // is a no-op and migrateTask still returns ok.
+    const dispatcher = taskRegistry.get(taskId);
+    if (dispatcher) {
+      for (const stageName of runningBeforeSupersede) {
+        dispatcher.send({ type: "INTERRUPT", stage: stageName });
+      }
     }
 
     return {

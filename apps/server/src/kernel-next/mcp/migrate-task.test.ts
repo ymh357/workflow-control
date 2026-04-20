@@ -529,3 +529,153 @@ describe("F5: migrateTask serial-per-task lock (§10.2)", () => {
     }
   });
 });
+
+// A2.3.4 — migrateTask broadcasts INTERRUPT{stage} to the live runner
+// (via taskRegistry) for every stage still in 'running' status AFTER
+// the DB transaction commits. This is how a migration approval
+// propagates through to an in-flight AgentMachine and triggers the
+// §4.2 summary-turn handoff.
+describe("A2.3.4: migrateTask broadcasts INTERRUPT to live runner", () => {
+  afterEach(async () => {
+    __resetMigrationLocksForTest();
+    const { taskRegistry } = await import("../runtime/task-registry.js");
+    taskRegistry.__clearForTest();
+  });
+
+  it("sends INTERRUPT for each running stage; skipped when no dispatcher", async () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const submit = svc.submit(linearIR());
+      if (!submit.ok) throw new Error("submit failed");
+
+      // Seed task with one running stage (B) + one completed (A).
+      seedAttempts(db, "t1", submit.versionHash, [
+        { name: "A", status: "success" },
+        { name: "B", status: "running" },
+      ]);
+      seedPortValue(db, "att-t1-A", "A", "x", 10);
+
+      const prop = svc.propose({
+        currentVersion: submit.versionHash,
+        actor: "ai:main-claude",
+        patch: {
+          ops: [{ op: "update_stage_config", stage: "B", configPatch: { promptRef: "p2" } }],
+        },
+        rerunFrom: "B",
+        migrateRunningTasks: ["t1"],
+      });
+      if (!prop.ok) throw new Error("propose failed");
+      const approved = svc.approveProposal(prop.proposalId);
+      if (!approved.ok) throw new Error("approve failed");
+
+      // Register a capturing dispatcher — simulates a live runner.
+      const received: Array<{ type: string; stage?: string }> = [];
+      const { taskRegistry } = await import("../runtime/task-registry.js");
+      taskRegistry.register("t1", {
+        send: (ev) => {
+          received.push(ev as { type: string; stage?: string });
+        },
+      });
+
+      const result = svc.migrateTask("t1", prop.proposalId);
+      expect(result.ok).toBe(true);
+
+      // Exactly one INTERRUPT, targeting the running stage B.
+      const interrupts = received.filter((e) => e.type === "INTERRUPT");
+      expect(interrupts).toEqual([{ type: "INTERRUPT", stage: "B" }]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("broadcasts INTERRUPT for every running stage (parallel)", async () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      // Parallel IR: two independent entry stages both running.
+      const parallelIR: PipelineIR = {
+        name: "a234-parallel",
+        stages: [
+          { name: "P", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+          { name: "Q", type: "agent", inputs: [], outputs: [{ name: "y", type: "number" }], config: { promptRef: "p" } },
+        ],
+        wires: [],
+      };
+      const submit = svc.submit(parallelIR);
+      if (!submit.ok) throw new Error("submit failed");
+
+      seedAttempts(db, "t2", submit.versionHash, [
+        { name: "P", status: "running" },
+        { name: "Q", status: "running" },
+      ]);
+
+      const prop = svc.propose({
+        currentVersion: submit.versionHash,
+        actor: "ai:main-claude",
+        patch: {
+          ops: [{ op: "update_stage_config", stage: "P", configPatch: { promptRef: "p2" } }],
+        },
+        rerunFrom: "P",
+        migrateRunningTasks: ["t2"],
+      });
+      if (!prop.ok) throw new Error("propose failed");
+      const approved = svc.approveProposal(prop.proposalId);
+      if (!approved.ok) throw new Error("approve failed");
+
+      const received: Array<{ type: string; stage?: string }> = [];
+      const { taskRegistry } = await import("../runtime/task-registry.js");
+      taskRegistry.register("t2", {
+        send: (ev) => {
+          received.push(ev as { type: string; stage?: string });
+        },
+      });
+
+      const result = svc.migrateTask("t2", prop.proposalId);
+      expect(result.ok).toBe(true);
+
+      // Both running stages got INTERRUPT. Order is SQL DISTINCT-defined,
+      // so sort before asserting.
+      const stages = received
+        .filter((e) => e.type === "INTERRUPT")
+        .map((e) => e.stage)
+        .sort();
+      expect(stages).toEqual(["P", "Q"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("no-op when taskRegistry has no dispatcher for the task", async () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const submit = svc.submit(linearIR());
+      if (!submit.ok) throw new Error("submit failed");
+
+      seedAttempts(db, "t3", submit.versionHash, [
+        { name: "A", status: "running" },
+      ]);
+
+      const prop = svc.propose({
+        currentVersion: submit.versionHash,
+        actor: "ai:main-claude",
+        patch: {
+          ops: [{ op: "update_stage_config", stage: "A", configPatch: { promptRef: "p2" } }],
+        },
+        rerunFrom: "A",
+        migrateRunningTasks: ["t3"],
+      });
+      if (!prop.ok) throw new Error("propose failed");
+      const approved = svc.approveProposal(prop.proposalId);
+      if (!approved.ok) throw new Error("approve failed");
+
+      // Intentionally do NOT register a dispatcher. migrateTask must
+      // still succeed — the broadcast is best-effort.
+      const result = svc.migrateTask("t3", prop.proposalId);
+      expect(result.ok).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+});
