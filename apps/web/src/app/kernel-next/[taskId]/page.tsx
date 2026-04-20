@@ -22,11 +22,17 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 type TopLevelState = "idle" | "running" | "completed" | "failed" | "unknown";
 
+type StageErrorReason = "no_active_wire" | "executor_failed";
+
 interface StageRow {
   stage: string;
   state: "executing" | "done" | "error";
   attemptId?: string;
   errorMessage?: string;
+  // Classifies an `error` state so the UI can render a reason badge
+  // without regex-matching the message. Absence on older emitters is
+  // treated as no_active_wire by the renderer (runner invariant).
+  errorReason?: StageErrorReason;
 }
 
 interface PortWriteRow {
@@ -46,6 +52,28 @@ interface SeedPortEntry {
 // real pipeline stage — surface it separately so the stages table stays
 // clean.
 const EXTERNAL_STAGE = "__external__";
+
+// Compact visual classifier for a stage_error cause. Runner currently
+// emits two reasons: no_active_wire (topology — every inbound wire
+// resolved false or a producer never ran) and executor_failed (the
+// agent / script returned status=error or threw). Older emitters that
+// pre-date the SSE reason field render as "wire" under the runner's
+// backwards-compat convention.
+const ErrorReasonBadge = ({ reason }: { reason?: StageErrorReason }) => {
+  const isExec = reason === "executor_failed";
+  const label = isExec ? "exec" : "wire";
+  const title = isExec
+    ? "executor_failed — stage agent/script returned error or threw"
+    : "no_active_wire — every inbound wire resolved false";
+  const className = isExec
+    ? "mr-1 inline-block rounded bg-red-100 px-1 text-[10px] font-semibold uppercase text-red-800"
+    : "mr-1 inline-block rounded bg-amber-100 px-1 text-[10px] font-semibold uppercase text-amber-800";
+  return (
+    <span className={className} title={title}>
+      {label}
+    </span>
+  );
+};
 
 interface RunFinalPayload {
   finalState: "completed" | "failed";
@@ -108,13 +136,19 @@ export default function KernelNextTaskPage() {
         break;
       }
       case "stage_error": {
-        const d = event.data as { stage: string; attemptId?: string; message: string };
+        const d = event.data as {
+          stage: string;
+          attemptId?: string;
+          message: string;
+          reason?: StageErrorReason;
+        };
         if (d.stage === EXTERNAL_STAGE) break;
         upsertStage({
           stage: d.stage,
           state: "error",
           attemptId: d.attemptId,
           errorMessage: d.message,
+          errorReason: d.reason,
         });
         break;
       }
@@ -298,6 +332,9 @@ export default function KernelNextTaskPage() {
                     {row.attemptId ?? "—"}
                   </td>
                   <td className="border border-gray-300 px-2 py-1 text-xs text-red-600">
+                    {row.state === "error" && (
+                      <ErrorReasonBadge reason={row.errorReason} />
+                    )}
                     {row.errorMessage ?? ""}
                   </td>
                 </tr>
