@@ -57,6 +57,15 @@ export interface MachineContext {
   // for the answered gate, every routing target that is not the picked
   // branch gets added here.
   gateSkippedTargets: string[];
+  // Debt #3 retire — control-plane mirror of each stage region's final
+  // outcome. Populated atomically with the region's final.entry. Read by
+  // runner.ts when the machine reaches a top-level final state to detect
+  // `error` regions that parallel.onDone collapsed into the same snapshot
+  // tick (previously scraped via regex over `log[]`). The `log` string
+  // array is preserved as a test-facing ordering contract (see
+  // wire-guards.test.ts, demo/diamond.ts); this field is the typed,
+  // runner-only signal.
+  finalizedStages: { name: string; outcome: "done" | "error" }[];
 }
 
 export type MachineEvent =
@@ -188,6 +197,7 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
       log: [],
       gateAuthorizedTargets: [],
       gateSkippedTargets: [],
+      finalizedStages: [],
     },
     initial: "idle",
     on: {
@@ -546,12 +556,20 @@ function buildStageRegion(
         type: "final",
         entry: assign({
           log: ({ context }) => [...context.log, `${stageName}:done`],
+          finalizedStages: ({ context }) => [
+            ...context.finalizedStages,
+            { name: stageName, outcome: "done" as const },
+          ],
         }),
       },
       error: {
         type: "final",
         entry: assign({
           log: ({ context }) => [...context.log, `${stageName}:error`],
+          finalizedStages: ({ context }) => [
+            ...context.finalizedStages,
+            { name: stageName, outcome: "error" as const },
+          ],
         }),
       },
     },

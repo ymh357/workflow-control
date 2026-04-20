@@ -292,17 +292,16 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       machineEnded = true;
       clearTimeout(timer);
       const ctx = snapshot.context as MachineContext;
-      // Scan the log for stage-region error entries that we never observed
-      // via the substate path. When parallel.onDone fires synchronously
-      // with a child's final transition (e.g. NO_ACTIVE_WIRE on a short
-      // pipeline), the top-level value jumps to `completed` in the same
-      // snapshot that the child reached `error`, so we never see an
-      // "error" substate. The per-region `entry: log += <stage>:error`
-      // is the stable signal.
-      for (const entry of ctx.log) {
-        const m = /^([A-Za-z_][A-Za-z0-9_]*):error$/.exec(entry);
-        if (!m) continue;
-        const stageName = m[1]!;
+      // Catch stage-region errors that we never observed via the substate
+      // path. When parallel.onDone fires synchronously with a child's final
+      // transition (e.g. NO_ACTIVE_WIRE on a short pipeline), the top-level
+      // value jumps to `completed` in the same snapshot tick that the
+      // child reached `error`, so the substate-level observer below never
+      // sees it. ctx.finalizedStages is populated atomically with each
+      // region's final.entry (compiler/ir-to-machine.ts), so reading it
+      // here is the structured equivalent of the retired log-regex scan.
+      for (const { name: stageName, outcome } of ctx.finalizedStages) {
+        if (outcome !== "error") continue;
         if (dispatched.has(stageName)) continue;
         dispatched.add(stageName);
         stageErrors.push(
