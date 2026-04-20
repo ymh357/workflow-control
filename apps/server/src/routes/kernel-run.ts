@@ -20,6 +20,8 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { KernelService } from "../kernel-next/mcp/kernel.js";
 import { createKernelMcp } from "../kernel-next/mcp/server.js";
 import { getKernelNextDb } from "../lib/kernel-next-db.js";
@@ -30,6 +32,7 @@ import { slowDiamondHandlers } from "../kernel-next/demo/slow-diamond.js";
 import { RealStageExecutor } from "../kernel-next/runtime/real-executor.js";
 import { FsPromptResolver } from "../kernel-next/runtime/fs-prompt-resolver.js";
 import { smokeTestIR, smokeTestPromptRoot } from "../kernel-next/builtins/smoke-test.js";
+import { convertLegacyYaml } from "../kernel-next/converter/legacy-yaml.js";
 import type { StageExecutor } from "../kernel-next/runtime/executor.js";
 import type { PipelineIR } from "../kernel-next/ir/schema.js";
 import type { StageHandlerMap } from "../kernel-next/runtime/mock-executor.js";
@@ -45,6 +48,10 @@ const runBodySchema = z.object({
   model: z.string().min(1).optional(),
   maxTurns: z.number().int().positive().optional(),
   maxBudgetUsd: z.number().positive().optional(),
+  // External-input seed values. Keys must cover every externalInputs
+  // port on the selected pipeline; missing keys surface via SSE
+  // run_final=failed (runner-side SEED_VALUES_MISSING_KEY error).
+  seedValues: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 
 type RunBodyOverrides = z.infer<typeof runBodySchema>;
@@ -131,6 +138,43 @@ const pipelineRegistry: Record<string, () => PipelineRegistration> = {
       }),
     timeoutMs: 3 * 60_000,
   }),
+  "tech-research-collector": () => {
+    // Task 3.1 — convert the legacy YAML on each factory call. The
+    // fixture lives under src/builtin-pipelines/tech-research-collector/
+    // relative to the server root. `import.meta.url` resolves the same
+    // way in tsx dev and compiled dist — both point at the file the
+    // route module was loaded from, and we walk `..` up to
+    // builtin-pipelines/. This mirrors smokeTestPromptRoot()'s
+    // layout-anchoring convention.
+    const yamlPath = join(
+      new URL(".", import.meta.url).pathname,
+      "..", "builtin-pipelines", "tech-research-collector", "pipeline.yaml",
+    );
+    const yamlText = readFileSync(yamlPath, "utf-8");
+    const conv = convertLegacyYaml(yamlText, { yamlFilePath: yamlPath });
+    if (!conv.ok) {
+      throw new Error(
+        `tech-research-collector YAML failed to convert: ${conv.diagnostics.map((d) => d.code).join(", ")}`,
+      );
+    }
+    for (const w of conv.warnings) {
+      logger.info({ pipeline: "tech-research-collector", warning: w }, "converter warning");
+    }
+    return {
+      ir: conv.ir,
+      handlers: {},
+      executorFactory: (db, overrides) =>
+        new RealStageExecutor({
+          mcpServerFactory: (_dispatcher, portRuntime) =>
+            createKernelMcp(db, { surface: "combined", portRuntime }),
+          promptResolver: new FsPromptResolver({ rootDir: conv.promptRoot! }),
+          model: overrides.model ?? DEFAULT_REAL_MODEL,
+          maxTurns: overrides.maxTurns ?? DEFAULT_REAL_MAX_TURNS,
+          maxBudgetUsd: overrides.maxBudgetUsd ?? DEFAULT_REAL_BUDGET_USD,
+        }),
+      timeoutMs: 5 * 60_000,
+    };
+  },
 };
 
 function badRequest(
@@ -209,6 +253,7 @@ kernelRunRoute.post("/kernel/tasks/run", async (c) => {
     handlers,
     executor,
     broadcaster: kernelNextBroadcaster,
+    seedValues: parsed.data.seedValues,
   }, timeoutMs).then((result) => {
     logger.info(
       { taskId, finalState: result.finalState, stageErrors: result.stageErrors.length },

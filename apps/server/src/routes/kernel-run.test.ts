@@ -65,6 +65,7 @@ describe("POST /api/kernel/tasks/run", () => {
     expect(json.diagnostics[0]!.context?.known).toContain("diamond-slow");
     expect(json.diagnostics[0]!.context?.known).toContain("diamond-real");
     expect(json.diagnostics[0]!.context?.known).toContain("smoke-test");
+    expect(json.diagnostics[0]!.context?.known).toContain("tech-research-collector");
   });
 
   it("accepts real-executor overrides (model / maxTurns / maxBudgetUsd) without validation errors", async () => {
@@ -167,6 +168,71 @@ describe("POST /api/kernel/tasks/run", () => {
     const runFinal = events.find((e) => e.type === "run_final");
     const data = runFinal!.data as { finalState: string };
     expect(data.finalState).toBe("completed");
+  });
+
+  it("accepts seedValues in body without validation errors", async () => {
+    const taskId = `kr-seed-${Date.now()}`;
+    const res = await app.request("/api/kernel/tasks/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pipeline: "diamond",
+        taskId,
+        seedValues: { foo: "bar" },
+      }),
+    });
+    expect(res.status).toBe(202);
+    // Drain fire-and-forget runPipeline
+    await new Promise((r) => setTimeout(r, 50));
+    kernelNextBroadcaster.clearTask(taskId);
+  });
+
+  it("accepts tech-research-collector pipeline with seedValues (body shape only)", async () => {
+    // Body-validation check. We do NOT expect the real Claude SDK run
+    // to complete here — we just prove the registry recognises the
+    // name and the body shape is accepted (202).
+    const taskId = `kr-trc-${Date.now()}`;
+    const res = await app.request("/api/kernel/tasks/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pipeline: "tech-research-collector",
+        taskId,
+        seedValues: {
+          pipelineConfig: {},
+          projectContext: {},
+        },
+      }),
+    });
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 50));
+    kernelNextBroadcaster.clearTask(taskId);
+  });
+
+  it("rejects tech-research-collector WITHOUT required seedValues via run_final failed", async () => {
+    const taskId = `kr-trc-miss-${Date.now()}`;
+    const events: KernelNextSSEEvent[] = [];
+    const unsub = kernelNextBroadcaster.subscribe(taskId, (e) => events.push(e));
+    const res = await app.request("/api/kernel/tasks/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pipeline: "tech-research-collector", taskId }),
+    });
+    expect(res.status).toBe(202);
+
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      if (events.some((e) => e.type === "run_final")) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    unsub();
+    kernelNextBroadcaster.clearTask(taskId);
+
+    const runFinal = events.find((e) => e.type === "run_final");
+    expect(runFinal).toBeDefined();
+    const data = runFinal!.data as { finalState: string; stageErrors: Array<{ message: string }> };
+    expect(data.finalState).toBe("failed");
+    expect(data.stageErrors[0]!.message).toMatch(/SEED_VALUES_MISSING_KEY/);
   });
 
 });
