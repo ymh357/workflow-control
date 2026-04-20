@@ -82,7 +82,7 @@ TaskMachine → completed（或 failed，依 stage 结果）
 1. **Debt #1（AgentMachine 非 invoked child）**：**已降级为非阻塞**
    - 渐进方案下 executor 仍内部起 agentActor，但 A2.3.3 的 AbortSignal bridge 证明 full nesting 不是必需的
    - 真·嵌套仍可做（POC 已验证可行），但不阻塞任何下游工作；如果以后需要"parent 停 → child 自动 cleanup"的 XState 生命周期绑定，再做
-2. **Debt #2（`createKernelMcp` 默认 combined）**：**已 retire**（commit 待填）
+2. **Debt #2（`createKernelMcp` 默认 combined）**：**已 retire**（commit `25be7b7`）
    - 默认翻到 `external`；4 caller 按使用场景显式声明（diamond-real / sdk-probe → combined；diamond-generate / diamond-patch → external）
    - server.test.ts 新增 "default is external" 回归保护测试
 3. **Debt #3（runner silent-fanout + log-scan 兜底）**：**已 retire**（commit `b892ed2`）
