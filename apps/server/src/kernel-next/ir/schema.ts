@@ -56,8 +56,16 @@ export const GateQuestionSchema = z.object({
 });
 
 export const GateRoutingSchema = z.object({
-  // answer value → target stage name (special key '_default' for fallback).
-  routes: z.record(z.string().min(1), identifier),
+  // Routes: answer value → target stage name(s). Single stage stays a
+  // string; multiple stages (used when a human gate gates a parallel
+  // block whose stages all need simultaneous authorization) use an
+  // array. Canonical form preserves the input shape so existing
+  // fixture hashes stay byte-identical; array values are additionally
+  // sorted in canonical form to make permutations hash-equivalent.
+  routes: z.record(
+    z.string().min(1),
+    z.union([identifier, z.array(identifier).min(1)]),
+  ),
 });
 
 // --- Stage variants (discriminated union on `type`) ---

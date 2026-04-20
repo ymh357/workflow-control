@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PipelineIRSchema, WireIRSchema } from "./schema.js";
+import { GateRoutingSchema, PipelineIRSchema, WireIRSchema } from "./schema.js";
 
 describe("PipelineIRSchema externalInputs", () => {
   it("accepts externalInputs: []", () => {
@@ -56,5 +56,29 @@ describe("WireIRSchema from discriminated union", () => {
       to: { stage: "B", port: "ctx" },
     });
     expect(r.success).toBe(true);
+  });
+});
+
+describe("GateRoutingSchema", () => {
+  it("accepts single-string route targets (backwards compatible)", () => {
+    const parsed = GateRoutingSchema.parse({ routes: { approve: "B", reject: "C" } });
+    expect(parsed.routes.approve).toBe("B");
+    expect(parsed.routes.reject).toBe("C");
+  });
+
+  it("accepts string-array route targets", () => {
+    const parsed = GateRoutingSchema.parse({
+      routes: { approve: ["X", "Y"], reject: "Z" },
+    });
+    expect(parsed.routes.approve).toEqual(["X", "Y"]);
+    expect(parsed.routes.reject).toBe("Z");
+  });
+
+  it("rejects empty route-target array", () => {
+    expect(() => GateRoutingSchema.parse({ routes: { x: [] } })).toThrow();
+  });
+
+  it("rejects empty string route target", () => {
+    expect(() => GateRoutingSchema.parse({ routes: { x: "" } })).toThrow();
   });
 });

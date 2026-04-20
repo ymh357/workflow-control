@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { canonicalJSON, versionHash } from "./canonical.js";
 import type { PipelineIR } from "./schema.js";
 
+
 const base: PipelineIR = {
   name: "diamond",
   stages: [
@@ -156,5 +157,55 @@ describe("canonical IR backward-compat (externalInputs extension)", () => {
     const withoutField: PipelineIR = { ...base };
     delete (withoutField as any).externalInputs;
     expect(versionHash(withEmpty)).toBe(versionHash(withoutField));
+  });
+});
+
+describe("canonicalizeIR gate routing widening", () => {
+  it("preserves single-string route targets in canonical (hash stable vs pre-widening)", () => {
+    // Build an IR with a single-stage gate route; assert the canonical
+    // JSON for the gate stage contains "approve":"B" and NOT
+    // "approve":["B"].
+    const ir: PipelineIR = {
+      name: "single-route",
+      stages: [
+        { name: "G", type: "gate", inputs: [], outputs: [],
+          config: {
+            question: { text: "?" },
+            routing: { routes: { approve: "B", reject: "C" } },
+          } },
+        { name: "B", type: "agent", inputs: [], outputs: [],
+          config: { promptRef: "p" } },
+        { name: "C", type: "agent", inputs: [], outputs: [],
+          config: { promptRef: "p" } },
+      ],
+      wires: [],
+      externalInputs: [],
+    };
+    const canon = canonicalJSON(ir);
+    expect(canon).toContain('"approve":"B"');
+    expect(canon).not.toContain('"approve":["B"]');
+    expect(canon).toContain('"reject":"C"');
+  });
+
+  it("sorts array route targets alphabetically in canonical (permutation-equivalent hashes)", () => {
+    const makeIR = (approveArr: string[]): PipelineIR => ({
+      name: "array-route",
+      stages: [
+        { name: "G", type: "gate", inputs: [], outputs: [],
+          config: {
+            question: { text: "?" },
+            routing: { routes: { approve: approveArr, reject: "Z" } },
+          } },
+        { name: "X", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+        { name: "Y", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+        { name: "Z", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+      ],
+      wires: [],
+      externalInputs: [],
+    });
+    const canonYX = canonicalJSON(makeIR(["Y", "X"]));
+    const canonXY = canonicalJSON(makeIR(["X", "Y"]));
+    expect(canonYX).toBe(canonXY);
+    expect(canonXY).toContain('"approve":["X","Y"]');
   });
 });

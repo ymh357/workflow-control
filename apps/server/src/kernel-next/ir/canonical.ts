@@ -12,7 +12,7 @@
 //   3. Optional fields omitted when absent (never serialized as `undefined`).
 
 import { createHash } from "node:crypto";
-import type { PipelineIR, StageIR, WireIR } from "./schema.js";
+import type { GateStage, PipelineIR, StageIR, WireIR } from "./schema.js";
 
 type CanonicalValue =
   | null
@@ -51,17 +51,40 @@ function sortKeys(value: unknown): CanonicalValue {
   return null;
 }
 
+// Custom canonicalizer for gate stage config. Route targets may be a string
+// (single stage) or string[] (multiple stages). Single-string values are
+// preserved as-is so existing baseline hashes remain byte-identical. Array
+// values are sorted by codepointCompare so that logically-equivalent
+// permutations hash identically.
+function canonicalizeGateConfig(cfg: GateStage["config"]): CanonicalValue {
+  const routeEntries = Object.entries(cfg.routing.routes)
+    .sort(([a], [b]) => codepointCompare(a, b));
+  const routesOut: Record<string, CanonicalValue> = {};
+  for (const [ans, target] of routeEntries) {
+    if (Array.isArray(target)) {
+      routesOut[ans] = [...target].sort(codepointCompare);
+    } else {
+      routesOut[ans] = target;
+    }
+  }
+  return sortKeys({
+    question: cfg.question,
+    routing: { routes: routesOut },
+  });
+}
+
 function canonicalizeStage(s: StageIR): CanonicalValue {
   // `fanout` is only present on agent/script variants (see schema.ts); the
   // discriminated-union narrowing surfaces it as an extra optional key that
   // participates in the canonical form when set.
   const fanout = "fanout" in s ? s.fanout : undefined;
+  const config = s.type === "gate" ? canonicalizeGateConfig(s.config) : s.config;
   return sortKeys({
     name: s.name,
     type: s.type,
     inputs: [...s.inputs].sort((a, b) => codepointCompare(a.name, b.name)),
     outputs: [...s.outputs].sort((a, b) => codepointCompare(a.name, b.name)),
-    config: s.config,
+    config,
     fanout,
   });
 }

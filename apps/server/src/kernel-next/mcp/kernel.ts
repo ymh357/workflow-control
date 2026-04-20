@@ -124,7 +124,7 @@ export interface GateRow {
 }
 
 export type AnswerGateResult =
-  | { ok: true; gateId: string; taskId: string; stageName: string; targetStage: string; answer: string }
+  | { ok: true; gateId: string; taskId: string; stageName: string; targetStage: string | string[]; answer: string }
   | { ok: false; diagnostics: Diagnostic[] };
 
 export type TaskStatus = "not_found" | "running" | "gated" | "completed" | "failed";
@@ -576,7 +576,10 @@ export class KernelService {
       };
     }
     const routes = stage.config.routing.routes;
-    const targetStage = routes[answer] ?? routes["_default"];
+    // routes values may be string or string[] (multi-target widening, A4).
+    // Return the route value verbatim — single string or array — so the
+    // machine runtime can authorize ALL targets in a multi-target answer.
+    const targetStage: string | string[] | undefined = routes[answer] ?? routes["_default"];
     if (targetStage === undefined) {
       return {
         ok: false,

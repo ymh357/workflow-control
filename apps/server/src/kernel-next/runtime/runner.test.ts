@@ -542,6 +542,131 @@ describe("A3.2: gate routing exclusivity", () => {
   });
 });
 
+// A4: multi-target gate routing — approve → ["A", "B"] authorises BOTH
+// branches simultaneously. The non-picked branches (reject → "C") must be
+// correctly added to gateSkippedTargets so their regions close cleanly.
+describe("A4: multi-target gate routing", () => {
+  it("gate with array route activates all picked targets and skips the non-picked branch", async () => {
+    // Pipeline:
+    //   SRC → G (gate, approve → ["A_STAGE", "B_STAGE"], reject → "C_STAGE")
+    //   A_STAGE and B_STAGE are sibling outputs with no inbound wires (gate-only).
+    //   C_STAGE is the non-picked alternative — must be skipped so the
+    //   pipeline can terminate.
+    const db = makeDb();
+    try {
+      const ir: PipelineIR = {
+        name: "multi-gate",
+        stages: [
+          {
+            name: "SRC",
+            type: "agent",
+            inputs: [],
+            outputs: [{ name: "x", type: "number" }],
+            config: { promptRef: "p" },
+          },
+          {
+            name: "G",
+            type: "gate",
+            inputs: [{ name: "x", type: "number" }],
+            outputs: [],
+            config: {
+              question: { text: "approve or reject?", options: ["approve", "reject"] },
+              routing: { routes: { approve: ["A_STAGE", "B_STAGE"], reject: "C_STAGE" } },
+            },
+          },
+          {
+            name: "A_STAGE",
+            type: "agent",
+            inputs: [],
+            outputs: [{ name: "a_done", type: "boolean" }],
+            config: { promptRef: "p" },
+          },
+          {
+            name: "B_STAGE",
+            type: "agent",
+            inputs: [],
+            outputs: [{ name: "b_done", type: "boolean" }],
+            config: { promptRef: "p" },
+          },
+          {
+            name: "C_STAGE",
+            type: "agent",
+            inputs: [],
+            outputs: [{ name: "c_done", type: "boolean" }],
+            config: { promptRef: "p" },
+          },
+        ],
+        wires: [{ from: { stage: "SRC", port: "x" }, to: { stage: "G", port: "x" } }],
+      };
+      const hash = versionHash(ir);
+      insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+      let aInvoked = false;
+      let bInvoked = false;
+      let cInvoked = false;
+      const handlers: StageHandlerMap = {
+        SRC: () => ({ x: 1 }),
+        A_STAGE: () => { aInvoked = true; return { a_done: true }; },
+        B_STAGE: () => { bInvoked = true; return { b_done: true }; },
+        C_STAGE: () => { cInvoked = true; return { c_done: true }; },
+      };
+
+      const { KernelService } = await import("../mcp/kernel.js");
+      const { taskRegistry } = await import("./task-registry.js");
+
+      const runPromise = runPipeline(
+        { db, ir, taskId: "multi-gate-1", versionHash: hash, handlers },
+        30_000,
+      );
+
+      const kernel = new KernelService(db, { skipTypeCheck: true });
+      let gateId: string | undefined;
+      for (let i = 0; i < 50 && !gateId; i++) {
+        const gates = kernel.listGates({ taskId: "multi-gate-1", answered: false });
+        if (gates.length > 0) gateId = gates[0]!.gateId;
+        else await new Promise((r) => setTimeout(r, 20));
+      }
+      expect(gateId).toBeDefined();
+
+      // Before answering: no target should have been invoked.
+      expect(aInvoked).toBe(false);
+      expect(bInvoked).toBe(false);
+      expect(cInvoked).toBe(false);
+
+      // Answer with "approve" → array route ["A_STAGE", "B_STAGE"].
+      const answer = kernel.answerGate(gateId!, "approve");
+      expect(answer.ok).toBe(true);
+      if (!answer.ok) return;
+      // targetStage must be the full array, not just the first element.
+      expect(answer.targetStage).toEqual(["A_STAGE", "B_STAGE"]);
+
+      // Dispatch GATE_ANSWERED with the array targetStage.
+      taskRegistry.get("multi-gate-1")!.send({
+        type: "GATE_ANSWERED",
+        gateId: answer.gateId,
+        stageName: answer.stageName,
+        answer: answer.answer,
+        targetStage: answer.targetStage,
+      });
+
+      const result = await runPromise;
+      expect(result.finalState).toBe("completed");
+
+      // Both picked stages must have run.
+      expect(aInvoked).toBe(true);
+      expect(bInvoked).toBe(true);
+      // The non-picked branch must NOT have run.
+      expect(cInvoked).toBe(false);
+
+      // Port values for picked stages are present.
+      expect(result.portValues["A_STAGE.a_done"]).toBe(true);
+      expect(result.portValues["B_STAGE.b_done"]).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+});
+
 describe("A3.1: wire guards + NO_ACTIVE_WIRE", () => {
   it("runPipeline returns failed + stageErrors when all inbound guards drop", async () => {
     const db = makeDb();

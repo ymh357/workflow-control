@@ -85,7 +85,7 @@ export type MachineEvent =
   | { type: "START" }
   | { type: "PORT_WRITTEN"; key: string; value: unknown }
   | { type: "STAGE_FAILED"; stage: string; error: string }
-  | { type: "GATE_ANSWERED"; gateId: string; stageName: string; answer: string; targetStage: string }
+  | { type: "GATE_ANSWERED"; gateId: string; stageName: string; answer: string; targetStage: string | string[] }
   // A2.3.3 — external interrupt for a specific running stage. Carried on
   // the root TaskMachine event bus; individual agent stage regions match
   // on `event.stage === <my stage>` and forward the event to their
@@ -135,7 +135,12 @@ function indexStages(ir: PipelineIR): Map<string, StageMeta> {
   for (const s of ir.stages) {
     if (s.type !== "gate") continue;
     for (const target of Object.values(s.config.routing.routes)) {
-      gateRoutedTargets.add(target);
+      // target may be a single stage name or an array of stage names (multi-target)
+      if (Array.isArray(target)) {
+        for (const t of target) gateRoutedTargets.add(t);
+      } else {
+        gateRoutedTargets.add(target);
+      }
     }
   }
 
@@ -222,7 +227,16 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
   const gateRoutingMap = new Map<string, string[]>();
   for (const s of ir.stages) {
     if (s.type !== "gate") continue;
-    gateRoutingMap.set(s.name, Object.values(s.config.routing.routes));
+    // Flatten: each route target may be a string or string[] (multi-target)
+    const targets: string[] = [];
+    for (const t of Object.values(s.config.routing.routes)) {
+      if (Array.isArray(t)) {
+        targets.push(...t);
+      } else {
+        targets.push(t);
+      }
+    }
+    gateRoutingMap.set(s.name, targets);
   }
 
   // Build parallel region children.
@@ -257,30 +271,41 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
           }),
         }),
       },
-      // Root-level GATE_ANSWERED: record the routed target on the context
+      // Root-level GATE_ANSWERED: record the routed target(s) on the context
       // so gate-routed stages can evaluate the authorization guard; AND
       // mark every OTHER routing-target of the answered gate as skipped,
       // so the unpicked branches transition to `done` without running.
+      // targetStage may be a single string (single-target route) or a string[]
+      // (multi-target route, e.g. approve → ["A", "B"]). All entries in the
+      // array are authorized; every sibling NOT in the picked set is skipped.
       // Stage regions also observe GATE_ANSWERED (for routing/gate-resolve
       // transitions), unaffected by this root-level assign.
       GATE_ANSWERED: {
         actions: assign(({ context, event }) => {
-          const authorized = context.gateAuthorizedTargets.includes(event.targetStage)
-            ? context.gateAuthorizedTargets
-            : [...context.gateAuthorizedTargets, event.targetStage];
-          // The answered gate's stageName tells us which routing table
-          // to consult; the picked target is event.targetStage. Only
-          // skip siblings when the answer routed to a KNOWN sibling —
-          // otherwise the answer was malformed and we leave every
-          // branch untouched (symmetric with the waiting.GATE_ANSWERED
-          // guard above).
+          // Normalize to array for uniform handling.
+          const pickedTargets = Array.isArray(event.targetStage)
+            ? event.targetStage
+            : [event.targetStage];
+
+          // Add every picked target that isn't already authorized.
+          let authorized = context.gateAuthorizedTargets;
+          for (const t of pickedTargets) {
+            if (!authorized.includes(t)) {
+              authorized = [...authorized, t];
+            }
+          }
+
+          // Compute which siblings are SKIPPED for this answered gate.
+          // A sibling is "picked" iff it's in pickedTargets. Every other
+          // sibling not already in skipped goes into skipped. Only skip when
+          // the answer routed to KNOWN siblings — otherwise the answer was
+          // malformed and we leave every branch untouched.
           const siblings = gateRoutingMap.get(event.stageName) ?? [];
-          const pickedIsKnown = siblings.includes(event.targetStage);
+          const pickedSet = new Set(pickedTargets);
+          const pickedIsKnown = pickedTargets.every((t) => siblings.includes(t));
           const newSkips = pickedIsKnown
             ? siblings.filter(
-                (t) =>
-                  t !== event.targetStage &&
-                  !context.gateSkippedTargets.includes(t),
+                (t) => !pickedSet.has(t) && !context.gateSkippedTargets.includes(t),
               )
             : [];
           const skipped = newSkips.length === 0
@@ -585,17 +610,21 @@ function buildStageRegion(
               guard: ({ event }: { event: MachineEvent }) => {
                 if (event.type !== "GATE_ANSWERED") return false;
                 const siblings = gateSiblingsByGate.get(event.stageName) ?? [];
-                // Only skip when the answered gate picked a KNOWN sibling
-                // other than this stage. If the targetStage isn't a real
-                // sibling (malformed answer that slipped past answerGate
+                // Normalize targetStage to an array for uniform membership checks.
+                const picked = Array.isArray(event.targetStage)
+                  ? event.targetStage
+                  : [event.targetStage];
+                // Only skip when the answered gate picked KNOWN siblings and
+                // this stage is NOT among them. If the targetStage(s) aren't
+                // real siblings (malformed answer that slipped past answerGate
                 // validation), don't terminate any branch — leave the
                 // pipeline state untouched so diagnostics surface via
-                // other paths. This keeps the "unknown target is a
-                // no-op" invariant.
+                // other paths. This keeps the "unknown target is a no-op" invariant.
+                const pickedIsKnown = picked.every((t) => siblings.includes(t));
                 return (
+                  pickedIsKnown &&
                   siblings.includes(stageName) &&
-                  siblings.includes(event.targetStage) &&
-                  event.targetStage !== stageName
+                  !picked.includes(stageName)
                 );
               },
             },
@@ -603,7 +632,11 @@ function buildStageRegion(
               target: "executing",
               guard: ({ context, event }: { context: MachineContext; event: MachineEvent }) => {
                 if (event.type !== "GATE_ANSWERED") return false;
-                if (event.targetStage !== stageName) return false;
+                // Check whether this stage is among the picked targets.
+                const isTarget = Array.isArray(event.targetStage)
+                  ? event.targetStage.includes(stageName)
+                  : event.targetStage === stageName;
+                if (!isTarget) return false;
                 return meta.inbound.every((w) => wireDelivers(w, context.portValues));
               },
             },
@@ -611,7 +644,10 @@ function buildStageRegion(
               target: "error",
               guard: ({ context, event }: { context: MachineContext; event: MachineEvent }) => {
                 if (event.type !== "GATE_ANSWERED") return false;
-                if (event.targetStage !== stageName) return false;
+                const isTarget = Array.isArray(event.targetStage)
+                  ? event.targetStage.includes(stageName)
+                  : event.targetStage === stageName;
+                if (!isTarget) return false;
                 if (meta.inbound.length === 0) return false;
                 if (!meta.inbound.every((w) => wireSettled(w, context.portValues))) return false;
                 return meta.inbound.some((w) => !wireDelivers(w, context.portValues));

@@ -146,25 +146,29 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
         });
       }
       const routes = s.config.routing.routes;
-      for (const [answer, target] of Object.entries(routes)) {
-        if (!stageNames.has(target)) {
-          diagnostics.push({
-            code: "GATE_ROUTING_TARGET_MISSING",
-            message:
-              `Gate '${s.name}' routes answer '${answer}' to stage '${target}', ` +
-              `but '${target}' is not declared in stages[].`,
-            context: { stage: s.name, answer, target },
-          });
-        }
-        // Record owner for the cross-gate conflict check below. A single
-        // gate may legitimately route multiple answers to the same target
-        // (e.g. yes → SUMMARY, confirm → SUMMARY); that's not a conflict,
-        // so we de-dupe per-gate before adding.
-        const owners = gateTargetOwners.get(target);
-        if (!owners) {
-          gateTargetOwners.set(target, [s.name]);
-        } else if (!owners.includes(s.name)) {
-          owners.push(s.name);
+      for (const [answer, rawTarget] of Object.entries(routes)) {
+        // rawTarget may be a single stage name or an array of stage names
+        const targets: string[] = Array.isArray(rawTarget) ? rawTarget : [rawTarget];
+        for (const target of targets) {
+          if (!stageNames.has(target)) {
+            diagnostics.push({
+              code: "GATE_ROUTING_TARGET_MISSING",
+              message:
+                `Gate '${s.name}' routes answer '${answer}' to stage '${target}', ` +
+                `but '${target}' is not declared in stages[].`,
+              context: { stage: s.name, answer, target },
+            });
+          }
+          // Record owner for the cross-gate conflict check below. A single
+          // gate may legitimately route multiple answers to the same target
+          // (e.g. yes → SUMMARY, confirm → SUMMARY); that's not a conflict,
+          // so we de-dupe per-gate before adding.
+          const owners = gateTargetOwners.get(target);
+          if (!owners) {
+            gateTargetOwners.set(target, [s.name]);
+          } else if (!owners.includes(s.name)) {
+            owners.push(s.name);
+          }
         }
       }
     }
