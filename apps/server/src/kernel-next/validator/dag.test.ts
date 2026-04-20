@@ -89,3 +89,47 @@ describe("dag validator", () => {
     expect(validateDag(ir)).toEqual({ ok: true });
   });
 });
+
+describe("DAG with external wires", () => {
+  it("external-only driven stage has in-degree 0", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent", inputs: [{ name: "ctx", type: "unknown" }], outputs: [], config: { promptRef: "p" } },
+      ],
+      externalInputs: [{ name: "ctx", type: "unknown" }],
+      wires: [{ from: { source: "external", port: "ctx" }, to: { stage: "A", port: "ctx" } }],
+    };
+    const dag = buildDag(ir);
+    expect("topoOrder" in dag).toBe(true);
+    if ("topoOrder" in dag) {
+      expect(dag.topoOrder).toEqual(["A"]);
+      expect(dag.upstream.get("A")!.size).toBe(0);
+    }
+  });
+
+  it("external wires do not appear in downstream map", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent", inputs: [{ name: "ctx", type: "unknown" }], outputs: [{ name: "y", type: "string" }], config: { promptRef: "p" } },
+        { name: "B", type: "agent", inputs: [{ name: "y", type: "string" }], outputs: [], config: { promptRef: "p" } },
+      ],
+      externalInputs: [{ name: "ctx", type: "unknown" }],
+      wires: [
+        { from: { source: "external", port: "ctx" }, to: { stage: "A", port: "ctx" } },
+        { from: { source: "stage", stage: "A", port: "y" }, to: { stage: "B", port: "y" } },
+      ],
+    };
+    const dag = buildDag(ir);
+    expect("topoOrder" in dag).toBe(true);
+    if ("topoOrder" in dag) {
+      expect(dag.topoOrder).toEqual(["A", "B"]);
+      expect(dag.upstream.get("A")!.size).toBe(0);
+      expect(dag.upstream.get("B")!.has("A")).toBe(true);
+      // __external__ must not appear as a node
+      expect(dag.downstream.has("__external__")).toBe(false);
+      expect(dag.upstream.has("__external__")).toBe(false);
+    }
+  });
+});

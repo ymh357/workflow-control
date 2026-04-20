@@ -28,13 +28,12 @@ export function buildDag(ir: PipelineIR): DagInfo | { cycle: string[] } {
   }
 
   for (const w of ir.wires) {
-    // Bridge: Task 1.2 introduced WireSource discriminated union. Task 1.5
-    // will short-circuit external-source wires here (no DAG edge) and drop
-    // this sentinel. Until then, existing fixtures never set source=external.
-    const fromStage = w.from.source === "external" ? "__external__" : w.from.stage;
-    if (fromStage === w.to.stage) continue; // self-wire is a cycle, caught below
-    upstream.get(w.to.stage)!.add(fromStage);
-    downstream.get(fromStage)?.add(w.to.stage);
+    // External wires originate outside the DAG — they seed ports but
+    // create no upstream dependency for scheduling purposes.
+    if (w.from.source === "external") continue;
+    if (w.from.stage === w.to.stage) continue; // self-wire is a cycle, caught below
+    upstream.get(w.to.stage)!.add(w.from.stage);
+    downstream.get(w.from.stage)!.add(w.to.stage);
   }
 
   // Kahn's algorithm with cycle detection.
@@ -66,10 +65,9 @@ export function buildDag(ir: PipelineIR): DagInfo | { cycle: string[] } {
 
   // Include self-wires as cycles (caught as length-1 cycles).
   for (const w of ir.wires) {
-    // Bridge: Task 1.5 will collapse this after short-circuiting externals.
-    const fromStage = w.from.source === "external" ? "__external__" : w.from.stage;
-    if (fromStage === w.to.stage) {
-      return { cycle: [fromStage] };
+    if (w.from.source === "external") continue;
+    if (w.from.stage === w.to.stage) {
+      return { cycle: [w.from.stage] };
     }
   }
 
