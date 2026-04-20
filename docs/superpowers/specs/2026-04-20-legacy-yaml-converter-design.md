@@ -599,9 +599,16 @@ emitted since this is a consistent, documented loss.
 - `use_cases` — `USE_CASES_IGNORED` warning.
 - `official`, `description`, `engine` — no warning (pipeline-level
   metadata that kernel-next simply doesn't track).
-- `claude_md` — `UNSUPPORTED_FEATURE` diagnostic. Rationale: silently
+- `claude_md` — `LEGACY_FIELD_IGNORED` warning at the pipeline-level
+  ignored-fields stage (2026-04-21 change from the original spec:
+  originally fatal `UNSUPPORTED_FEATURE` on the rationale that silently
   dropping global constraint files would let a tech-research-writer
-  pipeline run without its stated quality rules. Forced opt-in.
+  pipeline run without its stated quality rules. Lowered so
+  `tech-research-writer`, `web3-research-writer` and similar pipelines
+  that declare global constraint files can still be converted. Loss is
+  acknowledged — agents run without the pipeline-level global
+  constraint file injected, which is a quality degradation, not a
+  functional failure).
 
 ## 6. Semantic Differences (Documented, Not Warnings)
 

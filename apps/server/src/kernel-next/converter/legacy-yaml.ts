@@ -75,6 +75,19 @@ export function convertLegacyYaml(
       message: "use_cases list ignored",
     });
   }
+  // Pipeline-level `claude_md` was originally spec'd as a fatal
+  // UNSUPPORTED_FEATURE (see §5.7). Downgraded 2026-04-21 to a warning
+  // so writer-style pipelines declaring a global constraint file can
+  // still be converted; kernel-next agents will run without the global
+  // file injected (quality degradation, not functional failure).
+  if ("claude_md" in legacy) {
+    warnings.push({
+      code: "LEGACY_FIELD_IGNORED",
+      message:
+        "claude_md pipeline-level constraints ignored — kernel-next does not inject global claude.md files",
+      context: { field: "claude_md" },
+    });
+  }
 
   const ir: PipelineIR = {
     name: typeof legacy.name === "string" ? legacy.name : "unnamed-pipeline",

@@ -41,6 +41,36 @@ describe("convertLegacyYaml golden (smoke-test)", () => {
   });
 });
 
+describe("convertLegacyYaml pipeline-level ignored fields", () => {
+  it("emits LEGACY_FIELD_IGNORED warning for pipeline-level claude_md", () => {
+    const yaml = `
+name: t
+claude_md:
+  global: global-constraints.md
+store_schema:
+  e:
+    produced_by: s
+    fields:
+      x: { type: string }
+stages:
+  - name: s
+    type: agent
+    runtime:
+      engine: llm
+      system_prompt: p
+      reads: {}
+`;
+    const r = convertLegacyYaml(yaml);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      const ignored = r.warnings.find(
+        (w) => w.code === "LEGACY_FIELD_IGNORED" && w.context?.field === "claude_md",
+      );
+      expect(ignored).toBeDefined();
+    }
+  });
+});
+
 describe("convertLegacyYaml golden (tech-research-collector)", () => {
   it("converts successfully with externalInputs + warnings", () => {
     const yamlPath = resolve(
