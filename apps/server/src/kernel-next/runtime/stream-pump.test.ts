@@ -96,4 +96,50 @@ describe("pumpSdkStream", () => {
     });
     expect(out).toBe(finalOutput);
   });
+
+  it("iterator throws at stream end but actor reached done → returns actor output (A7.3 Bug 2)", async () => {
+    // Simulates the Claude Agent SDK behaviour observed during A7.1
+    // browser verification: result_success is delivered, then the
+    // underlying claude CLI child process exits non-zero so the
+    // async iterator throws on its next() after the last yield. The
+    // AgentMachine already saw result_success via adapter, so the
+    // stage is semantically complete — we must return the actor's
+    // done output, not propagate the iterator exit error.
+    async function* lateThrowStream(): AsyncIterable<SdkMessageLike> {
+      yield { type: "result", subtype: "success" } as SdkMessageLike;
+      throw new Error("Claude Code process exited with code 1");
+    }
+    const finalOutput: AgentMachineOutput = {
+      status: "done", turns: 1, stageName: "S", taskId: "T", attemptId: "A",
+    };
+    const out = await pumpSdkStream({
+      stream: lateThrowStream(),
+      adapter: makeAdapter(
+        new Map([["result", [{ type: "RESULT_SUCCESS" }]]]),
+      ),
+      send: () => { /* ignore */ },
+      waitForFinal: async () => finalOutput,
+    });
+    expect(out).toBe(finalOutput);
+  });
+
+  it("iterator throws AND actor never reached final → re-throws iterator error", async () => {
+    // If the SDK process crashes mid-stream (no result_success yet),
+    // waitForFinal will time out. The original stream error is the
+    // real cause and should surface, not the downstream wait error.
+    async function* crashStream(): AsyncIterable<SdkMessageLike> {
+      yield { type: "system" } as SdkMessageLike;
+      throw new Error("SDK crashed");
+    }
+    await expect(
+      pumpSdkStream({
+        stream: crashStream(),
+        adapter: makeAdapter(new Map()),
+        send: () => { /* ignore */ },
+        waitForFinal: async () => {
+          throw new Error("waitFor timeout");
+        },
+      }),
+    ).rejects.toThrow("SDK crashed");
+  });
 });
