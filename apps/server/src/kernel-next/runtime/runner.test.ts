@@ -11,6 +11,7 @@ import { initKernelNextSchema, insertPipelineVersion } from "../ir/sql.js";
 import { versionHash } from "../ir/canonical.js";
 import { runPipeline } from "./runner.js";
 import { readLatestPort, PortRuntime } from "./port-runtime.js";
+import { taskRegistry } from "./task-registry.js";
 import type { PipelineIR } from "../ir/schema.js";
 import type { StageHandlerMap } from "./mock-executor.js";
 
@@ -797,6 +798,153 @@ describe("A2.3.2: agent stage invoke wiring", () => {
     expect(result.finalState).toBe("completed");
     // Exactly 4 stages, exactly 4 executor invocations. No double-dispatch.
     expect(calls.sort()).toEqual(["A", "B", "C", "D"]);
+    db.close();
+  });
+
+  // A2.3.3 — external INTERRUPT{stage} reaches the stage's invoked child,
+  // which aborts the AbortSignal passed into executor.executeStage. The
+  // executor's signal-aware path (RealStageExecutor translates it into
+  // an AgentMachine INTERRUPT event) is exercised here via a custom
+  // StageExecutor that observes the signal.
+  it("forwards TaskMachine INTERRUPT{stage} to executor via AbortSignal", async () => {
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "one",
+      stages: [
+        { name: "A", type: "agent", inputs: [],
+          outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+      ],
+      wires: [],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    let observedSignal: AbortSignal | undefined;
+    let aborted = false;
+    // Executor that parks until either the signal aborts or a timer
+    // fires. Test fires dispatcher.send INTERRUPT — the invoke's
+    // fromCallback aborts the signal — we observe aborted=true.
+    const interruptibleExecutor = {
+      executeStage: async (args: Parameters<import("./executor.js").StageExecutor["executeStage"]>[0]) => {
+        observedSignal = args.signal;
+        // Start an attempt so stage_attempts rows match the legacy shape.
+        const { attemptId, attemptIdx } = args.portRuntime.startAttempt({
+          taskId: args.taskId, versionHash: args.versionHash, stageName: args.stageName,
+        });
+        await new Promise<void>((resolve) => {
+          if (args.signal?.aborted) {
+            aborted = true;
+            resolve();
+            return;
+          }
+          args.signal?.addEventListener("abort", () => {
+            aborted = true;
+            resolve();
+          }, { once: true });
+          // Fallback timer so the test doesn't hang if INTERRUPT never arrives.
+          setTimeout(() => resolve(), 1000);
+        });
+        // Write the declared output so region reaches done via the always
+        // guard after abort — keeps the runner result shape simple.
+        args.portRuntime.writePort({
+          attemptId, stageName: args.stageName, portName: "x", value: 1,
+        });
+        args.portRuntime.finishAttempt(attemptId, "success");
+        return { attemptId, attemptIdx, status: "success" as const };
+      },
+    };
+
+    // Fire INTERRUPT via taskRegistry — simulates external caller
+    // (migrateTask in A2.3.4). Dispatcher is registered by runPipeline.
+    const interruptTimer = setTimeout(() => {
+      const dispatcher = taskRegistry.get("t-int");
+      if (dispatcher) {
+        dispatcher.send({ type: "INTERRUPT", stage: "A" });
+      }
+    }, 50);
+
+    const result = await runPipeline({
+      db, ir, taskId: "t-int", versionHash: hash,
+      handlers: {},
+      executor: interruptibleExecutor,
+    });
+    clearTimeout(interruptTimer);
+
+    expect(result.finalState).toBe("completed");
+    expect(observedSignal).toBeDefined();
+    expect(aborted).toBe(true);
+    db.close();
+  });
+
+  // A2.3.3 — stage-specific routing (owner §6.1): INTERRUPT{stage:'A'}
+  // must NOT leak to sibling stage B running in the parallel region.
+  it("INTERRUPT{stage:'A'} only aborts A's signal, not B's", async () => {
+    const db = makeDb();
+    // Two independent entry stages running in parallel, no wires between.
+    const ir: PipelineIR = {
+      name: "two",
+      stages: [
+        { name: "A", type: "agent", inputs: [],
+          outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+        { name: "B", type: "agent", inputs: [],
+          outputs: [{ name: "y", type: "number" }], config: { promptRef: "p" } },
+      ],
+      wires: [],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const abortObserved: Record<string, boolean> = { A: false, B: false };
+    const interruptibleExecutor = {
+      executeStage: async (args: Parameters<import("./executor.js").StageExecutor["executeStage"]>[0]) => {
+        const { attemptId, attemptIdx } = args.portRuntime.startAttempt({
+          taskId: args.taskId, versionHash: args.versionHash, stageName: args.stageName,
+        });
+        await new Promise<void>((resolve) => {
+          const onAbort = () => {
+            abortObserved[args.stageName] = true;
+            resolve();
+          };
+          if (args.signal?.aborted) {
+            onAbort();
+            return;
+          }
+          args.signal?.addEventListener("abort", onAbort, { once: true });
+          // Per stage timers: B finishes naturally at 30ms, A waits for abort.
+          const delay = args.stageName === "B" ? 30 : 1000;
+          setTimeout(() => {
+            // Remove the abort listener so a post-completion signal.abort
+            // (triggered by invoke cleanup when the parent stops) doesn't
+            // retroactively flip abortObserved.
+            args.signal?.removeEventListener("abort", onAbort);
+            resolve();
+          }, delay);
+        });
+        const portName = args.stageName === "A" ? "x" : "y";
+        args.portRuntime.writePort({
+          attemptId, stageName: args.stageName, portName, value: 1,
+        });
+        args.portRuntime.finishAttempt(attemptId, "success");
+        return { attemptId, attemptIdx, status: "success" as const };
+      },
+    };
+
+    // Fire INTERRUPT only for A after B has already finished.
+    const timer = setTimeout(() => {
+      const dispatcher = taskRegistry.get("t-iso");
+      if (dispatcher) dispatcher.send({ type: "INTERRUPT", stage: "A" });
+    }, 60);
+
+    const result = await runPipeline({
+      db, ir, taskId: "t-iso", versionHash: hash,
+      handlers: {},
+      executor: interruptibleExecutor,
+    });
+    clearTimeout(timer);
+
+    expect(result.finalState).toBe("completed");
+    expect(abortObserved["A"]).toBe(true);
+    expect(abortObserved["B"]).toBe(false);
     db.close();
   });
 

@@ -42,6 +42,22 @@ export interface ExecuteStageArgs {
   portValues: Record<string, unknown>; // current in-memory view
   handlers: StageHandlerMap;           // used by MockStageExecutor only
   portRuntime: PortRuntime;
+  /**
+   * A2.3.3 — cancellation signal plumbed from XState's invoked child.
+   * When the TaskMachine receives INTERRUPT{stage}, the runner's
+   * fromCallback actor aborts this signal. Executors that host a
+   * long-running child (RealStageExecutor → AgentMachine) listen on
+   * `signal.addEventListener('abort', ...)` and translate the abort
+   * into an INTERRUPT event forwarded to the nested AgentMachine per
+   * design §4.2. Executors without a nested machine (MockStageExecutor
+   * / ScriptStageExecutor) may ignore the signal; the executor will
+   * finish before the invoke is stopped anyway.
+   *
+   * Optional for backward compatibility — existing callers that don't
+   * pass one degrade to "no interrupt support" which is the pre-A2.3.3
+   * behaviour.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ExecuteStageResult {

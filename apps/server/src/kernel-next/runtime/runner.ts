@@ -13,7 +13,7 @@
 // The mock-executor invokes handlers; the machine decides transitions based
 // on port presence.
 
-import { createActor, fromPromise } from "xstate";
+import { createActor, fromCallback } from "xstate";
 import type { DatabaseSync } from "node:sqlite";
 import { compileIRToMachine } from "../compiler/ir-to-machine.js";
 import type {
@@ -168,57 +168,117 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
     rejectRun(new Error(`runPipeline timeout after ${timeoutMs}ms`));
   }, timeoutMs);
 
-  // A2.3.2 — build the executor-as-promise logic now that all closed-over
-  // variables (stageErrors, dispatcher, portRuntime) exist. machine.provide
-  // returns a new machine with the stageName 'execute_stage' actor logic
-  // bound; createActor then spawns the root actor.
-  const executeStageLogic = fromPromise(async ({ input }: { input: ExecuteStageInvokeInput }) => {
+  // A2.3.2 + A2.3.3 — build the executor-as-actor logic. fromCallback
+  // replaces A2.3.2's fromPromise so the child can receive INTERRUPT
+  // events from the parent's sendTo forward (compiler places
+  // `on: INTERRUPT` on each agent stage's executing state). Cancellation
+  // is expressed as an AbortSignal the executor consumes; real-executor
+  // translates the abort into an INTERRUPT event for its nested
+  // AgentMachine per design §4.2.
+  //
+  // fromCallback doesn't carry `output` on xstate.done.actor — A2.3.2's
+  // invoke.onDone/onError were already inert (the region reaches `done`
+  // via the allOutboundPresent `always` guard, not via invoke output),
+  // so dropping output is harmless. Errors still surface through
+  // STAGE_FAILED via the in-body dispatcher.send below.
+  const executeStageLogic = fromCallback<
+    { type: "INTERRUPT" },
+    ExecuteStageInvokeInput
+  >(({ input, receive }) => {
     const stageDef = opts.ir.stages.find((s) => s.name === input.stageName);
     if (!stageDef) {
+      // Treat as a runner-level bug. The promise below will reject;
+      // dispatching a STAGE_FAILED is pointless because the IR is
+      // corrupt. Throwing inside fromCallback is recorded by XState as
+      // an error.actor event which the region's invoke.onError catches.
       throw new Error(`invoke: stage '${input.stageName}' not found in IR`);
     }
     if (stageDef.type === "gate") {
-      // Should not reach here — compiler suppresses invoke for gates.
       throw new Error(`invoke: gate stage '${input.stageName}' should not reach execute_stage`);
     }
     if ((stageDef.type === "agent" || stageDef.type === "script") && stageDef.fanout) {
-      // Fanout stages are handled by the subscribe loop's runFanoutStage
-      // branch. The invoke fires in parallel with it; by the time it runs,
-      // the fanout has already written ports and the always guard moved
-      // the region to done. Returning success here is harmless.
-      return { status: "success" as const };
+      // Fanout stages run through the subscribe loop's runFanoutStage
+      // path; this invoke is a no-op for them. No executor work, no
+      // interrupt forwarding. The region reaches `done` via the always
+      // guard once runFanoutStage writes the aggregated array.
+      return;
     }
+
     // versionHash — input.versionHash comes from machine context, which
-    // the compiler seeds as "" and the runner does not currently overwrite
-    // (legacy code path used opts.versionHash directly). Prefer the runner
-    // opts so stage_attempts.version_hash is correctly populated; fall
-    // back to input.versionHash only if it's non-empty (future-proof if
-    // the machine starts carrying versionHash properly).
+    // the compiler seeds as "" and the runner does not currently
+    // overwrite. Prefer opts.versionHash so stage_attempts.version_hash
+    // is correctly populated.
     const versionHash = input.versionHash || opts.versionHash;
-    const result = await executor.executeStage({
-      ir: opts.ir,
-      stageName: input.stageName,
-      taskId: input.taskId,
-      versionHash,
-      portValues: input.portValues,
-      handlers: opts.handlers,
-      portRuntime,
+
+    // AbortController bridges XState INTERRUPT events → executor signal.
+    // The executor listens on `signal.aborted` + the `abort` event to
+    // cancel its in-flight work (real-executor translates this into an
+    // INTERRUPT event for the nested AgentMachine).
+    const ac = new AbortController();
+
+    // Subscribe to events from the parent. The compiler's sendTo on
+    // INTERRUPT lands here; we translate it to an AbortController abort.
+    // Any other event type is ignored (none are defined at A2.3.3).
+    receive((ev) => {
+      if (ev.type === "INTERRUPT") ac.abort();
     });
-    if (result.status === "error") {
-      stageErrors.push({ stage: input.stageName, message: result.error ?? "unspecified" });
-      // Only dispatch if the machine is still running. When another region
-      // has already driven the pipeline to 'completed' (parallel onDone
-      // fires as soon as every child reaches a final state), sending to a
-      // stopped actor would emit an XState warning and be ignored.
-      if (!machineEnded) {
-        dispatcher.send({
-          type: "STAGE_FAILED",
-          stage: input.stageName,
-          error: result.error ?? "unspecified",
+
+    // Track executor completion so cleanup knows whether to abort.
+    // Without this, XState's stop-on-region-exit (happens as soon as
+    // the always guard transitions to `done`, which is normal for a
+    // successful stage) would fire `ac.abort()` for every stage's
+    // invoke, poisoning tests that check signal.aborted as a proxy
+    // for "external INTERRUPT landed". Only abort on cleanup when
+    // the executor hasn't finished yet.
+    let executorDone = false;
+
+    // Fire-and-forget the executor. Promise rejections / status='error'
+    // both route to STAGE_FAILED + stageErrors so the region reaches
+    // its error final and finalState = 'failed'.
+    void (async () => {
+      try {
+        const result = await executor.executeStage({
+          ir: opts.ir,
+          stageName: input.stageName,
+          taskId: input.taskId,
+          versionHash,
+          portValues: input.portValues,
+          handlers: opts.handlers,
+          portRuntime,
+          signal: ac.signal,
         });
+        if (result.status === "error") {
+          stageErrors.push({ stage: input.stageName, message: result.error ?? "unspecified" });
+          if (!machineEnded) {
+            dispatcher.send({
+              type: "STAGE_FAILED",
+              stage: input.stageName,
+              error: result.error ?? "unspecified",
+            });
+          }
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        stageErrors.push({ stage: input.stageName, message });
+        if (!machineEnded) {
+          dispatcher.send({
+            type: "STAGE_FAILED",
+            stage: input.stageName,
+            error: message,
+          });
+        }
+      } finally {
+        executorDone = true;
       }
-    }
-    return result;
+    })();
+
+    // Cleanup fires when XState stops this invoked child (parent
+    // region leaves `executing`, or the whole actor stops). Only
+    // abort if the executor is still running — a clean completion
+    // should not trigger an artificial abort (see executorDone comment).
+    return () => {
+      if (!executorDone && !ac.signal.aborted) ac.abort();
+    };
   });
 
   const providedMachine = machine.provide({

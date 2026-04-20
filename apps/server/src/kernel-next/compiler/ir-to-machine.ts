@@ -29,7 +29,7 @@
 // The machine is pure: it contains no side effects, no DB writes, no subprocess
 // invocation. runtime/runner.ts owns all side effects.
 
-import { createMachine, assign } from "xstate";
+import { createMachine, assign, sendTo } from "xstate";
 import type { AnyStateMachine } from "xstate";
 import type { PipelineIR, StageIR } from "../ir/schema.js";
 import { buildDag } from "../validator/dag.js";
@@ -63,7 +63,16 @@ export type MachineEvent =
   | { type: "START" }
   | { type: "PORT_WRITTEN"; key: string; value: unknown }
   | { type: "STAGE_FAILED"; stage: string; error: string }
-  | { type: "GATE_ANSWERED"; gateId: string; stageName: string; answer: string; targetStage: string };
+  | { type: "GATE_ANSWERED"; gateId: string; stageName: string; answer: string; targetStage: string }
+  // A2.3.3 — external interrupt for a specific running stage. Carried on
+  // the root TaskMachine event bus; individual agent stage regions match
+  // on `event.stage === <my stage>` and forward the event to their
+  // invoked child via sendTo. The child (fromCallback in A2.3.3 — see
+  // runner.ts executeStageLogic) converts it into an AbortSignal trigger
+  // so the real executor can deliver INTERRUPT to the nested AgentMachine
+  // per design doc §4.2. stage-specific routing is owner-decided (A2.3
+  // plan §6.1).
+  | { type: "INTERRUPT"; stage: string };
 
 export interface InboundWireMeta {
   // "<from.stage>.<from.port>" — the source port whose value activates the wire.
@@ -386,7 +395,13 @@ function buildStageRegion(
     // the compiler agnostic of stage-specific executor dispatch; the
     // stageName is passed via `input` so the runtime logic picks the
     // right handler.
+    //
+    // `id: <stageName>_exec` makes the child addressable via sendTo() for
+    // A2.3.3 INTERRUPT forwarding. Without a deterministic id, XState
+    // auto-generates one per actor instance which the compiler can't
+    // reference ahead of time.
     executingBody.invoke = {
+      id: `${stageName}_exec`,
       src: "execute_stage",
       input: ({ context }: { context: MachineContext }) => ({
         stageName,
@@ -409,6 +424,21 @@ function buildStageRegion(
           void event;
         },
       },
+    };
+
+    // A2.3.3 — forward INTERRUPT to the invoked child. The guard narrows
+    // to "this stage" so a parallel region's INTERRUPT for a sibling
+    // doesn't affect this one (owner decision §6.1). The child actor
+    // receives the raw event (it's a fromCallback in A2.3.3; see
+    // runner.ts) and translates it into an AbortSignal trigger for the
+    // executor → AgentMachine §4.2 path.
+    (executingBody.on as Record<string, unknown>).INTERRUPT = {
+      guard: ({ event }: { event: MachineEvent }) =>
+        event.type === "INTERRUPT" && event.stage === stageName,
+      actions: sendTo(
+        `${stageName}_exec`,
+        { type: "INTERRUPT" as const },
+      ),
     };
   }
 

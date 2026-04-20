@@ -231,6 +231,27 @@ export class RealStageExecutor implements StageExecutor {
       agentActor.start();
       const adapter = createSdkAdapter();
 
+      // A2.3.3 — bridge the parent's AbortSignal to an INTERRUPT event
+      // on the inner AgentMachine. When the TaskMachine receives
+      // INTERRUPT{stage} and sendTo's the stage's invoked child, the
+      // runner's fromCallback aborts this signal; we translate that
+      // into the §4.2 INTERRUPT event so the AgentMachine's state
+      // matrix (arm on waiting_for_claude, defer on tool loop, etc.)
+      // runs as designed. Listener is removed in the finally so we
+      // don't leak across sequential stage attempts.
+      const onAbort = () => {
+        agentActor.send({ type: "INTERRUPT" });
+      };
+      if (args.signal) {
+        if (args.signal.aborted) {
+          // Signal already aborted (interrupt fired before executeStage
+          // even started — e.g. XState stop-on-create). Send immediately.
+          agentActor.send({ type: "INTERRUPT" });
+        } else {
+          args.signal.addEventListener("abort", onAbort, { once: true });
+        }
+      }
+
       let agentOutput: AgentMachineOutput;
       try {
         // Stream pump extracted to stream-pump.ts so A2.3.2 can reuse it
@@ -250,6 +271,7 @@ export class RealStageExecutor implements StageExecutor {
           },
         });
       } finally {
+        if (args.signal) args.signal.removeEventListener("abort", onAbort);
         // Always stop the actor — even on adapter/stream errors or waitFor
         // timeout. Otherwise XState keeps a subscription alive and a later
         // test iteration's actor may race with this one.
