@@ -359,6 +359,17 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
             const stage = String(args.stage);
             const port = String(args.port);
 
+            // Guard: '__external__' is a reserved stage name owned by the
+            // runner's seed phase, which is the sole legitimate producer of
+            // port_values rows with that stage. Rejecting here — before the
+            // FK / lineage work below — prevents agents from forging
+            // external-input provenance via write_port.
+            if (stage === "__external__") {
+              return errorResponse(
+                "stage '__external__' is reserved for runner-initiated seed values; write_port cannot target it",
+              );
+            }
+
             // Resolve the pipeline version this attempt belongs to, so we can
             // validate that (stage, port) is declared as an output on that
             // specific version (not just any version in the DB).

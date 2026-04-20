@@ -483,3 +483,39 @@ describe("A7.2: createKernelMcp reuses caller-supplied PortRuntime", () => {
     db.close();
   });
 });
+
+// Task 1.9 — write_port must refuse stage='__external__'. Only the
+// runner's seed phase is allowed to produce port_values rows with that
+// reserved stage name; agents writing runtime ports must never forge
+// external-input lineage.
+describe("write_port rejects __external__ sentinel", () => {
+  it("rejects stage='__external__' before touching FK / lineage state", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, {
+      tscPath: TSC_PATH,
+      skipTypeCheck: true,
+      surface: "combined",
+    });
+    const t = getTools(mcp);
+
+    // Intentionally do NOT seed a matching attempt row. The sentinel
+    // check must fire first — if the handler reached the FK lookup it
+    // would instead complain about a missing attemptId.
+    const resp = await t.get("write_port")!.handler({
+      taskId: "irrelevant",
+      attemptId: "irrelevant",
+      stage: "__external__",
+      port: "anything",
+      value: 1,
+    });
+
+    expect(resp.isError).toBe(true);
+    const payload = parsePayload(resp) as { ok: boolean; error: string };
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toMatch(/reserved/i);
+    expect(payload.error).toMatch(/__external__/);
+
+    db.close();
+  });
+});
