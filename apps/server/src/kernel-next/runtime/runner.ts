@@ -457,7 +457,8 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
     // produce duplicate events.
     {
       const ctx = snapshot.context as MachineContext;
-      for (const { name: stageName, outcome } of ctx.finalizedStages) {
+      for (const entry of ctx.finalizedStages) {
+        const { name: stageName, outcome, reason } = entry;
         if (publishedStageFinal.has(stageName)) continue;
         publishedStageFinal.add(stageName);
         if (outcome === "done") {
@@ -468,17 +469,40 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
             data: { stage: stageName },
           });
         } else {
-          const err = buildNoActiveWireError(stageName, stageMeta, ctx.portValues);
-          publish({
-            type: "stage_error",
-            taskId: opts.taskId,
-            timestamp: isoNow(),
-            data: {
-              stage: stageName,
-              message: err.message,
-              context: err.context,
-            },
-          });
+          // Dispatch by reason recorded at the entering transition. Legacy
+          // absence of reason is treated as no_active_wire for backwards
+          // compatibility (old fixture snapshots pre-date the field), but
+          // all 3 compiler-emitted paths populate it.
+          if (reason === "executor_failed") {
+            // Executor failed (agent/script returned status=error or
+            // threw). The concrete message has already been pushed to
+            // stageErrors by executeStageLogic / orchestrateFanoutStage;
+            // reuse it here so the SSE carries the real reason instead
+            // of the generic NO_ACTIVE_WIRE text.
+            const stageErr = stageErrors.find((e) => e.stage === stageName);
+            publish({
+              type: "stage_error",
+              taskId: opts.taskId,
+              timestamp: isoNow(),
+              data: {
+                stage: stageName,
+                message: stageErr?.message ?? "stage executor failed",
+              },
+            });
+          } else {
+            // no_active_wire — structured diagnostic attaches failedWires[].
+            const err = buildNoActiveWireError(stageName, stageMeta, ctx.portValues);
+            publish({
+              type: "stage_error",
+              taskId: opts.taskId,
+              timestamp: isoNow(),
+              data: {
+                stage: stageName,
+                message: err.message,
+                context: err.context,
+              },
+            });
+          }
         }
       }
     }
@@ -496,12 +520,18 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       // sees it. ctx.finalizedStages is populated atomically with each
       // region's final.entry (compiler/ir-to-machine.ts), so reading it
       // here is the structured equivalent of the retired log-regex scan.
-      for (const { name: stageName, outcome } of ctx.finalizedStages) {
-        if (outcome !== "error") continue;
-        if (dispatched.has(stageName)) continue;
-        dispatched.add(stageName);
+      for (const entry of ctx.finalizedStages) {
+        if (entry.outcome !== "error") continue;
+        if (dispatched.has(entry.name)) continue;
+        dispatched.add(entry.name);
+        // executor_failed path already pushed a concrete message into
+        // stageErrors from executeStageLogic / orchestrateFanoutStage
+        // before the machine reached final — skip to avoid a second
+        // (duplicate, generic) entry. Only no_active_wire needs
+        // synthesising here because that path never opened an attempt.
+        if (entry.reason === "executor_failed") continue;
         stageErrors.push(
-          buildNoActiveWireError(stageName, stageMeta, ctx.portValues),
+          buildNoActiveWireError(entry.name, stageMeta, ctx.portValues),
         );
       }
       // Drain pending executors before resolving so db writes finish.
@@ -561,17 +591,22 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
     if (!running) return;
 
     for (const [stageName, substate] of Object.entries(running)) {
-      // NO_ACTIVE_WIRE surfaces as a stage region reaching `error` without
-      // a corresponding executor dispatch. Capture as a stageError once per
-      // stage so the RunResult reports it (and promotes finalState to
-      // 'failed'). We reuse the `dispatched` set as a seen-marker because
+      // Stage region reached `error` final. Three entering paths: true
+      // NO_ACTIVE_WIRE (dropped wire), or STAGE_FAILED from an executor
+      // (agent/script returned error / threw). Executor_failed stages
+      // already pushed a concrete message into stageErrors; only
+      // synthesise a NO_ACTIVE_WIRE entry when the reason marks this
+      // path. We reuse the `dispatched` set as a seen-marker because
       // a stage that never executed won't be in it.
       if (substate === "error" && !dispatched.has(stageName)) {
         dispatched.add(stageName);
         const ctx = snapshot.context as MachineContext;
-        stageErrors.push(
-          buildNoActiveWireError(stageName, stageMeta, ctx.portValues),
-        );
+        const finalized = ctx.finalizedStages.find((f) => f.name === stageName);
+        if (finalized?.reason !== "executor_failed") {
+          stageErrors.push(
+            buildNoActiveWireError(stageName, stageMeta, ctx.portValues),
+          );
+        }
         continue;
       }
       if (substate === "executing" && !dispatched.has(stageName)) {

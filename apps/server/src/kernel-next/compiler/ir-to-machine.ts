@@ -65,7 +65,20 @@ export interface MachineContext {
   // array is preserved as a test-facing ordering contract (see
   // wire-guards.test.ts, demo/diamond.ts); this field is the typed,
   // runner-only signal.
-  finalizedStages: { name: string; outcome: "done" | "error" }[];
+  //
+  // `reason` is populated on `error` outcomes to distinguish the 3 entry
+  // paths (§6.2 stage_error differentiation):
+  //   - "no_active_wire" — every inbound wire settled but at least one
+  //     dropped (guard false) so the stage cannot activate. Runner
+  //     attaches the structured failedWires[] payload.
+  //   - "executor_failed" — agent/script executor returned status=error
+  //     or rejected; runner reads the concrete message from stageErrors.
+  // `outcome === "done"` always has reason === undefined.
+  finalizedStages: {
+    name: string;
+    outcome: "done" | "error";
+    reason?: "no_active_wire" | "executor_failed";
+  }[];
 }
 
 export type MachineEvent =
@@ -391,6 +404,20 @@ function buildStageRegion(
           target: "error",
           guard: ({ event }: { event: MachineEvent }) =>
             event.type === "STAGE_FAILED" && event.stage === stageName,
+          // Executor dispatched STAGE_FAILED after its promise returned
+          // status='error' or rejected — reason is "executor_failed" so
+          // runner pulls the concrete message from stageErrors.
+          actions: assign({
+            log: ({ context }) => [...context.log, `${stageName}:error`],
+            finalizedStages: ({ context }) => [
+              ...context.finalizedStages,
+              {
+                name: stageName,
+                outcome: "error" as const,
+                reason: "executor_failed" as const,
+              },
+            ],
+          }),
         },
       ],
     },
@@ -495,13 +522,42 @@ function buildStageRegion(
             // was dropped by a false guard. Emit via `error` final; the
             // runner interprets the `error` substate + meta.inbound to
             // produce the structured diagnostic.
-            { target: "error", guard: noDeliverableWire },
+            {
+              target: "error",
+              guard: noDeliverableWire,
+              actions: assign({
+                log: ({ context }) => [...context.log, `${stageName}:error`],
+                finalizedStages: ({ context }) => [
+                  ...context.finalizedStages,
+                  {
+                    name: stageName,
+                    outcome: "error" as const,
+                    reason: "no_active_wire" as const,
+                  },
+                ],
+              }),
+            },
           ],
           STAGE_FAILED: [
             {
               target: "error",
               guard: ({ event }: { event: MachineEvent }) =>
                 event.type === "STAGE_FAILED" && event.stage === stageName,
+              // Rare path: STAGE_FAILED arrives while the stage is still
+              // waiting (e.g. fanout orchestrator fails before the region
+              // entered executing). Origin is the executor layer, so
+              // reason = executor_failed.
+              actions: assign({
+                log: ({ context }) => [...context.log, `${stageName}:error`],
+                finalizedStages: ({ context }) => [
+                  ...context.finalizedStages,
+                  {
+                    name: stageName,
+                    outcome: "error" as const,
+                    reason: "executor_failed" as const,
+                  },
+                ],
+              }),
             },
           ],
           // A3.2 — GATE_ANSWERED composes with inbound delivery. XState
@@ -560,6 +616,20 @@ function buildStageRegion(
                 if (!meta.inbound.every((w) => wireSettled(w, context.portValues))) return false;
                 return meta.inbound.some((w) => !wireDelivers(w, context.portValues));
               },
+              // Gate authorised this stage but its inbound has at least
+              // one dropped wire — same underlying cause as the plain
+              // PORT_WRITTEN NO_ACTIVE_WIRE branch.
+              actions: assign({
+                log: ({ context }) => [...context.log, `${stageName}:error`],
+                finalizedStages: ({ context }) => [
+                  ...context.finalizedStages,
+                  {
+                    name: stageName,
+                    outcome: "error" as const,
+                    reason: "no_active_wire" as const,
+                  },
+                ],
+              }),
             },
           ],
         },
@@ -580,7 +650,24 @@ function buildStageRegion(
               context.gateSkippedTargets.includes(stageName),
           },
           { target: "executing", guard: allInboundDelivered },
-          { target: "error", guard: noDeliverableWire },
+          {
+            target: "error",
+            guard: noDeliverableWire,
+            // waiting.always NO_ACTIVE_WIRE — symmetric to PORT_WRITTEN
+            // branch above; covers the "already dead on entry" race
+            // where portValues arrive before the region starts.
+            actions: assign({
+              log: ({ context }) => [...context.log, `${stageName}:error`],
+              finalizedStages: ({ context }) => [
+                ...context.finalizedStages,
+                {
+                  name: stageName,
+                  outcome: "error" as const,
+                  reason: "no_active_wire" as const,
+                },
+              ],
+            }),
+          },
         ],
       },
       executing: executingBody,
@@ -595,14 +682,10 @@ function buildStageRegion(
         }),
       },
       error: {
+        // `entry` removed — finalizedStages + log are assigned on each of
+        // the transitions that enter this state so `reason` can carry
+        // the originating path (no_active_wire vs executor_failed).
         type: "final",
-        entry: assign({
-          log: ({ context }) => [...context.log, `${stageName}:error`],
-          finalizedStages: ({ context }) => [
-            ...context.finalizedStages,
-            { name: stageName, outcome: "error" as const },
-          ],
-        }),
       },
     },
   } as const;

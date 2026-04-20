@@ -1115,6 +1115,122 @@ describe("SSE Slice 2: broadcaster integration", () => {
   });
 });
 
+// stage_error SSE differentiation (2026-04-20). Three paths enter a stage
+// region's `error` final state; the compiler now tags `finalizedStages`
+// entries with `reason`, and the runner emits differentiated messages so
+// the dashboard / debugger stops mislabelling executor failures as
+// NO_ACTIVE_WIRE.
+describe("runPipeline stage_error reason differentiation", () => {
+  it("emits NO_ACTIVE_WIRE message + failedWires context when an inbound wire drops", async () => {
+    const { KernelNextBroadcaster } = await import("../sse/broadcaster.js");
+    const broadcaster = new KernelNextBroadcaster();
+    const db = makeDb();
+    // A -> B wired with a guard that always fails. B reaches `error`
+    // final via noDeliverableWire (reason = no_active_wire).
+    const ir: PipelineIR = {
+      name: "naw-reason",
+      stages: [
+        { name: "A", type: "agent", inputs: [],
+          outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+        { name: "B", type: "agent",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [{ name: "y", type: "string" }], config: { promptRef: "p" } },
+      ],
+      wires: [
+        { from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" }, guard: "value > 100" },
+      ],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const events: Array<{ type: string; data: unknown }> = [];
+    broadcaster.subscribe("naw-reason", (e) => events.push({ type: e.type, data: e.data }));
+
+    const result = await runPipeline({
+      db, ir, taskId: "naw-reason", versionHash: hash,
+      handlers: { A: () => ({ x: 5 }), B: () => ({ y: "nope" }) },
+      broadcaster,
+    });
+    db.close();
+
+    expect(result.finalState).toBe("failed");
+    expect(result.stageErrors).toHaveLength(1);
+    expect(result.stageErrors[0]!.message).toMatch(/NO_ACTIVE_WIRE/);
+
+    const stageErrorEvents = events.filter((e) => e.type === "stage_error");
+    expect(stageErrorEvents).toHaveLength(1);
+    const errData = stageErrorEvents[0]!.data as {
+      stage: string;
+      message: string;
+      context?: { failedWires: unknown[] };
+    };
+    expect(errData.stage).toBe("B");
+    expect(errData.message).toMatch(/NO_ACTIVE_WIRE/);
+    // Structured diagnostic must be attached.
+    expect(errData.context?.failedWires).toHaveLength(1);
+  });
+
+  it("emits executor-specific message (not NO_ACTIVE_WIRE) when an agent returns status=error", async () => {
+    const { KernelNextBroadcaster } = await import("../sse/broadcaster.js");
+    const broadcaster = new KernelNextBroadcaster();
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "exec-fail-reason",
+      stages: [
+        { name: "X", type: "agent", inputs: [],
+          outputs: [{ name: "o", type: "number" }], config: { promptRef: "p" } },
+      ],
+      wires: [],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    // Executor that reports a concrete failure. Runner must surface this
+    // verbatim in both stageErrors and the SSE stage_error event.
+    const erroringExecutor = {
+      executeStage: async () => ({
+        attemptId: "a0", attemptIdx: 0,
+        status: "error" as const,
+        error: "turn limit exhausted: agent produced no output after 5 turns",
+      }),
+    };
+
+    const events: Array<{ type: string; data: unknown }> = [];
+    broadcaster.subscribe("exec-fail-reason", (e) => events.push({ type: e.type, data: e.data }));
+
+    const result = await runPipeline({
+      db, ir, taskId: "exec-fail-reason", versionHash: hash,
+      handlers: { X: () => ({}) },
+      executor: erroringExecutor,
+      broadcaster,
+    });
+    db.close();
+
+    expect(result.finalState).toBe("failed");
+    // RunResult carries exactly one error and it is the executor's
+    // concrete message — not the generic NO_ACTIVE_WIRE string, and not
+    // duplicated (guards against double-push from the finalizedStages
+    // error loop at run-final).
+    expect(result.stageErrors).toHaveLength(1);
+    expect(result.stageErrors[0]!.stage).toBe("X");
+    expect(result.stageErrors[0]!.message).toContain("turn limit exhausted");
+
+    // SSE stage_error must carry the same message; context is absent
+    // (executor_failed has no structured failedWires payload).
+    const stageErrorEvents = events.filter((e) => e.type === "stage_error");
+    expect(stageErrorEvents).toHaveLength(1);
+    const errData = stageErrorEvents[0]!.data as {
+      stage: string;
+      message: string;
+      context?: unknown;
+    };
+    expect(errData.stage).toBe("X");
+    expect(errData.message).toContain("turn limit exhausted");
+    expect(errData.message).not.toMatch(/NO_ACTIVE_WIRE/);
+    expect(errData.context).toBeUndefined();
+  });
+});
+
 // Task 1.8 — runner seed-phase. Before actor.start(), runPipeline must:
 //   1. validate seedValues contains every ir.externalInputs key,
 //   2. open a kind="external" stage_attempts row on "__external__",
