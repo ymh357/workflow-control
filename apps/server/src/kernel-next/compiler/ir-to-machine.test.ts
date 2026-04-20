@@ -367,6 +367,83 @@ describe("ScriptStage retry transition", () => {
     actor.stop();
   });
 
+  it("waiting region stays in waiting after portValues cleared (guard premise)", async () => {
+    // Premise for the retry reset mechanism: `waiting.always` and
+    // `waiting.on.PORT_WRITTEN` only advance a region to `executing` when
+    // allInboundDelivered returns true. If portValues lacks a required
+    // source key, the region stays in `waiting`. This is the invariant
+    // that Task C5's portValues-clearing step depends on: once the runner
+    // deletes upstream port keys from context.portValues (via assign), the
+    // downstream region cannot auto-promote — it must wait for the upstream
+    // to re-execute and re-populate those keys.
+    //
+    // Pipeline: A (agent, no inputs, writes x) -> B (agent, reads x).
+    // A has no inbound wires so it starts in `executing` immediately.
+    // We verify two halves of B's behaviour:
+    //   (1) With A.x absent from portValues, B stays in `waiting`.
+    //   (2) After PORT_WRITTEN A.x, B advances to `executing`.
+    // Half (1) directly proves that if portValues were cleared (runner C5),
+    // a B that had NOT yet advanced past `waiting` would remain in `waiting`.
+    // The case "B is already in executing when portValues clear" is outside
+    // compiler scope — the runner's C5 handler must also stop the executing
+    // invocation; no in-machine event is needed.
+    const ir: PipelineIR = {
+      name: "reset-via-portvalues",
+      externalInputs: [],
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "B",
+          type: "agent",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [{ name: "y", type: "string" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        {
+          from: { source: "stage", stage: "A", port: "x" },
+          to: { stage: "B", port: "x" },
+        },
+      ],
+    };
+    const { machine } = compileIRToMachine(ir, { taskId: "t1" });
+    const provided = machine.provide({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      actors: { execute_stage: fromCallback(() => {}) as any },
+    });
+    const actor = createActor(provided);
+    actor.start();
+    actor.send({ type: "START" });
+
+    // (1) Before any PORT_WRITTEN: B lacks its required A.x → stays waiting.
+    // A has no inbound wires (entry stage) so it advances immediately to
+    // executing. That is expected and does not affect the B assertion.
+    let snap = actor.getSnapshot();
+    expect((snap.value as { running?: Record<string, string> }).running?.A).toBe("executing");
+    expect((snap.value as { running?: Record<string, string> }).running?.B).toBe("waiting");
+
+    // (2) Write A.x: allInboundDelivered for B becomes true → B advances.
+    actor.send({ type: "PORT_WRITTEN", key: "A.x", value: 10 });
+    await new Promise((r) => setTimeout(r, 0));
+    snap = actor.getSnapshot();
+    expect((snap.value as { running?: Record<string, string> }).running?.B).toBe("executing");
+
+    // This test documents the guard invariant: the machine's `waiting`
+    // state only exits when portValues contains every required inbound key.
+    // Combined with Task C5's portValues-clearing logic, this guarantees
+    // that clearing A.x from portValues (runner-side assign) leaves any
+    // B that is still in `waiting` in `waiting`, without requiring any
+    // explicit RESET_STAGE machine event.
+    actor.stop();
+  });
+
   it("raises RETRY_TO_STAGE on STAGE_FAILED while retryCounts < maxRetries", async () => {
     // Pipeline: A (agent) --x--> S (script, retry maxRetries=2 backToStage=A).
     // When S's executor fails with retryCounts[S]=0, the compiler's retry

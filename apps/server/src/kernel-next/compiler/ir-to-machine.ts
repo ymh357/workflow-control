@@ -481,12 +481,25 @@ function buildStageRegion(
   const stageFailedTransitions = retrySpec
     ? [
         {
+          // Reset mechanism (no explicit RESET_STAGE event):
+          //   The retry transition targets `waiting` and raises RETRY_TO_STAGE.
+          //   Runner (Task C5) handles the raised event by (a) incrementing
+          //   retryCounts[stageName], (b) clearing portValues for the
+          //   backToStage AND its transitive downstream. After runner's
+          //   portValues clear, the `waiting.always` guards for the target and
+          //   downstream stages re-evaluate; allInboundDelivered becomes false
+          //   because the source ports are now missing, so they stay in
+          //   `waiting` until the upstream's re-execution re-populates them.
+          //   Gate authorization (gateAuthorizedTargets) is NOT cleared on
+          //   retry; a stage that a human already approved does not need a
+          //   second approval when its script downstream fails.
+          //
           // Retry path: stage-name match AND retries still in budget.
           // Target `waiting` so the region re-enters its entry guards;
           // Task C5's root-level handler will also bump retryCounts and
-          // (via RESET_STAGE) clear downstream portValues so the
-          // waiting.always re-evaluation doesn't immediately promote the
-          // stage back to executing on stale inbound values.
+          // clear downstream portValues so the waiting.always re-evaluation
+          // doesn't immediately promote the stage back to executing on
+          // stale inbound values.
           target: "waiting",
           guard: ({
             context,
