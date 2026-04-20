@@ -16,6 +16,7 @@ export type KernelNextSSEEventType =
   | "stage_executing"  // a stage region entered the executing substate
   | "stage_done"       // a stage region reached its `done` final
   | "stage_error"      // a stage region reached its `error` final (NO_ACTIVE_WIRE or executor failure)
+  | "stage_retry"      // runner caught RETRY_TO_STAGE: a script failed but retry is in budget, backToStage is being rerun
   | "port_written"     // a single port_values row was written on the live PortRuntime
   | "run_final";       // top-level machine reached `completed` or `failed`; carries aggregated diagnostics
 
@@ -72,6 +73,27 @@ export interface StageErrorData {
   context?: unknown;
 }
 
+export interface StageRetryData {
+  // The stage that just failed (the script whose executor errored).
+  stage: string;
+  // The upstream stage whose execution is being restarted.
+  backToStage: string;
+  // 0-based retry count as of this retry. 0 = this is the first retry
+  // (first failure for this stage), 1 = second, etc. After this retry
+  // fires, runner increments retryCounts[stage]; the next failure sees
+  // retryIdx = retryCounts[stage] at emission time.
+  retryIdx: number;
+  // Upper bound on retries for this stage, from ScriptStage.config.retry.
+  // When retryIdx + 1 would exceed maxRetries, runner does NOT emit
+  // another stage_retry — it lets the stage's STAGE_FAILED transition
+  // fall through to the error final (surfacing as stage_error instead).
+  maxRetries: number;
+  // Concrete executor error message (the same value that would have
+  // been surfaced on stage_error.reason=executor_failed if retry were
+  // out of budget). Included here so UIs can show "retrying because X".
+  errorMessage: string;
+}
+
 export interface PortWrittenData {
   stage: string;
   port: string;
@@ -108,6 +130,10 @@ export interface KernelNextStageErrorEvent extends KernelNextSSEEvent {
   type: "stage_error";
   data: StageErrorData;
 }
+export interface KernelNextStageRetryEvent extends KernelNextSSEEvent {
+  type: "stage_retry";
+  data: StageRetryData;
+}
 export interface KernelNextPortWrittenEvent extends KernelNextSSEEvent {
   type: "port_written";
   data: PortWrittenData;
@@ -122,5 +148,6 @@ export type AnyKernelNextSSEEvent =
   | KernelNextStageExecutingEvent
   | KernelNextStageDoneEvent
   | KernelNextStageErrorEvent
+  | KernelNextStageRetryEvent
   | KernelNextPortWrittenEvent
   | KernelNextRunFinalEvent;
