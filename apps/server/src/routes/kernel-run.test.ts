@@ -64,6 +64,7 @@ describe("POST /api/kernel/tasks/run", () => {
     expect(json.diagnostics[0]!.context?.known).toContain("diamond");
     expect(json.diagnostics[0]!.context?.known).toContain("diamond-slow");
     expect(json.diagnostics[0]!.context?.known).toContain("diamond-real");
+    expect(json.diagnostics[0]!.context?.known).toContain("smoke-test");
   });
 
   it("accepts real-executor overrides (model / maxTurns / maxBudgetUsd) without validation errors", async () => {

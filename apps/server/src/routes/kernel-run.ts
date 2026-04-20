@@ -28,6 +28,8 @@ import { kernelNextBroadcaster } from "../kernel-next/sse/singleton.js";
 import { diamondIR } from "../kernel-next/generator-mock/mini-generator.js";
 import { slowDiamondHandlers } from "../kernel-next/demo/slow-diamond.js";
 import { RealStageExecutor } from "../kernel-next/runtime/real-executor.js";
+import { FsPromptResolver } from "../kernel-next/runtime/fs-prompt-resolver.js";
+import { smokeTestIR, smokeTestPromptRoot } from "../kernel-next/builtins/smoke-test.js";
 import type { StageExecutor } from "../kernel-next/runtime/executor.js";
 import type { PipelineIR } from "../kernel-next/ir/schema.js";
 import type { StageHandlerMap } from "../kernel-next/runtime/mock-executor.js";
@@ -109,6 +111,25 @@ const pipelineRegistry: Record<string, () => PipelineRegistration> = {
     // Dashboard stays subscribed via SSE reconnect, so a generous
     // upper bound is fine.
     timeoutMs: 5 * 60_000,
+  }),
+  "smoke-test": () => ({
+    // A7.4 — hand-ported from legacy YAML. greet → echoBack, each
+    // legacy store_schema field becomes a kernel-next port. Legacy
+    // prompts reused verbatim; buildSystemPromptAppend supplies the
+    // kernel-next port contract at invocation time so the agent
+    // knows to call write_port rather than the legacy `writes` API.
+    ir: smokeTestIR(),
+    handlers: {},
+    executorFactory: (db, overrides) =>
+      new RealStageExecutor({
+        mcpServerFactory: (_dispatcher, portRuntime) =>
+          createKernelMcp(db, { surface: "combined", portRuntime }),
+        promptResolver: new FsPromptResolver({ rootDir: smokeTestPromptRoot() }),
+        model: overrides.model ?? DEFAULT_REAL_MODEL,
+        maxTurns: overrides.maxTurns ?? DEFAULT_REAL_MAX_TURNS,
+        maxBudgetUsd: overrides.maxBudgetUsd ?? DEFAULT_REAL_BUDGET_USD,
+      }),
+    timeoutMs: 3 * 60_000,
   }),
 };
 
