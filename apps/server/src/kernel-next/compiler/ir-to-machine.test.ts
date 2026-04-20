@@ -11,7 +11,7 @@
 // No runner, no DB — pure compiled-machine behavior.
 
 import { describe, it, expect } from "vitest";
-import { createActor } from "xstate";
+import { createActor, fromCallback } from "xstate";
 import { compileIRToMachine } from "./ir-to-machine.js";
 import type { MachineContext } from "./ir-to-machine.js";
 import type { PipelineIR } from "../ir/schema.js";
@@ -306,6 +306,170 @@ describe("compileIRToMachine seedValues", () => {
     // Both keys present regardless of iteration order
     expect(ctx.portValues["__external__.a"]).toBe(10);
     expect(ctx.portValues["__external__.b"]).toBe(20);
+    actor.stop();
+  });
+});
+
+// Slice C (Task C1): script stage retry transition.
+// These tests exercise only the compiler's emission side — the runner's
+// root-level RETRY_TO_STAGE handler (increment + RESET_STAGE) is Task C5.
+describe("ScriptStage retry transition", () => {
+  it("compiles a ScriptStage without retry without regression", () => {
+    // Regression canary: a ScriptStage with no retry spec still compiles
+    // and the machine builds. Existing tests cover the error-final path.
+    const ir: PipelineIR = {
+      name: "no-retry-script",
+      externalInputs: [],
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "S",
+          type: "script",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [{ name: "r", type: "boolean" }],
+          config: { moduleId: "m" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "x" }, to: { stage: "S", port: "x" } },
+      ],
+    };
+    const { machine } = compileIRToMachine(ir, { taskId: "t1" });
+    expect(machine).toBeDefined();
+  });
+
+  it("initialises MachineContext.retryCounts as an empty record", () => {
+    const ir: PipelineIR = {
+      name: "rc-init",
+      externalInputs: [],
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [],
+    };
+    const { machine } = compileIRToMachine(ir, { taskId: "t1" });
+    const actor = createActor(machine);
+    actor.start();
+    const snapshot = actor.getSnapshot();
+    expect((snapshot.context as MachineContext).retryCounts).toEqual({});
+    actor.stop();
+  });
+
+  it("raises RETRY_TO_STAGE on STAGE_FAILED while retryCounts < maxRetries", async () => {
+    // Pipeline: A (agent) --x--> S (script, retry maxRetries=2 backToStage=A).
+    // When S's executor fails with retryCounts[S]=0, the compiler's retry
+    // transition should:
+    //   (1) raise a RETRY_TO_STAGE event with the stage + back target,
+    //   (2) target S's region back to `waiting` (not `error`).
+    const ir: PipelineIR = {
+      name: "retry-fire",
+      externalInputs: [],
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "S",
+          type: "script",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [{ name: "r", type: "boolean" }],
+          config: { moduleId: "m", retry: { maxRetries: 2, backToStage: "A" } },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "x" }, to: { stage: "S", port: "x" } },
+      ],
+    };
+    const { machine } = compileIRToMachine(ir, { taskId: "t1" });
+
+    // Capture raised events via XState's inspect hook. The retry
+    // transition uses `raise(...)` which surfaces through the inspector
+    // as an @xstate.event whose source is the actor's own sessionId.
+    // Capture RETRY_TO_STAGE events from the inspector. `raise()` in
+    // XState v5 dispatches as an internal microstep rather than a
+    // top-level @xstate.event, so we match on both inspector
+    // categories (microstep + event) to be robust across versions.
+    const raisedEvents: Array<Record<string, unknown>> = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const inspector = (inspEvent: any) => {
+      const ev = inspEvent.event;
+      if (!ev || ev.type !== "RETRY_TO_STAGE") return;
+      if (
+        inspEvent.type === "@xstate.event" ||
+        inspEvent.type === "@xstate.microstep"
+      ) {
+        // Dedupe: the same raised event can surface as both microstep
+        // and event on some paths; push only once per identity.
+        if (!raisedEvents.some((e) => e === ev)) {
+          raisedEvents.push(ev);
+        }
+      }
+    };
+
+    // Provide execute_stage as a no-op callback actor so the invoke
+    // doesn't throw "Actor type not found". It never resolves on its
+    // own; we drive state transitions entirely via external events.
+    const providedMachine = machine.provide({
+      actors: {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        execute_stage: fromCallback(() => {}) as any,
+      },
+    });
+    const actor = createActor(providedMachine, { inspect: inspector });
+    actor.start();
+    actor.send({ type: "START" });
+
+    // Drive A to done by writing its output port; wires deliver to S.
+    actor.send({ type: "PORT_WRITTEN", key: "A.x", value: 10 });
+
+    // Microtask tick so waiting.always re-evaluates and S enters executing.
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Dispatch STAGE_FAILED for S; retryCounts[S] is still 0 so guard passes.
+    actor.send({ type: "STAGE_FAILED", stage: "S", error: "boom" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Primary assertion: the retry transition fired and raised the
+    // correctly-shaped RETRY_TO_STAGE event. Runner's Task C5 is
+    // responsible for observing this event and applying the side
+    // effects (increment retryCounts, clear downstream portValues,
+    // RESET_STAGE) — none of which are in scope for the compiler.
+    expect(raisedEvents).toHaveLength(1);
+    expect(raisedEvents[0]).toMatchObject({
+      type: "RETRY_TO_STAGE",
+      failedStageName: "S",
+      backToStage: "A",
+      reason: "executor_failed",
+      retryIdx: 0,
+      maxRetries: 2,
+      errorMessage: "boom",
+    });
+
+    // Secondary assertion: S's region is NOT in `error`. After the
+    // retry raise it momentarily enters `waiting`; because portValues
+    // still carry A.x the waiting.always guard promotes it straight
+    // back to `executing`. That's fine for an isolated compiler test
+    // — what matters is that the error-final path was bypassed.
+    const snap = actor.getSnapshot();
+    const running = (snap.value as { running?: Record<string, string> }).running;
+    expect(running?.S).not.toBe("error");
+
     actor.stop();
   });
 });

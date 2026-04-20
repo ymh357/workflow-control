@@ -29,7 +29,7 @@
 // The machine is pure: it contains no side effects, no DB writes, no subprocess
 // invocation. runtime/runner.ts owns all side effects.
 
-import { createMachine, assign, sendTo } from "xstate";
+import { createMachine, assign, sendTo, raise } from "xstate";
 import type { AnyStateMachine } from "xstate";
 import type { PipelineIR, StageIR } from "../ir/schema.js";
 import { buildDag } from "../validator/dag.js";
@@ -79,6 +79,12 @@ export interface MachineContext {
     outcome: "done" | "error";
     reason?: "no_active_wire" | "executor_failed";
   }[];
+  // Slice C (Task C1): per-stage retry counter. Keyed by the failing
+  // stage name (the ScriptStage whose executor errored). Read by the
+  // STAGE_FAILED retry guard; incremented by runner's root-level
+  // RETRY_TO_STAGE handler (Task C5). Distinct from port-runtime's
+  // stage_attempts.attempt_idx — that's a monotonic audit counter.
+  retryCounts: Record<string, number>;
 }
 
 export type MachineEvent =
@@ -94,7 +100,20 @@ export type MachineEvent =
   // so the real executor can deliver INTERRUPT to the nested AgentMachine
   // per design doc §4.2. stage-specific routing is owner-decided (A2.3
   // plan §6.1).
-  | { type: "INTERRUPT"; stage: string };
+  | { type: "INTERRUPT"; stage: string }
+  // Slice C (Task C1): script stage executor failed with retry-in-budget.
+  // Raised by the per-stage STAGE_FAILED transition; handled by runner's
+  // root-level subscriber (C5) which clears downstream portValues, bumps
+  // retryCounts, and sends RESET_STAGE back to the backToStage region.
+  | {
+      type: "RETRY_TO_STAGE";
+      failedStageName: string;
+      backToStage: string;
+      reason: "executor_failed";
+      retryIdx: number; // 0-based pre-increment value
+      maxRetries: number;
+      errorMessage: string;
+    };
 
 export interface InboundWireMeta {
   // "<from.stage>.<from.port>" — the source port whose value activates the wire.
@@ -243,7 +262,11 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
   const parallelChildren: Record<string, unknown> = {};
   for (const s of ir.stages) {
     const meta = stageMeta.get(s.name)!;
-    parallelChildren[s.name] = buildStageRegion(s.name, meta, gateRoutingMap);
+    // Slice C (Task C1): only ScriptStage carries a retry spec. Extract
+    // it here so buildStageRegion can emit a retry-aware STAGE_FAILED
+    // transition without having to re-discriminate the stage union.
+    const retrySpec = s.type === "script" ? s.config.retry : undefined;
+    parallelChildren[s.name] = buildStageRegion(s.name, meta, gateRoutingMap, retrySpec);
   }
 
   const machine = createMachine({
@@ -257,6 +280,7 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
       gateAuthorizedTargets: [],
       gateSkippedTargets: [],
       finalizedStages: [],
+      retryCounts: {},
     },
     initial: "idle",
     on: {
@@ -344,6 +368,12 @@ function buildStageRegion(
   stageName: string,
   meta: StageMeta,
   gateSiblingsByGate: Map<string, string[]>,
+  // Slice C (Task C1): present only for ScriptStage with config.retry.
+  // When set, the executing.STAGE_FAILED transition becomes a two-entry
+  // array: a guarded retry path (target `waiting`, raises
+  // RETRY_TO_STAGE) and the existing error-final fallback. When
+  // undefined, behavior is unchanged.
+  retrySpec: { maxRetries: number; backToStage: string } | undefined,
 ) {
   // A wire is "settled" when its source port has been written.
   const wireSettled = (
@@ -419,32 +449,96 @@ function buildStageRegion(
   const gateAnsweredIsMe = ({ event }: { event: MachineEvent }) =>
     event.type === "GATE_ANSWERED" && event.stageName === stageName;
 
+  // Executor-failure transition(s). The error-final path is the
+  // historic default: record the finalized stage with
+  // reason="executor_failed" and enter the region's `error` final.
+  //
+  // Slice C (Task C1) — when the stage is a ScriptStage with a retry
+  // spec, we prepend a guarded retry entry: if
+  // retryCounts[stageName] < maxRetries, target `waiting` and raise
+  // RETRY_TO_STAGE. The root-level handler in runner (Task C5) owns the
+  // side effects (bump counter, clear downstream ports, RESET_STAGE).
+  const errorFinalTransition = {
+    target: "error",
+    guard: ({ event }: { event: MachineEvent }) =>
+      event.type === "STAGE_FAILED" && event.stage === stageName,
+    actions: assign({
+      log: ({ context }: { context: MachineContext }) => [
+        ...context.log,
+        `${stageName}:error`,
+      ],
+      finalizedStages: ({ context }: { context: MachineContext }) => [
+        ...context.finalizedStages,
+        {
+          name: stageName,
+          outcome: "error" as const,
+          reason: "executor_failed" as const,
+        },
+      ],
+    }),
+  };
+
+  const stageFailedTransitions = retrySpec
+    ? [
+        {
+          // Retry path: stage-name match AND retries still in budget.
+          // Target `waiting` so the region re-enters its entry guards;
+          // Task C5's root-level handler will also bump retryCounts and
+          // (via RESET_STAGE) clear downstream portValues so the
+          // waiting.always re-evaluation doesn't immediately promote the
+          // stage back to executing on stale inbound values.
+          target: "waiting",
+          guard: ({
+            context,
+            event,
+          }: {
+            context: MachineContext;
+            event: MachineEvent;
+          }) => {
+            if (event.type !== "STAGE_FAILED" || event.stage !== stageName) {
+              return false;
+            }
+            const count = context.retryCounts[stageName] ?? 0;
+            return count < retrySpec.maxRetries;
+          },
+          actions: raise(
+            ({
+              context,
+              event,
+            }: {
+              context: MachineContext;
+              event: MachineEvent;
+            }) => {
+              // Guard above narrows event to STAGE_FAILED, but the
+              // factory signature sees the full union — re-narrow here.
+              if (event.type !== "STAGE_FAILED") {
+                throw new Error("unreachable: retry raise on non-STAGE_FAILED");
+              }
+              return {
+                type: "RETRY_TO_STAGE" as const,
+                failedStageName: stageName,
+                backToStage: retrySpec.backToStage,
+                reason: "executor_failed" as const,
+                retryIdx: context.retryCounts[stageName] ?? 0,
+                maxRetries: retrySpec.maxRetries,
+                errorMessage: event.error,
+              };
+            },
+          ),
+        },
+        // Fallback: retries exhausted (guard above failed) — the
+        // existing error-final path runs with the same name+reason
+        // payload as the no-retry case.
+        errorFinalTransition,
+      ]
+    : [errorFinalTransition];
+
   const executingBody: Record<string, unknown> = {
     entry: assign({
       log: ({ context }) => [...context.log, `${stageName}:executing`],
     }),
     on: {
-      STAGE_FAILED: [
-        {
-          target: "error",
-          guard: ({ event }: { event: MachineEvent }) =>
-            event.type === "STAGE_FAILED" && event.stage === stageName,
-          // Executor dispatched STAGE_FAILED after its promise returned
-          // status='error' or rejected — reason is "executor_failed" so
-          // runner pulls the concrete message from stageErrors.
-          actions: assign({
-            log: ({ context }) => [...context.log, `${stageName}:error`],
-            finalizedStages: ({ context }) => [
-              ...context.finalizedStages,
-              {
-                name: stageName,
-                outcome: "error" as const,
-                reason: "executor_failed" as const,
-              },
-            ],
-          }),
-        },
-      ],
+      STAGE_FAILED: stageFailedTransitions,
     },
   };
 
