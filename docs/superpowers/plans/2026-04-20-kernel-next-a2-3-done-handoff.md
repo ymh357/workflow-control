@@ -79,6 +79,8 @@ TaskMachine → completed（或 failed，依 stage 结果）
 
 ### 0.5 Debt 状态更新（原 `2026-04-20-kernel-next-f1-f8-done-handoff.md` §0.4）
 
+**2026-04-20 收尾（在 A2.3 之后）**：Debt 系列整体 closed。#2/#3/#4/#7 已 retire（4 commits：`b892ed2` `ed0ab9a` `ea8cf06` `25be7b7`）；#1 降为非阻塞；#5/#6 诊断撤销（见条目详情）。剩余 follow-up 不再走 debt 列表，见本文档 §1。
+
 1. **Debt #1（AgentMachine 非 invoked child）**：**已降级为非阻塞**
    - 渐进方案下 executor 仍内部起 agentActor，但 A2.3.3 的 AbortSignal bridge 证明 full nesting 不是必需的
    - 真·嵌套仍可做（POC 已验证可行），但不阻塞任何下游工作；如果以后需要"parent 停 → child 自动 cleanup"的 XState 生命周期绑定，再做
@@ -93,7 +95,11 @@ TaskMachine → completed（或 failed，依 stage 结果）
    - 深入代码后发现 fanout 本质是 orchestration（N element attempt + 1 aggregate attempt），不是 execution（per-stage-type 路由），不该走 Composite
    - 改名 `runFanoutStage` → `orchestrateFanoutStage`，并在 `orchestrateFanoutStage` / `composite-executor.ts` 顶部留下"why not Composite"的设计注释
    - 该条目从 debt 列表删除（非 debt）
-6. **Debt #6（guard deny-list 硬编码）**：未动
+6. ~~**Debt #6（guard deny-list 硬编码）**~~：**诊断无效，已撤销**
+   - `runtime/guard-evaluator.ts` 的 `DENIED_IDENTIFIERS` 是 9 个 JS escape-hatch token（`require` / `import` / `eval` / `process` / `globalThis` / `Function` / `constructor` / `prototype` / `__proto__`）
+   - 其定位（注释已说清）是"防 AI 幻觉 / tutorial 复制粘贴"，不是"防敌对输入沙箱"——本项目是单用户本地引擎（CLAUDE.md）
+   - 该常量只在本文件使用，没有代码重复；`guard-evaluator.test.ts` 已用 `it.each` 覆盖 9/9 denied token + 4 个假阳性反例
+   - 抽到 config / env var 属于 local-single-user 不该背的复杂度——条目本身是"硬编码刺眼"的刻板印象，并非真实 debt
 7. **Debt #7（fanout aggregate attempt 无 `kind` 列）**：**已 retire**（commit `ed0ab9a`，与 #4 合并）
    - 新增 `kind` 列，枚举 `regular | fanout_element | fanout_aggregate`，CHECK 约束
    - 通过 `PortRuntime.defaultKind` 构造参数传递，orchestrateFanoutStage 的 silent runtime 设为 `fanout_element`
