@@ -4,8 +4,10 @@
 // Accepts: type: "agent" | "script" | "gate".
 // Parallel wrappers, human_confirm → gate transformation handled
 // upstream by unwrapParallelBlocks + mapHumanConfirmGates.
-// runtime.retry emits LEGACY_FIELD_IGNORED warning in Slice A (will be
-// extracted in Slice C). runtime.agents → AgentStage.config.subAgents
+// runtime.retry → ScriptStage.config.retry extraction (Slice C) with
+// LEGACY_FIELD_IGNORED for malformed or incomplete specs (out-of-bounds
+// max_retries, missing back_to, etc.).
+// runtime.agents → AgentStage.config.subAgents
 // extraction (Slice D) with SUB_AGENT_INVALID for malformed shapes.
 // Still rejected: foreach, fanout, runtime.compensation, unknown
 // stage types.
@@ -118,17 +120,6 @@ export function mapStagesToIR(
       });
     }
 
-    // Slice A placeholder: runtime.retry will be extracted into
-    // ScriptStage.config.retry by map-stages in Slice C. For now,
-    // warn and drop.
-    if (s.runtime?.retry) {
-      warnings.push({
-        code: "LEGACY_FIELD_IGNORED",
-        message: `stage '${name}' runtime.retry ignored (Slice A placeholder; will be extracted in Slice C)`,
-        context: { stage: name, field: "retry" },
-      });
-    }
-
     // Derive inputs from runtime.reads.
     const reads = s.runtime?.reads ?? {};
     const inputs: PortIR[] = [];
@@ -238,12 +229,39 @@ export function mapStagesToIR(
       });
     } else {
       const moduleId = s.runtime?.script_id ?? "";
+      let retry: { maxRetries: number; backToStage: string } | undefined;
+      if (s.runtime?.retry) {
+        const rr = s.runtime.retry;
+        const rawMax = rr.max_retries ?? rr.max_attempts;
+        const backTo = rr.back_to;
+        if (typeof rawMax !== "number" ||
+            !Number.isInteger(rawMax) ||
+            rawMax < 1 ||
+            rawMax > 10) {
+          warnings.push({
+            code: "LEGACY_FIELD_IGNORED",
+            message: `stage '${name}' runtime.retry ignored: requires max_retries (1..10) or max_attempts (1..10)`,
+            context: { stage: name, field: "retry" },
+          });
+        } else if (typeof backTo !== "string" || backTo.length === 0) {
+          warnings.push({
+            code: "LEGACY_FIELD_IGNORED",
+            message: `stage '${name}' runtime.retry ignored: requires back_to (retry count without restart target is not supported)`,
+            context: { stage: name, field: "retry" },
+          });
+        } else {
+          retry = { maxRetries: rawMax, backToStage: backTo };
+        }
+      }
       stages.push({
         name,
         type: "script",
         inputs,
         outputs,
-        config: { moduleId },
+        config: {
+          moduleId,
+          ...(retry ? { retry } : {}),
+        },
       });
     }
   }

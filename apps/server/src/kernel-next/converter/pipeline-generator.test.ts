@@ -48,22 +48,19 @@ describe("convertLegacyYaml(pipeline-generator.yaml) — Slice A", () => {
     expect(gate.config.routing.routes.reject).toBe("analyzing");
   });
 
-  it("persisting.retry is dropped with LEGACY_FIELD_IGNORED (Slice A placeholder)", () => {
-    // Slice A drops runtime.retry silently with a warning; Slice C
-    // will promote this to real ScriptStage.config.retry extraction.
+  it("persisting.retry extracted with back_to rewritten from block to first inner stage (genSkeleton)", () => {
     const yaml = readFileSync(PIPELINE_YAML, "utf8");
     const r = convertLegacyYaml(yaml);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    const retryWarnings = r.warnings.filter(
-      w => w.code === "LEGACY_FIELD_IGNORED" && w.context?.field === "retry",
-    );
-    expect(retryWarnings.length).toBeGreaterThan(0);
-    // persisting in Slice A should NOT carry config.retry yet.
-    const persisting = r.ir.stages.find(s => s.name === "persisting");
-    if (persisting?.type === "script") {
-      expect(persisting.config.retry).toBeUndefined();
-    }
+    const p = r.ir.stages.find(s => s.name === "persisting");
+    expect(p?.type).toBe("script");
+    if (p?.type !== "script") return;
+    // pipeline-generator.yaml has persisting.retry = { max_retries: 1, back_to: generating }
+    // rewriteRetryBackTo (Task A7) redirects "generating" (parallel block
+    // name) to "genSkeleton" (first inner stage of the unwrapped block).
+    expect(p.config.retry).toEqual({ maxRetries: 1, backToStage: "genSkeleton" });
+    expect(r.warnings.some(w => w.code === "RETRY_BACK_TO_REDIRECTED")).toBe(true);
   });
 
   it("genPrompts.runtime.agents extracted into config.subAgents with prompt-writer", () => {

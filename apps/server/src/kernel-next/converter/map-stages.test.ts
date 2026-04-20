@@ -197,21 +197,109 @@ describe("mapStagesToIR", () => {
     expect(a.config.subAgents).toBeUndefined();
   });
 
-  it("emits LEGACY_FIELD_IGNORED for runtime.retry (Slice A placeholder; Slice C extracts)", () => {
+  it("extracts runtime.retry with back_to into ScriptStage.config.retry", () => {
     const legacy = {
       stages: [
-        { name: "P", type: "script",
-          runtime: { engine: "script", script_id: "m", reads: {},
-                     retry: { max_retries: 1, back_to: "A" } } },
         { name: "A", type: "agent", runtime: { engine: "llm", system_prompt: "p", reads: {} } },
+        { name: "S", type: "script",
+          runtime: { engine: "script", script_id: "m", reads: {},
+                     retry: { max_retries: 2, back_to: "A" } } },
       ],
     };
-    const r = mapStagesToIR(legacy, new Map([["P", []], ["A", []]]), new Map(), new Set());
+    const r = mapStagesToIR(legacy, new Map([["S", []], ["A", []]]), new Map(), new Set());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const s = r.stages.find(x => x.name === "S")!;
+    expect(s.type).toBe("script");
+    if (s.type !== "script") return;
+    expect(s.config.retry).toEqual({ maxRetries: 2, backToStage: "A" });
+  });
+
+  it("also accepts legacy max_attempts as retry count (alias for max_retries)", () => {
+    const legacy = {
+      stages: [
+        { name: "A", type: "agent", runtime: { engine: "llm", system_prompt: "p", reads: {} } },
+        { name: "S", type: "script",
+          runtime: { engine: "script", script_id: "m", reads: {},
+                     retry: { max_attempts: 3, back_to: "A" } } },
+      ],
+    };
+    const r = mapStagesToIR(legacy, new Map([["S", []], ["A", []]]), new Map(), new Set());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const s = r.stages.find(x => x.name === "S")!;
+    if (s.type !== "script") return;
+    expect(s.config.retry).toEqual({ maxRetries: 3, backToStage: "A" });
+  });
+
+  it("emits LEGACY_FIELD_IGNORED when retry has max_retries but no back_to", () => {
+    const legacy = {
+      stages: [{ name: "S", type: "script",
+                 runtime: { engine: "script", script_id: "m", reads: {},
+                            retry: { max_retries: 3 } } }],
+    };
+    const r = mapStagesToIR(legacy, new Map([["S", []]]), new Map(), new Set());
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.warnings.some(w =>
       w.code === "LEGACY_FIELD_IGNORED" && w.context?.field === "retry"
     )).toBe(true);
+    const s = r.stages[0]!;
+    if (s.type !== "script") return;
+    expect(s.config.retry).toBeUndefined();
+  });
+
+  it("emits LEGACY_FIELD_IGNORED when retry has back_to but no max_retries/max_attempts", () => {
+    const legacy = {
+      stages: [
+        { name: "A", type: "agent", runtime: { engine: "llm", system_prompt: "p", reads: {} } },
+        { name: "S", type: "script",
+          runtime: { engine: "script", script_id: "m", reads: {},
+                     retry: { back_to: "A" } } },
+      ],
+    };
+    const r = mapStagesToIR(legacy, new Map([["S", []], ["A", []]]), new Map(), new Set());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.warnings.some(w =>
+      w.code === "LEGACY_FIELD_IGNORED" && w.context?.field === "retry"
+    )).toBe(true);
+    const s = r.stages.find(x => x.name === "S")!;
+    if (s.type !== "script") return;
+    expect(s.config.retry).toBeUndefined();
+  });
+
+  it("emits LEGACY_FIELD_IGNORED when max_retries is out of bounds (<1 or >10)", () => {
+    const legacy = {
+      stages: [
+        { name: "A", type: "agent", runtime: { engine: "llm", system_prompt: "p", reads: {} } },
+        { name: "S", type: "script",
+          runtime: { engine: "script", script_id: "m", reads: {},
+                     retry: { max_retries: 99, back_to: "A" } } },
+      ],
+    };
+    const r = mapStagesToIR(legacy, new Map([["S", []], ["A", []]]), new Map(), new Set());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.warnings.some(w =>
+      w.code === "LEGACY_FIELD_IGNORED" && w.context?.field === "retry"
+    )).toBe(true);
+    const s = r.stages.find(x => x.name === "S")!;
+    if (s.type !== "script") return;
+    expect(s.config.retry).toBeUndefined();
+  });
+
+  it("does not populate retry when runtime.retry is absent", () => {
+    const legacy = {
+      stages: [{ name: "S", type: "script",
+                 runtime: { engine: "script", script_id: "m", reads: {} } }],
+    };
+    const r = mapStagesToIR(legacy, new Map([["S", []]]), new Map(), new Set());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const s = r.stages[0]!;
+    if (s.type !== "script") return;
+    expect(s.config.retry).toBeUndefined();
   });
 
   it("derives inputs from each reads-target entry's fields", () => {
