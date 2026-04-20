@@ -59,6 +59,12 @@ export interface StageErrorData {
   stage: string;
   attemptId?: string;
   message: string;
+  // Classifies the cause of the stage reaching its `error` final so
+  // UIs can distinguish a wire-topology failure from an executor
+  // failure without string-matching `message`. Absent on legacy
+  // emitters that pre-date this field; consumers should treat absence
+  // as `no_active_wire` for backwards compatibility.
+  reason?: "no_active_wire" | "executor_failed";
   // Opaque payload for rich errors (e.g. NO_ACTIVE_WIRE's
   // failedWires[] from runner.buildNoActiveWireError). Kept as
   // `unknown` so callers don't accidentally couple to the internal

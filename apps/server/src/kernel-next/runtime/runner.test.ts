@@ -1162,10 +1162,12 @@ describe("runPipeline stage_error reason differentiation", () => {
     const errData = stageErrorEvents[0]!.data as {
       stage: string;
       message: string;
+      reason?: string;
       context?: { failedWires: unknown[] };
     };
     expect(errData.stage).toBe("B");
     expect(errData.message).toMatch(/NO_ACTIVE_WIRE/);
+    expect(errData.reason).toBe("no_active_wire");
     // Structured diagnostic must be attached.
     expect(errData.context?.failedWires).toHaveLength(1);
   });
@@ -1222,11 +1224,13 @@ describe("runPipeline stage_error reason differentiation", () => {
     const errData = stageErrorEvents[0]!.data as {
       stage: string;
       message: string;
+      reason?: string;
       context?: unknown;
     };
     expect(errData.stage).toBe("X");
     expect(errData.message).toContain("turn limit exhausted");
     expect(errData.message).not.toMatch(/NO_ACTIVE_WIRE/);
+    expect(errData.reason).toBe("executor_failed");
     expect(errData.context).toBeUndefined();
   });
 });

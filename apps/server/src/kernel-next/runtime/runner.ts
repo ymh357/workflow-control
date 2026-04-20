@@ -487,6 +487,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
               data: {
                 stage: stageName,
                 message: stageErr?.message ?? "stage executor failed",
+                reason: "executor_failed",
               },
             });
           } else {
@@ -499,6 +500,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
               data: {
                 stage: stageName,
                 message: err.message,
+                reason: "no_active_wire",
                 context: err.context,
               },
             });
