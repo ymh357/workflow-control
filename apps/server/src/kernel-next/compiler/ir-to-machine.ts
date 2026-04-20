@@ -157,6 +157,35 @@ function indexStages(ir: PipelineIR): Map<string, StageMeta> {
 
 export interface CompileOptions {
   taskId: string;
+  // 2026-04-20 — external-input seeding. When provided, the compiler
+  // inlines the values into the machine's initial context.portValues
+  // under keys `__external__.<name>`. The runner MUST also persist the
+  // same values via writePort against a kind="external" attempt row
+  // (see runner.ts seed phase) so lineage and SSE observe them.
+  seedValues?: Record<string, unknown>;
+}
+
+// Build the initial context.portValues map for a compiled machine.
+// XState's createActor cannot mutate initial context after construction,
+// so any externalInputs seeded by the caller must be inlined here. We
+// iterate ir.externalInputs (declaration order) rather than Object.keys
+// on seedValues so the resulting map is deterministic regardless of the
+// caller's object key order — this matters for the port_values row
+// persistence order in Task 1.8.
+function buildInitialPortValues(
+  ir: PipelineIR,
+  seedValues: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (!seedValues || !ir.externalInputs || ir.externalInputs.length === 0) {
+    return {};
+  }
+  const out: Record<string, unknown> = {};
+  for (const port of ir.externalInputs) {
+    if (port.name in seedValues) {
+      out[`__external__.${port.name}`] = seedValues[port.name];
+    }
+  }
+  return out;
 }
 
 export interface CompiledMachine {
@@ -196,7 +225,7 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
     context: {
       taskId: options.taskId,
       versionHash: "", // filled by runner before starting
-      portValues: {},
+      portValues: buildInitialPortValues(ir, options.seedValues),
       log: [],
       gateAuthorizedTargets: [],
       gateSkippedTargets: [],

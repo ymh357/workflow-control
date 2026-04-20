@@ -13,6 +13,7 @@
 import { describe, it, expect } from "vitest";
 import { createActor } from "xstate";
 import { compileIRToMachine } from "./ir-to-machine.js";
+import type { MachineContext } from "./ir-to-machine.js";
 import type { PipelineIR } from "../ir/schema.js";
 
 function readRunningValue(snap: ReturnType<ReturnType<typeof createActor>["getSnapshot"]>): Record<string, string> | undefined {
@@ -220,6 +221,91 @@ describe("compileIRToMachine — gate routing (A1.2b.1)", () => {
     } else {
       expect(readRunningValue(afterB)?.B).toBe("done");
     }
+    actor.stop();
+  });
+});
+
+describe("compileIRToMachine seedValues", () => {
+  it("seeds external portValues into initial context", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent", inputs: [{ name: "ctx", type: "unknown" }], outputs: [], config: { promptRef: "p" } },
+      ],
+      externalInputs: [{ name: "ctx", type: "unknown" }],
+      wires: [{ from: { source: "external", port: "ctx" }, to: { stage: "A", port: "ctx" } }],
+    };
+    const { machine } = compileIRToMachine(ir, {
+      taskId: "t1",
+      seedValues: { ctx: { pipelineConfig: { hello: "world" } } },
+    });
+    const actor = createActor(machine);
+    actor.start();
+    const ctx = actor.getSnapshot().context as MachineContext;
+    expect(ctx.portValues["__external__.ctx"]).toEqual({ pipelineConfig: { hello: "world" } });
+    actor.stop();
+  });
+
+  it("leaves portValues empty when seedValues is omitted", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+      ],
+      wires: [],
+    };
+    const { machine } = compileIRToMachine(ir, { taskId: "t2" });
+    const actor = createActor(machine);
+    actor.start();
+    const ctx = actor.getSnapshot().context as MachineContext;
+    expect(ctx.portValues).toEqual({});
+    actor.stop();
+  });
+
+  it("ignores seedValues keys not declared in externalInputs", () => {
+    // seedValues may carry extras (runner logs a warning but doesn't fail).
+    // The compiler silently drops extras — only declared ports land in context.
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent", inputs: [{ name: "ctx", type: "unknown" }], outputs: [], config: { promptRef: "p" } },
+      ],
+      externalInputs: [{ name: "ctx", type: "unknown" }],
+      wires: [{ from: { source: "external", port: "ctx" }, to: { stage: "A", port: "ctx" } }],
+    };
+    const { machine } = compileIRToMachine(ir, {
+      taskId: "t3",
+      seedValues: { ctx: 1, extra: "unused" },
+    });
+    const actor = createActor(machine);
+    actor.start();
+    const ctx = actor.getSnapshot().context as MachineContext;
+    expect(ctx.portValues).toEqual({ "__external__.ctx": 1 });
+    actor.stop();
+  });
+
+  it("preserves declaration order of externalInputs in initial portValues iteration", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent", inputs: [{ name: "b", type: "unknown" }, { name: "a", type: "unknown" }], outputs: [], config: { promptRef: "p" } },
+      ],
+      externalInputs: [{ name: "b", type: "unknown" }, { name: "a", type: "unknown" }],
+      wires: [
+        { from: { source: "external", port: "b" }, to: { stage: "A", port: "b" } },
+        { from: { source: "external", port: "a" }, to: { stage: "A", port: "a" } },
+      ],
+    };
+    const { machine } = compileIRToMachine(ir, {
+      taskId: "t4",
+      seedValues: { a: 10, b: 20 },
+    });
+    const actor = createActor(machine);
+    actor.start();
+    const ctx = actor.getSnapshot().context as MachineContext;
+    // Both keys present regardless of iteration order
+    expect(ctx.portValues["__external__.a"]).toBe(10);
+    expect(ctx.portValues["__external__.b"]).toBe(20);
     actor.stop();
   });
 });
