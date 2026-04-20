@@ -1,9 +1,13 @@
 // Maps legacy stages[] to kernel-next StageIR[].
-// Spec: docs/superpowers/specs/2026-04-20-legacy-yaml-converter-design.md §5.5.
+// Spec: docs/superpowers/specs/2026-04-22-converter-extension-pipeline-generator-design.md §3.3.
 //
-// Accepts only type: "agent" and type: "script". Parallel blocks,
-// human_confirm, foreach, fanout, retry.back_to, compensation, and
-// sub-agents (runtime.agents) are all UNSUPPORTED_FEATURE.
+// Accepts: type: "agent" | "script" | "gate".
+// Parallel wrappers, human_confirm → gate transformation handled
+// upstream by unwrapParallelBlocks + mapHumanConfirmGates.
+// retry.back_to and runtime.agents emit LEGACY_FIELD_IGNORED warnings
+// in Slice A; Slice C and Slice D replace those with real extractions.
+// Still rejected: foreach, fanout, runtime.compensation, unknown
+// stage types.
 
 import type { PortIR, StageIR } from "../ir/schema.js";
 import type { ConverterDiagnostic, ConverterWarning } from "./types.js";
@@ -49,15 +53,6 @@ export function mapStagesToIR(
   const diagnostics: ConverterDiagnostic[] = [];
 
   for (const s of legacy.stages ?? []) {
-    // Parallel block → unsupported.
-    if ("parallel" in s && s.parallel !== undefined) {
-      diagnostics.push({
-        code: "UNSUPPORTED_FEATURE",
-        message: "parallel blocks are not supported by the converter (smoke-test scope)",
-        context: { stage: s.parallel },
-      });
-      continue;
-    }
     // Foreach / fanout → unsupported.
     if (s.foreach || s.fanout) {
       diagnostics.push({
@@ -67,19 +62,11 @@ export function mapStagesToIR(
       });
       continue;
     }
-    if (s.type !== "agent" && s.type !== "script") {
+    if (s.type !== "agent" && s.type !== "script" && s.type !== "gate") {
       diagnostics.push({
         code: "UNSUPPORTED_FEATURE",
         message: `stage '${s.name}' has unsupported type '${s.type}'`,
         context: { stage: s.name, type: s.type },
-      });
-      continue;
-    }
-    if (s.runtime?.retry?.back_to) {
-      diagnostics.push({
-        code: "UNSUPPORTED_FEATURE",
-        message: `stage '${s.name}' declares retry.back_to (unsupported in converter scope)`,
-        context: { stage: s.name },
       });
       continue;
     }
@@ -91,12 +78,23 @@ export function mapStagesToIR(
       });
       continue;
     }
-    if (s.runtime?.agents) {
-      diagnostics.push({
-        code: "UNSUPPORTED_FEATURE",
-        message: `stage '${s.name}' declares runtime.agents (sub-agents unsupported)`,
-        context: { stage: s.name },
-      });
+    // Gate stage: config lifted verbatim. Shape guaranteed by upstream
+    // mapHumanConfirmGates; no reads/outputs derivation needed.
+    if (s.type === "gate") {
+      const name = s.name!;
+      const cfg = (s as unknown as { config?: unknown }).config;
+      if (!cfg) {
+        diagnostics.push({
+          code: "LEGACY_SCHEMA_INVALID",
+          message: `gate stage '${name}' is missing config (expected { question, routing })`,
+          context: { stage: name },
+        });
+        continue;
+      }
+      stages.push({
+        name, type: "gate", inputs: [], outputs: [],
+        config: cfg as never,  // Shape guaranteed by upstream mapHumanConfirmGates.
+      } as StageIR);
       continue;
     }
 
@@ -116,6 +114,27 @@ export function mapStagesToIR(
         code: "LEGACY_FIELD_IGNORED",
         message: `stage '${name}' runtime.disallowed_tools ignored`,
         context: { stage: name, field: "disallowed_tools" },
+      });
+    }
+
+    // Slice A placeholder: runtime.retry will be extracted into
+    // ScriptStage.config.retry by map-stages in Slice C. For now,
+    // warn and drop.
+    if (s.runtime?.retry) {
+      warnings.push({
+        code: "LEGACY_FIELD_IGNORED",
+        message: `stage '${name}' runtime.retry ignored (Slice A placeholder; will be extracted in Slice C)`,
+        context: { stage: name, field: "retry" },
+      });
+    }
+
+    // Slice A placeholder: runtime.agents will be extracted into
+    // AgentStage.config.subAgents by map-stages in Slice D.
+    if (s.runtime?.agents) {
+      warnings.push({
+        code: "LEGACY_FIELD_IGNORED",
+        message: `stage '${name}' runtime.agents ignored (Slice A placeholder; will be extracted in Slice D)`,
+        context: { stage: name, field: "agents" },
       });
     }
 

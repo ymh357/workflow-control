@@ -51,18 +51,24 @@ describe("mapStagesToIR", () => {
     }
   });
 
-  it("fails with UNSUPPORTED_FEATURE for parallel block", () => {
-    const legacy = { stages: [{ parallel: { name: "pg", stages: [] } }] };
-    const r = mapStagesToIR(legacy as { stages: unknown[] } as Parameters<typeof mapStagesToIR>[0], new Map(), new Map(), new Set());
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.diagnostics[0]!.code).toBe("UNSUPPORTED_FEATURE");
-  });
-
-  it("fails with UNSUPPORTED_FEATURE for human_confirm type", () => {
-    const legacy = { stages: [{ name: "g", type: "human_confirm" }] };
-    const r = mapStagesToIR(legacy as Parameters<typeof mapStagesToIR>[0], new Map(), new Map(), new Set());
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.diagnostics[0]!.code).toBe("UNSUPPORTED_FEATURE");
+  it("accepts gate stages (post-mapHumanConfirmGates shape) and lifts config verbatim", () => {
+    const legacy = {
+      stages: [
+        { name: "G", type: "gate",
+          config: { question: { text: "?" }, routing: { routes: { yes: "A" } } } },
+        { name: "A", type: "agent", runtime: { reads: {} } },
+      ],
+    };
+    const r = mapStagesToIR(legacy as Parameters<typeof mapStagesToIR>[0],
+                           new Map([["A", []]]), new Map(), new Set());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const gate = r.stages.find(s => s.name === "G")!;
+    expect(gate.type).toBe("gate");
+    if (gate.type === "gate") {
+      expect(gate.config.routing.routes).toEqual({ yes: "A" });
+      expect(gate.config.question.text).toBe("?");
+    }
   });
 
   it("maps script stage with script_id → moduleId", () => {
@@ -76,13 +82,37 @@ describe("mapStagesToIR", () => {
     }
   });
 
-  it("rejects script stage with retry.back_to", () => {
+  it("emits LEGACY_FIELD_IGNORED for runtime.agents (Slice A placeholder; Slice D extracts)", () => {
     const legacy = {
-      stages: [{ name: "s", type: "script", runtime: { engine: "script", script_id: "x", retry: { back_to: "prev" } } }],
+      stages: [{
+        name: "A", type: "agent",
+        runtime: { engine: "llm", system_prompt: "p", reads: {},
+                   agents: { a: { description: "x", prompt: "y" } } },
+      }],
     };
-    const r = mapStagesToIR(legacy as Parameters<typeof mapStagesToIR>[0], new Map([["s", []]]), new Map(), new Set());
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.diagnostics[0]!.code).toBe("UNSUPPORTED_FEATURE");
+    const r = mapStagesToIR(legacy, new Map([["A", []]]), new Map(), new Set());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.warnings.some(w =>
+      w.code === "LEGACY_FIELD_IGNORED" && w.context?.field === "agents"
+    )).toBe(true);
+  });
+
+  it("emits LEGACY_FIELD_IGNORED for runtime.retry (Slice A placeholder; Slice C extracts)", () => {
+    const legacy = {
+      stages: [
+        { name: "P", type: "script",
+          runtime: { engine: "script", script_id: "m", reads: {},
+                     retry: { max_retries: 1, back_to: "A" } } },
+        { name: "A", type: "agent", runtime: { engine: "llm", system_prompt: "p", reads: {} } },
+      ],
+    };
+    const r = mapStagesToIR(legacy, new Map([["P", []], ["A", []]]), new Map(), new Set());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.warnings.some(w =>
+      w.code === "LEGACY_FIELD_IGNORED" && w.context?.field === "retry"
+    )).toBe(true);
   });
 
   it("derives inputs from each reads-target entry's fields", () => {
