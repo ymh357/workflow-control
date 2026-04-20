@@ -193,6 +193,69 @@ describe("canonicalizeIR ScriptStage retry", () => {
   });
 });
 
+describe("canonicalizeIR AgentStage subAgents", () => {
+  it("omits subAgents from canonical when absent (baseline hashes stay stable)", () => {
+    const ir: PipelineIR = {
+      name: "no-sub",
+      externalInputs: [],
+      stages: [{
+        name: "A", type: "agent", inputs: [], outputs: [],
+        config: { promptRef: "p" },
+      }],
+      wires: [],
+    };
+    const canon = canonicalJSON(ir);
+    expect(canon).not.toContain('"subAgents"');
+  });
+
+  it("sorts subAgents by name alphabetically (permutation-equivalent hashes)", () => {
+    const makeIR = (order: string[]): PipelineIR => ({
+      name: "with-sub",
+      externalInputs: [],
+      stages: [{
+        name: "A", type: "agent", inputs: [], outputs: [],
+        config: {
+          promptRef: "p",
+          subAgents: order.map(n => ({ name: n, description: "d", prompt: "p" })),
+        },
+      }],
+      wires: [],
+    });
+    const canonZA = canonicalJSON(makeIR(["zeta", "alpha"]));
+    const canonAZ = canonicalJSON(makeIR(["alpha", "zeta"]));
+    expect(canonZA).toBe(canonAZ);
+    // Alphabetical order: alpha appears before zeta in canonical string.
+    expect(canonAZ.indexOf("alpha")).toBeLessThan(canonAZ.indexOf("zeta"));
+  });
+
+  it("serializes each sub-agent with alphabetical key order", () => {
+    const ir: PipelineIR = {
+      name: "ordered",
+      externalInputs: [],
+      stages: [{
+        name: "A", type: "agent", inputs: [], outputs: [],
+        config: {
+          promptRef: "p",
+          subAgents: [{
+            name: "writer", description: "d", prompt: "sp",
+            tools: ["Read"], model: "sonnet", maxTurns: 10,
+          }],
+        },
+      }],
+      wires: [],
+    };
+    const canon = canonicalJSON(ir);
+    // Keys inside a sub-agent should appear in alphabetical order:
+    // description, maxTurns, model, name, prompt, tools
+    const subCanon = canon.substring(canon.indexOf('"subAgents"'));
+    expect(subCanon.indexOf('"description"')).toBeLessThan(subCanon.indexOf('"maxTurns"'));
+    expect(subCanon.indexOf('"maxTurns"')).toBeLessThan(subCanon.indexOf('"model"'));
+    expect(subCanon.indexOf('"model"')).toBeLessThan(subCanon.indexOf('"name"'));
+    expect(subCanon.indexOf('"name"')).toBeLessThan(subCanon.indexOf('"prompt"'));
+    expect(subCanon.indexOf('"prompt"')).toBeLessThan(subCanon.indexOf('"tools"'));
+  });
+});
+
 describe("canonicalizeIR gate routing widening", () => {
   it("preserves single-string route targets in canonical (hash stable vs pre-widening)", () => {
     // Build an IR with a single-stage gate route; assert the canonical

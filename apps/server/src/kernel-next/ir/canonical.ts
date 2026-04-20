@@ -12,7 +12,7 @@
 //   3. Optional fields omitted when absent (never serialized as `undefined`).
 
 import { createHash } from "node:crypto";
-import type { GateStage, PipelineIR, StageIR, WireIR } from "./schema.js";
+import type { AgentStage, GateStage, PipelineIR, StageIR, WireIR } from "./schema.js";
 
 type CanonicalValue =
   | null
@@ -73,12 +73,33 @@ function canonicalizeGateConfig(cfg: GateStage["config"]): CanonicalValue {
   });
 }
 
+// Custom canonicalizer for agent stage config. subAgents array must
+// be sorted by sub-agent name so authoring permutations hash
+// identically. Absent subAgents omitted (preserves baseline hashes
+// for every pre-D1 fixture).
+function canonicalizeAgentConfig(cfg: AgentStage["config"]): CanonicalValue {
+  const out: Record<string, unknown> = { promptRef: cfg.promptRef };
+  if (cfg.subAgents && cfg.subAgents.length > 0) {
+    out.subAgents = [...cfg.subAgents].sort((a, b) =>
+      codepointCompare(a.name, b.name),
+    );
+  }
+  return sortKeys(out);
+}
+
 function canonicalizeStage(s: StageIR): CanonicalValue {
   // `fanout` is only present on agent/script variants (see schema.ts); the
   // discriminated-union narrowing surfaces it as an extra optional key that
   // participates in the canonical form when set.
   const fanout = "fanout" in s ? s.fanout : undefined;
-  const config = s.type === "gate" ? canonicalizeGateConfig(s.config) : s.config;
+  let config: unknown;
+  if (s.type === "gate") {
+    config = canonicalizeGateConfig(s.config);
+  } else if (s.type === "agent") {
+    config = canonicalizeAgentConfig(s.config);
+  } else {
+    config = s.config;
+  }
   return sortKeys({
     name: s.name,
     type: s.type,

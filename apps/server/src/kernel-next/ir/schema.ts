@@ -65,6 +65,21 @@ export const RetrySpecSchema = z.object({
   backToStage: identifier,
 });
 
+// Sub-agent definition — maps to Claude Agent SDK's AgentDefinition
+// (description/prompt/tools/model/maxTurns). legacy YAML's
+// runtime.agents[<name>] is extracted into this shape by the converter
+// (Slice D / Task D2). disallowedTools/skills/mcpServers are not
+// captured in this milestone; pipeline-generator's prompt-writer uses
+// only the five fields below.
+export const SubAgentDefSchema = z.object({
+  name: identifier,
+  description: z.string().min(1),
+  prompt: z.string().min(1),
+  tools: z.array(z.string()).optional(),
+  model: z.enum(["sonnet", "opus", "haiku", "inherit"]).optional(),
+  maxTurns: z.number().int().positive().optional(),
+});
+
 export const GateRoutingSchema = z.object({
   // Routes: answer value → target stage name(s). Single stage stays a
   // string; multiple stages (used when a human gate gates a parallel
@@ -91,6 +106,7 @@ export const AgentStageSchema = z.object({
   type: z.literal("agent"),
   config: z.object({
     promptRef: z.string().min(1),         // resolved by userland prompt assembler
+    subAgents: z.array(SubAgentDefSchema).optional(),
   }),
   fanout: FanoutSpecSchema.optional(),
 });
@@ -170,6 +186,7 @@ export type PortIR = z.infer<typeof PortIRSchema>;
 export type FanoutSpec = z.infer<typeof FanoutSpecSchema>;
 export type GateQuestion = z.infer<typeof GateQuestionSchema>;
 export type GateRouting = z.infer<typeof GateRoutingSchema>;
+export type SubAgentDef = z.infer<typeof SubAgentDefSchema>;
 export type AgentStage = z.infer<typeof AgentStageSchema>;
 export type ScriptStage = z.infer<typeof ScriptStageSchema>;
 export type GateStage = z.infer<typeof GateStageSchema>;
