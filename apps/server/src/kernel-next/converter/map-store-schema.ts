@@ -83,6 +83,15 @@ export function mapStoreSchemaToPorts(legacy: LegacyInput): MapStoreSchemaResult
     const existing = stageOutputs.get(entry.produced_by) ?? [];
     stageOutputs.set(entry.produced_by, existing.concat(ports));
     entryDirectory.set(entryName, { producerStage: entry.produced_by, fields: ports });
+
+    // Also register dot-notation field paths (e.g. "pipelineDesign.stageContracts")
+    // so stages that read a single field from an entry can resolve them.
+    for (const port of ports) {
+      entryDirectory.set(`${entryName}.${port.name}`, {
+        producerStage: entry.produced_by,
+        fields: [port],
+      });
+    }
   }
 
   if (diagnostics.length > 0) return { ok: false, diagnostics };
