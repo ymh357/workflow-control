@@ -15,6 +15,7 @@
 
 import { createActor, fromCallback } from "xstate";
 import type { DatabaseSync } from "node:sqlite";
+import { logger } from "../../lib/logger.js";
 import { compileIRToMachine } from "../compiler/ir-to-machine.js";
 import type {
   MachineContext, MachineEvent, StageMeta, InboundWireMeta,
@@ -46,6 +47,16 @@ export interface RunnerOptions {
   // the run live. No broadcaster means no publishing — existing test
   // harnesses stay exactly as they were.
   broadcaster?: KernelNextBroadcaster;
+  // 2026-04-20 (Task 1.8) — per-port external seed values. Keys must
+  // cover every name in ir.externalInputs or runPipeline rejects with
+  // SEED_VALUES_MISSING_KEY (surfaces as run_final failed via the
+  // kernel-run.ts .catch path). Extra keys produce a logger.warn but
+  // are not fatal. The same values are also threaded into the
+  // compiler so initial context.portValues is populated on the very
+  // first snapshot — this DB-side seed phase exists purely for
+  // lineage (port_values rows under stage_name='__external__') +
+  // SSE (port_written events).
+  seedValues?: Record<string, unknown>;
 }
 
 // Design §6.2 — why the inbound wire to a stage failed. NO_ACTIVE_WIRE
@@ -103,7 +114,13 @@ export interface RunResult {
 export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Promise<RunResult> {
   const executor: StageExecutor =
     opts.executor ?? new MockStageExecutor({ handlers: opts.handlers });
-  const { machine, stageMeta } = compileIRToMachine(opts.ir, { taskId: opts.taskId });
+  const { machine, stageMeta } = compileIRToMachine(opts.ir, {
+    taskId: opts.taskId,
+    // Task 1.8 — inline seedValues into initial context.portValues so
+    // stage guards see external inputs on the actor's very first
+    // snapshot. The DB-side seed phase below handles lineage + SSE.
+    seedValues: opts.seedValues,
+  });
 
   // A2.3.2 — non-gate, non-fanout agent/script stages are now invoked as
   // XState children. The compiler places `invoke: { src: 'execute_stage' }`
@@ -229,6 +246,69 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   const timer = setTimeout(() => {
     rejectRun(new Error(`runPipeline timeout after ${timeoutMs}ms`));
   }, timeoutMs);
+
+  // Task 1.8 — seed phase (externalInputs).
+  //
+  // Before actor.start(), persist each declared external input as
+  // port_values rows under a kind="external" stage_attempts row
+  // (stage_name='__external__'). The compiler has already inlined
+  // seedValues into initial context.portValues (see compileIRToMachine
+  // above), so this block is strictly for lineage (query_lineage /
+  // diff_runs / read_port) + SSE (port_written events via the
+  // livePortRuntime's onPortWritten hook).
+  //
+  // Why the DB-side seed must come BEFORE actor.start():
+  //   - Writing via portRuntime.writePort after the actor started would
+  //     re-deliver PORT_WRITTEN to the machine — but the compiler
+  //     already pre-populated context.portValues with the same keys,
+  //     so a second delivery is redundant (harmless but wasteful).
+  //   - Here, actor is still null; dispatcher.send() is guarded by
+  //     `if (actor)` and silently drops — which is the exact behavior
+  //     we want: DB writes happen, machine isn't touched twice.
+  const externalInputs = opts.ir.externalInputs ?? [];
+  if (externalInputs.length > 0) {
+    const seedValues = opts.seedValues ?? {};
+    // Reject before opening any attempt — keeps failure path clean.
+    for (const port of externalInputs) {
+      if (!(port.name in seedValues)) {
+        clearTimeout(timer);
+        taskRegistry.unregister(opts.taskId);
+        throw new Error(
+          `SEED_VALUES_MISSING_KEY: external input '${port.name}' has no seed value`,
+        );
+      }
+    }
+    // Warn on extra keys — not fatal because the pipeline still has
+    // every declared input satisfied, but surface the mismatch so an
+    // operator can correct a typo or a stale seedValues caller.
+    for (const key of Object.keys(seedValues)) {
+      if (!externalInputs.some((p) => p.name === key)) {
+        logger.warn(
+          { taskId: opts.taskId, key },
+          "SEED_VALUES_UNEXPECTED_KEY: seedValues contains a key not declared in externalInputs",
+        );
+      }
+    }
+    const { attemptId } = portRuntime.startAttempt({
+      taskId: opts.taskId,
+      versionHash: opts.versionHash,
+      stageName: "__external__",
+      kind: "external",
+    });
+    // Iterate externalInputs (declaration order) rather than
+    // Object.keys(seedValues) so port_values insertion order is
+    // deterministic regardless of how the caller constructed the
+    // seedValues object.
+    for (const port of externalInputs) {
+      portRuntime.writePort({
+        attemptId,
+        stageName: "__external__",
+        portName: port.name,
+        value: seedValues[port.name],
+      });
+    }
+    portRuntime.finishAttempt(attemptId, "success");
+  }
 
   // A2.3.2 + A2.3.3 — build the executor-as-actor logic. fromCallback
   // replaces A2.3.2's fromPromise so the child can receive INTERRUPT

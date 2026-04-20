@@ -1114,3 +1114,139 @@ describe("SSE Slice 2: broadcaster integration", () => {
     expect(result.portValues["D.final"]).toBe("B-got-10+C-got-10");
   });
 });
+
+// Task 1.8 — runner seed-phase. Before actor.start(), runPipeline must:
+//   1. validate seedValues contains every ir.externalInputs key,
+//   2. open a kind="external" stage_attempts row on "__external__",
+//   3. writePort each declared external input (persists port_values),
+//   4. pass seedValues to the compiler so initial context.portValues
+//      already sees the external seeds on the very first snapshot.
+describe("runPipeline seedValues (Task 1.8)", () => {
+  it("opens a kind='external' attempt and persists port_values rows", async () => {
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "seed-ok",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [{ name: "ctx", type: "unknown" }],
+          outputs: [{ name: "done", type: "boolean" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      externalInputs: [{ name: "ctx", type: "unknown" }],
+      wires: [
+        { from: { source: "external", port: "ctx" }, to: { stage: "A", port: "ctx" } },
+      ],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const result = await runPipeline({
+      db,
+      ir,
+      taskId: "seed-t",
+      versionHash: hash,
+      handlers: { A: () => ({ done: true }) },
+      seedValues: { ctx: { hello: "world" } },
+    });
+    expect(result.finalState).toBe("completed");
+
+    const ext = db
+      .prepare(
+        "SELECT kind, status FROM stage_attempts WHERE task_id = ? AND stage_name = ?",
+      )
+      .get("seed-t", "__external__") as { kind: string; status: string } | undefined;
+    expect(ext).toBeDefined();
+    expect(ext!.kind).toBe("external");
+    expect(ext!.status).toBe("success");
+
+    const seedRow = db
+      .prepare(
+        "SELECT port_name, value_json FROM port_values WHERE stage_name = ?",
+      )
+      .get("__external__") as { port_name: string; value_json: string } | undefined;
+    expect(seedRow).toBeDefined();
+    expect(seedRow!.port_name).toBe("ctx");
+    expect(JSON.parse(seedRow!.value_json)).toEqual({ hello: "world" });
+
+    db.close();
+  });
+
+  it("fails when an externalInput has no seedValue", async () => {
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "seed-missing",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [{ name: "ctx", type: "unknown" }],
+          outputs: [],
+          config: { promptRef: "p" },
+        },
+      ],
+      externalInputs: [{ name: "ctx", type: "unknown" }],
+      wires: [
+        { from: { source: "external", port: "ctx" }, to: { stage: "A", port: "ctx" } },
+      ],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    await expect(
+      runPipeline({
+        db,
+        ir,
+        taskId: "miss-t",
+        versionHash: hash,
+        handlers: { A: () => ({}) },
+        seedValues: {},
+      }),
+    ).rejects.toThrow(/SEED_VALUES_MISSING_KEY/);
+
+    db.close();
+  });
+
+  it("passes seedValues to compiler for initial portValues so downstream sees the value", async () => {
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "seed-pass",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [{ name: "ctx", type: "unknown" }],
+          outputs: [{ name: "echo", type: "string" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      externalInputs: [{ name: "ctx", type: "unknown" }],
+      wires: [
+        { from: { source: "external", port: "ctx" }, to: { stage: "A", port: "ctx" } },
+      ],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const observed: Record<string, unknown>[] = [];
+    const result = await runPipeline({
+      db,
+      ir,
+      taskId: "pass-t",
+      versionHash: hash,
+      handlers: {
+        A: (inputs) => {
+          observed.push(inputs);
+          return { echo: String(inputs.ctx) };
+        },
+      },
+      seedValues: { ctx: "HELLO" },
+    });
+    expect(result.finalState).toBe("completed");
+    expect(observed[0]!.ctx).toBe("HELLO");
+
+    db.close();
+  });
+});
