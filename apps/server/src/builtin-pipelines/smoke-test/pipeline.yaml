@@ -1,4 +1,4 @@
-name: Smoke Test
+name: smoke-test
 description: Minimal two-stage pipeline used to verify the engine end-to-end — agent writes a schema-constrained object, a downstream stage reads it. Intended for installation verification and as the smallest possible reference sample for pipeline-generator.
 engine: claude
 official: true
