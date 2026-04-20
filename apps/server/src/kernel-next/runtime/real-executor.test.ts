@@ -324,3 +324,117 @@ describe("RealStageExecutor — AbortSignal INTERRUPT bridge (A2.3.3)", () => {
     db.close();
   });
 });
+
+describe("RealStageExecutor subAgents pass-through", () => {
+  it("passes stage.config.subAgents into SDK options.agents", async () => {
+    const db = makeDb();
+    // Build an IR with an agent stage that declares one sub-agent.
+    const ir: PipelineIR = {
+      name: "sub-agent-test",
+      stages: [
+        {
+          name: "S",
+          type: "agent",
+          inputs: [],
+          outputs: [],
+          config: {
+            promptRef: "do stuff",
+            subAgents: [
+              {
+                name: "writer",
+                description: "Writes prompts",
+                prompt: "You are a writer",
+                tools: ["Read", "Write"],
+                model: "sonnet" as const,
+                maxTurns: 20,
+              },
+            ],
+          },
+        },
+      ],
+      wires: [],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const portRuntime = new PortRuntime(db, { send: () => { /* inert */ } });
+
+    // Capture the options the SDK query was called with.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const capturedOptions: any[] = [];
+    const executor = new RealStageExecutor({
+      mcpServerFactory: () => ({}),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      queryFn: ((args: any) => {
+        capturedOptions.push(args.options);
+        // Return a stream that immediately emits a terminal error result so
+        // the executor exits quickly without needing port writes (no declared
+        // outputs in this IR).
+        return (async function* () {
+          yield {
+            type: "result",
+            subtype: "error_max_turns",
+            error_message: "test short-circuit",
+            session_id: "s",
+          };
+        })() as never;
+      }) as never,
+    });
+
+    await executor.executeStage({
+      ir, stageName: "S", taskId: "t-sa", versionHash: hash,
+      portValues: {}, handlers: {}, portRuntime,
+    });
+
+    expect(capturedOptions).toHaveLength(1);
+    expect(capturedOptions[0].agents).toEqual({
+      writer: {
+        description: "Writes prompts",
+        prompt: "You are a writer",
+        tools: ["Read", "Write"],
+        model: "sonnet",
+        maxTurns: 20,
+      },
+    });
+    db.close();
+  });
+
+  it("omits options.agents when subAgents is absent", async () => {
+    const db = makeDb();
+    const ir = oneStageIR(); // no subAgents
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const portRuntime = new PortRuntime(db, { send: () => { /* inert */ } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const capturedOptions: any[] = [];
+    let writeSideEffect: (() => void) | null = null;
+    const executor = new RealStageExecutor({
+      mcpServerFactory: () => ({}),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      queryFn: ((args: any) => {
+        capturedOptions.push(args.options);
+        return makeFakeStream("success", { writePorts: () => writeSideEffect?.() });
+      }) as never,
+    });
+
+    // Write the declared output port so schema check passes.
+    writeSideEffect = () => {
+      const row = db.prepare(
+        `SELECT attempt_id FROM stage_attempts WHERE stage_name = 'S' ORDER BY attempt_idx DESC LIMIT 1`,
+      ).get() as { attempt_id: string } | undefined;
+      if (!row) return;
+      portRuntime.writePort({
+        attemptId: row.attempt_id, stageName: "S", portName: "x", value: 0,
+      });
+    };
+
+    await executor.executeStage({
+      ir, stageName: "S", taskId: "t-no-sa", versionHash: hash,
+      portValues: {}, handlers: {}, portRuntime,
+    });
+
+    expect(capturedOptions).toHaveLength(1);
+    expect(capturedOptions[0].agents).toBeUndefined();
+    db.close();
+  });
+});

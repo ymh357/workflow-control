@@ -206,6 +206,7 @@ export class RealStageExecutor implements StageExecutor {
       // The factory receives the machine-bound dispatcher so agent-side
       // write_port calls fire PORT_WRITTEN.
       const mcpServer = this.mcpServerFactory(portRuntime.getDispatcher(), portRuntime);
+      const subAgents = stage.config.subAgents;
       const options: SdkOptions = {
         systemPrompt: {
           type: "preset",
@@ -224,6 +225,9 @@ export class RealStageExecutor implements StageExecutor {
         disallowedTools: ["ToolSearch", "mcp__claude_ai_*"],
         pathToClaudeCodeExecutable: this.claudePath,
         env: buildChildEnv(),
+        ...(subAgents && subAgents.length > 0
+          ? { agents: buildSdkAgents(subAgents) }
+          : {}),
       };
 
       const stream = this.queryFn({ prompt: userPrompt, options });
@@ -377,6 +381,27 @@ function queryAttemptPortWrites(
 
 
 // --- helpers ---
+
+/**
+ * Maps IR SubAgentDef[] to the Claude SDK options.agents record shape.
+ * Conditionally spreads optional fields so absent IR values yield absent
+ * SDK keys (SDK treats tools: undefined as "inherit from parent").
+ */
+function buildSdkAgents(
+  defs: NonNullable<AgentStage["config"]["subAgents"]>,
+): NonNullable<SdkOptions["agents"]> {
+  const out: Record<string, NonNullable<SdkOptions["agents"]>[string]> = {};
+  for (const d of defs) {
+    out[d.name] = {
+      description: d.description,
+      prompt: d.prompt,
+      ...(d.tools ? { tools: d.tools } : {}),
+      ...(d.model ? { model: d.model } : {}),
+      ...(d.maxTurns !== undefined ? { maxTurns: d.maxTurns } : {}),
+    };
+  }
+  return out;
+}
 
 /**
  * Project a stage's declared output ports into a JSON-schema object.
