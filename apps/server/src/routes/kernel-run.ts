@@ -209,6 +209,12 @@ const pipelineRegistry: Record<string, () => PipelineRegistration> = {
   "tech-research-writer": registerLegacyPipeline({
     pipelineDir: "tech-research-writer",
   }),
+  "pipeline-generator": registerLegacyPipeline({
+    pipelineDir: "pipeline-generator",
+    maxTurns: 80,
+    maxBudgetUsd: 8,
+    timeoutMs: 15 * 60_000,  // 15 minutes — genPrompts is the biggest stage
+  }),
 };
 
 function badRequest(
