@@ -21,11 +21,14 @@ import type { Context } from "hono";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { KernelService } from "../kernel-next/mcp/kernel.js";
+import { createKernelMcp } from "../kernel-next/mcp/server.js";
 import { getKernelNextDb } from "../lib/kernel-next-db.js";
 import { runPipeline } from "../kernel-next/runtime/runner.js";
 import { kernelNextBroadcaster } from "../kernel-next/sse/singleton.js";
 import { diamondIR } from "../kernel-next/generator-mock/mini-generator.js";
 import { slowDiamondHandlers } from "../kernel-next/demo/slow-diamond.js";
+import { RealStageExecutor } from "../kernel-next/runtime/real-executor.js";
+import type { StageExecutor } from "../kernel-next/runtime/executor.js";
 import type { PipelineIR } from "../kernel-next/ir/schema.js";
 import type { StageHandlerMap } from "../kernel-next/runtime/mock-executor.js";
 import { logger } from "../lib/logger.js";
@@ -35,19 +38,37 @@ export const kernelRunRoute = new Hono();
 const runBodySchema = z.object({
   pipeline: z.string().min(1),
   taskId: z.string().min(1).optional(),
+  // Real-executor overrides. Only meaningful when the selected
+  // pipeline maps to a real-executor factory; ignored for mock ones.
+  model: z.string().min(1).optional(),
+  maxTurns: z.number().int().positive().optional(),
+  maxBudgetUsd: z.number().positive().optional(),
 }).strict();
+
+type RunBodyOverrides = z.infer<typeof runBodySchema>;
 
 interface PipelineRegistration {
   ir: PipelineIR;
+  // Mock handlers OR a real executor — exclusive. Mock path keeps
+  // handlers+{} + undefined executor; real path provides a factory
+  // that materialises an executor against the live DB so MCP can
+  // write_port through the dispatcher wired by runner.
   handlers: StageHandlerMap;
-  // Longer timeout for slow-mock variants so the dashboard has time
-  // to actually render mid-run state.
+  executorFactory?: (
+    db: import("node:sqlite").DatabaseSync,
+    overrides: RunBodyOverrides,
+  ) => StageExecutor;
+  // Longer timeout for slow-mock / real variants so the dashboard
+  // has time to actually render mid-run state.
   timeoutMs?: number;
 }
 
+const DEFAULT_REAL_MODEL = "claude-haiku-4-5";
+const DEFAULT_REAL_MAX_TURNS = 10;
+const DEFAULT_REAL_BUDGET_USD = 0.2;
+
 // Registry of pipelines runnable via this route. Keys are the values
-// accepted in the `pipeline` body field. Names chosen so future
-// builtin pipelines can be added without colliding.
+// accepted in the `pipeline` body field.
 const pipelineRegistry: Record<string, () => PipelineRegistration> = {
   "diamond": () => ({
     ir: diamondIR(),
@@ -62,6 +83,28 @@ const pipelineRegistry: Record<string, () => PipelineRegistration> = {
     ir: diamondIR(),
     handlers: slowDiamondHandlers(),
     timeoutMs: 30_000,
+  }),
+  "diamond-real": () => ({
+    ir: diamondIR(),
+    handlers: {}, // real executor drives via RealStageExecutor
+    executorFactory: (db, overrides) =>
+      new RealStageExecutor({
+        // Fresh MCP server per stage (SDK MCP transport is single-
+        // use). Combined surface so `write_port` is visible to the
+        // agent — same rationale as demo/diamond-real.ts.
+        mcpServerFactory: (dispatcher) =>
+          createKernelMcp(db, {
+            surface: "combined",
+            writePortDispatcher: dispatcher,
+          }),
+        model: overrides.model ?? DEFAULT_REAL_MODEL,
+        maxTurns: overrides.maxTurns ?? DEFAULT_REAL_MAX_TURNS,
+        maxBudgetUsd: overrides.maxBudgetUsd ?? DEFAULT_REAL_BUDGET_USD,
+      }),
+    // 4 agent calls × up to 10 turns × haiku latency → minutes.
+    // Dashboard stays subscribed via SSE reconnect, so a generous
+    // upper bound is fine.
+    timeoutMs: 5 * 60_000,
   }),
 };
 
@@ -110,7 +153,7 @@ kernelRunRoute.post("/kernel/tasks/run", async (c) => {
     );
   }
 
-  const { ir, handlers, timeoutMs } = factory();
+  const { ir, handlers, executorFactory, timeoutMs } = factory();
   const db = getKernelNextDb();
   const svc = new KernelService(db, { skipTypeCheck: true });
   const submit = svc.submit(ir);
@@ -124,6 +167,12 @@ kernelRunRoute.post("/kernel/tasks/run", async (c) => {
   const taskId = parsed.data.taskId ?? `kr-${randomUUID()}`;
   const versionHash = submit.versionHash;
 
+  // Real pipelines construct their executor now (after submit, before
+  // dispatch) so the closure captures the same `db` handle the runner
+  // will use. Mock pipelines leave executor undefined — runner falls
+  // back to MockStageExecutor(handlers).
+  const executor = executorFactory?.(db, parsed.data);
+
   // Fire-and-forget. The runner publishes SSE events through the
   // singleton broadcaster; clients observe via /stream. Errors are
   // logged but do not affect the HTTP response (already returned).
@@ -133,6 +182,7 @@ kernelRunRoute.post("/kernel/tasks/run", async (c) => {
     taskId,
     versionHash,
     handlers,
+    executor,
     broadcaster: kernelNextBroadcaster,
   }, timeoutMs).then((result) => {
     logger.info(

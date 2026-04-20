@@ -63,6 +63,50 @@ describe("POST /api/kernel/tasks/run", () => {
     expect(json.diagnostics[0]!.code).toBe("UNKNOWN_PIPELINE");
     expect(json.diagnostics[0]!.context?.known).toContain("diamond");
     expect(json.diagnostics[0]!.context?.known).toContain("diamond-slow");
+    expect(json.diagnostics[0]!.context?.known).toContain("diamond-real");
+  });
+
+  it("accepts real-executor overrides (model / maxTurns / maxBudgetUsd) without validation errors", async () => {
+    // We don't actually want to invoke the SDK here — that's the
+    // job of the browser verification step. Just prove the body
+    // schema accepts the optional real-executor fields and the
+    // route returns 202 (the fire-and-forget runPipeline is
+    // already scheduled at this point; even if it errors later
+    // because claude is not reachable, the response path is
+    // already correct). We tag a unique taskId so the background
+    // promise doesn't alias any other test's subscriber.
+    const taskId = `kr-override-validation-${Date.now()}`;
+    const res = await app.request("/api/kernel/tasks/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pipeline: "diamond",
+        taskId,
+        model: "claude-haiku-4-5",
+        maxTurns: 5,
+        maxBudgetUsd: 0.1,
+      }),
+    });
+    expect(res.status).toBe(202);
+    // Let the microtask queue drain; the mock executor will finish
+    // quickly since pipeline is "diamond", not "diamond-real". This
+    // prevents the promise from leaking into the next test.
+    await new Promise((r) => setTimeout(r, 50));
+    kernelNextBroadcaster.clearTask(taskId);
+  });
+
+  it("rejects invalid override types with INVALID_REQUEST_BODY", async () => {
+    const res = await app.request("/api/kernel/tasks/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pipeline: "diamond",
+        maxBudgetUsd: -1, // must be positive
+      }),
+    });
+    expect(res.status).toBe(400);
+    const json = await res.json() as { diagnostics: Array<{ code: string }> };
+    expect(json.diagnostics[0]!.code).toBe("INVALID_REQUEST_BODY");
   });
 
   it("rejects malformed JSON body with INVALID_JSON_BODY", async () => {
