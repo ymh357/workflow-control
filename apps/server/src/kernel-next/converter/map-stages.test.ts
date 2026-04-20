@@ -82,20 +82,119 @@ describe("mapStagesToIR", () => {
     }
   });
 
-  it("emits LEGACY_FIELD_IGNORED for runtime.agents (Slice A placeholder; Slice D extracts)", () => {
+  it("extracts runtime.agents into AgentStage.config.subAgents", () => {
     const legacy = {
       stages: [{
         name: "A", type: "agent",
-        runtime: { engine: "llm", system_prompt: "p", reads: {},
-                   agents: { a: { description: "x", prompt: "y" } } },
+        runtime: {
+          engine: "llm", system_prompt: "p", reads: {},
+          agents: {
+            writer: {
+              description: "Writes prompts",
+              prompt: "You are a writer",
+              tools: ["Read", "Write"],
+              model: "sonnet",
+              maxTurns: 20,
+            },
+          },
+        },
       }],
     };
     const r = mapStagesToIR(legacy, new Map([["A", []]]), new Map(), new Set());
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.warnings.some(w =>
-      w.code === "LEGACY_FIELD_IGNORED" && w.context?.field === "agents"
-    )).toBe(true);
+    const a = r.stages[0]!;
+    expect(a.type).toBe("agent");
+    if (a.type !== "agent") return;
+    expect(a.config.subAgents).toHaveLength(1);
+    expect(a.config.subAgents![0]).toMatchObject({
+      name: "writer",
+      description: "Writes prompts",
+      prompt: "You are a writer",
+      tools: ["Read", "Write"],
+      model: "sonnet",
+      maxTurns: 20,
+    });
+  });
+
+  it("extracts minimal subAgent with only description + prompt", () => {
+    const legacy = {
+      stages: [{
+        name: "A", type: "agent",
+        runtime: {
+          engine: "llm", system_prompt: "p", reads: {},
+          agents: { minimal: { description: "d", prompt: "p" } },
+        },
+      }],
+    };
+    const r = mapStagesToIR(legacy, new Map([["A", []]]), new Map(), new Set());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const a = r.stages[0]!;
+    if (a.type !== "agent") return;
+    expect(a.config.subAgents).toEqual([
+      { name: "minimal", description: "d", prompt: "p" },
+    ]);
+  });
+
+  it("emits SUB_AGENT_INVALID when agents is not an object (e.g. array)", () => {
+    const legacy = {
+      stages: [{
+        name: "A", type: "agent",
+        runtime: { engine: "llm", system_prompt: "p", reads: {}, agents: ["x"] },
+      }],
+    };
+    const r = mapStagesToIR(legacy as any, new Map(), new Map(), new Set());
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics[0]!.code).toBe("SUB_AGENT_INVALID");
+  });
+
+  it("emits SUB_AGENT_INVALID when a sub-agent lacks description", () => {
+    const legacy = {
+      stages: [{
+        name: "A", type: "agent",
+        runtime: {
+          engine: "llm", system_prompt: "p", reads: {},
+          agents: { bad: { prompt: "x" } },
+        },
+      }],
+    };
+    const r = mapStagesToIR(legacy, new Map([["A", []]]), new Map(), new Set());
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics[0]!.code).toBe("SUB_AGENT_INVALID");
+  });
+
+  it("emits SUB_AGENT_INVALID when a sub-agent lacks prompt", () => {
+    const legacy = {
+      stages: [{
+        name: "A", type: "agent",
+        runtime: {
+          engine: "llm", system_prompt: "p", reads: {},
+          agents: { bad: { description: "x" } },
+        },
+      }],
+    };
+    const r = mapStagesToIR(legacy, new Map([["A", []]]), new Map(), new Set());
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics[0]!.code).toBe("SUB_AGENT_INVALID");
+  });
+
+  it("does not populate subAgents when runtime.agents is absent", () => {
+    const legacy = {
+      stages: [{
+        name: "A", type: "agent",
+        runtime: { engine: "llm", system_prompt: "p", reads: {} },
+      }],
+    };
+    const r = mapStagesToIR(legacy, new Map([["A", []]]), new Map(), new Set());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const a = r.stages[0]!;
+    if (a.type !== "agent") return;
+    expect(a.config.subAgents).toBeUndefined();
   });
 
   it("emits LEGACY_FIELD_IGNORED for runtime.retry (Slice A placeholder; Slice C extracts)", () => {

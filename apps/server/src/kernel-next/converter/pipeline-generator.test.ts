@@ -66,16 +66,19 @@ describe("convertLegacyYaml(pipeline-generator.yaml) — Slice A", () => {
     }
   });
 
-  it("genPrompts.runtime.agents is dropped with LEGACY_FIELD_IGNORED (Slice A placeholder)", () => {
-    // Slice A drops runtime.agents silently with a warning; Slice D
-    // will promote this to real AgentStage.config.subAgents extraction.
+  it("genPrompts.runtime.agents extracted into config.subAgents with prompt-writer", () => {
     const yaml = readFileSync(PIPELINE_YAML, "utf8");
     const r = convertLegacyYaml(yaml);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    const agentsWarnings = r.warnings.filter(
-      w => w.code === "LEGACY_FIELD_IGNORED" && w.context?.field === "agents",
-    );
-    expect(agentsWarnings.length).toBeGreaterThan(0);
+    const genPrompts = r.ir.stages.find(s => s.name === "genPrompts");
+    expect(genPrompts?.type).toBe("agent");
+    if (genPrompts?.type !== "agent") return;
+    expect(genPrompts.config.subAgents).toBeDefined();
+    expect(genPrompts.config.subAgents!.map(sa => sa.name)).toContain("prompt-writer");
+    const writer = genPrompts.config.subAgents!.find(sa => sa.name === "prompt-writer")!;
+    expect(writer.tools).toEqual(["Read", "Write"]);
+    expect(writer.model).toBe("sonnet");
+    expect(writer.maxTurns).toBe(20);
   });
 });

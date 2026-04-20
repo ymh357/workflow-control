@@ -4,12 +4,13 @@
 // Accepts: type: "agent" | "script" | "gate".
 // Parallel wrappers, human_confirm → gate transformation handled
 // upstream by unwrapParallelBlocks + mapHumanConfirmGates.
-// retry.back_to and runtime.agents emit LEGACY_FIELD_IGNORED warnings
-// in Slice A; Slice C and Slice D replace those with real extractions.
+// runtime.retry emits LEGACY_FIELD_IGNORED warning in Slice A (will be
+// extracted in Slice C). runtime.agents → AgentStage.config.subAgents
+// extraction (Slice D) with SUB_AGENT_INVALID for malformed shapes.
 // Still rejected: foreach, fanout, runtime.compensation, unknown
 // stage types.
 
-import type { PortIR, StageIR } from "../ir/schema.js";
+import type { PortIR, StageIR, SubAgentDef } from "../ir/schema.js";
 import type { ConverterDiagnostic, ConverterWarning } from "./types.js";
 import type { EntryDescriptor } from "./map-store-schema.js";
 
@@ -128,16 +129,6 @@ export function mapStagesToIR(
       });
     }
 
-    // Slice A placeholder: runtime.agents will be extracted into
-    // AgentStage.config.subAgents by map-stages in Slice D.
-    if (s.runtime?.agents) {
-      warnings.push({
-        code: "LEGACY_FIELD_IGNORED",
-        message: `stage '${name}' runtime.agents ignored (Slice A placeholder; will be extracted in Slice D)`,
-        context: { stage: name, field: "agents" },
-      });
-    }
-
     // Derive inputs from runtime.reads.
     const reads = s.runtime?.reads ?? {};
     const inputs: PortIR[] = [];
@@ -166,12 +157,84 @@ export function mapStagesToIR(
 
     if (s.type === "agent") {
       const systemPrompt = s.runtime?.system_prompt ?? "";
+      let subAgents: SubAgentDef[] | undefined;
+      if (s.runtime?.agents !== undefined) {
+        const rawAgents = s.runtime.agents;
+        if (typeof rawAgents !== "object" ||
+            Array.isArray(rawAgents) ||
+            rawAgents === null) {
+          diagnostics.push({
+            code: "SUB_AGENT_INVALID",
+            message: `stage '${name}': runtime.agents must be an object map of name → def`,
+            context: { stage: name, got: Array.isArray(rawAgents) ? "array" : typeof rawAgents },
+          });
+          continue;
+        }
+        const collected: SubAgentDef[] = [];
+        let hadInvalid = false;
+        for (const [saName, rawDef] of Object.entries(rawAgents as Record<string, unknown>)) {
+          if (!rawDef || typeof rawDef !== "object" || Array.isArray(rawDef)) {
+            diagnostics.push({
+              code: "SUB_AGENT_INVALID",
+              message: `stage '${name}': sub-agent '${saName}' must be an object`,
+              context: { stage: name, subAgent: saName },
+            });
+            hadInvalid = true;
+            continue;
+          }
+          const d = rawDef as Record<string, unknown>;
+          const description = d.description;
+          const prompt = d.prompt;
+          if (typeof description !== "string" || description.length === 0) {
+            diagnostics.push({
+              code: "SUB_AGENT_INVALID",
+              message: `stage '${name}': sub-agent '${saName}' missing or empty description`,
+              context: { stage: name, subAgent: saName },
+            });
+            hadInvalid = true;
+            continue;
+          }
+          if (typeof prompt !== "string" || prompt.length === 0) {
+            diagnostics.push({
+              code: "SUB_AGENT_INVALID",
+              message: `stage '${name}': sub-agent '${saName}' missing or empty prompt`,
+              context: { stage: name, subAgent: saName },
+            });
+            hadInvalid = true;
+            continue;
+          }
+          const tools = Array.isArray(d.tools)
+            ? d.tools.filter((t): t is string => typeof t === "string")
+            : undefined;
+          const model = d.model === "sonnet" || d.model === "opus" ||
+                        d.model === "haiku" || d.model === "inherit"
+            ? d.model
+            : undefined;
+          const maxTurns = typeof d.maxTurns === "number" &&
+                           Number.isInteger(d.maxTurns) && d.maxTurns > 0
+            ? d.maxTurns
+            : undefined;
+          collected.push({
+            name: saName,
+            description,
+            prompt,
+            ...(tools ? { tools } : {}),
+            ...(model ? { model } : {}),
+            ...(maxTurns !== undefined ? { maxTurns } : {}),
+          });
+        }
+        if (hadInvalid) continue;
+        if (collected.length > 0) subAgents = collected;
+      }
       stages.push({
         name,
         type: "agent",
         inputs,
         outputs,
-        config: { promptRef: `system/${systemPrompt}` },
+        config: {
+          promptRef: `system/${systemPrompt}`,
+          ...(subAgents ? { subAgents } : {}),
+        },
       });
     } else {
       const moduleId = s.runtime?.script_id ?? "";
