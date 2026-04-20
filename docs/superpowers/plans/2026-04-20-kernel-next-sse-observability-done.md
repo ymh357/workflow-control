@@ -2,7 +2,7 @@
 
 > Created: 2026-04-20
 > Author: Opus 4.7 (与产品 owner 协作)
-> Status: **code-complete**（Slice 1/2/3/5 合并；Slice 4 撤销）
+> Status: **code-complete + 浏览器端到端验证通过**（Slice 1/2/3/5 合并；Slice 4 撤销；生产入口 + 真实验证已补）
 > Parent: `docs/kernel-next-terminal-design.md`
 > Predecessor plan: `docs/superpowers/plans/2026-04-20-kernel-next-sse-observability.md`
 
@@ -81,41 +81,34 @@ Next.js page at /kernel-next/<taskId>          ← Slice 5
 
 ## 1. 未做但值得做的
 
-### 1.1 浏览器端真实验证
+### 1.1 浏览器端真实验证 — ✅ 已完成（2026-04-20）
 
-本轮 code-complete 但**未做浏览器端到端**。推荐验证方式：
+commit `4b0c2b0`（`POST /api/kernel/tasks/run` + slow-diamond fixture）落地后，启动两端 dev server（`apps/server :3001` + `apps/web :3004`）做了完整端到端验证：
 
-1. 启动 server: `cd apps/server && pnpm dev`
-2. 启动 web: `cd apps/web && pnpm dev`（默认 `:3004`）
-3. 在 server 侧的 REPL 或一段临时脚本里跑 diamond pipeline，显式传 `kernelNextBroadcaster`（`src/kernel-next/sse/singleton.ts`）
-4. 浏览器访问 `http://localhost:3004/kernel-next/<taskId>`
-5. 观察 stage 表格 + port writes feed 实时更新
+- `curl -X POST /api/kernel/tasks/run`（body: `{pipeline:"diamond-slow", taskId:"browser-..."}`）立即返回 202 + `{taskId, versionHash}`
+- SSE `curl -N /api/kernel-next/tasks/<id>/stream` 收到完整事件序列：task_state（idle→running→completed）、4 × stage_executing、4 × stage_done、4 × port_written（A.x、B.y、C.z、D.final）、run_final（completed, stageErrors=[]）
+- 时间戳正确反映拓扑：A 用 ~1.5s → B/C 并行 ~1.5s → D ~1.5s，总约 4.5s
+- 浏览器访问 `http://localhost:3004/kernel-next/<taskId>`：Connection=open, Events received=16, State=completed, Stages 表格 4 行全 done（绿色），Recent port writes 4 条带时间戳，Run final 方块 finalState=completed
 
-如果 dashboard 端行为有问题，修补点大概率在：
-- fetch streaming 的 reconnect 2s 延迟（看 `page.tsx:scheduleReconnect`）
-- event frame 解析（`page.tsx:handleEvent` 的 switch 分支）
-- CORS（server 已有 hono/cors；若 web dev port 不同，可能需要加白名单）
+端到端通路：POST → KernelService.submit → runPipeline 后台 → broadcaster.publish → HTTP SSE route → fetch-streaming → Next.js page 实时渲染。**无需额外修补，一遍通**。
 
-### 1.2 生产入口接入
+### 1.2 生产入口接入 — ✅ 已完成（commit `4b0c2b0`）
 
-SSE 观察层建完但**没有生产入口消费**。下一个合理切片是：当外部（MCP / REST）触发真实 kernel-next pipeline 时，**该入口**显式注入 singleton broadcaster。形态候选：
+新增 `POST /api/kernel/tasks/run`（`src/routes/kernel-run.ts`）。body: `{pipeline: string; taskId?: string}`，pipeline 在文件内小 registry 注册（首批 `diamond` + `diamond-slow`），返回 202 + `{ok, taskId, versionHash}`。后台 `runPipeline` 注入 singleton broadcaster，`.catch` 兜底 publish `run_final(failed)` 确保 dashboard 看到 coherent 结束。
 
-- 给 `src/routes/kernel-tasks.ts` 加一个 POST 触发 runPipeline 的 handler，注入 singleton
-- 或者让 `KernelService.submitAndRun()`（若要新增）接受一个 broadcaster 参数，默认 singleton
-- 或者让 `pipeline-generator MCP surface`（另一个方向）的触发路径走 singleton
-
-任意一个都会让"浏览器端真实观察"变成单击启动。
+接受 **注册过的 pipeline 名字**，不接受任意 IR——那个攻击面属于 MCP surface，不属于 dashboard 触发入口。想加新 builtin 就在 registry 新增一项即可。
 
 ### 1.3 新 session 可选方向
 
+§1.1 + §1.2 已完成，余下方向：
+
 | 方向 | 阻塞依赖 | 估算 |
 |---|---|---|
-| **生产入口 + 浏览器验证**（§1.2） | 无（本 slice 基础上） | 小，≤5 文件 |
-| **A7 真实 pipeline 验证** | 无 | 3-7 fix 切片，需 API key |
+| **A7 真实 pipeline 验证** | 无，dashboard 已可作为调试工具 | 3-7 fix 切片，需 API key |
 | **§10.5 deep live-migration** | 无 | 2-3 周 |
 | **pipeline-generator MCP surface** | 无 | 中大型 |
-
-**推荐顺序**：先做 §1.2（真实浏览器观察 + 生产入口），再选大方向。§1.2 完成后 A7 的验证也会更顺——因为真实 pipeline 跑起来时 dashboard 就是调试工具。
+| **dashboard UX 打磨** | 无，但验证驱动场景有限 | 小-中 |
+| **kernel-run registry 扩充** | 无 | 每条新 pipeline 几行 |
 
 ---
 
@@ -192,8 +185,10 @@ SSE 观察层建完但**没有生产入口消费**。下一个合理切片是：
 
 ## 5. Verdict
 
-kernel-next SSE 观察层 **code-complete**。
+kernel-next SSE 观察层 **code-complete + 浏览器端到端验证通过**。
 
 5 个 slice 落地（4 个实施 + 1 个撤销），测试数量与 plan 估算同量级（+18 vs +10~15），0 回归，tsc 两端干净。broadcaster / HTTP route / dashboard 三层独立可测。
 
-浏览器端到端真实验证 + 生产入口接入（§1.2）是下一步最低门槛的切片。
+commit `4b0c2b0` 补上生产入口（POST /api/kernel/tasks/run）+ slow-diamond fixture（+6 tests，4046→4052），启动 server+web dev server 跑通：POST → 后台 runPipeline → broadcaster → SSE → Next.js 页面 4 stage 全 done、port feed 4 条、run_final=completed。
+
+下一步候选见 §1.3；最顺手的大方向是 **A7 真实 pipeline 验证**——dashboard 已就位作为实战调试工具。
