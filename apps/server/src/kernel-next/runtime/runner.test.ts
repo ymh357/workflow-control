@@ -1495,3 +1495,240 @@ describe("runPipeline seedValues (Task 1.8)", () => {
     db.close();
   });
 });
+
+// Task C5 — retry rebuild loop. When a ScriptStage's retry transition
+// raises RETRY_TO_STAGE, the runner observes it via an XState inspect
+// hook, stops the current actor, rebuilds a fresh one with a filtered
+// context (upstream portValues preserved, downstream cleared, retry
+// counters bumped, gate authorizations preserved), and keeps running
+// until the pipeline completes or retries are exhausted.
+describe("runPipeline retry loop (Task C5)", () => {
+  it("rebuilds on first script failure and completes when the retry succeeds", async () => {
+    const { KernelNextBroadcaster } = await import("../sse/broadcaster.js");
+    const broadcaster = new KernelNextBroadcaster();
+
+    const db = makeDb();
+    // A (agent) -> S (script, retry maxRetries=1 backToStage=A).
+    // S fails on its first execution, succeeds on the retry. A is
+    // rerun because `backToStage: A` marks A as the restart point.
+    const ir: PipelineIR = {
+      name: "retry-happy",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "S",
+          type: "script",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [{ name: "r", type: "boolean" }],
+          config: { moduleId: "m", retry: { maxRetries: 1, backToStage: "A" } },
+        },
+      ],
+      wires: [
+        { from: { stage: "A", port: "x" }, to: { stage: "S", port: "x" } },
+      ],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    let aCallCount = 0;
+    let sCallCount = 0;
+    const handlers: StageHandlerMap = {
+      A: () => {
+        aCallCount++;
+        return { x: 10 };
+      },
+      S: () => {
+        sCallCount++;
+        if (sCallCount === 1) throw new Error("first S fail");
+        return { r: true };
+      },
+    };
+
+    const events: Array<{ type: string; data: unknown }> = [];
+    broadcaster.subscribe("retry-happy", (e) =>
+      events.push({ type: e.type, data: e.data }),
+    );
+
+    const result = await runPipeline({
+      db,
+      ir,
+      taskId: "retry-happy",
+      versionHash: hash,
+      handlers,
+      broadcaster,
+    });
+
+    expect(result.finalState).toBe("completed");
+    expect(result.portValues["A.x"]).toBe(10);
+    expect(result.portValues["S.r"]).toBe(true);
+    // A ran once initially + once on retry.
+    expect(aCallCount).toBe(2);
+    // S: minimum of 2 invocations (first fail, then success on rebuild).
+    // XState's retry transition targets `waiting`, and waiting.always
+    // re-promotes to `executing` in the SAME old actor before runner's
+    // inspector can stop it — so a single intra-actor re-entry (writes
+    // dropped after actor.stop) is possible in addition to the rebuild
+    // attempt. 2..3 is the legitimate range; assert >= 2 to be robust.
+    expect(sCallCount).toBeGreaterThanOrEqual(2);
+
+    // Stage_retry must be emitted exactly once with the pre-increment
+    // retryIdx=0 and the configured maxRetries=1.
+    const retries = events.filter((e) => e.type === "stage_retry");
+    expect(retries).toHaveLength(1);
+    const retryData = retries[0]!.data as {
+      stage: string;
+      backToStage: string;
+      retryIdx: number;
+      maxRetries: number;
+      errorMessage: string;
+    };
+    expect(retryData.stage).toBe("S");
+    expect(retryData.backToStage).toBe("A");
+    expect(retryData.retryIdx).toBe(0);
+    expect(retryData.maxRetries).toBe(1);
+    expect(retryData.errorMessage).toBe("first S fail");
+
+    // run_final fires exactly once, at the very end, with the
+    // terminal finalState.
+    const finals = events.filter((e) => e.type === "run_final");
+    expect(finals).toHaveLength(1);
+    expect((finals[0]!.data as { finalState: string }).finalState).toBe("completed");
+    // Terminal stageErrors should be empty — the intermediate failure
+    // was consumed by the retry.
+    expect((finals[0]!.data as { stageErrors: unknown[] }).stageErrors).toEqual([]);
+
+    // task_state: no duplicate "running" emitted across rebuild.
+    const taskStates = events
+      .filter((e) => e.type === "task_state")
+      .map((e) => (e.data as { state: string }).state);
+    expect(taskStates.filter((s) => s === "running")).toHaveLength(1);
+    expect(taskStates).toContain("completed");
+
+    // stage_retry should come BEFORE run_final.
+    const retryIdx = events.findIndex((e) => e.type === "stage_retry");
+    const finalIdx = events.findIndex((e) => e.type === "run_final");
+    expect(retryIdx).toBeLessThan(finalIdx);
+
+    // stage_attempts table shows both attempts for A and S. A's count
+    // is exactly 2 (initial + rebuild); S may have an extra row from
+    // the old actor's intra-attempt re-entry, so we check >= 2 and
+    // assert the terminal status on the last (highest attempt_idx) row.
+    const attempts = db.prepare(
+      `SELECT stage_name, attempt_idx, status FROM stage_attempts
+       WHERE task_id = ? ORDER BY started_at, attempt_idx`,
+    ).all("retry-happy") as Array<{
+      stage_name: string; attempt_idx: number; status: string;
+    }>;
+    const a = attempts.filter((r) => r.stage_name === "A");
+    const s = attempts.filter((r) => r.stage_name === "S");
+    expect(a.length).toBe(2);
+    expect(s.length).toBeGreaterThanOrEqual(2);
+    // S's first attempt should be 'error'; the LAST attempt (highest
+    // attempt_idx) should be 'success' since the retry produced a
+    // successful run.
+    expect(s[0]!.status).toBe("error");
+    const sLast = s[s.length - 1]!;
+    expect(sLast.status).toBe("success");
+
+    db.close();
+  });
+
+  it("fails the run when retries are exhausted", async () => {
+    const { KernelNextBroadcaster } = await import("../sse/broadcaster.js");
+    const broadcaster = new KernelNextBroadcaster();
+
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "retry-exhaust",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "S",
+          type: "script",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [{ name: "r", type: "boolean" }],
+          config: { moduleId: "m", retry: { maxRetries: 1, backToStage: "A" } },
+        },
+      ],
+      wires: [
+        { from: { stage: "A", port: "x" }, to: { stage: "S", port: "x" } },
+      ],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    let aCallCount = 0;
+    let sCallCount = 0;
+    const handlers: StageHandlerMap = {
+      A: () => {
+        aCallCount++;
+        return { x: 10 };
+      },
+      S: () => {
+        sCallCount++;
+        throw new Error(`S failure #${sCallCount}`);
+      },
+    };
+
+    const events: Array<{ type: string; data: unknown }> = [];
+    broadcaster.subscribe("retry-exhaust", (e) =>
+      events.push({ type: e.type, data: e.data }),
+    );
+
+    const result = await runPipeline({
+      db,
+      ir,
+      taskId: "retry-exhaust",
+      versionHash: hash,
+      handlers,
+      broadcaster,
+    });
+
+    expect(result.finalState).toBe("failed");
+    // maxRetries=1 means: first failure triggers one retry; second
+    // failure exhausts the budget. A runs twice (initial + retry).
+    expect(aCallCount).toBe(2);
+    // S: minimum of 2 invocations (first attempt + rebuild attempt).
+    // Intra-actor re-entry after the compiler's retry transition may
+    // produce one extra call before the inspector can stop the actor;
+    // see the corresponding note in the happy-path test.
+    expect(sCallCount).toBeGreaterThanOrEqual(2);
+
+    // Exactly one stage_retry — only the first failure had budget.
+    const retries = events.filter((e) => e.type === "stage_retry");
+    expect(retries).toHaveLength(1);
+    expect((retries[0]!.data as { retryIdx: number }).retryIdx).toBe(0);
+
+    // stage_error fires for S once the retries are exhausted.
+    const stageErrors = events.filter((e) => e.type === "stage_error");
+    expect(stageErrors.length).toBeGreaterThanOrEqual(1);
+    const sError = stageErrors.find(
+      (e) => (e.data as { stage: string }).stage === "S",
+    );
+    expect(sError).toBeDefined();
+    expect((sError!.data as { reason: string }).reason).toBe("executor_failed");
+
+    // run_final fires exactly once with finalState="failed".
+    const finals = events.filter((e) => e.type === "run_final");
+    expect(finals).toHaveLength(1);
+    expect((finals[0]!.data as { finalState: string }).finalState).toBe("failed");
+
+    // The result's stageErrors surfaces at least one entry for S.
+    const sErrors = result.stageErrors.filter((e) => e.stage === "S");
+    expect(sErrors.length).toBeGreaterThanOrEqual(1);
+
+    db.close();
+  });
+});

@@ -27,6 +27,7 @@ import type { PipelineIR, GateStage } from "../ir/schema.js";
 import { KernelService } from "../mcp/kernel.js";
 import { taskRegistry } from "./task-registry.js";
 import { evaluateGuard } from "./guard-evaluator.js";
+import { topoDownstream } from "../converter/topo-downstream.js";
 import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import type {
   AnyKernelNextSSEEvent,
@@ -111,53 +112,82 @@ export interface RunResult {
   stageErrors: Array<{ stage: string; message: string; context?: StageErrorContext }>;
 }
 
+// Task C5 — retry rebuild support.
+//
+// The runner orchestrates two nested loops:
+//   1. Outer loop (runPipeline): lives for the duration of the run.
+//      Owns run-scoped state that must persist across retry rebuilds
+//      (portValues that survive, retryCounts, gate authorizations,
+//      accumulated log, publishedTopState, SSE dedupe sets for stages
+//      whose final hasn't been superseded by a retry).
+//   2. Inner loop (runOneAttempt): one XState actor lifecycle. Resolves
+//      with either `{verdict: "completed"|"failed"}` or
+//      `{verdict: "retry", event}` when a ScriptStage's retry transition
+//      raises RETRY_TO_STAGE.
+//
+// On retry, the outer loop:
+//   - filters persistentPortValues to drop the backToStage and every
+//     stage transitively downstream of it,
+//   - filters persistentFinalizedStages the same way,
+//   - bumps retryCounts[failedStageName] by 1 (guard on next failure
+//     reads the incremented value),
+//   - clears SSE dedupe sets for the reset stages so their executing /
+//     done / error events can re-emit on the new attempt,
+//   - preserves gateAuthorizedTargets / gateSkippedTargets (an already-
+//     approved gate does not need a second approval when a downstream
+//     script fails),
+//   - compiles a fresh machine with the updated context via
+//     CompileOptions.initialContext, and runs the next attempt.
+
+type AttemptVerdict =
+  | { verdict: "completed" | "failed"; snapshot: unknown }
+  | {
+      verdict: "retry";
+      event: {
+        failedStageName: string;
+        backToStage: string;
+        retryIdx: number;
+        maxRetries: number;
+        errorMessage: string;
+      };
+    };
+
+// Safety cap on retry iterations: the per-stage RetrySpec caps
+// maxRetries at 10, so even with every stage retrying in sequence this
+// budget is comfortably above any legitimate run. A higher count means
+// runner is in a loop it can't escape — throw rather than hang the test.
+const MAX_TOTAL_ATTEMPTS = 50;
+
+interface ExecuteStageInvokeInput {
+  stageName: string;
+  taskId: string;
+  versionHash: string;
+  portValues: Record<string, unknown>;
+}
+
 export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Promise<RunResult> {
   const executor: StageExecutor =
     opts.executor ?? new MockStageExecutor({ handlers: opts.handlers });
-  const { machine, stageMeta } = compileIRToMachine(opts.ir, {
-    taskId: opts.taskId,
-    // Task 1.8 — inline seedValues into initial context.portValues so
-    // stage guards see external inputs on the actor's very first
-    // snapshot. The DB-side seed phase below handles lineage + SSE.
-    seedValues: opts.seedValues,
-  });
 
-  // A2.3.2 — non-gate, non-fanout agent/script stages are now invoked as
-  // XState children. The compiler places `invoke: { src: 'execute_stage' }`
-  // in each such region's executing state; we supply the actor logic here
-  // via machine.provide(). The promise body is a thin adapter that calls
-  // the already-constructed executor (mock or real) with the input passed
-  // through from the invoke. Post-execution side-effects (stageErrors,
-  // STAGE_FAILED dispatch on error) still flow through the subscribe()
-  // loop below — the invoke's onDone/onError are intentionally shallow
-  // because the machine already reaches its final state via PORT_WRITTEN
-  // + allOutboundPresent (always guard) as soon as writePort fires.
-  //
-  // Variable order: we must define dispatcher/portRuntime/stageErrors
-  // BEFORE constructing executeStageLogic (which closes over them), but
-  // dispatcher needs `actor` (forward ref). We use a `let actor` + an
-  // indirection function so the closure resolves actor at call time,
-  // after createActor has run.
-  interface ExecuteStageInvokeInput {
-    stageName: string;
-    taskId: string;
-    versionHash: string;
-    portValues: Record<string, unknown>;
-  }
-  let actor: ReturnType<typeof createActor<typeof machine>> | null = null;
+  // ---- Run-scoped state (survives retry rebuilds) -------------------
+  // Dispatcher must survive rebuilds — answer_gate / MCP route events
+  // through taskRegistry once per run, not per attempt. A mutable
+  // `currentActor` ref lets the closure forward to whichever actor is
+  // alive at dispatch time.
+  let currentActor: ReturnType<typeof createActor> | null = null;
   const dispatcher: EventDispatcher = {
     send: (event: MachineEvent) => {
-      if (actor) actor.send(event);
+      if (currentActor) currentActor.send(event);
     },
   };
+  // Kernel service + port runtime are run-scoped: one DB handle, one
+  // rewriter. The PortRuntime's dispatcher points at currentActor via
+  // the shared `dispatcher` above so port writes route to the live
+  // actor across rebuilds.
   const portRuntime = new PortRuntime(
     opts.db,
     dispatcher,
     "regular",
-    // Slice 2 — publish port_written on every live write. valuePreview
-    // stays small (PREVIEW_BYTES=200) so the event stream never blows
-    // up with raw port payloads. Hook is only installed when a
-    // broadcaster is provided so non-observed runs pay zero cost.
     opts.broadcaster
       ? ({ stageName, portName, value }) => {
           try {
@@ -175,47 +205,47 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
         }
       : undefined,
   );
-
-  // Register this run's dispatcher so answer_gate (MCP/REST) can route
-  // GATE_ANSWERED events back into our actor. Unregistered in the
-  // .finally() below so we never leak across runs even if the machine
-  // throws mid-flight.
   taskRegistry.register(opts.taskId, dispatcher);
-
-  // Kernel service used for gate_queue writes when a gate stage activates.
-  // skipTypeCheck is fine — the IR was already validated before runPipeline
-  // was called and we're only writing gate rows, not re-validating pipelines.
   const kernel = new KernelService(opts.db, { skipTypeCheck: true });
 
-  // Track which stages we've already dispatched an executor for, to avoid
-  // double-launching when the actor emits multiple snapshots with the same
-  // "executing" state.
+  // Run-scoped execution bookkeeping. `dispatched` dedupes executor
+  // launches and also acts as the seen-marker for error-final
+  // detection inside subscribe. On retry, entries for reset stages are
+  // cleared so they can re-dispatch.
   const dispatched = new Set<string>();
-
-  // Track in-flight executor promises so we drain them before resolving
-  // the run. Without this, a stage's writePort can fire AFTER the
-  // machine transitions to completed (because the final port write is
-  // what made the machine enter completed in the first place), causing
-  // db writes to race with db.close() in tests.
-  const executorPromises: Array<Promise<void>> = [];
-  // Drain-time errors: executor promises that reject after finalResult is
-  // already set (typical: final writePort -> machine completed -> executor
-  // cleanup code throws). Surfaced on the returned RunResult so callers
-  // aren't blind.
+  // Drain errors carry executor promise rejections that landed after
+  // run-final. Run-scoped so rejections on any attempt surface in the
+  // final RunResult. (In practice the retry path stops the outgoing
+  // actor, cancels its child invokes, and discards their rejections
+  // during the cleanup of the prior attempt.)
   const drainErrors: Array<{ stage: string | null; message: string }> = [];
-  // Per-stage errors captured from executor results (status="error"). Unlike
-  // drainErrors these are the expected "agent produced bad output" path, not
-  // executor crashes. Surfacing these lets harnesses distinguish
-  // schema-non-compliant failures per stage without a second DB probe.
+  // Stage errors captured from executor results. On retry we drop
+  // entries for stages being reset so the final RunResult only
+  // contains errors from the terminal attempt.
   const stageErrors: Array<{ stage: string; message: string }> = [];
 
-  // Slice 2 — tiny publish helper. No-op when broadcaster is absent.
-  // Centralising event construction keeps timestamps monotonic in
-  // publish order (not event-origin order) and prevents accidental
-  // KernelNextSSEEvent shape drift across call sites. Errors are
-  // shallow-caught because the broadcaster already isolates listener
-  // exceptions, but a broken broadcaster itself must not abort the
-  // runner's state-machine loop.
+  // Run-scoped SSE state. `lastTopState` ensures task_state dedupes
+  // across rebuilds (a rebuilt actor emits idle→running again; we
+  // don't want duplicate running events on the SSE stream).
+  let lastTopState: TaskTopLevelState | null = null;
+  // Once a stage has published a stage_executing / final event, we
+  // don't re-publish it in the same attempt; the retry path clears
+  // entries for reset stages before the next attempt starts so their
+  // executing/done/error can emit again on the retry run.
+  const publishedStageExecuting = new Set<string>();
+  const publishedStageFinal = new Set<string>();
+
+  // ---- Retry-preserved context (read by next compileIRToMachine) ----
+  let persistentPortValues: Record<string, unknown> =
+    buildInitialPortValuesRunner(opts.ir, opts.seedValues);
+  let persistentRetryCounts: Record<string, number> = {};
+  let persistentGateAuthorized: string[] = [];
+  let persistentGateSkipped: string[] = [];
+  let persistentLog: string[] = [];
+  let persistentFinalizedStages: MachineContext["finalizedStages"] = [];
+  let isRetryRebuild = false; // drives initialContext.portValues override
+
+  // ---- Publishing + run-level coordination --------------------------
   const publish = (event: AnyKernelNextSSEEvent): void => {
     if (!opts.broadcaster) return;
     try {
@@ -224,51 +254,23 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   };
   const isoNow = (): string => new Date().toISOString();
 
-  // Track the top-level state we last published, so state transitions
-  // emit exactly one task_state event each. idle is published on
-  // first observation (not pre-emptively) to stay aligned with the
-  // actor's own initial snapshot.
-  let lastTopState: TaskTopLevelState | null = null;
-  // Track which stage regions we've already published executing /
-  // done / error for, so noisy snapshot deliveries don't produce
-  // duplicate events.
-  const publishedStageExecuting = new Set<string>();
-  const publishedStageFinal = new Set<string>();
-
-  let resolveRun: (result: RunResult) => void;
-  let rejectRun: (err: Error) => void;
-  let machineEnded = false;
-  const done = new Promise<RunResult>((resolve, reject) => {
-    resolveRun = resolve;
-    rejectRun = reject;
-  });
-
+  // Timer is run-scoped: a retry does not reset the overall budget.
+  // Long pipelines should set timeoutMs explicitly.
+  let timedOut = false;
   const timer = setTimeout(() => {
-    rejectRun(new Error(`runPipeline timeout after ${timeoutMs}ms`));
+    timedOut = true;
+    // Attempt in flight will observe via currentActor.stop() when the
+    // outer loop unwinds; we surface as a thrown error on the outer
+    // runPipeline promise.
   }, timeoutMs);
 
-  // Task 1.8 — seed phase (externalInputs).
-  //
-  // Before actor.start(), persist each declared external input as
-  // port_values rows under a kind="external" stage_attempts row
-  // (stage_name='__external__'). The compiler has already inlined
-  // seedValues into initial context.portValues (see compileIRToMachine
-  // above), so this block is strictly for lineage (query_lineage /
-  // diff_runs / read_port) + SSE (port_written events via the
-  // livePortRuntime's onPortWritten hook).
-  //
-  // Why the DB-side seed must come BEFORE actor.start():
-  //   - Writing via portRuntime.writePort after the actor started would
-  //     re-deliver PORT_WRITTEN to the machine — but the compiler
-  //     already pre-populated context.portValues with the same keys,
-  //     so a second delivery is redundant (harmless but wasteful).
-  //   - Here, actor is still null; dispatcher.send() is guarded by
-  //     `if (actor)` and silently drops — which is the exact behavior
-  //     we want: DB writes happen, machine isn't touched twice.
+  // Task 1.8 — seed phase (externalInputs). Run once (regardless of
+  // retries) so lineage and SSE observe the external seeds exactly
+  // once. The compiler's initial context.portValues carries the same
+  // values so the first attempt's stages see them immediately.
   const externalInputs = opts.ir.externalInputs ?? [];
   if (externalInputs.length > 0) {
     const seedValues = opts.seedValues ?? {};
-    // Reject before opening any attempt — keeps failure path clean.
     for (const port of externalInputs) {
       if (!(port.name in seedValues)) {
         clearTimeout(timer);
@@ -278,9 +280,6 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
         );
       }
     }
-    // Warn on extra keys — not fatal because the pipeline still has
-    // every declared input satisfied, but surface the mismatch so an
-    // operator can correct a typo or a stale seedValues caller.
     for (const key of Object.keys(seedValues)) {
       if (!externalInputs.some((p) => p.name === key)) {
         logger.warn(
@@ -295,10 +294,6 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       stageName: "__external__",
       kind: "external",
     });
-    // Iterate externalInputs (declaration order) rather than
-    // Object.keys(seedValues) so port_values insertion order is
-    // deterministic regardless of how the caller constructed the
-    // seedValues object.
     for (const port of externalInputs) {
       portRuntime.writePort({
         attemptId,
@@ -310,437 +305,598 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
     portRuntime.finishAttempt(attemptId, "success");
   }
 
-  // A2.3.2 + A2.3.3 — build the executor-as-actor logic. fromCallback
-  // replaces A2.3.2's fromPromise so the child can receive INTERRUPT
-  // events from the parent's sendTo forward (compiler places
-  // `on: INTERRUPT` on each agent stage's executing state). Cancellation
-  // is expressed as an AbortSignal the executor consumes; real-executor
-  // translates the abort into an INTERRUPT event for its nested
-  // AgentMachine per design §4.2.
+  // ---- Main retry loop ---------------------------------------------
+  let totalAttempts = 0;
+  let finalOutcome:
+    | { verdict: "completed" | "failed"; snapshot: unknown }
+    | null = null;
+
+  try {
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      totalAttempts += 1;
+      if (totalAttempts > MAX_TOTAL_ATTEMPTS) {
+        throw new Error(
+          `runPipeline retry loop exceeded ${MAX_TOTAL_ATTEMPTS} attempts — likely a bug`,
+        );
+      }
+      const verdict = await runOneAttempt();
+      if (verdict.verdict !== "retry") {
+        finalOutcome = verdict;
+        break;
+      }
+      // verdict.verdict === "retry": apply the transformations and loop.
+      const { failedStageName, backToStage, retryIdx, maxRetries, errorMessage } =
+        verdict.event;
+
+      publish({
+        type: "stage_retry",
+        taskId: opts.taskId,
+        timestamp: isoNow(),
+        data: {
+          stage: failedStageName,
+          backToStage,
+          retryIdx,
+          maxRetries,
+          errorMessage,
+        },
+      });
+
+      // Compute the downstream closure of backToStage — every stage
+      // whose outputs depend on backToStage (transitively). These plus
+      // backToStage itself form the set of stages we reset: their port
+      // values are cleared (so their downstream waiting.always guards
+      // stay false until the upstream re-runs), their finalizedStages
+      // entries are dropped, and their SSE dedupe entries are cleared.
+      const downstream = topoDownstream(opts.ir.wires, backToStage);
+      const toReset = new Set<string>([backToStage, ...downstream]);
+
+      persistentRetryCounts = {
+        ...persistentRetryCounts,
+        [failedStageName]:
+          (persistentRetryCounts[failedStageName] ?? 0) + 1,
+      };
+
+      // Drop portValues for reset stages. Keys are `<stageName>.<port>`
+      // so prefix-match on the stage part.
+      persistentPortValues = Object.fromEntries(
+        Object.entries(persistentPortValues).filter(([key]) => {
+          const [stageName] = key.split(".");
+          return !toReset.has(stageName ?? "");
+        }),
+      );
+
+      // Drop finalizedStages for reset stages so the audit log
+      // reflects only the terminal attempt's outcomes per stage.
+      persistentFinalizedStages = persistentFinalizedStages.filter(
+        (f) => !toReset.has(f.name),
+      );
+
+      // stageErrors: keep entries for stages NOT being reset (they
+      // won't re-run and so are terminal in their own right).
+      const preservedStageErrors = stageErrors.filter(
+        (e) => !toReset.has(e.stage),
+      );
+      stageErrors.length = 0;
+      stageErrors.push(...preservedStageErrors);
+
+      // SSE dedupe sets: clear entries for reset stages.
+      for (const name of toReset) {
+        publishedStageExecuting.delete(name);
+        publishedStageFinal.delete(name);
+        dispatched.delete(name);
+      }
+
+      // Keep gateAuthorizedTargets / gateSkippedTargets intact — an
+      // already-approved gate does not need a second approval when
+      // a downstream script retries. (Per design §4.3.)
+
+      // Log-continuity: the compiler will append new entries on the
+      // next attempt, but prior log entries for reset stages are no
+      // longer meaningful. Filter them out to match the finalizedStages
+      // cleanup above.
+      persistentLog = persistentLog.filter((entry) => {
+        // Log entries look like `<stageName>:<substate>`; the leading
+        // token up to `:` is the stage name.
+        const colonIdx = entry.indexOf(":");
+        if (colonIdx < 0) return true;
+        const stageName = entry.slice(0, colonIdx);
+        return !toReset.has(stageName);
+      });
+
+      isRetryRebuild = true;
+    }
+  } finally {
+    clearTimeout(timer);
+    if (currentActor) {
+      try { currentActor.stop(); } catch { /* ignore */ }
+    }
+    taskRegistry.unregister(opts.taskId);
+  }
+
+  if (timedOut) {
+    throw new Error(`runPipeline timeout after ${timeoutMs}ms`);
+  }
+  if (!finalOutcome) {
+    // Should be unreachable — the while(true) only exits via break or throw.
+    throw new Error("runPipeline: retry loop exited without a final verdict");
+  }
+
+  // ---- Finalization: drain pending promises + compute finalState ----
+  // (moved out of runOneAttempt so the draining observes all run-scoped
+  // state after the last attempt completed.)
+  const snapshot = finalOutcome.snapshot as {
+    value: "completed" | "failed";
+    context: MachineContext;
+  };
+  const ctx = snapshot.context;
+
+  // Promote finalState to 'failed' if any stage's LATEST attempt
+  // ended with status='error'. The subquery picks the row with the
+  // highest attempt_idx per (task, stage); the outer count reports
+  // stages whose final attempt ended in error.
+  const errorRow = opts.db.prepare(
+    `SELECT COUNT(*) AS n FROM (
+       SELECT sa.status FROM stage_attempts sa
+       WHERE sa.task_id = ?
+         AND sa.attempt_idx = (
+           SELECT MAX(sa2.attempt_idx) FROM stage_attempts sa2
+           WHERE sa2.task_id = sa.task_id AND sa2.stage_name = sa.stage_name
+         )
+     ) t
+     WHERE t.status = 'error'`,
+  ).get(opts.taskId) as { n: number };
+
+  // Task C5 — intra-actor retry reconciliation. The compiler's retry
+  // transition targets `waiting`, which re-promotes via waiting.always
+  // back into `executing` within the SAME actor before runner's
+  // inspector can stop it. Any invoke IIFE that ran between STAGE_FAILED
+  // and actor.stop() already pushed to stageErrors. If that stage's
+  // LATEST DB attempt ultimately succeeded (via either the same-actor
+  // re-entry or a rebuilt-actor attempt), those stageErrors entries are
+  // no longer terminal — filter them out so the final RunResult matches
+  // the DB truth.
   //
-  // fromCallback doesn't carry `output` on xstate.done.actor — A2.3.2's
-  // invoke.onDone/onError were already inert (the region reaches `done`
-  // via the allOutboundPresent `always` guard, not via invoke output),
-  // so dropping output is harmless. Errors still surface through
-  // STAGE_FAILED via the in-body dispatcher.send below.
-  const executeStageLogic = fromCallback<
-    { type: "INTERRUPT" },
-    ExecuteStageInvokeInput
-  >(({ input, receive }) => {
-    const stageDef = opts.ir.stages.find((s) => s.name === input.stageName);
-    if (!stageDef) {
-      // Treat as a runner-level bug. The promise below will reject;
-      // dispatching a STAGE_FAILED is pointless because the IR is
-      // corrupt. Throwing inside fromCallback is recorded by XState as
-      // an error.actor event which the region's invoke.onError catches.
-      throw new Error(`invoke: stage '${input.stageName}' not found in IR`);
-    }
-    if (stageDef.type === "gate") {
-      throw new Error(`invoke: gate stage '${input.stageName}' should not reach execute_stage`);
-    }
-    if ((stageDef.type === "agent" || stageDef.type === "script") && stageDef.fanout) {
-      // Fanout stages run through the subscribe loop's orchestrateFanoutStage
-      // path; this invoke is a no-op for them. No executor work, no
-      // interrupt forwarding. The region reaches `done` via the always
-      // guard once orchestrateFanoutStage writes the aggregated array.
-      return;
-    }
+  // The stage-level filter uses a per-stage "latest attempt succeeded"
+  // lookup. We cannot do this earlier because an attempt's outcome is
+  // only authoritative once the DB row reaches its terminal status.
+  const succeededStages = new Set<string>();
+  const succeededRows = opts.db.prepare(
+    `SELECT sa.stage_name FROM stage_attempts sa
+     WHERE sa.task_id = ?
+       AND sa.attempt_idx = (
+         SELECT MAX(sa2.attempt_idx) FROM stage_attempts sa2
+         WHERE sa2.task_id = sa.task_id AND sa2.stage_name = sa.stage_name
+       )
+       AND sa.status = 'success'`,
+  ).all(opts.taskId) as Array<{ stage_name: string }>;
+  for (const row of succeededRows) succeededStages.add(row.stage_name);
+  const reconciledStageErrors = stageErrors.filter(
+    (e) => !succeededStages.has(e.stage),
+  );
+  stageErrors.length = 0;
+  stageErrors.push(...reconciledStageErrors);
 
-    // versionHash — input.versionHash comes from machine context, which
-    // the compiler seeds as "" and the runner does not currently
-    // overwrite. Prefer opts.versionHash so stage_attempts.version_hash
-    // is correctly populated.
-    const versionHash = input.versionHash || opts.versionHash;
+  const finalState: "completed" | "failed" =
+    snapshot.value === "failed" ||
+    errorRow.n > 0 ||
+    drainErrors.length > 0 ||
+    stageErrors.length > 0
+      ? "failed"
+      : "completed";
 
-    // AbortController bridges XState INTERRUPT events → executor signal.
-    // The executor listens on `signal.aborted` + the `abort` event to
-    // cancel its in-flight work (real-executor translates this into an
-    // INTERRUPT event for the nested AgentMachine).
-    const ac = new AbortController();
+  publish({
+    type: "run_final",
+    taskId: opts.taskId,
+    timestamp: isoNow(),
+    data: {
+      finalState,
+      stageErrors: stageErrors.map((e) => ({ stage: e.stage, message: e.message })),
+    },
+  });
 
-    // Subscribe to events from the parent. The compiler's sendTo on
-    // INTERRUPT lands here; we translate it to an AbortController abort.
-    // Any other event type is ignored (none are defined at A2.3.3).
-    receive((ev) => {
-      if (ev.type === "INTERRUPT") ac.abort();
+  return {
+    finalState,
+    portValues: ctx.portValues,
+    log: ctx.log,
+    drainErrors,
+    stageErrors,
+  };
+
+  // ---- runOneAttempt: one actor lifecycle --------------------------
+  // Declared as a closure so it can see and mutate all run-scoped
+  // state (publish, dispatched, stageErrors, etc.) without a
+  // parameter list explosion.
+  async function runOneAttempt(): Promise<AttemptVerdict> {
+    // Compile a fresh machine. When this is a retry rebuild we pass
+    // initialContext so the new machine starts with the preserved
+    // portValues / retryCounts / gate authorizations; first-attempt
+    // path leaves initialContext undefined so the existing seedValues
+    // → buildInitialPortValues codepath still runs.
+    const { machine, stageMeta } = compileIRToMachine(opts.ir, {
+      taskId: opts.taskId,
+      seedValues: opts.seedValues,
+      initialContext: isRetryRebuild
+        ? {
+            portValues: persistentPortValues,
+            retryCounts: persistentRetryCounts,
+            gateAuthorizedTargets: persistentGateAuthorized,
+            gateSkippedTargets: persistentGateSkipped,
+            log: persistentLog,
+            finalizedStages: persistentFinalizedStages,
+          }
+        : undefined,
     });
 
-    // Track executor completion so cleanup knows whether to abort.
-    // Without this, XState's stop-on-region-exit (happens as soon as
-    // the always guard transitions to `done`, which is normal for a
-    // successful stage) would fire `ac.abort()` for every stage's
-    // invoke, poisoning tests that check signal.aborted as a proxy
-    // for "external INTERRUPT landed". Only abort on cleanup when
-    // the executor hasn't finished yet.
-    let executorDone = false;
+    // Per-attempt executor-promises array. On retry, the outer loop
+    // abandons the attempt and merges any drain-time messages into
+    // run-scoped drainErrors via the p.catch below. Invoke'd (non-
+    // fanout) stages don't populate this array — XState's actor
+    // lifecycle owns their cancellation.
+    const executorPromises: Array<Promise<void>> = [];
 
-    // Fire-and-forget the executor. Promise rejections / status='error'
-    // both route to STAGE_FAILED + stageErrors so the region reaches
-    // its error final and finalState = 'failed'.
-    void (async () => {
-      try {
-        const result = await executor.executeStage({
-          ir: opts.ir,
-          stageName: input.stageName,
-          taskId: input.taskId,
-          versionHash,
-          portValues: input.portValues,
-          handlers: opts.handlers,
-          portRuntime,
-          signal: ac.signal,
-        });
-        if (result.status === "error") {
-          stageErrors.push({ stage: input.stageName, message: result.error ?? "unspecified" });
-          if (!machineEnded) {
+    const executeStageLogic = fromCallback<
+      { type: "INTERRUPT" },
+      ExecuteStageInvokeInput
+    >(({ input, receive }) => {
+      const stageDef = opts.ir.stages.find((s) => s.name === input.stageName);
+      if (!stageDef) {
+        throw new Error(`invoke: stage '${input.stageName}' not found in IR`);
+      }
+      if (stageDef.type === "gate") {
+        throw new Error(`invoke: gate stage '${input.stageName}' should not reach execute_stage`);
+      }
+      if ((stageDef.type === "agent" || stageDef.type === "script") && stageDef.fanout) {
+        return;
+      }
+
+      const versionHash = input.versionHash || opts.versionHash;
+      const ac = new AbortController();
+      receive((ev) => {
+        if (ev.type === "INTERRUPT") ac.abort();
+      });
+
+      let executorDone = false;
+      void (async () => {
+        try {
+          const result = await executor.executeStage({
+            ir: opts.ir,
+            stageName: input.stageName,
+            taskId: input.taskId,
+            versionHash,
+            portValues: input.portValues,
+            handlers: opts.handlers,
+            portRuntime,
+            signal: ac.signal,
+          });
+          if (result.status === "error") {
+            stageErrors.push({ stage: input.stageName, message: result.error ?? "unspecified" });
             dispatcher.send({
               type: "STAGE_FAILED",
               stage: input.stageName,
               error: result.error ?? "unspecified",
             });
           }
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        stageErrors.push({ stage: input.stageName, message });
-        if (!machineEnded) {
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          stageErrors.push({ stage: input.stageName, message });
           dispatcher.send({
             type: "STAGE_FAILED",
             stage: input.stageName,
             error: message,
           });
+        } finally {
+          executorDone = true;
         }
-      } finally {
-        executorDone = true;
-      }
-    })();
+      })();
 
-    // Cleanup fires when XState stops this invoked child (parent
-    // region leaves `executing`, or the whole actor stops). Only
-    // abort if the executor is still running — a clean completion
-    // should not trigger an artificial abort (see executorDone comment).
-    return () => {
-      if (!executorDone && !ac.signal.aborted) ac.abort();
-    };
-  });
+      return () => {
+        if (!executorDone && !ac.signal.aborted) ac.abort();
+      };
+    });
 
-  const providedMachine = machine.provide({
-    actors: { execute_stage: executeStageLogic },
-  });
-  actor = createActor(providedMachine, { input: undefined });
+    const providedMachine = machine.provide({
+      actors: { execute_stage: executeStageLogic },
+    });
 
-  actor.subscribe((snapshot) => {
-    // Slice 2 — publish task_state on every top-level transition.
-    // snapshot.value is a string at top-level final states and an
-    // object ({ running: {...} }) while running; we map both to the
-    // four TaskTopLevelState values and dedupe via lastTopState.
-    const topValue = snapshot.value;
-    const topState: TaskTopLevelState =
-      topValue === "idle" ? "idle"
-      : topValue === "completed" ? "completed"
-      : topValue === "failed" ? "failed"
-      : "running"; // any object value (e.g. { running: {...} }) collapses to "running"
-    if (topState !== lastTopState) {
-      lastTopState = topState;
-      publish({
-        type: "task_state",
-        taskId: opts.taskId,
-        timestamp: isoNow(),
-        data: { state: topState },
-      });
-    }
+    return new Promise<AttemptVerdict>((resolveAttempt, rejectAttempt) => {
+      // Attempt-scoped retry-triggered flag. Prevents double-resolution
+      // if another snapshot landed between RETRY_TO_STAGE inspection and
+      // the outer while-loop re-entering runOneAttempt.
+      let retryTriggered = false;
+      let attemptEnded = false;
+      // Forward-ref: the actor is assigned below; the inspector needs
+      // to call .stop() on it when RETRY_TO_STAGE is observed so the
+      // compiler's post-retry `waiting` → (always) → `executing` path
+      // doesn't re-fire the executor in the outgoing actor.
+      // eslint-disable-next-line prefer-const
+      let thisActor: ReturnType<typeof createActor> | null = null;
 
-    // Slice 2 — publish stage_done / stage_error for each newly-
-    // finalized region. Uses ctx.finalizedStages (Debt #3 retire
-    // field) as the source of truth so the set matches what we
-    // compute into RunResult.stageErrors. Deduped via
-    // publishedStageFinal so noisy snapshot re-deliveries don't
-    // produce duplicate events.
-    {
-      const ctx = snapshot.context as MachineContext;
-      for (const entry of ctx.finalizedStages) {
-        const { name: stageName, outcome, reason } = entry;
-        if (publishedStageFinal.has(stageName)) continue;
-        publishedStageFinal.add(stageName);
-        if (outcome === "done") {
-          publish({
-            type: "stage_done",
-            taskId: opts.taskId,
-            timestamp: isoNow(),
-            data: { stage: stageName },
-          });
-        } else {
-          // Dispatch by reason recorded at the entering transition. Legacy
-          // absence of reason is treated as no_active_wire for backwards
-          // compatibility (old fixture snapshots pre-date the field), but
-          // all 3 compiler-emitted paths populate it.
-          if (reason === "executor_failed") {
-            // Executor failed (agent/script returned status=error or
-            // threw). The concrete message has already been pushed to
-            // stageErrors by executeStageLogic / orchestrateFanoutStage;
-            // reuse it here so the SSE carries the real reason instead
-            // of the generic NO_ACTIVE_WIRE text.
-            const stageErr = stageErrors.find((e) => e.stage === stageName);
-            publish({
-              type: "stage_error",
-              taskId: opts.taskId,
-              timestamp: isoNow(),
-              data: {
-                stage: stageName,
-                message: stageErr?.message ?? "stage executor failed",
-                reason: "executor_failed",
-              },
-            });
-          } else {
-            // no_active_wire — structured diagnostic attaches failedWires[].
-            const err = buildNoActiveWireError(stageName, stageMeta, ctx.portValues);
-            publish({
-              type: "stage_error",
-              taskId: opts.taskId,
-              timestamp: isoNow(),
-              data: {
-                stage: stageName,
-                message: err.message,
-                reason: "no_active_wire",
-                context: err.context,
-              },
-            });
-          }
+      // Inspector catches raise'd events (the compiler's retry
+      // transition uses raise()) which surface on either
+      // @xstate.microstep or @xstate.event depending on XState v5's
+      // internal routing. The compiler test (Task C1) also matches on
+      // both — we reuse the exact shape here.
+      const inspector = (inspEvent: { type?: string; event?: unknown }): void => {
+        if (retryTriggered || attemptEnded) return;
+        if (
+          inspEvent.type !== "@xstate.event" &&
+          inspEvent.type !== "@xstate.microstep"
+        ) {
+          return;
         }
-      }
-    }
-
-    // Top-level final states -> capture, drain executors, then resolve.
-    if ((snapshot.value === "completed" || snapshot.value === "failed") && !machineEnded) {
-      machineEnded = true;
-      clearTimeout(timer);
-      const ctx = snapshot.context as MachineContext;
-      // Catch stage-region errors that we never observed via the substate
-      // path. When parallel.onDone fires synchronously with a child's final
-      // transition (e.g. NO_ACTIVE_WIRE on a short pipeline), the top-level
-      // value jumps to `completed` in the same snapshot tick that the
-      // child reached `error`, so the substate-level observer below never
-      // sees it. ctx.finalizedStages is populated atomically with each
-      // region's final.entry (compiler/ir-to-machine.ts), so reading it
-      // here is the structured equivalent of the retired log-regex scan.
-      for (const entry of ctx.finalizedStages) {
-        if (entry.outcome !== "error") continue;
-        if (dispatched.has(entry.name)) continue;
-        dispatched.add(entry.name);
-        // executor_failed path already pushed a concrete message into
-        // stageErrors from executeStageLogic / orchestrateFanoutStage
-        // before the machine reached final — skip to avoid a second
-        // (duplicate, generic) entry. Only no_active_wire needs
-        // synthesising here because that path never opened an attempt.
-        if (entry.reason === "executor_failed") continue;
-        stageErrors.push(
-          buildNoActiveWireError(entry.name, stageMeta, ctx.portValues),
-        );
-      }
-      // Drain pending executors before resolving so db writes finish.
-      Promise.allSettled(executorPromises).then(() => {
-        // Promote finalState to 'failed' if any stage's LATEST attempt
-        // ended with status='error' for this task. Looking at the latest
-        // attempt per stage (not any attempt) is critical once retry is
-        // enabled: silent intermediate failures leave error rows in the
-        // table even when the stage ultimately succeeded.
-        //
-        // The subquery picks the row with the highest attempt_idx per
-        // (task, stage); the outer count reports stages whose final
-        // attempt ended in error. Zero => no stage failed overall.
-        const errorRow = opts.db.prepare(
-          `SELECT COUNT(*) AS n FROM (
-             SELECT sa.status FROM stage_attempts sa
-             WHERE sa.task_id = ?
-               AND sa.attempt_idx = (
-                 SELECT MAX(sa2.attempt_idx) FROM stage_attempts sa2
-                 WHERE sa2.task_id = sa.task_id AND sa2.stage_name = sa.stage_name
-               )
-           ) t
-           WHERE t.status = 'error'`,
-        ).get(opts.taskId) as { n: number };
-        const finalState: "completed" | "failed" =
-          snapshot.value === "failed" ||
-          errorRow.n > 0 ||
-          drainErrors.length > 0 ||
-          // NO_ACTIVE_WIRE and similar runner-captured errors never touch
-          // stage_attempts (no attempt was opened), so they only appear on
-          // the stageErrors array; include them in the fail verdict.
-          stageErrors.length > 0
-            ? "failed"
-            : "completed";
-        publish({
-          type: "run_final",
-          taskId: opts.taskId,
-          timestamp: isoNow(),
-          data: {
-            finalState,
-            stageErrors: stageErrors.map((e) => ({ stage: e.stage, message: e.message })),
+        const ev = inspEvent.event as Record<string, unknown> | undefined;
+        if (!ev || ev.type !== "RETRY_TO_STAGE") return;
+        retryTriggered = true;
+        // Stop the outgoing actor SYNCHRONOUSLY. The compiler's retry
+        // transition targets `waiting`, so the moment this inspector
+        // returns, XState will continue the microstep chain:
+        // waiting.always reads portValues (still carrying upstream
+        // outputs) and promotes the failed stage right back to
+        // `executing`, which in the invoke'd path re-dispatches the
+        // executor. That second dispatch is the exact duplicate run
+        // we're rebuilding the actor to avoid — stop NOW to cut it off.
+        if (thisActor) {
+          try { thisActor.stop(); } catch { /* ignore */ }
+        }
+        resolveAttempt({
+          verdict: "retry",
+          event: {
+            failedStageName: String(ev.failedStageName),
+            backToStage: String(ev.backToStage),
+            retryIdx: Number(ev.retryIdx),
+            maxRetries: Number(ev.maxRetries),
+            errorMessage: String(ev.errorMessage),
           },
         });
-        resolveRun({
-          finalState,
-          portValues: ctx.portValues,
-          log: ctx.log,
-          drainErrors,
-          stageErrors,
-        });
-      });
-      return;
-    }
+      };
 
-    // Stage-level dispatch: look into running.<stage>.<substate>.
-    const running = (snapshot.value as { running?: Record<string, string> }).running;
-    if (!running) return;
+      const actor = createActor(providedMachine, { inspect: inspector });
+      thisActor = actor;
+      currentActor = actor;
 
-    for (const [stageName, substate] of Object.entries(running)) {
-      // Stage region reached `error` final. Three entering paths: true
-      // NO_ACTIVE_WIRE (dropped wire), or STAGE_FAILED from an executor
-      // (agent/script returned error / threw). Executor_failed stages
-      // already pushed a concrete message into stageErrors; only
-      // synthesise a NO_ACTIVE_WIRE entry when the reason marks this
-      // path. We reuse the `dispatched` set as a seen-marker because
-      // a stage that never executed won't be in it.
-      if (substate === "error" && !dispatched.has(stageName)) {
-        dispatched.add(stageName);
-        const ctx = snapshot.context as MachineContext;
-        const finalized = ctx.finalizedStages.find((f) => f.name === stageName);
-        if (finalized?.reason !== "executor_failed") {
-          stageErrors.push(
-            buildNoActiveWireError(stageName, stageMeta, ctx.portValues),
-          );
-        }
-        continue;
-      }
-      if (substate === "executing" && !dispatched.has(stageName)) {
-        dispatched.add(stageName);
-
-        const stageDef = opts.ir.stages.find((s) => s.name === stageName);
-        if (stageDef?.type === "gate") {
-          // Gate stages: open a stage_attempt, register a gate_queue row,
-          // and do NOT invoke any executor. The machine stays in
-          // `executing` until answer_gate fires a GATE_ANSWERED event
-          // (dispatched to us via TaskRegistry).
-          const gateStage = stageDef as GateStage;
-          const { attemptId } = portRuntime.startAttempt({
-            taskId: opts.taskId,
-            versionHash: opts.versionHash,
-            stageName,
-          });
-          kernel.createGate({
-            taskId: opts.taskId,
-            stageName,
-            attemptId,
-            question: gateStage.config.question,
-          });
-          if (!publishedStageExecuting.has(stageName)) {
-            publishedStageExecuting.add(stageName);
-            publish({
-              type: "stage_executing",
-              taskId: opts.taskId,
-              timestamp: isoNow(),
-              data: { stage: stageName, attemptId },
-            });
-          }
-          // The attempt row stays status='running' until answerGate marks
-          // it success. That finalization is handled out-of-band (A1.2b.2
-          // answer path + later phases); during A1 we leave the row in
-          // 'running' and let the machine continue once GATE_ANSWERED
-          // arrives.
-          continue;
+      actor.subscribe((snapshot) => {
+        if (retryTriggered || attemptEnded) return;
+        if (timedOut) {
+          attemptEnded = true;
+          // Let the outer .finally handle actor.stop / unregister.
+          rejectAttempt(new Error(`runPipeline timeout after ${timeoutMs}ms`));
+          return;
         }
 
-        const ctx = snapshot.context as MachineContext;
-
-        // A3.3 — fanout dispatch. When a stage declares `fanout.input`,
-        // the runner iterates the source port's array value, running
-        // the executor N times (one virtual attempt per element) with
-        // a silent PortRuntime so intermediate writes don't advance
-        // the machine. After all elements complete, the runner
-        // aggregates each declared output into an array and dispatches
-        // a single PORT_WRITTEN per output via the live dispatcher.
-        // Minimum-viable scope: sequential execution, no concurrency
-        // pool, first element error fails the entire stage.
-        if (
-          (stageDef?.type === "agent" || stageDef?.type === "script") &&
-          stageDef?.fanout
-        ) {
-          if (!publishedStageExecuting.has(stageName)) {
-            publishedStageExecuting.add(stageName);
-            publish({
-              type: "stage_executing",
-              taskId: opts.taskId,
-              timestamp: isoNow(),
-              data: { stage: stageName }, // attemptId deferred — orchestrator owns it
-            });
-          }
-          const fanoutStage = stageDef;
-          const p = orchestrateFanoutStage({
-            ir: opts.ir,
-            stageDef: fanoutStage,
-            taskId: opts.taskId,
-            versionHash: opts.versionHash,
-            basePortValues: ctx.portValues,
-            handlers: opts.handlers,
-            db: opts.db,
-            livePortRuntime: portRuntime,
-            executor,
-          }).then((result) => {
-            if (result.status === "error") {
-              stageErrors.push({ stage: stageName, message: result.error });
-              // Tell the machine this stage failed so the region can
-              // reach its `error` final — otherwise the parallel region
-              // never converges and the run times out.
-              dispatcher.send({
-                type: "STAGE_FAILED",
-                stage: stageName,
-                error: result.error,
-              });
-            }
-          }, (err: unknown) => {
-            const message = err instanceof Error ? err.message : String(err);
-            if (!machineEnded) {
-              clearTimeout(timer);
-              rejectRun(err instanceof Error ? err : new Error(message));
-            } else {
-              drainErrors.push({ stage: stageName, message });
-            }
-          });
-          executorPromises.push(p);
-          continue;
-        }
-
-        // A2.3.2 — non-gate, non-fanout agent/script stages are now
-        // dispatched by XState's invoke (see compiler: executingBody.invoke).
-        // The runner no longer calls executor.executeStage manually here.
-        // The invoke's promise body (executeStageLogic, provided above)
-        // handles stageErrors + STAGE_FAILED dispatch. We still `dispatched.add`
-        // the stage to keep the seen-marker accurate for the subscribe
-        // loop's error-final detection.
-        //
-        // Note: executorPromises / drainErrors are no longer populated for
-        // invoke'd stages — XState's actor lifecycle owns the promise now.
-        // Run-final draining is still correct because the machine does not
-        // reach 'completed' until every region is final, which means every
-        // invoke has either resolved or been cancelled by XState.
-        if (!publishedStageExecuting.has(stageName)) {
-          publishedStageExecuting.add(stageName);
+        const topValue = snapshot.value;
+        const topState: TaskTopLevelState =
+          topValue === "idle" ? "idle"
+          : topValue === "completed" ? "completed"
+          : topValue === "failed" ? "failed"
+          : "running";
+        // Dedupe across attempts. A rebuilt actor starts in `idle` and
+        // immediately transitions to `running`; treat both transitions
+        // as no-ops since lastTopState is run-scoped and already
+        // reflects the active run state. Only publish monotonic
+        // forward transitions (idle → running → completed|failed).
+        const shouldPublishTopState =
+          topState !== lastTopState &&
+          !(lastTopState !== null && topState === "idle") &&
+          !(lastTopState === "running" && topState === "running");
+        if (shouldPublishTopState) {
+          lastTopState = topState;
           publish({
-            type: "stage_executing",
+            type: "task_state",
             taskId: opts.taskId,
             timestamp: isoNow(),
-            data: { stage: stageName }, // attemptId lives inside the executor
+            data: { state: topState },
           });
         }
-      }
-    }
-  });
 
-  actor!.start();
-  actor!.send({ type: "START" });
-  return done.finally(() => {
-    actor!.stop();
-    taskRegistry.unregister(opts.taskId);
-  });
+        {
+          const ctx2 = snapshot.context as MachineContext;
+          for (const entry of ctx2.finalizedStages) {
+            const { name: stageName, outcome, reason } = entry;
+            if (publishedStageFinal.has(stageName)) continue;
+            publishedStageFinal.add(stageName);
+            if (outcome === "done") {
+              publish({
+                type: "stage_done",
+                taskId: opts.taskId,
+                timestamp: isoNow(),
+                data: { stage: stageName },
+              });
+            } else {
+              if (reason === "executor_failed") {
+                const stageErr = stageErrors.find((e) => e.stage === stageName);
+                publish({
+                  type: "stage_error",
+                  taskId: opts.taskId,
+                  timestamp: isoNow(),
+                  data: {
+                    stage: stageName,
+                    message: stageErr?.message ?? "stage executor failed",
+                    reason: "executor_failed",
+                  },
+                });
+              } else {
+                const err = buildNoActiveWireError(stageName, stageMeta, ctx2.portValues);
+                publish({
+                  type: "stage_error",
+                  taskId: opts.taskId,
+                  timestamp: isoNow(),
+                  data: {
+                    stage: stageName,
+                    message: err.message,
+                    reason: "no_active_wire",
+                    context: err.context,
+                  },
+                });
+              }
+            }
+          }
+        }
+
+        if ((snapshot.value === "completed" || snapshot.value === "failed") && !attemptEnded) {
+          attemptEnded = true;
+          const ctx2 = snapshot.context as MachineContext;
+          for (const entry of ctx2.finalizedStages) {
+            if (entry.outcome !== "error") continue;
+            if (dispatched.has(entry.name)) continue;
+            dispatched.add(entry.name);
+            if (entry.reason === "executor_failed") continue;
+            stageErrors.push(
+              buildNoActiveWireError(entry.name, stageMeta, ctx2.portValues),
+            );
+          }
+          // Persist context for the outer loop's finalization + retry
+          // rebuild. These are harmless for the terminal attempt
+          // (retry verdict path doesn't reach here) and keep
+          // bookkeeping in one place.
+          persistentPortValues = ctx2.portValues;
+          persistentLog = ctx2.log;
+          persistentFinalizedStages = [...ctx2.finalizedStages];
+          persistentGateAuthorized = [...ctx2.gateAuthorizedTargets];
+          persistentGateSkipped = [...ctx2.gateSkippedTargets];
+          persistentRetryCounts = { ...ctx2.retryCounts };
+
+          Promise.allSettled(executorPromises).then(() => {
+            resolveAttempt({
+              verdict: snapshot.value as "completed" | "failed",
+              snapshot,
+            });
+          });
+          return;
+        }
+
+        const running = (snapshot.value as { running?: Record<string, string> }).running;
+        if (!running) return;
+
+        for (const [stageName, substate] of Object.entries(running)) {
+          if (substate === "error" && !dispatched.has(stageName)) {
+            dispatched.add(stageName);
+            const ctx2 = snapshot.context as MachineContext;
+            const finalized = ctx2.finalizedStages.find((f) => f.name === stageName);
+            if (finalized?.reason !== "executor_failed") {
+              stageErrors.push(
+                buildNoActiveWireError(stageName, stageMeta, ctx2.portValues),
+              );
+            }
+            continue;
+          }
+          if (substate === "executing" && !dispatched.has(stageName)) {
+            dispatched.add(stageName);
+
+            const stageDef = opts.ir.stages.find((s) => s.name === stageName);
+            if (stageDef?.type === "gate") {
+              const gateStage = stageDef as GateStage;
+              const { attemptId } = portRuntime.startAttempt({
+                taskId: opts.taskId,
+                versionHash: opts.versionHash,
+                stageName,
+              });
+              kernel.createGate({
+                taskId: opts.taskId,
+                stageName,
+                attemptId,
+                question: gateStage.config.question,
+              });
+              if (!publishedStageExecuting.has(stageName)) {
+                publishedStageExecuting.add(stageName);
+                publish({
+                  type: "stage_executing",
+                  taskId: opts.taskId,
+                  timestamp: isoNow(),
+                  data: { stage: stageName, attemptId },
+                });
+              }
+              continue;
+            }
+
+            const ctx2 = snapshot.context as MachineContext;
+
+            if (
+              (stageDef?.type === "agent" || stageDef?.type === "script") &&
+              stageDef?.fanout
+            ) {
+              if (!publishedStageExecuting.has(stageName)) {
+                publishedStageExecuting.add(stageName);
+                publish({
+                  type: "stage_executing",
+                  taskId: opts.taskId,
+                  timestamp: isoNow(),
+                  data: { stage: stageName },
+                });
+              }
+              const fanoutStage = stageDef;
+              const p = orchestrateFanoutStage({
+                ir: opts.ir,
+                stageDef: fanoutStage,
+                taskId: opts.taskId,
+                versionHash: opts.versionHash,
+                basePortValues: ctx2.portValues,
+                handlers: opts.handlers,
+                db: opts.db,
+                livePortRuntime: portRuntime,
+                executor,
+              }).then((result) => {
+                if (result.status === "error") {
+                  stageErrors.push({ stage: stageName, message: result.error });
+                  dispatcher.send({
+                    type: "STAGE_FAILED",
+                    stage: stageName,
+                    error: result.error,
+                  });
+                }
+              }, (err: unknown) => {
+                const message = err instanceof Error ? err.message : String(err);
+                if (!attemptEnded) {
+                  rejectAttempt(err instanceof Error ? err : new Error(message));
+                } else {
+                  drainErrors.push({ stage: stageName, message });
+                }
+              });
+              executorPromises.push(p);
+              continue;
+            }
+
+            if (!publishedStageExecuting.has(stageName)) {
+              publishedStageExecuting.add(stageName);
+              publish({
+                type: "stage_executing",
+                taskId: opts.taskId,
+                timestamp: isoNow(),
+                data: { stage: stageName },
+              });
+            }
+          }
+        }
+      });
+
+      actor.start();
+      actor.send({ type: "START" });
+    }).finally(() => {
+      if (currentActor) {
+        try { currentActor.stop(); } catch { /* ignore */ }
+      }
+    });
+  }
+}
+
+// Local mirror of the compiler-side buildInitialPortValues. Having a
+// runner-local copy means we can prime `persistentPortValues` without
+// exporting compiler internals; values are identical to what
+// compileIRToMachine produces on the first compile.
+function buildInitialPortValuesRunner(
+  ir: PipelineIR,
+  seedValues: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (!seedValues || !ir.externalInputs || ir.externalInputs.length === 0) {
+    return {};
+  }
+  const out: Record<string, unknown> = {};
+  for (const port of ir.externalInputs) {
+    if (port.name in seedValues) {
+      out[`__external__.${port.name}`] = seedValues[port.name];
+    }
+  }
+  return out;
 }
 
 interface RunFanoutArgs {

@@ -200,6 +200,21 @@ export interface CompileOptions {
   // same values via writePort against a kind="external" attempt row
   // (see runner.ts seed phase) so lineage and SSE observe them.
   seedValues?: Record<string, unknown>;
+  // Slice C (Task C5) — when the runner rebuilds the actor for a
+  // RETRY_TO_STAGE the freshly-compiled machine must start from a
+  // pre-populated context (upstream port values preserved, retryCounts
+  // carried forward, gate authorizations intact). Any field left
+  // undefined falls back to the default for that field (the seedValues
+  // path for portValues, `[]` / `{}` for the rest). First-run callers
+  // pass nothing here and preserve existing behavior.
+  initialContext?: {
+    portValues?: Record<string, unknown>;
+    retryCounts?: Record<string, number>;
+    gateAuthorizedTargets?: string[];
+    gateSkippedTargets?: string[];
+    log?: string[];
+    finalizedStages?: MachineContext["finalizedStages"];
+  };
 }
 
 // Build the initial context.portValues map for a compiled machine.
@@ -275,12 +290,16 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
     context: {
       taskId: options.taskId,
       versionHash: "", // filled by runner before starting
-      portValues: buildInitialPortValues(ir, options.seedValues),
-      log: [],
-      gateAuthorizedTargets: [],
-      gateSkippedTargets: [],
-      finalizedStages: [],
-      retryCounts: {},
+      // Task C5 — initialContext.portValues wins when provided (retry
+      // rebuild path); otherwise derive from seedValues as before.
+      portValues:
+        options.initialContext?.portValues
+        ?? buildInitialPortValues(ir, options.seedValues),
+      log: options.initialContext?.log ?? [],
+      gateAuthorizedTargets: options.initialContext?.gateAuthorizedTargets ?? [],
+      gateSkippedTargets: options.initialContext?.gateSkippedTargets ?? [],
+      finalizedStages: options.initialContext?.finalizedStages ?? [],
+      retryCounts: options.initialContext?.retryCounts ?? {},
     },
     initial: "idle",
     on: {
