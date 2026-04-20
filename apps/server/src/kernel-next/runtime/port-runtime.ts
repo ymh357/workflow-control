@@ -75,6 +75,10 @@ export function createActorDispatcher(actor: ActorRef<never, never>): EventDispa
   };
 }
 
+export interface PortWrittenHook {
+  (args: { stageName: string; portName: string; value: unknown }): void;
+}
+
 export class PortRuntime {
   constructor(
     private readonly db: DatabaseSync,
@@ -84,6 +88,13 @@ export class PortRuntime {
     // defaultKind='fanout_element' so every per-element attempt carries
     // the tag without each executor having to thread it through.
     private readonly defaultKind: AttemptKind = "regular",
+    // Slice 2 — observability hook. Invoked synchronously after a
+    // successful writePort, AFTER the DB row is inserted and AFTER
+    // the machine dispatcher has delivered PORT_WRITTEN. The runner
+    // attaches this on the live PortRuntime to publish SSE
+    // port_written events; silent runtimes (fanout element) do not
+    // pass it, so intermediate element writes are not broadcast.
+    private readonly onPortWritten?: PortWrittenHook,
   ) {}
 
   /**
@@ -177,6 +188,21 @@ export class PortRuntime {
       key: `${args.stageName}.${args.portName}`,
       value: args.value,
     });
+
+    // Slice 2 — observability hook. After the DB row is persisted
+    // and the machine has seen PORT_WRITTEN, notify any attached
+    // observer. Errors in the hook are caught here because the hook
+    // runs on the writePort hot path and a broken observer must not
+    // break port delivery.
+    if (this.onPortWritten) {
+      try {
+        this.onPortWritten({
+          stageName: args.stageName,
+          portName: args.portName,
+          value: args.value,
+        });
+      } catch { /* observer failure isolated from write path */ }
+    }
   }
 
   /**

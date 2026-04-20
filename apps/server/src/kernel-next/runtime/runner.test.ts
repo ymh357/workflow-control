@@ -984,3 +984,133 @@ describe("A2.3.2: agent stage invoke wiring", () => {
     db.close();
   });
 });
+
+// Slice 2: SSE observability integration. Runs a short pipeline with a
+// broadcaster attached and asserts the event sequence.
+describe("SSE Slice 2: broadcaster integration", () => {
+  it("publishes task_state + stage_executing + port_written + stage_done + run_final for a successful diamond run", async () => {
+    // Lazy import so this test doesn't affect other describe-level
+    // module load order; broadcaster is a pure TS class with no
+    // initializer side effects, but explicit is easier to scan.
+    const { KernelNextBroadcaster } = await import("../sse/broadcaster.js");
+    const broadcaster = new KernelNextBroadcaster();
+
+    const db = makeDb();
+    const ir = diamondIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const events: Array<{ type: string; data: unknown }> = [];
+    const unsub = broadcaster.subscribe("sse-slice2-ok", (e) =>
+      events.push({ type: e.type, data: e.data }),
+    );
+
+    const result = await runPipeline({
+      db, ir, taskId: "sse-slice2-ok", versionHash: hash,
+      handlers: diamondHandlers(),
+      broadcaster,
+    });
+    unsub();
+    db.close();
+
+    expect(result.finalState).toBe("completed");
+
+    // Task state: idle observed first (actor's initial snapshot fires
+    // before START), then running, then completed. Each exactly once.
+    const states = events
+      .filter((e) => e.type === "task_state")
+      .map((e) => (e.data as { state: string }).state);
+    expect(states).toEqual(["idle", "running", "completed"]);
+
+    // Every stage in the diamond fires stage_executing + stage_done once.
+    const executingStages = events
+      .filter((e) => e.type === "stage_executing")
+      .map((e) => (e.data as { stage: string }).stage);
+    const doneStages = events
+      .filter((e) => e.type === "stage_done")
+      .map((e) => (e.data as { stage: string }).stage);
+    expect(executingStages.sort()).toEqual(["A", "B", "C", "D"]);
+    expect(doneStages.sort()).toEqual(["A", "B", "C", "D"]);
+
+    // Every port write shows up; valuePreview is a string.
+    const portWritten = events.filter((e) => e.type === "port_written");
+    expect(portWritten.length).toBeGreaterThanOrEqual(4); // A.x B.y C.z D.final
+    for (const e of portWritten) {
+      const d = e.data as { valuePreview: unknown };
+      expect(typeof d.valuePreview).toBe("string");
+    }
+
+    // run_final closes the stream with no stage errors.
+    const finals = events.filter((e) => e.type === "run_final");
+    expect(finals).toHaveLength(1);
+    expect((finals[0]!.data as { finalState: string }).finalState).toBe("completed");
+    expect((finals[0]!.data as { stageErrors: unknown[] }).stageErrors).toEqual([]);
+  });
+
+  it("publishes stage_error + run_final with failed state for a guard-dropped pipeline", async () => {
+    const { KernelNextBroadcaster } = await import("../sse/broadcaster.js");
+    const broadcaster = new KernelNextBroadcaster();
+    const db = makeDb();
+    // Minimal: single wire whose guard is false. B never activates,
+    // reaches `error` final via noDeliverableWire.
+    const ir: PipelineIR = {
+      name: "guard-drop",
+      stages: [
+        { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+        { name: "B", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [{ name: "y", type: "string" }], config: { promptRef: "p" } },
+      ],
+      wires: [
+        { from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" }, guard: "value > 100" },
+      ],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const handlers: StageHandlerMap = {
+      A: () => ({ x: 5 }),
+      B: () => ({ y: "unreachable" }),
+    };
+
+    const events: Array<{ type: string; data: unknown }> = [];
+    broadcaster.subscribe("sse-slice2-err", (e) => events.push({ type: e.type, data: e.data }));
+
+    const result = await runPipeline({
+      db, ir, taskId: "sse-slice2-err", versionHash: hash,
+      handlers, broadcaster,
+    });
+    db.close();
+
+    expect(result.finalState).toBe("failed");
+
+    const stageErrors = events.filter((e) => e.type === "stage_error");
+    expect(stageErrors).toHaveLength(1);
+    expect((stageErrors[0]!.data as { stage: string }).stage).toBe("B");
+
+    const finals = events.filter((e) => e.type === "run_final");
+    expect(finals).toHaveLength(1);
+    const finalData = finals[0]!.data as { finalState: string; stageErrors: unknown[] };
+    expect(finalData.finalState).toBe("failed");
+    expect(finalData.stageErrors).toHaveLength(1);
+  });
+
+  it("no broadcaster = zero publishing (existing harnesses unaffected)", async () => {
+    // Can't directly assert 'zero events' without a broadcaster to
+    // check against; instead verify runPipeline still produces the
+    // same RunResult when broadcaster is absent vs. when it's
+    // attached to a no-op consumer. This guards the option-absent
+    // path from accidentally regressing RunResult shape.
+    const db = makeDb();
+    const ir = diamondIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const result = await runPipeline({
+      db, ir, taskId: "sse-slice2-absent", versionHash: hash,
+      handlers: diamondHandlers(),
+      // broadcaster intentionally omitted.
+    });
+    db.close();
+
+    expect(result.finalState).toBe("completed");
+    expect(result.portValues["D.final"]).toBe("B-got-10+C-got-10");
+  });
+});

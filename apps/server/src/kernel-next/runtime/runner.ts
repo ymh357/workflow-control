@@ -26,6 +26,12 @@ import type { PipelineIR, GateStage } from "../ir/schema.js";
 import { KernelService } from "../mcp/kernel.js";
 import { taskRegistry } from "./task-registry.js";
 import { evaluateGuard } from "./guard-evaluator.js";
+import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
+import type {
+  AnyKernelNextSSEEvent,
+  KernelNextSSEEvent,
+  TaskTopLevelState,
+} from "../sse/types.js";
 
 export interface RunnerOptions {
   db: DatabaseSync;
@@ -34,6 +40,12 @@ export interface RunnerOptions {
   versionHash: string;
   handlers: StageHandlerMap;
   executor?: StageExecutor;
+  // SSE observability hook (Slice 2). When provided, runner publishes
+  // task_state / stage_* / port_written / run_final events so an HTTP
+  // SSE route (Slice 3) or any other in-process subscriber can observe
+  // the run live. No broadcaster means no publishing — existing test
+  // harnesses stay exactly as they were.
+  broadcaster?: KernelNextBroadcaster;
 }
 
 // Design §6.2 — why the inbound wire to a stage failed. NO_ACTIVE_WIRE
@@ -121,7 +133,31 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       if (actor) actor.send(event);
     },
   };
-  const portRuntime = new PortRuntime(opts.db, dispatcher);
+  const portRuntime = new PortRuntime(
+    opts.db,
+    dispatcher,
+    "regular",
+    // Slice 2 — publish port_written on every live write. valuePreview
+    // stays small (PREVIEW_BYTES=200) so the event stream never blows
+    // up with raw port payloads. Hook is only installed when a
+    // broadcaster is provided so non-observed runs pay zero cost.
+    opts.broadcaster
+      ? ({ stageName, portName, value }) => {
+          try {
+            opts.broadcaster!.publish({
+              type: "port_written",
+              taskId: opts.taskId,
+              timestamp: new Date().toISOString(),
+              data: {
+                stage: stageName,
+                port: portName,
+                valuePreview: truncateJson(value),
+              },
+            });
+          } catch { /* broadcaster failure must not abort the run */ }
+        }
+      : undefined,
+  );
 
   // Register this run's dispatcher so answer_gate (MCP/REST) can route
   // GATE_ANSWERED events back into our actor. Unregistered in the
@@ -155,6 +191,32 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   // executor crashes. Surfacing these lets harnesses distinguish
   // schema-non-compliant failures per stage without a second DB probe.
   const stageErrors: Array<{ stage: string; message: string }> = [];
+
+  // Slice 2 — tiny publish helper. No-op when broadcaster is absent.
+  // Centralising event construction keeps timestamps monotonic in
+  // publish order (not event-origin order) and prevents accidental
+  // KernelNextSSEEvent shape drift across call sites. Errors are
+  // shallow-caught because the broadcaster already isolates listener
+  // exceptions, but a broken broadcaster itself must not abort the
+  // runner's state-machine loop.
+  const publish = (event: AnyKernelNextSSEEvent): void => {
+    if (!opts.broadcaster) return;
+    try {
+      opts.broadcaster.publish(event as KernelNextSSEEvent);
+    } catch { /* broadcaster failure must not abort the run */ }
+  };
+  const isoNow = (): string => new Date().toISOString();
+
+  // Track the top-level state we last published, so state transitions
+  // emit exactly one task_state event each. idle is published on
+  // first observation (not pre-emptively) to stay aligned with the
+  // actor's own initial snapshot.
+  let lastTopState: TaskTopLevelState | null = null;
+  // Track which stage regions we've already published executing /
+  // done / error for, so noisy snapshot deliveries don't produce
+  // duplicate events.
+  const publishedStageExecuting = new Set<string>();
+  const publishedStageFinal = new Set<string>();
 
   let resolveRun: (result: RunResult) => void;
   let rejectRun: (err: Error) => void;
@@ -287,6 +349,60 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   actor = createActor(providedMachine, { input: undefined });
 
   actor.subscribe((snapshot) => {
+    // Slice 2 — publish task_state on every top-level transition.
+    // snapshot.value is a string at top-level final states and an
+    // object ({ running: {...} }) while running; we map both to the
+    // four TaskTopLevelState values and dedupe via lastTopState.
+    const topValue = snapshot.value;
+    const topState: TaskTopLevelState =
+      topValue === "idle" ? "idle"
+      : topValue === "completed" ? "completed"
+      : topValue === "failed" ? "failed"
+      : "running"; // any object value (e.g. { running: {...} }) collapses to "running"
+    if (topState !== lastTopState) {
+      lastTopState = topState;
+      publish({
+        type: "task_state",
+        taskId: opts.taskId,
+        timestamp: isoNow(),
+        data: { state: topState },
+      });
+    }
+
+    // Slice 2 — publish stage_done / stage_error for each newly-
+    // finalized region. Uses ctx.finalizedStages (Debt #3 retire
+    // field) as the source of truth so the set matches what we
+    // compute into RunResult.stageErrors. Deduped via
+    // publishedStageFinal so noisy snapshot re-deliveries don't
+    // produce duplicate events.
+    {
+      const ctx = snapshot.context as MachineContext;
+      for (const { name: stageName, outcome } of ctx.finalizedStages) {
+        if (publishedStageFinal.has(stageName)) continue;
+        publishedStageFinal.add(stageName);
+        if (outcome === "done") {
+          publish({
+            type: "stage_done",
+            taskId: opts.taskId,
+            timestamp: isoNow(),
+            data: { stage: stageName },
+          });
+        } else {
+          const err = buildNoActiveWireError(stageName, stageMeta, ctx.portValues);
+          publish({
+            type: "stage_error",
+            taskId: opts.taskId,
+            timestamp: isoNow(),
+            data: {
+              stage: stageName,
+              message: err.message,
+              context: err.context,
+            },
+          });
+        }
+      }
+    }
+
     // Top-level final states -> capture, drain executors, then resolve.
     if ((snapshot.value === "completed" || snapshot.value === "failed") && !machineEnded) {
       machineEnded = true;
@@ -340,6 +456,15 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
           stageErrors.length > 0
             ? "failed"
             : "completed";
+        publish({
+          type: "run_final",
+          taskId: opts.taskId,
+          timestamp: isoNow(),
+          data: {
+            finalState,
+            stageErrors: stageErrors.map((e) => ({ stage: e.stage, message: e.message })),
+          },
+        });
         resolveRun({
           finalState,
           portValues: ctx.portValues,
@@ -390,6 +515,15 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
             attemptId,
             question: gateStage.config.question,
           });
+          if (!publishedStageExecuting.has(stageName)) {
+            publishedStageExecuting.add(stageName);
+            publish({
+              type: "stage_executing",
+              taskId: opts.taskId,
+              timestamp: isoNow(),
+              data: { stage: stageName, attemptId },
+            });
+          }
           // The attempt row stays status='running' until answerGate marks
           // it success. That finalization is handled out-of-band (A1.2b.2
           // answer path + later phases); during A1 we leave the row in
@@ -413,6 +547,15 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
           (stageDef?.type === "agent" || stageDef?.type === "script") &&
           stageDef?.fanout
         ) {
+          if (!publishedStageExecuting.has(stageName)) {
+            publishedStageExecuting.add(stageName);
+            publish({
+              type: "stage_executing",
+              taskId: opts.taskId,
+              timestamp: isoNow(),
+              data: { stage: stageName }, // attemptId deferred — orchestrator owns it
+            });
+          }
           const fanoutStage = stageDef;
           const p = orchestrateFanoutStage({
             ir: opts.ir,
@@ -462,6 +605,15 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
         // Run-final draining is still correct because the machine does not
         // reach 'completed' until every region is final, which means every
         // invoke has either resolved or been cancelled by XState.
+        if (!publishedStageExecuting.has(stageName)) {
+          publishedStageExecuting.add(stageName);
+          publish({
+            type: "stage_executing",
+            taskId: opts.taskId,
+            timestamp: isoNow(),
+            data: { stage: stageName }, // attemptId lives inside the executor
+          });
+        }
       }
     }
   });

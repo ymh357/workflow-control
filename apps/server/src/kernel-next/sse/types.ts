@@ -38,7 +38,12 @@ export interface TaskStateData {
 
 export interface StageExecutingData {
   stage: string;
-  attemptId: string;
+  // Present for gate stages (runner owns the attempt_id). For
+  // invoke'd agent/script stages and fanout-orchestrated stages the
+  // attempt_id lives inside the executor / orchestrator and is not
+  // surfaced to runner at dispatch time; the UI should tolerate its
+  // absence and correlate via port_written events or read_port.
+  attemptId?: string;
 }
 
 export interface StageDoneData {
