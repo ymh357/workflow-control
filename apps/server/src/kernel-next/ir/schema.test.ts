@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { GateRoutingSchema, PipelineIRSchema, WireIRSchema } from "./schema.js";
+import { GateRoutingSchema, PipelineIRSchema, ScriptStageSchema, WireIRSchema } from "./schema.js";
 
 describe("PipelineIRSchema externalInputs", () => {
   it("accepts externalInputs: []", () => {
@@ -80,5 +80,47 @@ describe("GateRoutingSchema", () => {
 
   it("rejects empty string route target", () => {
     expect(() => GateRoutingSchema.parse({ routes: { x: "" } })).toThrow();
+  });
+});
+
+describe("ScriptStage.config.retry", () => {
+  it("accepts a valid retry spec", () => {
+    const parsed = ScriptStageSchema.shape.config.parse({
+      moduleId: "m",
+      retry: { maxRetries: 2, backToStage: "A" },
+    });
+    expect(parsed.retry).toEqual({ maxRetries: 2, backToStage: "A" });
+  });
+
+  it("treats retry as optional (script without retry is valid)", () => {
+    const parsed = ScriptStageSchema.shape.config.parse({ moduleId: "m" });
+    expect(parsed.retry).toBeUndefined();
+  });
+
+  it("rejects maxRetries < 1", () => {
+    expect(() =>
+      ScriptStageSchema.shape.config.parse({
+        moduleId: "m",
+        retry: { maxRetries: 0, backToStage: "A" },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects maxRetries > 10", () => {
+    expect(() =>
+      ScriptStageSchema.shape.config.parse({
+        moduleId: "m",
+        retry: { maxRetries: 11, backToStage: "A" },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects non-identifier backToStage", () => {
+    expect(() =>
+      ScriptStageSchema.shape.config.parse({
+        moduleId: "m",
+        retry: { maxRetries: 1, backToStage: "" },
+      }),
+    ).toThrow();
   });
 });

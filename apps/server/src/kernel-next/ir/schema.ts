@@ -55,6 +55,16 @@ export const GateQuestionSchema = z.object({
   options: z.array(z.string().min(1)).optional(),
 });
 
+// Script retry spec: when a script stage fails (executor returns
+// status=error), the runner reruns `backToStage` and every stage
+// downstream of it, up to `maxRetries` times. The upper bound is
+// arbitrary but intentional — prevents typos like `max_retries:
+// 99999` from hiding runaway costs. pipeline-generator uses 1.
+export const RetrySpecSchema = z.object({
+  maxRetries: z.number().int().min(1).max(10),
+  backToStage: identifier,
+});
+
 export const GateRoutingSchema = z.object({
   // Routes: answer value → target stage name(s). Single stage stays a
   // string; multiple stages (used when a human gate gates a parallel
@@ -90,6 +100,7 @@ export const ScriptStageSchema = z.object({
   type: z.literal("script"),
   config: z.object({
     moduleId: z.string().min(1),          // userland-provided module identifier
+    retry: RetrySpecSchema.optional(),
   }),
   fanout: FanoutSpecSchema.optional(),
 });

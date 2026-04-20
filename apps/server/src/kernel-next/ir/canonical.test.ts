@@ -160,6 +160,39 @@ describe("canonical IR backward-compat (externalInputs extension)", () => {
   });
 });
 
+describe("canonicalizeIR ScriptStage retry", () => {
+  it("omits retry from canonical when absent (baseline hashes stay stable)", () => {
+    const ir: PipelineIR = {
+      name: "no-retry",
+      externalInputs: [],
+      stages: [{
+        name: "S", type: "script", inputs: [], outputs: [],
+        config: { moduleId: "m" },
+      }],
+      wires: [],
+    };
+    const canon = canonicalJSON(ir);
+    expect(canon).not.toContain('"retry"');
+  });
+
+  it("serializes retry alphabetically when present", () => {
+    const ir: PipelineIR = {
+      name: "with-retry",
+      externalInputs: [],
+      stages: [
+        { name: "S", type: "script", inputs: [], outputs: [],
+          config: { moduleId: "m", retry: { maxRetries: 2, backToStage: "T" } } },
+        { name: "T", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" } },
+      ],
+      wires: [],
+    };
+    const canon = canonicalJSON(ir);
+    // Alphabetical key order within the retry object: backToStage before maxRetries.
+    expect(canon).toContain('"retry":{"backToStage":"T","maxRetries":2}');
+  });
+});
+
 describe("canonicalizeIR gate routing widening", () => {
   it("preserves single-string route targets in canonical (hash stable vs pre-widening)", () => {
     // Build an IR with a single-stage gate route; assert the canonical
