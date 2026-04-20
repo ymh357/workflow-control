@@ -66,6 +66,7 @@ describe("POST /api/kernel/tasks/run", () => {
     expect(json.diagnostics[0]!.context?.known).toContain("diamond-real");
     expect(json.diagnostics[0]!.context?.known).toContain("smoke-test");
     expect(json.diagnostics[0]!.context?.known).toContain("tech-research-collector");
+    expect(json.diagnostics[0]!.context?.known).toContain("tech-research-writer");
   });
 
   it("accepts real-executor overrides (model / maxTurns / maxBudgetUsd) without validation errors", async () => {
@@ -201,6 +202,36 @@ describe("POST /api/kernel/tasks/run", () => {
         seedValues: {
           pipelineConfig: {},
           projectContext: {},
+        },
+      }),
+    });
+    expect(res.status).toBe(202);
+    await new Promise((r) => setTimeout(r, 50));
+    kernelNextBroadcaster.clearTask(taskId);
+  });
+
+  it("accepts tech-research-writer pipeline with seedValues (body shape only)", async () => {
+    const taskId = `kr-trw-${Date.now()}`;
+    const res = await app.request("/api/kernel/tasks/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pipeline: "tech-research-writer",
+        taskId,
+        seedValues: {
+          pipelineConfig: {},
+          outputPlan: {},
+          domainKnowledge: {},
+          verificationFacts: {},
+          sourceCodeFacts: {},
+          communityIntel: {},
+          ossHealthFacts: {},
+          benchmarkResults: {},
+          projectContext: {},
+          primarySources: {},
+          landscapeResults: {},
+          painPoints: {},
+          solutionPlan: {},
         },
       }),
     });

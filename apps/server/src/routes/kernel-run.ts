@@ -206,6 +206,9 @@ const pipelineRegistry: Record<string, () => PipelineRegistration> = {
   "tech-research-collector": registerLegacyPipeline({
     pipelineDir: "tech-research-collector",
   }),
+  "tech-research-writer": registerLegacyPipeline({
+    pipelineDir: "tech-research-writer",
+  }),
 };
 
 function badRequest(
