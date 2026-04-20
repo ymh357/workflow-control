@@ -420,3 +420,66 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     db.close();
   });
 });
+
+// A7.2 Bug 1 regression — ensure a caller-supplied PortRuntime is
+// actually reused by the write_port handler, not silently replaced by
+// a fresh PortRuntime that would bypass any onPortWritten hook.
+describe("A7.2: createKernelMcp reuses caller-supplied PortRuntime", () => {
+  it("write_port routes through options.portRuntime (onPortWritten fires)", { timeout: 15_000 }, async () => {
+    const { PortRuntime } = await import("../runtime/port-runtime.js");
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+
+    // Seed a pipeline + an attempt to satisfy write_port's FK checks.
+    const mcpExternal = createKernelMcp(db, { tscPath: TSC_PATH, skipTypeCheck: true, surface: "combined" });
+    const tExternal = getTools(mcpExternal);
+    const { diamondIR: diamondIrFn } = await import("../generator-mock/mini-generator.js");
+    const ir = diamondIrFn();
+    const submitResp = await tExternal.get("submit_pipeline")!.handler({ ir });
+    const submit = JSON.parse(submitResp.content[0]!.text) as { versionHash: string };
+    const taskId = "portRuntime-reuse-test";
+
+    // Open a stage_attempt so write_port has an attemptId to target.
+    const portWritten: Array<{ stage: string; port: string; value: unknown }> = [];
+    const liveRuntime = new PortRuntime(
+      db,
+      { send: () => { /* inert dispatcher */ } },
+      "regular",
+      ({ stageName, portName, value }) => {
+        portWritten.push({ stage: stageName, port: portName, value });
+      },
+    );
+    const { attemptId } = liveRuntime.startAttempt({
+      taskId,
+      versionHash: submit.versionHash,
+      stageName: "A",
+    });
+
+    // Build a SECOND MCP server that reuses the live runtime.
+    const mcp = createKernelMcp(db, {
+      tscPath: TSC_PATH,
+      skipTypeCheck: true,
+      surface: "combined",
+      portRuntime: liveRuntime,
+    });
+    const t = getTools(mcp);
+
+    const resp = await t.get("write_port")!.handler({
+      taskId,
+      versionHash: submit.versionHash,
+      attemptId,
+      stage: "A",
+      port: "x",
+      value: 42,
+    });
+    const parsed = JSON.parse(resp.content[0]!.text) as { ok: boolean };
+    expect(parsed.ok).toBe(true);
+
+    // Hook fired exactly once with our write — NOT silently bypassed
+    // by a freshly constructed PortRuntime.
+    expect(portWritten).toHaveLength(1);
+    expect(portWritten[0]).toEqual({ stage: "A", port: "x", value: 42 });
+
+    db.close();
+  });
+});

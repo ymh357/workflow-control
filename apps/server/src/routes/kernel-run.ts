@@ -92,10 +92,14 @@ const pipelineRegistry: Record<string, () => PipelineRegistration> = {
         // Fresh MCP server per stage (SDK MCP transport is single-
         // use). Combined surface so `write_port` is visible to the
         // agent — same rationale as demo/diamond-real.ts.
-        mcpServerFactory: (dispatcher) =>
+        mcpServerFactory: (_dispatcher, portRuntime) =>
           createKernelMcp(db, {
             surface: "combined",
-            writePortDispatcher: dispatcher,
+            // Reuse the runner's live PortRuntime so the Slice 2
+            // onPortWritten hook fires on MCP-initiated writes too
+            // (otherwise dashboard sees zero port_written events on
+            // real-executor paths — discovered during A7.1 verify).
+            portRuntime,
           }),
         model: overrides.model ?? DEFAULT_REAL_MODEL,
         maxTurns: overrides.maxTurns ?? DEFAULT_REAL_MAX_TURNS,

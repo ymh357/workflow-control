@@ -54,7 +54,15 @@ export interface RealStageExecutorOptions {
    * a pipeline runs N sequential `query()` calls (one per stage attempt),
    * we need a factory instead of a shared instance.
    */
-  mcpServerFactory: (dispatcher: EventDispatcher) => unknown;
+  // Second argument is the runner's live PortRuntime. Pass it to
+  // createKernelMcp's `portRuntime` option so MCP-initiated write_port
+  // calls reuse the same runtime (and its onPortWritten hook) instead
+  // of constructing a fresh one. Ignored by factories that only speak
+  // to the dispatcher.
+  mcpServerFactory: (
+    dispatcher: EventDispatcher,
+    portRuntime: import("./port-runtime.js").PortRuntime,
+  ) => unknown;
   /** Defaults to "claude-haiku-4-5". */
   model?: string;
   /** Defaults to 10. */
@@ -94,7 +102,10 @@ const DEFAULT_CLAUDE_PATH = "claude";
 const DEFAULT_MAX_RETRIES = 0;
 
 export class RealStageExecutor implements StageExecutor {
-  private readonly mcpServerFactory: (dispatcher: EventDispatcher) => unknown;
+  private readonly mcpServerFactory: (
+    dispatcher: EventDispatcher,
+    portRuntime: import("./port-runtime.js").PortRuntime,
+  ) => unknown;
   private readonly model: string;
   private readonly maxTurns: number;
   private readonly maxBudgetUsd: number;
@@ -191,7 +202,7 @@ export class RealStageExecutor implements StageExecutor {
       // Fresh MCP server per attempt — SDK's MCP transport is single-use.
       // The factory receives the machine-bound dispatcher so agent-side
       // write_port calls fire PORT_WRITTEN.
-      const mcpServer = this.mcpServerFactory(portRuntime.getDispatcher());
+      const mcpServer = this.mcpServerFactory(portRuntime.getDispatcher(), portRuntime);
       const options: SdkOptions = {
         systemPrompt: {
           type: "preset",

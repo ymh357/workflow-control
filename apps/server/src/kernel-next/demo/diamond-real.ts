@@ -86,14 +86,16 @@ export async function runOnce(opts: RunOnceOptions): Promise<RunOnceResult> {
       // Fresh MCP server per stage: SDK MCP transport is single-use.
       // Pass the live dispatcher so agent-side write_port tool calls fire
       // PORT_WRITTEN and advance the runner's state machine.
-      mcpServerFactory: (dispatcher) =>
+      mcpServerFactory: (_dispatcher, portRuntime) =>
         createKernelMcp(db, {
           // Execution path: the agent needs `write_port` to deliver
           // stage outputs. Explicit 'combined' after the default flip
-          // to 'external' (Debt #2 retire).
+          // to 'external' (Debt #2 retire). Reuse the runner's live
+          // PortRuntime (A7.2) so SSE port_written events fire on
+          // MCP-initiated writes.
           surface: "combined",
           tscPath: opts.tscPath,
-          writePortDispatcher: dispatcher,
+          portRuntime,
         }),
       model: opts.model,
       maxTurns: 10,

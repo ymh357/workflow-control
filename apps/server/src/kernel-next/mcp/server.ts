@@ -48,8 +48,24 @@ export interface KernelMcpOptions extends KernelServiceOptions {
    * write_port tool calls to advance the machine, pass the runner's
    * dispatcher here. Omit (default inert) for external authoring /
    * debugging use cases where no machine is listening.
+   *
+   * Ignored when `portRuntime` is supplied — the caller's runtime
+   * already carries its own dispatcher.
    */
   writePortDispatcher?: EventDispatcher;
+  /**
+   * Reuse the caller's PortRuntime instead of constructing a fresh
+   * one per write_port call. Preserves any observability hooks the
+   * runtime was built with (notably Slice 2's onPortWritten, which
+   * backs the SSE port_written events). Without this, an
+   * MCP-initiated write silently bypasses the runner-side hook and
+   * the dashboard sees no port_written events for real-executor
+   * runs.
+   *
+   * The runtime's dispatcher takes precedence; writePortDispatcher
+   * is ignored when portRuntime is set.
+   */
+  portRuntime?: PortRuntime;
   /**
    * Which tool surface to expose. Per design doc §9.1 the external
    * surface (AI consumers, dashboards) must NOT include write_port;
@@ -385,13 +401,15 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
               );
             }
 
-            // Dispatcher: use the caller-supplied one when provided (live
-            // runner expects PORT_WRITTEN so stage guards can advance). Fall
-            // back to inert for external / debugging callers where no actor
-            // is listening.
-            const dispatcher: EventDispatcher =
-              options.writePortDispatcher ?? { send: () => { /* inert */ } };
-            const runtime = new PortRuntime(db, dispatcher);
+            // Prefer the caller-supplied live PortRuntime so Slice 2's
+            // onPortWritten hook fires on MCP-initiated writes too
+            // (without this, real-executor runs produce zero SSE
+            // port_written events). Fall back to constructing one here
+            // for external callers that only pass a dispatcher.
+            const runtime = options.portRuntime ?? new PortRuntime(
+              db,
+              options.writePortDispatcher ?? { send: () => { /* inert */ } },
+            );
             runtime.writePort({
               attemptId,
               stageName: stage,
