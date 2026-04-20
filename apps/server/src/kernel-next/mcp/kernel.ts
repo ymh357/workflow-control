@@ -1025,7 +1025,12 @@ function computeDownstream(ir: PipelineIR, root: string): Set<string> {
   while (changed) {
     changed = false;
     for (const w of ir.wires) {
-      if (reachable.has(w.from.stage) && !reachable.has(w.to.stage)) {
+      // Bridge: Task 1.2 introduced WireSource. External-source wires have
+      // no stage-identity upstream so they cannot extend reachability from
+      // any stage; treat as a non-reachable origin. Task 1.3+ will branch
+      // explicitly on source === "external".
+      const fromStage = w.from.source === "external" ? "__external__" : w.from.stage;
+      if (reachable.has(fromStage) && !reachable.has(w.to.stage)) {
         reachable.add(w.to.stage);
         changed = true;
       }

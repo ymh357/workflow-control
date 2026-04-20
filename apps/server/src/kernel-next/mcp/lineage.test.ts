@@ -155,7 +155,7 @@ describe("A5: lineage in parallel + fanout scenarios", () => {
     });
 
     const wiredInputs = ir.wires
-      .filter((w) => w.from.stage === "A" && w.from.port === "x")
+      .filter((w) => w.from.source !== "external" && w.from.stage === "A" && w.from.port === "x")
       .map((w) => ({ stage: w.to.stage, port: w.to.port }));
     const report = queryLineage(db, {
       stage: "A", port: "x", taskId: "par", wiredInputs,

@@ -59,21 +59,28 @@ export function applyPatch(base: PipelineIR, patch: IRPatch): PipelineIR {
           );
         }
         // Cascade: remove any wire touching this stage.
+        // Bridge: Task 1.2 introduced WireSource. External-source wires
+        // never reference stage names by identity (source !== "stage") so
+        // the cascade only applies to stage-source wires. Task 1.3+ will
+        // replace the sentinel with an explicit source === "stage" check.
         ir.wires = ir.wires.filter(
-          (w) => w.from.stage !== op.stageName && w.to.stage !== op.stageName,
+          (w) =>
+            (w.from.source === "external" ? "__external__" : w.from.stage) !== op.stageName &&
+            w.to.stage !== op.stageName,
         );
         break;
       }
       case "add_wire": {
+        const opFromStage = op.wire.from.source === "external" ? "__external__" : op.wire.from.stage;
         if (ir.wires.some(
           (w) =>
-            w.from.stage === op.wire.from.stage &&
+            (w.from.source === "external" ? "__external__" : w.from.stage) === opFromStage &&
             w.from.port === op.wire.from.port &&
             w.to.stage === op.wire.to.stage &&
             w.to.port === op.wire.to.port,
         )) {
           throw new PatchApplyError(
-            `add_wire: wire ${op.wire.from.stage}.${op.wire.from.port} -> ${op.wire.to.stage}.${op.wire.to.port} already exists`,
+            `add_wire: wire ${opFromStage}.${op.wire.from.port} -> ${op.wire.to.stage}.${op.wire.to.port} already exists`,
             op,
           );
         }
@@ -81,10 +88,11 @@ export function applyPatch(base: PipelineIR, patch: IRPatch): PipelineIR {
         break;
       }
       case "remove_wire": {
+        const opFromStage = op.wire.from.source === "external" ? "__external__" : op.wire.from.stage;
         const before = ir.wires.length;
         ir.wires = ir.wires.filter(
           (w) => !(
-            w.from.stage === op.wire.from.stage &&
+            (w.from.source === "external" ? "__external__" : w.from.stage) === opFromStage &&
             w.from.port === op.wire.from.port &&
             w.to.stage === op.wire.to.stage &&
             w.to.port === op.wire.to.port

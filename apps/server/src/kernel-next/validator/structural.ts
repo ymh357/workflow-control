@@ -156,25 +156,30 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
   // --- Wire validity ---
   const drivenInputs = new Set<string>();
   for (const w of ir.wires) {
+    // Bridge: Task 1.2 introduced WireSource discriminated union. Task 1.4
+    // will short-circuit external-source wires at the loop head and remove
+    // this sentinel. Until then, treat "__external__" as a non-stage; the
+    // existing fixtures never set source=external so this branch is dead.
+    const fromStageName = w.from.source === "external" ? "__external__" : w.from.stage;
     // Source must exist and be an output.
-    const fromInKey: PortKey = `${w.from.stage}.${w.from.port}.in`;
-    const fromOutKey: PortKey = `${w.from.stage}.${w.from.port}.out`;
+    const fromInKey: PortKey = `${fromStageName}.${w.from.port}.in`;
+    const fromOutKey: PortKey = `${fromStageName}.${w.from.port}.out`;
     const fromExistsAsOut = portIndex.has(fromOutKey);
     const fromExistsAsIn  = portIndex.has(fromInKey);
-    const fromStageExists = stageNames.has(w.from.stage);
+    const fromStageExists = stageNames.has(fromStageName);
 
     if (!fromExistsAsOut && !fromExistsAsIn) {
       diagnostics.push({
         code: "WIRE_SOURCE_PORT_MISSING",
         message: fromStageExists
-          ? `Wire source '${w.from.stage}.${w.from.port}' does not exist on stage '${w.from.stage}'.`
-          : `Wire source stage '${w.from.stage}' does not exist (port '${w.from.port}' unreachable).`,
+          ? `Wire source '${fromStageName}.${w.from.port}' does not exist on stage '${fromStageName}'.`
+          : `Wire source stage '${fromStageName}' does not exist (port '${w.from.port}' unreachable).`,
         context: { from: w.from, stageExists: fromStageExists },
       });
     } else if (!fromExistsAsOut && fromExistsAsIn) {
       diagnostics.push({
         code: "WIRE_SOURCE_DIRECTION_WRONG",
-        message: `Wire source '${w.from.stage}.${w.from.port}' is an input port; must be output.`,
+        message: `Wire source '${fromStageName}.${w.from.port}' is an input port; must be output.`,
         context: { from: w.from },
       });
     }

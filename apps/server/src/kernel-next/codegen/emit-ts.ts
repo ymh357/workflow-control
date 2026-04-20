@@ -89,9 +89,13 @@ export function emitPipelineModule(ir: PipelineIR): EmitResult {
   const wireByLine = new Map<number, WireMapEntry>();
 
   for (const w of ir.wires) {
-    const ident = wireIdentifier(w.from.stage, w.from.port, w.to.stage, w.to.port);
+    // Bridge: Task 1.2 introduced WireSource discriminated union. Task 1.6
+    // will emit codegen for external-source wires (reading from an external
+    // inputs namespace) and replace this sentinel with an explicit branch.
+    const fromStageName = w.from.source === "external" ? "__external__" : w.from.stage;
+    const ident = wireIdentifier(fromStageName, w.from.port, w.to.stage, w.to.port);
     const toTypeLookup = `Stages.${w.to.stage}.Inputs["${w.to.port}"]`;
-    const fromTypeLookup = `Stages.${w.from.stage}.Outputs["${w.from.port}"]`;
+    const fromTypeLookup = `Stages.${fromStageName}.Outputs["${w.from.port}"]`;
 
     // Design §7.3 — fanout type compatibility.
     //   from-fanout:   producer stage has `fanout`. Kernel auto-reshapes
@@ -107,7 +111,7 @@ export function emitPipelineModule(ir: PipelineIR): EmitResult {
     //
     // Without these wrap/unwrap transforms tsc would reject every fanout
     // pipeline with TS2322 (Reviewer concern C1 / plan §3 C1).
-    const fromStage = ir.stages.find((s) => s.name === w.from.stage);
+    const fromStage = ir.stages.find((s) => s.name === fromStageName);
     const toStage = ir.stages.find((s) => s.name === w.to.stage);
     const fromIsFanout =
       (fromStage?.type === "agent" || fromStage?.type === "script") &&
@@ -145,7 +149,7 @@ export function emitPipelineModule(ir: PipelineIR): EmitResult {
 
     const entry: WireMapEntry = {
       line: assignmentLine,
-      fromStage: w.from.stage,
+      fromStage: fromStageName,
       fromPort: w.from.port,
       toStage: w.to.stage,
       toPort: w.to.port,

@@ -174,7 +174,10 @@ export class RealStageExecutor implements StageExecutor {
         (w) => w.to.stage === stageName && w.to.port === p.name,
       );
       if (!wire) continue;
-      const srcKey = `${wire.from.stage}.${wire.from.port}`;
+      // Bridge: Task 1.2 introduced WireSource. Task 1.3+ will resolve
+      // external sources against the externalInputs namespace.
+      const fromStage = wire.from.source === "external" ? "__external__" : wire.from.stage;
+      const srcKey = `${fromStage}.${wire.from.port}`;
       const value = portValues[srcKey];
       inputs[p.name] = value;
       portRuntime.recordRead({

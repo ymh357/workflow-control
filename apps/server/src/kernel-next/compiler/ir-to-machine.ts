@@ -141,9 +141,12 @@ function indexStages(ir: PipelineIR): Map<string, StageMeta> {
   for (const w of ir.wires) {
     const entry = index.get(w.to.stage);
     if (!entry) continue;
+    // Bridge: Task 1.2 introduced WireSource. Task 1.3+ will wire external
+    // sources into the inbound set via a dedicated external stage record.
+    const fromStage = w.from.source === "external" ? "__external__" : w.from.stage;
     entry.inbound.push({
-      sourceKey: `${w.from.stage}.${w.from.port}`,
-      from: { stage: w.from.stage, port: w.from.port },
+      sourceKey: `${fromStage}.${w.from.port}`,
+      from: { stage: fromStage, port: w.from.port },
       to: { stage: w.to.stage, port: w.to.port },
       guard: w.guard,
     });

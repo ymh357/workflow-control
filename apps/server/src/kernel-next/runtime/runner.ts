@@ -703,7 +703,10 @@ async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<FanoutResult
     };
   }
 
-  const sourceKey = `${wire.from.stage}.${wire.from.port}`;
+  // Bridge: Task 1.2 introduced WireSource. Task 1.3+ will resolve external
+  // fanout sources from the external-inputs namespace.
+  const fromStage = wire.from.source === "external" ? "__external__" : wire.from.stage;
+  const sourceKey = `${fromStage}.${wire.from.port}`;
   const sourceValue = basePortValues[sourceKey];
   if (!Array.isArray(sourceValue)) {
     return {

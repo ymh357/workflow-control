@@ -80,6 +80,10 @@ function isDiamondShape(ir: PipelineIR | null): { ok: boolean; notes: string[] }
   const inDeg = new Map<string, number>();
   for (const s of ir.stages) inDeg.set(s.name, 0);
   for (const w of ir.wires) {
+    // Bridge: Task 1.2 introduced WireSource. The diamond generator never
+    // emits external-source wires, so skip them here. Task 1.3+ will add
+    // first-class handling.
+    if (w.from.source === "external") continue;
     if (!stageNames.has(w.from.stage)) notes.push(`wire.from unknown stage ${w.from.stage}`);
     if (!stageNames.has(w.to.stage)) notes.push(`wire.to unknown stage ${w.to.stage}`);
     inDeg.set(w.to.stage, (inDeg.get(w.to.stage) ?? 0) + 1);
@@ -92,7 +96,9 @@ function isDiamondShape(ir: PipelineIR | null): { ok: boolean; notes: string[] }
   // The entry stage should fan out to 2 middle stages.
   if (entries.length === 1) {
     const entry = entries[0]![0];
-    const fanOut = ir.wires.filter((w) => w.from.stage === entry);
+    // Bridge: external-source wires cannot originate from a stage name;
+    // filter them out before comparing fan-out.
+    const fanOut = ir.wires.filter((w) => w.from.source !== "external" && w.from.stage === entry);
     if (fanOut.length !== 2) notes.push(`entry stage fan-out expected 2, got ${fanOut.length}`);
   }
 

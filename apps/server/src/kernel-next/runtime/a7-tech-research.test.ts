@@ -235,6 +235,7 @@ describe("A7 debug: pipeline reaches FILTER", () => {
         ...fullIR,
         stages: fullIR.stages.filter((s) => ["SRC", "EVAL", "TOPIC_ECHO", "FILTER"].includes(s.name)),
         wires: fullIR.wires.filter((w) =>
+          w.from.source !== "external" &&
           ["SRC", "EVAL", "TOPIC_ECHO", "FILTER"].includes(w.from.stage) &&
           ["SRC", "EVAL", "TOPIC_ECHO", "FILTER"].includes(w.to.stage)
         ),

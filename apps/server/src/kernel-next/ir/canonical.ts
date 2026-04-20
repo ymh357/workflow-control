@@ -67,8 +67,13 @@ function canonicalizeStage(s: StageIR): CanonicalValue {
 }
 
 function canonicalizeWire(w: WireIR): CanonicalValue {
+  // Bridge: Task 1.2 introduced WireSource discriminated union. Task 1.3
+  // will replace this with explicit source-aware canonicalization.
   return sortKeys({
-    from: { stage: w.from.stage, port: w.from.port },
+    from: {
+      stage: w.from.source === "external" ? "__external__" : w.from.stage,
+      port: w.from.port,
+    },
     to: { stage: w.to.stage, port: w.to.port },
     guard: w.guard,
   });

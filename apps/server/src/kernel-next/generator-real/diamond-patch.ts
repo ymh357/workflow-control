@@ -102,8 +102,10 @@ function verifyPatchedIr(ir: PipelineIR | null): { ok: boolean; notes: string[];
   if (!D) notes.push("stage D missing");
   const bHasExtra = !!B?.outputs.some((p) => p.name === "extra" && p.type.trim() === "string");
   const dHasBExtra = !!D?.inputs.some((p) => p.name === "bExtra" && p.type.trim() === "string");
+  // Bridge: Task 1.2 introduced WireSource; the diamond patch bench only
+  // produces stage-source wires, so narrow to that branch.
   const newWire = !!ir.wires.some(
-    (w) => w.from.stage === "B" && w.from.port === "extra" && w.to.stage === "D" && w.to.port === "bExtra",
+    (w) => w.from.source !== "external" && w.from.stage === "B" && w.from.port === "extra" && w.to.stage === "D" && w.to.port === "bExtra",
   );
   if (!bHasExtra) notes.push("B.extra output missing or wrong type");
   if (!dHasBExtra) notes.push("D.bExtra input missing or wrong type");

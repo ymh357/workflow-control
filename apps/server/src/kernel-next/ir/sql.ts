@@ -204,7 +204,10 @@ export function insertPipelineVersion(
       }
     }
     for (const w of ir.wires) {
-      insertWire.run(meta.versionHash, w.from.stage, w.from.port, w.to.stage, w.to.port);
+      // Bridge: Task 1.2 introduced WireSource discriminated union. Task 1.3+
+      // will add source-aware persistence (or a dedicated wires.source column).
+      const fromStage = w.from.source === "external" ? "__external__" : w.from.stage;
+      insertWire.run(meta.versionHash, fromStage, w.from.port, w.to.stage, w.to.port);
     }
 
     db.exec("COMMIT");

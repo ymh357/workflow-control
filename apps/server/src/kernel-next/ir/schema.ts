@@ -105,17 +105,46 @@ export const StageIRSchema = z.discriminatedUnion("type", [
   GateStageSchema,
 ]);
 
-export const WireIRSchema = z.object({
-  from: z.object({ stage: identifier, port: identifier }),
-  to:   z.object({ stage: identifier, port: identifier }),
-  guard: z.string().min(1).optional(),     // §6.2 runtime expression
-});
+const WireSourceSchema = z.discriminatedUnion("source", [
+  z.object({
+    source: z.literal("stage"),
+    stage: identifier,
+    port: identifier,
+  }),
+  z.object({
+    source: z.literal("external"),
+    port: identifier,
+  }),
+]);
+
+// Backward-compat preprocess: a legacy `from` lacking `source` is
+// treated as `source: "stage"`. Keeps the discriminated union clean
+// without forcing every existing IR fixture to be rewritten.
+function normalizeWireFrom(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const wire = raw as { from?: unknown };
+  const from = wire.from;
+  if (from && typeof from === "object" && !("source" in from)) {
+    return { ...wire, from: { source: "stage", ...(from as Record<string, unknown>) } };
+  }
+  return raw;
+}
+
+export const WireIRSchema = z.preprocess(
+  normalizeWireFrom,
+  z.object({
+    from: WireSourceSchema,
+    to: z.object({ stage: identifier, port: identifier }),
+    guard: z.string().min(1).optional(),   // §6.2 runtime expression
+  }),
+);
 
 export const PipelineIRSchema = z.object({
   name: z.string().min(1).max(128),
   stages: z.array(StageIRSchema).min(1),
   wires: z.array(WireIRSchema).default([]),
   entry: identifier.optional(),
+  externalInputs: z.array(PortIRSchema).default([]),
 });
 
 export type PortIR = z.infer<typeof PortIRSchema>;
@@ -126,8 +155,32 @@ export type AgentStage = z.infer<typeof AgentStageSchema>;
 export type ScriptStage = z.infer<typeof ScriptStageSchema>;
 export type GateStage = z.infer<typeof GateStageSchema>;
 export type StageIR = z.infer<typeof StageIRSchema>;
-export type WireIR = z.infer<typeof WireIRSchema>;
-export type PipelineIR = z.infer<typeof PipelineIRSchema>;
+
+// WireSource: strict discriminated union (after zod preprocess). Callers
+// that have just parsed an IR through WireIRSchema see this shape.
+export type WireSource = z.infer<typeof WireSourceSchema>;
+
+// WireIR type: legacy-compatible at the TypeScript level. The runtime
+// schema (WireIRSchema) always preprocesses missing `source` to "stage",
+// so the normalized shape at runtime is WireSource. At the type level we
+// accept the legacy `{stage, port}` literal (source optional) so existing
+// IR fixtures compile without modification; callers that need to branch
+// on `source` must use a type guard / discriminant check. See Task 1.2.
+export type WireIR = {
+  from:
+    | { source?: "stage"; stage: string; port: string }
+    | { source: "external"; port: string };
+  to: { stage: string; port: string };
+  guard?: string;
+};
+
+// PipelineIR type: externalInputs is typed as optional to keep legacy
+// fixtures compiling. At runtime PipelineIRSchema defaults it to [], so
+// consumers observing a parsed IR will always see a concrete array.
+export type PipelineIR = Omit<z.infer<typeof PipelineIRSchema>, "externalInputs" | "wires"> & {
+  externalInputs?: PortIR[];
+  wires: WireIR[];
+};
 
 // IRPatch — see docs/kernel-next-terminal-design.md §10.
 // configPatch is typed as `unknown` at the Zod layer because the valid shape
@@ -156,8 +209,16 @@ export const IRPatchSchema = z.object({
   ops: z.array(IRPatchOpSchema).min(1),
 });
 
-export type IRPatchOp = z.infer<typeof IRPatchOpSchema>;
-export type IRPatch = z.infer<typeof IRPatchSchema>;
+// IRPatchOp/IRPatch types use the relaxed WireIR at the add_wire/remove_wire
+// sites so existing patch fixtures (legacy `from: { stage, port }` literal)
+// continue to typecheck. Runtime validation goes through IRPatchOpSchema
+// which enforces the discriminated union via WireIRSchema's preprocess.
+type _InferredIRPatchOp = z.infer<typeof IRPatchOpSchema>;
+export type IRPatchOp =
+  | Exclude<_InferredIRPatchOp, { op: "add_wire" } | { op: "remove_wire" }>
+  | { op: "add_wire"; wire: WireIR }
+  | { op: "remove_wire"; wire: WireIR };
+export type IRPatch = { ops: IRPatchOp[] };
 
 // Diagnostic — returned by validator and tsc-based type checker.
 export const DiagnosticSchema = z.object({
@@ -190,6 +251,11 @@ export const DiagnosticSchema = z.object({
     // A8 / F5 — hot-update migration lifecycle
     "MIGRATION_IN_PROGRESS",
     "MIGRATION_FAILED",
+    // 2026-04-20 — externalInputs schema extension
+    "WIRE_EXTERNAL_SOURCE_PORT_MISSING",
+    "DUPLICATE_EXTERNAL_INPUT_NAME",
+    "EXTERNAL_INPUT_COLLIDES_WITH_STAGE",
+    "RESERVED_STAGE_NAME",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),
