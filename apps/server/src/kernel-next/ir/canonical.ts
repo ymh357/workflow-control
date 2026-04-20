@@ -67,13 +67,15 @@ function canonicalizeStage(s: StageIR): CanonicalValue {
 }
 
 function canonicalizeWire(w: WireIR): CanonicalValue {
-  // Bridge: Task 1.2 introduced WireSource discriminated union. Task 1.3
-  // will replace this with explicit source-aware canonicalization.
+  // Discriminated union: "stage" sources omit the tag (preserves the
+  // pre-extension hash for every legacy fixture); "external" sources
+  // embed it. See §4.12 of legacy-yaml-converter-design.md.
+  const from: CanonicalValue =
+    w.from.source === "external"
+      ? { source: "external", port: w.from.port }
+      : { stage: w.from.stage, port: w.from.port };
   return sortKeys({
-    from: {
-      stage: w.from.source === "external" ? "__external__" : w.from.stage,
-      port: w.from.port,
-    },
+    from,
     to: { stage: w.to.stage, port: w.to.port },
     guard: w.guard,
   });
@@ -91,11 +93,22 @@ export function canonicalizeIR(ir: PipelineIR): CanonicalValue {
     })
     .map(canonicalizeWire);
 
+  // externalInputs is serialized only when non-empty, preserving the
+  // canonical form for every pre-extension IR fixture (their hash must
+  // not shift — see canonical.test.ts backward-compat block).
+  const externalInputs =
+    ir.externalInputs && ir.externalInputs.length > 0
+      ? [...ir.externalInputs]
+          .sort((a, b) => codepointCompare(a.name, b.name))
+          .map((p) => sortKeys({ name: p.name, type: p.type, zod: p.zod }))
+      : undefined;
+
   return sortKeys({
     name: ir.name,
     entry: ir.entry,
     stages,
     wires,
+    externalInputs,
   });
 }
 
