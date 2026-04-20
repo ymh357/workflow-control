@@ -778,6 +778,21 @@ Each step is green independently. No intermediate broken state.
   declare externalInputs with real types.
 - **R3. Dashboard visual regression** — `__external__` renders as a
   stage row. Acceptable (read §1 non-goals) and tracked separately.
+  **Resolved 2026-04-21**: Dashboard now renders a dedicated Seed
+  Inputs section above the stages table; `__external__` is filtered
+  out of the stages table and ports feed.
+- **R4. Sub-pipeline YAML cannot run standalone.** A legacy YAML that
+  declares no `injected_context` but expects to receive data from a
+  parent pipeline's `foreach` (e.g. `web3-research-writer`, which is
+  invoked as a sub-pipeline of `web3-tech-research`) has no way to
+  be fed via `seedValues` — the converter has nothing to bind the
+  body keys to, so every `runtime.reads` resolves to "no upstream
+  producer" and the pipeline cannot activate. This is a structural
+  limitation of the current converter scope (no `foreach` / no
+  sub-pipeline orchestration), not a bug. Mitigation: such pipelines
+  must be invoked through their parent once the converter gains
+  `foreach` support (deferred, §10.3). Until then, the HTTP route
+  returns a 202 but the run reaches `NO_ACTIVE_WIRE` immediately.
 
 ### 10.2 Closed decisions (from brainstorm)
 
@@ -792,8 +807,11 @@ Each step is green independently. No intermediate broken state.
 ### 10.3 Not decided here (deferred)
 
 - Full YAML→IR for pipeline-generator (needs `parallel` support).
-- Dashboard "Seed" band styling (§1.4 followup).
+- ~~Dashboard "Seed" band styling (§1.4 followup).~~ **Done
+  2026-04-21** — implemented in the kernel-next dashboard page.
 - Runtime type validation of seedValues against externalInputs shapes.
+- Sub-pipeline support (see R4). Unblocks naturally once the
+  converter learns `foreach` / sub-pipeline invocation (§10.3 above).
 
 ## 11. File Impact Summary
 
