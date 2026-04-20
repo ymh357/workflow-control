@@ -760,3 +760,79 @@ describe("A3.1: wire guards + NO_ACTIVE_WIRE", () => {
     db.close();
   });
 });
+
+// A2.3.2 — non-gate, non-fanout agent/script stages now execute as XState
+// invoked children instead of being dispatched manually by the runner.
+// These tests lock in the new path: invoke's promise is what actually
+// calls executor.executeStage; the runner's subscribe loop no longer
+// does so for these stage types.
+describe("A2.3.2: agent stage invoke wiring", () => {
+  it("counts executor invocations through the invoke path, not the runner loop", async () => {
+    const db = makeDb();
+    const ir = diamondIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    // Spy executor that increments a counter on each executeStage call and
+    // delegates to MockStageExecutor. If A2.3.2 were broken and the runner
+    // still did handwritten dispatch, the counter would still increment
+    // once per stage — but so would the invoke's own call, so we'd see
+    // DOUBLE the expected count. The assertion catches that regression.
+    const { MockStageExecutor } = await import("./mock-executor.js");
+    const inner = new MockStageExecutor({ handlers: diamondHandlers() });
+    const calls: string[] = [];
+    const spy = {
+      executeStage: async (args: Parameters<typeof inner.executeStage>[0]) => {
+        calls.push(args.stageName);
+        return inner.executeStage(args);
+      },
+    };
+
+    const result = await runPipeline({
+      db, ir, taskId: "t-invoke", versionHash: hash,
+      handlers: diamondHandlers(),
+      executor: spy,
+    });
+
+    expect(result.finalState).toBe("completed");
+    // Exactly 4 stages, exactly 4 executor invocations. No double-dispatch.
+    expect(calls.sort()).toEqual(["A", "B", "C", "D"]);
+    db.close();
+  });
+
+  it("invoke's onError path still surfaces executor-returned status='error'", async () => {
+    // An executor that returns status='error' (schema non-compliance shape)
+    // should still trigger STAGE_FAILED via the invoke's internal
+    // stageErrors push + dispatcher.send, exactly as the legacy path did.
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "single",
+      stages: [
+        { name: "X", type: "agent", inputs: [],
+          outputs: [{ name: "o", type: "number" }], config: { promptRef: "p" } },
+      ],
+      wires: [],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const erroringExecutor = {
+      executeStage: async () => ({
+        attemptId: "a0", attemptIdx: 0,
+        status: "error" as const, error: "schema non-compliant: simulated",
+      }),
+    };
+
+    const result = await runPipeline({
+      db, ir, taskId: "t-err", versionHash: hash,
+      handlers: { X: () => ({}) },
+      executor: erroringExecutor,
+    });
+
+    expect(result.finalState).toBe("failed");
+    const err = result.stageErrors.find((e) => e.stage === "X");
+    expect(err).toBeDefined();
+    expect(err!.message).toContain("schema non-compliant");
+    db.close();
+  });
+});

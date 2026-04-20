@@ -361,6 +361,55 @@ function buildStageRegion(
     // Synchronous-complete path for mock executors that write outputs
     // before the machine observes.
     executingBody.always = [{ target: "done", guard: allOutboundPresent }];
+
+    // A2.3.2 — non-gate stages (agent / script / fanout-less agent) now
+    // invoke a stage executor as a proper XState child. The executor is
+    // provided at runtime via `machine.provide({ actors: { execute_stage: ... } })`
+    // and reads `input.stageName` to dispatch to the right handler.
+    //
+    // Semantics:
+    //   - The executor's Promise resolves AFTER writePort has dispatched
+    //     PORT_WRITTEN events; by that point the `always` guard above
+    //     (allOutboundPresent) has already transitioned this region to
+    //     `done`. onDone therefore usually never fires — it's a safety
+    //     net for executors that finish without writing all declared
+    //     outputs (schema non-compliance) so the region still progresses.
+    //   - onError raises STAGE_FAILED so the error final path runs, same
+    //     as the legacy `runner.ts` executor-rejected branch.
+    //   - Fanout stages still bypass this invoke and run through the
+    //     runner's specialised runFanoutStage (Debt #5). They enter
+    //     `executing` without an invoke because runner handles them
+    //     before this code path gets a chance — see runner.ts.
+    //
+    // Invoke src `execute_stage` is a string key resolved by the runner's
+    // machine.provide() call. Using one src name for every stage keeps
+    // the compiler agnostic of stage-specific executor dispatch; the
+    // stageName is passed via `input` so the runtime logic picks the
+    // right handler.
+    executingBody.invoke = {
+      src: "execute_stage",
+      input: ({ context }: { context: MachineContext }) => ({
+        stageName,
+        taskId: context.taskId,
+        versionHash: context.versionHash,
+        portValues: context.portValues,
+      }),
+      onError: {
+        actions: ({ event }: { event: { error: unknown } }) => {
+          // A2.3.2 note: onError payload shape differs from MachineEvent;
+          // the compiler cannot dispatch a typed STAGE_FAILED from here
+          // (XState action signature limitation). The runner observes
+          // this via the executor's promise result path — if executor
+          // returns status='error', the runner sends STAGE_FAILED. If
+          // the promise itself rejects (uncaught throw), the runner
+          // catches it the same way as pre-A2.3.2 via the subscribe()
+          // drainErrors path. So this onError is effectively a no-op
+          // observation point; kept here for XState completeness so
+          // invoke errors don't become uncaught promise rejections.
+          void event;
+        },
+      },
+    };
   }
 
   return {

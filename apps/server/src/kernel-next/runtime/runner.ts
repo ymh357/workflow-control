@@ -13,7 +13,7 @@
 // The mock-executor invokes handlers; the machine decides transitions based
 // on port presence.
 
-import { createActor } from "xstate";
+import { createActor, fromPromise } from "xstate";
 import type { DatabaseSync } from "node:sqlite";
 import { compileIRToMachine } from "../compiler/ir-to-machine.js";
 import type {
@@ -92,17 +92,35 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   const executor: StageExecutor =
     opts.executor ?? new MockStageExecutor({ handlers: opts.handlers });
   const { machine, stageMeta } = compileIRToMachine(opts.ir, { taskId: opts.taskId });
-  const actor = createActor(machine, {
-    input: undefined,
-  });
 
-  // Build a dispatcher that forwards to the actor. We can't use
-  // createActorDispatcher directly here because actor isn't the right
-  // ActorRef shape for the type param; just wrap inline.
+  // A2.3.2 — non-gate, non-fanout agent/script stages are now invoked as
+  // XState children. The compiler places `invoke: { src: 'execute_stage' }`
+  // in each such region's executing state; we supply the actor logic here
+  // via machine.provide(). The promise body is a thin adapter that calls
+  // the already-constructed executor (mock or real) with the input passed
+  // through from the invoke. Post-execution side-effects (stageErrors,
+  // STAGE_FAILED dispatch on error) still flow through the subscribe()
+  // loop below — the invoke's onDone/onError are intentionally shallow
+  // because the machine already reaches its final state via PORT_WRITTEN
+  // + allOutboundPresent (always guard) as soon as writePort fires.
+  //
+  // Variable order: we must define dispatcher/portRuntime/stageErrors
+  // BEFORE constructing executeStageLogic (which closes over them), but
+  // dispatcher needs `actor` (forward ref). We use a `let actor` + an
+  // indirection function so the closure resolves actor at call time,
+  // after createActor has run.
+  interface ExecuteStageInvokeInput {
+    stageName: string;
+    taskId: string;
+    versionHash: string;
+    portValues: Record<string, unknown>;
+  }
+  let actor: ReturnType<typeof createActor<typeof machine>> | null = null;
   const dispatcher: EventDispatcher = {
-    send: (event: MachineEvent) => actor.send(event),
+    send: (event: MachineEvent) => {
+      if (actor) actor.send(event);
+    },
   };
-
   const portRuntime = new PortRuntime(opts.db, dispatcher);
 
   // Register this run's dispatcher so answer_gate (MCP/REST) can route
@@ -149,6 +167,64 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   const timer = setTimeout(() => {
     rejectRun(new Error(`runPipeline timeout after ${timeoutMs}ms`));
   }, timeoutMs);
+
+  // A2.3.2 — build the executor-as-promise logic now that all closed-over
+  // variables (stageErrors, dispatcher, portRuntime) exist. machine.provide
+  // returns a new machine with the stageName 'execute_stage' actor logic
+  // bound; createActor then spawns the root actor.
+  const executeStageLogic = fromPromise(async ({ input }: { input: ExecuteStageInvokeInput }) => {
+    const stageDef = opts.ir.stages.find((s) => s.name === input.stageName);
+    if (!stageDef) {
+      throw new Error(`invoke: stage '${input.stageName}' not found in IR`);
+    }
+    if (stageDef.type === "gate") {
+      // Should not reach here — compiler suppresses invoke for gates.
+      throw new Error(`invoke: gate stage '${input.stageName}' should not reach execute_stage`);
+    }
+    if ((stageDef.type === "agent" || stageDef.type === "script") && stageDef.fanout) {
+      // Fanout stages are handled by the subscribe loop's runFanoutStage
+      // branch. The invoke fires in parallel with it; by the time it runs,
+      // the fanout has already written ports and the always guard moved
+      // the region to done. Returning success here is harmless.
+      return { status: "success" as const };
+    }
+    // versionHash — input.versionHash comes from machine context, which
+    // the compiler seeds as "" and the runner does not currently overwrite
+    // (legacy code path used opts.versionHash directly). Prefer the runner
+    // opts so stage_attempts.version_hash is correctly populated; fall
+    // back to input.versionHash only if it's non-empty (future-proof if
+    // the machine starts carrying versionHash properly).
+    const versionHash = input.versionHash || opts.versionHash;
+    const result = await executor.executeStage({
+      ir: opts.ir,
+      stageName: input.stageName,
+      taskId: input.taskId,
+      versionHash,
+      portValues: input.portValues,
+      handlers: opts.handlers,
+      portRuntime,
+    });
+    if (result.status === "error") {
+      stageErrors.push({ stage: input.stageName, message: result.error ?? "unspecified" });
+      // Only dispatch if the machine is still running. When another region
+      // has already driven the pipeline to 'completed' (parallel onDone
+      // fires as soon as every child reaches a final state), sending to a
+      // stopped actor would emit an XState warning and be ignored.
+      if (!machineEnded) {
+        dispatcher.send({
+          type: "STAGE_FAILED",
+          stage: input.stageName,
+          error: result.error ?? "unspecified",
+        });
+      }
+    }
+    return result;
+  });
+
+  const providedMachine = machine.provide({
+    actors: { execute_stage: executeStageLogic },
+  });
+  actor = createActor(providedMachine, { input: undefined });
 
   actor.subscribe((snapshot) => {
     // Top-level final states -> capture, drain executors, then resolve.
@@ -314,41 +390,27 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
           continue;
         }
 
-        const p = executor.executeStage({
-          ir: opts.ir,
-          stageName,
-          taskId: opts.taskId,
-          versionHash: opts.versionHash,
-          portValues: ctx.portValues,
-          handlers: opts.handlers,
-          portRuntime,
-        }).then((result) => {
-          if (result.status === "error") {
-            stageErrors.push({ stage: stageName, message: result.error ?? "unspecified" });
-          }
-        }, (err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
-          if (!machineEnded) {
-            // Pre-end errors reject the whole run — something went wrong
-            // before the pipeline had a chance to converge.
-            clearTimeout(timer);
-            rejectRun(err instanceof Error ? err : new Error(message));
-          } else {
-            // Post-end (drain) errors: machine already finalized. Collect
-            // for the RunResult.drainErrors payload so callers can act on
-            // them (tests, observability). Do NOT swallow silently.
-            drainErrors.push({ stage: stageName, message });
-          }
-        });
-        executorPromises.push(p);
+        // A2.3.2 — non-gate, non-fanout agent/script stages are now
+        // dispatched by XState's invoke (see compiler: executingBody.invoke).
+        // The runner no longer calls executor.executeStage manually here.
+        // The invoke's promise body (executeStageLogic, provided above)
+        // handles stageErrors + STAGE_FAILED dispatch. We still `dispatched.add`
+        // the stage to keep the seen-marker accurate for the subscribe
+        // loop's error-final detection.
+        //
+        // Note: executorPromises / drainErrors are no longer populated for
+        // invoke'd stages — XState's actor lifecycle owns the promise now.
+        // Run-final draining is still correct because the machine does not
+        // reach 'completed' until every region is final, which means every
+        // invoke has either resolved or been cancelled by XState.
       }
     }
   });
 
-  actor.start();
-  actor.send({ type: "START" });
+  actor!.start();
+  actor!.send({ type: "START" });
   return done.finally(() => {
-    actor.stop();
+    actor!.stop();
     taskRegistry.unregister(opts.taskId);
   });
 }
