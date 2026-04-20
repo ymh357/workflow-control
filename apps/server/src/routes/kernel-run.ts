@@ -75,6 +75,71 @@ interface PipelineRegistration {
 const DEFAULT_REAL_MODEL = "claude-haiku-4-5";
 const DEFAULT_REAL_MAX_TURNS = 10;
 const DEFAULT_REAL_BUDGET_USD = 0.2;
+const DEFAULT_LEGACY_TIMEOUT_MS = 5 * 60_000;
+
+interface LegacyPipelineRegistrationOpts {
+  /** Directory name under src/builtin-pipelines/ (e.g. "tech-research-collector"). */
+  pipelineDir: string;
+  /** Claude model override; falls back to body override then DEFAULT_REAL_MODEL. */
+  model?: string;
+  maxTurns?: number;
+  maxBudgetUsd?: number;
+  /** Hard timeout for runPipeline (ms). Defaults to 5 minutes. */
+  timeoutMs?: number;
+}
+
+/**
+ * Build a PipelineRegistration factory for a legacy-YAML builtin pipeline.
+ *
+ * The YAML is located at src/builtin-pipelines/<pipelineDir>/pipeline.yaml
+ * (resolved relative to this module, matching smokeTestPromptRoot()'s
+ * layout-anchoring convention). Conversion happens eagerly at registry
+ * initialisation — readFileSync + convertLegacyYaml run once per process,
+ * not once per POST. Warnings are logged via logger.info; a hard
+ * conversion failure throws at module load so misconfigured fixtures
+ * fail fast instead of surfacing as 500s at request time.
+ *
+ * The returned factory is invoked per POST and constructs a fresh
+ * RealStageExecutor against the live DB so write_port goes through the
+ * runner's PortRuntime (same rationale as the diamond-real / smoke-test
+ * entries).
+ */
+function registerLegacyPipeline(
+  opts: LegacyPipelineRegistrationOpts,
+): () => PipelineRegistration {
+  const yamlPath = join(
+    new URL(".", import.meta.url).pathname,
+    "..", "builtin-pipelines", opts.pipelineDir, "pipeline.yaml",
+  );
+  const yamlText = readFileSync(yamlPath, "utf-8");
+  const conv = convertLegacyYaml(yamlText, { yamlFilePath: yamlPath });
+  if (!conv.ok) {
+    throw new Error(
+      `legacy pipeline '${opts.pipelineDir}' failed to convert: ${conv.diagnostics.map((d) => d.code).join(", ")}`,
+    );
+  }
+  for (const w of conv.warnings) {
+    logger.info({ pipeline: opts.pipelineDir, warning: w }, "converter warning");
+  }
+  const ir = conv.ir;
+  const promptRoot = conv.promptRoot!;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_LEGACY_TIMEOUT_MS;
+
+  return () => ({
+    ir,
+    handlers: {},
+    executorFactory: (db, overrides) =>
+      new RealStageExecutor({
+        mcpServerFactory: (_dispatcher, portRuntime) =>
+          createKernelMcp(db, { surface: "combined", portRuntime }),
+        promptResolver: new FsPromptResolver({ rootDir: promptRoot }),
+        model: overrides.model ?? opts.model ?? DEFAULT_REAL_MODEL,
+        maxTurns: overrides.maxTurns ?? opts.maxTurns ?? DEFAULT_REAL_MAX_TURNS,
+        maxBudgetUsd: overrides.maxBudgetUsd ?? opts.maxBudgetUsd ?? DEFAULT_REAL_BUDGET_USD,
+      }),
+    timeoutMs,
+  });
+}
 
 // Registry of pipelines runnable via this route. Keys are the values
 // accepted in the `pipeline` body field.
@@ -138,43 +203,9 @@ const pipelineRegistry: Record<string, () => PipelineRegistration> = {
       }),
     timeoutMs: 3 * 60_000,
   }),
-  "tech-research-collector": () => {
-    // Task 3.1 — convert the legacy YAML on each factory call. The
-    // fixture lives under src/builtin-pipelines/tech-research-collector/
-    // relative to the server root. `import.meta.url` resolves the same
-    // way in tsx dev and compiled dist — both point at the file the
-    // route module was loaded from, and we walk `..` up to
-    // builtin-pipelines/. This mirrors smokeTestPromptRoot()'s
-    // layout-anchoring convention.
-    const yamlPath = join(
-      new URL(".", import.meta.url).pathname,
-      "..", "builtin-pipelines", "tech-research-collector", "pipeline.yaml",
-    );
-    const yamlText = readFileSync(yamlPath, "utf-8");
-    const conv = convertLegacyYaml(yamlText, { yamlFilePath: yamlPath });
-    if (!conv.ok) {
-      throw new Error(
-        `tech-research-collector YAML failed to convert: ${conv.diagnostics.map((d) => d.code).join(", ")}`,
-      );
-    }
-    for (const w of conv.warnings) {
-      logger.info({ pipeline: "tech-research-collector", warning: w }, "converter warning");
-    }
-    return {
-      ir: conv.ir,
-      handlers: {},
-      executorFactory: (db, overrides) =>
-        new RealStageExecutor({
-          mcpServerFactory: (_dispatcher, portRuntime) =>
-            createKernelMcp(db, { surface: "combined", portRuntime }),
-          promptResolver: new FsPromptResolver({ rootDir: conv.promptRoot! }),
-          model: overrides.model ?? DEFAULT_REAL_MODEL,
-          maxTurns: overrides.maxTurns ?? DEFAULT_REAL_MAX_TURNS,
-          maxBudgetUsd: overrides.maxBudgetUsd ?? DEFAULT_REAL_BUDGET_USD,
-        }),
-      timeoutMs: 5 * 60_000,
-    };
-  },
+  "tech-research-collector": registerLegacyPipeline({
+    pipelineDir: "tech-research-collector",
+  }),
 };
 
 function badRequest(
