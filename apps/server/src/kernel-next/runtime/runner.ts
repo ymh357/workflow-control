@@ -197,10 +197,10 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       throw new Error(`invoke: gate stage '${input.stageName}' should not reach execute_stage`);
     }
     if ((stageDef.type === "agent" || stageDef.type === "script") && stageDef.fanout) {
-      // Fanout stages run through the subscribe loop's runFanoutStage
+      // Fanout stages run through the subscribe loop's orchestrateFanoutStage
       // path; this invoke is a no-op for them. No executor work, no
       // interrupt forwarding. The region reaches `done` via the always
-      // guard once runFanoutStage writes the aggregated array.
+      // guard once orchestrateFanoutStage writes the aggregated array.
       return;
     }
 
@@ -414,7 +414,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
           stageDef?.fanout
         ) {
           const fanoutStage = stageDef;
-          const p = runFanoutStage({
+          const p = orchestrateFanoutStage({
             ir: opts.ir,
             stageDef: fanoutStage,
             taskId: opts.taskId,
@@ -495,16 +495,38 @@ type FanoutResult =
   | { status: "error"; error: string };
 
 /**
- * Run a fanout stage: iterate the source port's array, execute the
- * stage once per element against a silent PortRuntime, then aggregate
- * every declared output into an array and dispatch one PORT_WRITTEN
- * per output via the live dispatcher.
+ * Orchestrate a fanout stage: iterate the source port's array, execute
+ * the stage once per element against a silent PortRuntime, then
+ * aggregate every declared output into an array and dispatch one
+ * PORT_WRITTEN per output via the live dispatcher.
+ *
+ * Why this is not a StageExecutor (i.e. not routed through
+ * CompositeStageExecutor):
+ *   - CompositeStageExecutor picks a per-stage-type delegate (agent /
+ *     script / gate) to run ONE execution of ONE stage. Its
+ *     ExecuteStageArgs surface deliberately has no access to db /
+ *     livePortRuntime / the aggregate-attempt concept.
+ *   - Fanout is not "another stage type". It is an orchestration
+ *     pattern that runs the underlying agent/script executor N times
+ *     against a silent PortRuntime, then opens a separate aggregate
+ *     attempt (kind='fanout_aggregate') to materialise T[] outputs and
+ *     wake downstream guards. It spans N+1 stage_attempts for one
+ *     stage-region transition.
+ *   - Forcing it into Composite would either leak runtime internals
+ *     (db, livePortRuntime) into every ExecuteStageArgs or wrap this
+ *     function in a closure-based StageExecutor whose implementation
+ *     still lives in runner — change in shape, not in substance.
+ *
+ * It therefore sits alongside the invoke-driven per-stage execution
+ * path, not inside it. Composite is the execution layer; this is the
+ * orchestration layer.
  *
  * Scope (A3.3): sequential execution, no concurrency pool, first
  * element error fails the stage. Preserves existing lineage (each
- * attempt writes its own port_values rows normally).
+ * attempt writes its own port_values rows normally; attempt kind is
+ * set via the silent runtime's defaultKind — see Debt #7).
  */
-async function runFanoutStage(args: RunFanoutArgs): Promise<FanoutResult> {
+async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<FanoutResult> {
   const { ir, stageDef, taskId, versionHash, basePortValues, handlers, db, livePortRuntime, executor } = args;
   const fanout = stageDef.fanout;
   if (!fanout) {

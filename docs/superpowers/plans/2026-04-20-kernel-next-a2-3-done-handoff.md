@@ -83,14 +83,18 @@ TaskMachine → completed（或 failed，依 stage 结果）
    - 渐进方案下 executor 仍内部起 agentActor，但 A2.3.3 的 AbortSignal bridge 证明 full nesting 不是必需的
    - 真·嵌套仍可做（POC 已验证可行），但不阻塞任何下游工作；如果以后需要"parent 停 → child 自动 cleanup"的 XState 生命周期绑定，再做
 2. **Debt #2（`createKernelMcp` 默认 combined）**：未动，仍是独立可择时机处理
-3. **Debt #3（runner silent-fanout + log-scan 兜底）**：部分推进但未 retire
-   - log-scan 仍保留（`runner.ts:166-175`），用于捕获 parallel onDone 同步 fire 的 NO_ACTIVE_WIRE
-   - silent-fanout 仍保留（`runFanoutStage` 专用路径）
-   - A2.3 没触碰这条；仍是独立切片
-4. **Debt #4（`stage_attempts.status` 无 CHECK constraint）**：未动
-5. **Debt #5（Fanout 绕过 CompositeStageExecutor）**：未动
+3. **Debt #3（runner silent-fanout + log-scan 兜底）**：**已 retire**（commit `b892ed2`）
+   - log-scan 已替换为 `MachineContext.finalizedStages` 结构化字段
+   - silent-fanout 仍保留（这是 orchestration 层职责，见 Debt #5 更新）
+4. **Debt #4（`stage_attempts.status` 无 CHECK constraint）**：**已 retire**（commit `ed0ab9a`，与 #7 合并）
+5. ~~**Debt #5（Fanout 绕过 CompositeStageExecutor）**~~：**诊断错误，已撤销**
+   - 深入代码后发现 fanout 本质是 orchestration（N element attempt + 1 aggregate attempt），不是 execution（per-stage-type 路由），不该走 Composite
+   - 改名 `runFanoutStage` → `orchestrateFanoutStage`，并在 `orchestrateFanoutStage` / `composite-executor.ts` 顶部留下"why not Composite"的设计注释
+   - 该条目从 debt 列表删除（非 debt）
 6. **Debt #6（guard deny-list 硬编码）**：未动
-7. **Debt #7（fanout aggregate attempt 无 `kind` 列）**：未动
+7. **Debt #7（fanout aggregate attempt 无 `kind` 列）**：**已 retire**（commit `ed0ab9a`，与 #4 合并）
+   - 新增 `kind` 列，枚举 `regular | fanout_element | fanout_aggregate`，CHECK 约束
+   - 通过 `PortRuntime.defaultKind` 构造参数传递，orchestrateFanoutStage 的 silent runtime 设为 `fanout_element`
 
 ### 0.6 开工前 checklist（继任 session）
 

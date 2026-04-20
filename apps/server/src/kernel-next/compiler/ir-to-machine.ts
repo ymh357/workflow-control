@@ -396,7 +396,7 @@ function buildStageRegion(
     //   - onError raises STAGE_FAILED so the error final path runs, same
     //     as the legacy `runner.ts` executor-rejected branch.
     //   - Fanout stages still bypass this invoke and run through the
-    //     runner's specialised runFanoutStage (Debt #5). They enter
+    //     runner's specialised orchestrateFanoutStage (fanout is an orchestration concern — see comment there). They enter
     //     `executing` without an invoke because runner handles them
     //     before this code path gets a chance — see runner.ts.
     //

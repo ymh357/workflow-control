@@ -7,6 +7,13 @@
 // so tests and harnesses can build a Composite with only the variants they
 // exercise. A pipeline that uses a stage type without a registered executor
 // surfaces NO_EXECUTOR_FOR_STAGE_TYPE immediately.
+//
+// Fanout is intentionally NOT handled here. Fanout is an orchestration
+// concern (N element attempts + 1 aggregate attempt for a single stage
+// region), not a per-stage-type execution concern, and it requires
+// runtime access (db, livePortRuntime) that is deliberately absent from
+// ExecuteStageArgs. See runner.orchestrateFanoutStage for the full
+// rationale.
 
 import type { StageIR } from "../ir/schema.js";
 import type {
