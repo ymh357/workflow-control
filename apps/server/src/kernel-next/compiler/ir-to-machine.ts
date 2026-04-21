@@ -113,6 +113,17 @@ export type MachineEvent =
       retryIdx: number; // 0-based pre-increment value
       maxRetries: number;
       errorMessage: string;
+    }
+  // Intercepted by the runner before reaching the XState actor. Triggers
+  // prune of affectedStages' persistent state and a rebuild of the actor
+  // so the rejected gate re-enters executing for a fresh answer.
+  | {
+      type: "GATE_REJECTED";
+      gateId: string;
+      stageName: string;
+      answer: string;
+      targetStage: string;
+      affectedStages: string[];
     };
 
 export interface InboundWireMeta {

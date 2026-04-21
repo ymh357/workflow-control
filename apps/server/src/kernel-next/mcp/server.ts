@@ -603,9 +603,16 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
             const result = kernel.answerGate(String(args.gateId), String(args.answer));
             if (result.ok) {
               const dispatcher = taskRegistry.get(result.taskId);
-              // Task 4 will add kind==="rejected" dispatch (GATE_REJECTED).
-              // For now only answered answers are forwarded to the runner.
-              if (result.kind === "answered") {
+              if (result.kind === "rejected") {
+                dispatcher?.send({
+                  type: "GATE_REJECTED",
+                  gateId: result.gateId,
+                  stageName: result.stageName,
+                  answer: result.answer,
+                  targetStage: result.targetStage,
+                  affectedStages: result.affectedStages,
+                });
+              } else {
                 dispatcher?.send({
                   type: "GATE_ANSWERED",
                   gateId: result.gateId,

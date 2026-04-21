@@ -5,7 +5,7 @@
 // createSdkMcpServer to return the raw {name, version, tools} object so
 // the tools array is directly addressable.
 
-import { describe, it, expect, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, vi, afterEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -22,6 +22,8 @@ import { runPipeline } from "../runtime/runner.js";
 import { versionHash } from "../ir/canonical.js";
 import { generatePipeline, diamondIR } from "../generator-mock/mini-generator.js";
 import type { StageHandlerMap } from "../runtime/mock-executor.js";
+import { KernelService } from "./kernel.js";
+import { taskRegistry } from "../runtime/task-registry.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -543,5 +545,122 @@ describe("write_port rejects __external__ sentinel", () => {
     expect(payload.error).toMatch(/__external__/);
 
     db.close();
+  });
+});
+
+// Task 4: answer_gate handler dispatches GATE_REJECTED for rollback answers
+// and GATE_ANSWERED for forward answers — branching on AnswerGateResult.kind.
+describe("answer_gate MCP handler — reject dispatch", () => {
+  afterEach(() => {
+    taskRegistry.__clearForTest();
+  });
+
+  // Seed an in-memory DB with a pipeline whose gate G has routes:
+  //   { approve: "B", reject: "A" }
+  // and a wire A.out -> G.i, making A a transitive upstream of G
+  // (so "reject" is a rollback answer and kernel returns kind="rejected").
+  // Returns { db, gateId } — gateId is assigned by createGate.
+  function setupRejectReadyDb(taskId: string): { db: DatabaseSync; gateId: string } {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const ir = {
+      name: "mcp-reject-test",
+      stages: [
+        {
+          name: "A",
+          type: "agent" as const,
+          inputs: [],
+          outputs: [{ name: "out", type: "unknown" }],
+          config: { promptRef: "p", reads: [] },
+        },
+        {
+          name: "G",
+          type: "gate" as const,
+          inputs: [{ name: "i", type: "unknown" }],
+          outputs: [],
+          config: {
+            question: { text: "approve or reject?", options: ["approve", "reject"] },
+            routing: { routes: { approve: "B", reject: "A" } },
+          },
+        },
+        {
+          name: "B",
+          type: "agent" as const,
+          inputs: [],
+          outputs: [],
+          config: { promptRef: "p", reads: [] },
+        },
+      ],
+      wires: [
+        { from: { stage: "A", port: "out" }, to: { stage: "G", port: "i" } },
+      ],
+    };
+    const submit = svc.submit(ir);
+    if (!submit.ok) throw new Error("submit failed");
+
+    // Open a running stage_attempt for G so createGate has an FK to reference.
+    const attemptId = "attempt-g-" + taskId;
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+       VALUES (?, ?, ?, ?, 1, ?, 'running')`,
+    ).run(attemptId, taskId, submit.versionHash, "G", Date.now());
+
+    // Open the gate — createGate assigns and returns the gateId.
+    const { gateId } = svc.createGate({
+      taskId,
+      stageName: "G",
+      attemptId,
+      question: { text: "approve or reject?", options: ["approve", "reject"] },
+    });
+
+    return { db, gateId };
+  }
+
+  it("dispatches GATE_REJECTED when kernel returns kind='rejected'", async () => {
+    const taskId = "t-mcp-reject-1";
+    const { db, gateId } = setupRejectReadyDb(taskId);
+
+    const captured: unknown[] = [];
+    taskRegistry.register(taskId, { send: (ev: unknown) => captured.push(ev) } as never);
+
+    try {
+      const mcp = createKernelMcp(db, { surface: "external", skipTypeCheck: true });
+      const tool = getTools(mcp).get("answer_gate")!;
+      await tool.handler({ gateId, answer: "reject" });
+
+      expect(captured).toHaveLength(1);
+      const ev = captured[0] as Record<string, unknown>;
+      expect(ev["type"]).toBe("GATE_REJECTED");
+      expect(ev["gateId"]).toBe(gateId);
+      expect(ev["stageName"]).toBe("G");
+      expect(ev["targetStage"]).toBe("A");
+      expect(Array.isArray(ev["affectedStages"])).toBe(true);
+      expect(new Set(ev["affectedStages"] as string[])).toEqual(new Set(["A", "G"]));
+    } finally {
+      db.close();
+    }
+  });
+
+  it("dispatches GATE_ANSWERED when kernel returns kind='answered'", async () => {
+    const taskId = "t-mcp-reject-2";
+    const { db, gateId } = setupRejectReadyDb(taskId);
+
+    const captured: unknown[] = [];
+    taskRegistry.register(taskId, { send: (ev: unknown) => captured.push(ev) } as never);
+
+    try {
+      const mcp = createKernelMcp(db, { surface: "external", skipTypeCheck: true });
+      const tool = getTools(mcp).get("answer_gate")!;
+      await tool.handler({ gateId, answer: "approve" });
+
+      expect(captured).toHaveLength(1);
+      const ev = captured[0] as Record<string, unknown>;
+      expect(ev["type"]).toBe("GATE_ANSWERED");
+    } finally {
+      db.close();
+    }
   });
 });
