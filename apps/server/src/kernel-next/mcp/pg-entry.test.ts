@@ -9,6 +9,11 @@ import type { PipelineIR } from "../ir/schema.js";
 import type { StageExecutor } from "../runtime/executor.js";
 import { randomUUID } from "node:crypto";
 
+// Load real pipeline-generator prompts once for reuse across loader mocks.
+// Using the real prompts map avoids PROMPT_REF_MISSING diagnostics from
+// KernelService.submit (invoked inside handleStartPipelineGenerator).
+const realPrompts = loadLegacyPipelineIR("pipeline-generator").prompts;
+
 function freshDb() {
   const db = new DatabaseSync(":memory:");
   initKernelNextSchema(db);
@@ -70,7 +75,7 @@ describe("handleStartPipelineGenerator — happy path", () => {
     const db = freshDb();
     const broadcaster = new KernelNextBroadcaster();
     const ir = realIR();
-    const loader = vi.fn(() => ({ ir, promptRoot: "/tmp/prompts", yamlFilePath: "/tmp/pipeline.yaml", warnings: [] }));
+    const loader = vi.fn(() => ({ ir, promptRoot: "/tmp/prompts", yamlFilePath: "/tmp/pipeline.yaml", warnings: [], prompts: realPrompts }));
     const runner = vi.fn(async () => undefined);
     const executorFactory = vi.fn(() => ({ executeStage: vi.fn() }) as unknown as StageExecutor);
 
@@ -103,7 +108,7 @@ describe("handleStartPipelineGenerator — happy path", () => {
       {
         db: freshDb(),
         broadcaster: new KernelNextBroadcaster(),
-        loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [] })),
+        loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [], prompts: realPrompts })),
         runner: vi.fn(async () => undefined),
         executorFactory: vi.fn(() => ({ executeStage: vi.fn() }) as any),
         model: "m",
@@ -147,7 +152,7 @@ describe("handleStartPipelineGenerator — bootstrap errors", () => {
       {
         db: freshDb(),
         broadcaster: new KernelNextBroadcaster(),
-        loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [] })),
+        loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [], prompts: realPrompts })),
         runner,
         executorFactory: vi.fn(() => ({ executeStage: vi.fn() }) as any),
         model: "m",
@@ -165,7 +170,7 @@ describe("handleStartPipelineGenerator — bootstrap errors", () => {
       {
         db: freshDb(),
         broadcaster: new KernelNextBroadcaster(),
-        loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [] })),
+        loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [], prompts: realPrompts })),
         runner: vi.fn(async () => undefined),
         model: "m",
       },
@@ -175,7 +180,11 @@ describe("handleStartPipelineGenerator — bootstrap errors", () => {
     expect(res.error).toBe("RUN_BOOTSTRAP_FAILED");
   });
 
-  it("returns RUN_BOOTSTRAP_FAILED when insertPipelineVersion throws", async () => {
+  it("returns RUN_BOOTSTRAP_FAILED when submit throws (insertPipelineVersion db failure)", async () => {
+    // handleStartPipelineGenerator now routes through KernelService.submit,
+    // which calls insertPipelineVersion internally. A DB-layer throw from
+    // insertPipelineVersion surfaces as a RUN_BOOTSTRAP_FAILED with the
+    // underlying error message prefixed by 'submit: '.
     const spy = vi.spyOn(sqlMod, "insertPipelineVersion").mockImplementation(() => {
       throw new Error("db blew up");
     });
@@ -186,7 +195,7 @@ describe("handleStartPipelineGenerator — bootstrap errors", () => {
         {
           db: freshDb(),
           broadcaster: new KernelNextBroadcaster(),
-          loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [] })),
+          loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [], prompts: realPrompts })),
           runner: vi.fn(async () => undefined),
           executorFactory: vi.fn(() => ({ executeStage: vi.fn() }) as any),
           model: "m",
@@ -196,7 +205,7 @@ describe("handleStartPipelineGenerator — bootstrap errors", () => {
       if (res.ok) return;
       expect(res.error).toBe("RUN_BOOTSTRAP_FAILED");
       if (res.error === "RUN_BOOTSTRAP_FAILED") {
-        expect(res.reason).toMatch(/insertPipelineVersion/);
+        expect(res.reason).toMatch(/submit.*db blew up/);
       }
     } finally {
       spy.mockRestore();
@@ -448,7 +457,7 @@ describe("handleStartPipelineGenerator — version idempotency", () => {
     const db = freshDb();
     const broadcaster = new KernelNextBroadcaster();
     const ir = realIR();
-    const loader = vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [] }));
+    const loader = vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [], prompts: realPrompts }));
     const runner = vi.fn(async () => undefined);
     const executorFactory = vi.fn(() => ({ executeStage: vi.fn() }) as any);
 
@@ -519,7 +528,7 @@ describe("handleWaitPipelineResult — done", () => {
     const ir = realIR();
 
     // To satisfy port_values FK, we need a pipeline_versions row first.
-    // Use a simple placeholder version_hash for the seed data.
+    // Use a simple stub version_hash for the seed data.
     const versionHash = "test-vh-done-1";
     db.prepare(
       `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)

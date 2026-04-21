@@ -55,6 +55,14 @@ type RunBodyOverrides = z.infer<typeof runBodySchema>;
 
 interface PipelineRegistration {
   ir: PipelineIR;
+  // Present for pipelines registered via registerLegacyPipeline — the
+  // versionHash captured at module-load submit time. POST-time dispatch
+  // reuses this hash so we do not re-submit on every request (avoids
+  // stale pipeline_versions churn). Absent for the bespoke mock entries
+  // (diamond / diamond-slow / diamond-real) which are not submitted at
+  // module load; those submit at POST time using their promptRef strings
+  // as self-referential prompt bodies (TrivialPromptResolver semantics).
+  versionHash?: string;
   // Mock handlers OR a real executor — exclusive. Mock path keeps
   // handlers+{} + undefined executor; real path provides a factory
   // that materialises an executor against the live DB so MCP can
@@ -137,6 +145,7 @@ function registerLegacyPipeline(
 
   return () => ({
     ir,
+    versionHash,
     handlers: {},
     executorFactory: (execDb, overrides) =>
       new RealStageExecutor({
@@ -262,35 +271,46 @@ kernelRunRoute.post("/kernel/tasks/run", async (c) => {
     );
   }
 
-  const { ir, handlers, executorFactory, timeoutMs } = factory();
+  const registration = factory();
+  const { ir, handlers, executorFactory, timeoutMs } = registration;
   const db = getKernelNextDb();
-  const svc = new KernelService(db, { skipTypeCheck: true });
-  // Placeholder prompts for the POST-time re-submit path: legacy
-  // pipelines already submitted their real prompts at module load via
-  // registerLegacyPipeline (and their RealStageExecutor resolves
-  // prompts from the DB via the module-load versionHash). The
-  // re-submit here exists so diamond/diamond-slow/diamond-real (which
-  // do not go through registerLegacyPipeline) still pass submit; for
-  // those, the prompts map is ignored since no AgentStage.promptRef
-  // is set. For legacy pipelines, this emits a second (harmless)
-  // pipeline_versions row keyed by placeholder content, which the
-  // runner uses but the DbPromptResolver does NOT consult.
-  const placeholderPrompts: Record<string, string> = {};
-  for (const stage of ir.stages) {
-    if (stage.type === "agent" && stage.config.promptRef) {
-      placeholderPrompts[stage.config.promptRef] = "placeholder";
+
+  // Prefer the versionHash captured at module load by
+  // registerLegacyPipeline: the legacy builtins submit their IR + real
+  // prompts once and bind the resulting hash into their
+  // DbPromptResolver. Re-submitting at every POST would churn the
+  // pipeline_versions table and write stale rows keyed by synthetic
+  // prompt content, with no upside. Only the bespoke mock entries
+  // (diamond / diamond-slow / diamond-real), which are NOT registered
+  // through registerLegacyPipeline, still need a submit here — their
+  // IR embeds promptRef strings that serve as agent prompt bodies, so
+  // we echo each promptRef back as its own content. For mock-handler
+  // paths (diamond / diamond-slow) the content is never read; for
+  // diamond-real the RealStageExecutor falls through to
+  // TrivialPromptResolver (promptRef is the prompt body), so this
+  // submit is also a no-op on the execution path.
+  let versionHash: string;
+  if (registration.versionHash !== undefined) {
+    versionHash = registration.versionHash;
+  } else {
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const mockPrompts: Record<string, string> = {};
+    for (const stage of ir.stages) {
+      if (stage.type === "agent" && stage.config.promptRef) {
+        mockPrompts[stage.config.promptRef] = stage.config.promptRef;
+      }
     }
-  }
-  const submit = svc.submit(ir, { prompts: placeholderPrompts });
-  if (!submit.ok) {
-    return c.json(
-      { ok: false, diagnostics: submit.diagnostics },
-      400,
-    );
+    const submit = svc.submit(ir, { prompts: mockPrompts });
+    if (!submit.ok) {
+      return c.json(
+        { ok: false, diagnostics: submit.diagnostics },
+        400,
+      );
+    }
+    versionHash = submit.versionHash;
   }
 
   const taskId = parsed.data.taskId ?? `kr-${randomUUID()}`;
-  const versionHash = submit.versionHash;
 
   // Real pipelines construct their executor now (after submit, before
   // dispatch) so the closure captures the same `db` handle the runner

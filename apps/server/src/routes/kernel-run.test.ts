@@ -298,8 +298,8 @@ describe("registerLegacyPipeline populates pipeline_prompt_refs on module load",
 
       // Cross-check: the count of pipeline_prompt_refs rows for the
       // latest version must be at least the number of distinct
-      // AgentStage promptRefs in a fresh load. A placeholder-only
-      // submit that only registered one bogus ref would fail this.
+      // AgentStage promptRefs in a fresh load. A stub-only submit
+      // that only registered one bogus ref would fail this.
       const expectedAgentPromptCount = new Set(
         fresh.ir.stages
           .filter((s) => s.type === "agent")

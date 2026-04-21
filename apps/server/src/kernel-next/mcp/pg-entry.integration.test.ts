@@ -18,6 +18,10 @@ function realIR(): PipelineIR {
   return loadLegacyPipelineIR("pipeline-generator").ir;
 }
 
+// Load real prompts once so loader mocks can supply a valid prompts map
+// to KernelService.submit (invoked inside handleStartPipelineGenerator).
+const realPrompts = loadLegacyPipelineIR("pipeline-generator").prompts;
+
 // seedAttempt inserts a stage_attempts row (required by port_values FK).
 function seedAttempt(
   db: DatabaseSync,
@@ -80,6 +84,7 @@ describe("pg-entry integration — concurrent start + wait", () => {
       promptRoot: "/tmp/prompts",
       yamlFilePath: "/tmp/pipeline.yaml",
       warnings: [] as Array<{ code: string; message?: string }>,
+      prompts: realPrompts,
     });
 
     // Mock executorFactory: returns a stub StageExecutor.

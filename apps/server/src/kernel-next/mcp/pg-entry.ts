@@ -4,8 +4,7 @@ import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import type { PipelineIR } from "../ir/schema.js";
 import type { StageExecutor } from "../runtime/executor.js";
 import type { KernelNextSSEEvent, RunFinalData, StageErrorData, StageExecutingData } from "../sse/types.js";
-import { versionHash as computeVersionHash } from "../ir/canonical.js";
-import { insertPipelineVersion } from "../ir/sql.js";
+import { KernelService } from "./kernel.js";
 import { LegacyPipelineLoadError } from "../runtime/load-legacy-pipeline.js";
 import { readLatestPort } from "../runtime/port-runtime.js";
 import { logger } from "../../lib/logger.js";
@@ -29,6 +28,7 @@ export interface PgEntryDeps {
     promptRoot: string;
     yamlFilePath: string;
     warnings: Array<{ code: string; message?: string }>;
+    prompts: Record<string, string>;
   };
   runner: (args: {
     db: DatabaseSync;
@@ -40,8 +40,14 @@ export interface PgEntryDeps {
     seedValues: Record<string, unknown>;
     broadcaster: KernelNextBroadcaster;
   }) => Promise<unknown>;
+  // executorFactory receives the captured versionHash so the caller can
+  // construct a DbPromptResolver bound to the exact submitted pipeline
+  // version (Task 11 of the prompts-in-SQLite plan). `promptRoot` is
+  // still surfaced for callers that have not yet migrated to the DB
+  // resolver; new callers should prefer DbPromptResolver(db, versionHash).
   executorFactory?: (args: {
     promptRoot: string;
+    versionHash: string;
     db: DatabaseSync;
     model: string;
     maxTurns?: number;
@@ -80,29 +86,28 @@ export async function handleStartPipelineGenerator(
     };
   }
 
-  const vh = computeVersionHash(loaded.ir);
-  const existing = deps.db
-    .prepare("SELECT version_hash FROM pipeline_versions WHERE version_hash = ?")
-    .get(vh);
-  if (!existing) {
-    try {
-      insertPipelineVersion(deps.db, loaded.ir, { versionHash: vh, tsSource: "" });
-    } catch (err) {
-      // Another concurrent caller may have won the race between our SELECT
-      // and INSERT. If the row now exists, treat as success. Otherwise
-      // propagate.
-      const nowExists = deps.db
-        .prepare("SELECT version_hash FROM pipeline_versions WHERE version_hash = ?")
-        .get(vh);
-      if (!nowExists) {
-        return {
-          ok: false,
-          error: "RUN_BOOTSTRAP_FAILED",
-          reason: `insertPipelineVersion: ${(err as Error).message}`,
-        };
-      }
-      // Row exists — another caller completed it; proceed.
+  // Submit IR + prompts atomically so the pipeline_versions row AND
+  // the pipeline_prompt_refs / prompt_contents rows are both keyed by
+  // the prompts-aware pipelineVersionHash. KernelService.submit is
+  // idempotent on repeat calls with identical (ir, prompts).
+  let vh: string;
+  try {
+    const svc = new KernelService(deps.db, { skipTypeCheck: true });
+    const submitRes = svc.submit(loaded.ir, { prompts: loaded.prompts });
+    if (!submitRes.ok) {
+      return {
+        ok: false,
+        error: "RUN_BOOTSTRAP_FAILED",
+        reason: `submit: ${submitRes.diagnostics.map((d) => `${d.code}${d.message ? `: ${d.message}` : ""}`).join("; ")}`,
+      };
     }
+    vh = submitRes.versionHash;
+  } catch (err) {
+    return {
+      ok: false,
+      error: "RUN_BOOTSTRAP_FAILED",
+      reason: `submit: ${(err as Error).message}`,
+    };
   }
 
   if (!deps.executorFactory) {
@@ -116,6 +121,7 @@ export async function handleStartPipelineGenerator(
   const taskId = input.taskId ?? randomUUID();
   const executor = deps.executorFactory({
     promptRoot: loaded.promptRoot,
+    versionHash: vh,
     db: deps.db,
     model: deps.model,
     maxTurns: deps.maxTurns,
