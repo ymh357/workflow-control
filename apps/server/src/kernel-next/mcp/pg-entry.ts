@@ -340,12 +340,22 @@ export async function handleWaitPipelineResult(
     // do not arm the timeout.
     if (!settled) {
       timer = setTimeout(() => {
-        // Running path fleshed out in Task 9; for now return a placeholder.
+        let currentStage: string | null = null;
+        try {
+          const row = deps.db
+            .prepare(
+              "SELECT stage_name FROM stage_attempts WHERE task_id = ? ORDER BY started_at DESC LIMIT 1",
+            )
+            .get(input.taskId) as { stage_name: string } | undefined;
+          currentStage = row?.stage_name ?? null;
+        } catch {
+          // table missing or other transient error — keep null
+        }
         settle({
           ok: true,
           status: "running",
           taskId: input.taskId,
-          currentStage: null,
+          currentStage,
           elapsedMs: now() - startedAt,
           hint: "Pipeline still running. Call wait_pipeline_result again to continue waiting.",
         });

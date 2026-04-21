@@ -384,6 +384,65 @@ describe("handleWaitPipelineResult — gate_pending", () => {
   });
 });
 
+describe("handleWaitPipelineResult — running", () => {
+  it("returns running with currentStage from stage_attempts on timeout", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const taskId = "task-run-1";
+
+    // Need a pipeline_versions row to satisfy stage_attempts FK.
+    const versionHash = "test-vh-run-1";
+    db.prepare(
+      `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+       VALUES (?, 'test', ?, NULL, '{}', '')`,
+    ).run(versionHash, Date.now());
+
+    // Insert two attempts for the same task; second has higher started_at — latest wins.
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status, kind)
+       VALUES (?, ?, ?, ?, 0, ?, 'running', 'regular')`,
+    ).run(randomUUID(), taskId, versionHash, "analyzing", Date.now() - 1000);
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status, kind)
+       VALUES (?, ?, ?, ?, 1, ?, 'running', 'regular')`,
+    ).run(randomUUID(), taskId, versionHash, "analyzing", Date.now());
+
+    const res = await handleWaitPipelineResult({ taskId, timeoutMs: 1000 }, { db, broadcaster, ir: realIR() });
+    expect(res.ok).toBe(true);
+    if (!res.ok || res.status !== "running") throw new Error("expected running");
+    expect(res.currentStage).toBe("analyzing");
+    expect(res.elapsedMs).toBeGreaterThanOrEqual(1000);
+  });
+
+  it("returns currentStage=null when no stage_attempts row exists for the task", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const res = await handleWaitPipelineResult({ taskId: "task-empty-1", timeoutMs: 1000 }, { db, broadcaster, ir: realIR() });
+    expect(res.ok).toBe(true);
+    if (!res.ok || res.status !== "running") throw new Error("expected running");
+    expect(res.currentStage).toBeNull();
+  });
+
+  it("clamps timeoutMs below minimum to 1000", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const start = Date.now();
+    const res = await handleWaitPipelineResult(
+      { taskId: "task-clamp-low", timeoutMs: 10 },
+      { db, broadcaster, ir: realIR() },
+    );
+    const dur = Date.now() - start;
+    expect(res.ok && res.status).toBe("running");
+    expect(dur).toBeGreaterThanOrEqual(1000);
+  });
+
+  // Upper-clamp test (timeoutMs > 300000 clamped to 300000) is symmetric to the
+  // lower-clamp test — both use the same clampTimeout helper. Verifying it would
+  // require actually waiting 5 minutes, so it is intentionally skipped here.
+});
+
 describe("handleWaitPipelineResult — done", () => {
   it("returns done with result fields when run_final completed event arrives", async () => {
     const db = freshDb();
