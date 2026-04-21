@@ -344,7 +344,7 @@ export async function handleWaitPipelineResult(
         try {
           const row = deps.db
             .prepare(
-              "SELECT stage_name FROM stage_attempts WHERE task_id = ? ORDER BY started_at DESC LIMIT 1",
+              "SELECT stage_name FROM stage_attempts WHERE task_id = ? ORDER BY started_at DESC, attempt_idx DESC LIMIT 1",
             )
             .get(input.taskId) as { stage_name: string } | undefined;
           currentStage = row?.stage_name ?? null;
