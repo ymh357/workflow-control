@@ -259,6 +259,77 @@ function seedPortValue(
   ).run(randomUUID(), attemptId, stageName, portName, JSON.stringify(value), Date.now());
 }
 
+describe("handleWaitPipelineResult — error paths", () => {
+  it("returns error when run_final finalState=failed", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const taskId = "task-fail-1";
+    broadcaster.publish({
+      taskId,
+      timestamp: new Date().toISOString(),
+      type: "run_final",
+      data: { finalState: "failed", stageErrors: [{ stage: "analyzing", message: "boom" }] },
+    });
+    const res = await handleWaitPipelineResult({ taskId, timeoutMs: 1000 }, { db, broadcaster, ir: realIR() });
+    expect(res.ok).toBe(false);
+    if (res.ok || res.status !== "error") throw new Error("expected error");
+    expect(res.error).toBe("boom");
+    expect(res.failedStage).toBe("analyzing");
+  });
+
+  it("returns error on stage_error (stage_error always means final failure — no more retries)", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const taskId = "task-fail-2";
+    broadcaster.publish({
+      taskId,
+      timestamp: new Date().toISOString(),
+      type: "stage_error",
+      data: { stage: "genSkeleton", message: "sdk timeout" },
+    });
+    const res = await handleWaitPipelineResult({ taskId, timeoutMs: 1000 }, { db, broadcaster, ir: realIR() });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("expected error");
+    expect(res.status).toBe("error");
+    expect(res.failedStage).toBe("genSkeleton");
+    expect(res.error).toBe("sdk timeout");
+  });
+
+  it("ignores stage_retry (retry in flight) and falls through to running on timeout", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const taskId = "task-retry-1";
+    broadcaster.publish({
+      taskId,
+      timestamp: new Date().toISOString(),
+      type: "stage_retry",
+      data: { stage: "analyzing", backToStage: "analyzing", retryIdx: 0, maxRetries: 2, errorMessage: "transient" },
+    });
+    // stage_retry is not terminal — wait falls through to timeout → running
+    const res = await handleWaitPipelineResult({ taskId, timeoutMs: 1000 }, { db, broadcaster, ir: realIR() });
+    expect(res.ok).toBe(true);
+    if (!res.ok || res.status !== "running") throw new Error("expected running");
+  });
+
+  it("returns generic error message when run_final failed but stageErrors is empty", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const taskId = "task-fail-empty";
+    broadcaster.publish({
+      taskId,
+      timestamp: new Date().toISOString(),
+      type: "run_final",
+      data: { finalState: "failed", stageErrors: [] },
+    });
+    const res = await handleWaitPipelineResult({ taskId, timeoutMs: 1000 }, { db, broadcaster, ir: realIR() });
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error("expected error");
+    expect(res.status).toBe("error");
+    expect(res.error).toBeTruthy(); // any non-empty string
+    expect(res.failedStage).toBeUndefined();
+  });
+});
+
 describe("handleWaitPipelineResult — done", () => {
   it("returns done with result fields when run_final completed event arrives", async () => {
     const db = freshDb();

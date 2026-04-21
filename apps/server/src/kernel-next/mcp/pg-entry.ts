@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import type { PipelineIR } from "../ir/schema.js";
 import type { StageExecutor } from "../runtime/executor.js";
-import type { KernelNextSSEEvent, RunFinalData } from "../sse/types.js";
+import type { KernelNextSSEEvent, RunFinalData, StageErrorData } from "../sse/types.js";
 import { versionHash as computeVersionHash } from "../ir/canonical.js";
 import { insertPipelineVersion } from "../ir/sql.js";
 import { LegacyPipelineLoadError } from "../runtime/load-legacy-pipeline.js";
@@ -245,11 +245,36 @@ export async function handleWaitPipelineResult(
             taskId: input.taskId,
             result: assembleDone(deps.db, input.taskId),
           });
+          return;
         }
-        // Error path (finalState === "failed") lands in Task 7.
+        if (data.finalState === "failed") {
+          const first = data.stageErrors[0];
+          settle({
+            ok: false,
+            status: "error",
+            taskId: input.taskId,
+            error: first?.message ?? "pipeline run failed",
+            ...(first?.stage ? { failedStage: first.stage } : {}),
+          });
+          return;
+        }
         return;
       }
-      // Other terminal events (gate / error) land in Tasks 7-8.
+      if (ev.type === "stage_error") {
+        // stage_error always means the stage has exhausted retries and reached
+        // its final error state — treat as immediate terminal failure.
+        const data = ev.data as StageErrorData;
+        settle({
+          ok: false,
+          status: "error",
+          taskId: input.taskId,
+          error: data.message,
+          failedStage: data.stage,
+        });
+        return;
+      }
+      // stage_retry and other non-terminal events are ignored; wait continues until
+      // the next terminal event or timeout. Gate detection lands in Task 8.
     });
 
     // If already settled (synchronous history replay resolved the promise),
