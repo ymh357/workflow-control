@@ -893,6 +893,12 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
             if (publishedStageFinal.has(stageName)) continue;
             publishedStageFinal.add(stageName);
             if (outcome === "done") {
+              // If this stage was previously rejected (Task 6), its successful
+              // re-answer means subsequent retry rebuilds should replay the
+              // new approved answer rather than re-opening the gate.
+              if (rejectFromGates.has(stageName)) {
+                rejectFromGates.delete(stageName);
+              }
               publish({
                 type: "stage_done",
                 taskId: opts.taskId,

@@ -174,4 +174,134 @@ describe("runner — gate reject rollback", () => {
 
     db.close();
   }, 20_000);
+
+  it("rejectFromGates cleared after approve: G answer replayed (not re-opened) on subsequent B retry rebuild", async () => {
+    // Regression test for the bug where rejectFromGates was never cleared.
+    //
+    // Pipeline: A(agent) -> G(gate, approve->B, reject->A) -> B(script, retry backToStage=B)
+    //
+    // Scenario:
+    //   1. G rejected  → rollback → A reruns, G reopens
+    //   2. G approved  → B runs, B fails on first call
+    //   3. B retry rebuild: backToStage=B → toReset={B}, so G stays in
+    //      persistentFinalizedStages. G's answer must be REPLAYED.
+    //
+    // Before the fix: rejectFromGates still contained "G", so the replay
+    // loop skipped it and G re-opened — user would have to approve again.
+    // After the fix: rejectFromGates["G"] is cleared when G finalizes done,
+    // so the replay loop synthesises GATE_ANSWERED and B proceeds.
+
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+
+    // Pipeline: A(agent) -> G(gate, approve->B, reject->A) -> B(script, retry backToStage=B)
+    // B is a script stage whose backToStage=B, so toReset={B} only.
+    // G stays in persistentFinalizedStages and must be replayed on retry.
+    // Note: wire must include source:"stage" so gateUpstreamByGate correctly
+    // identifies A as G's upstream (reject rollback target, not a forward gate target).
+    const ir: PipelineIR = {
+      name: "rb-retry",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "out", type: "unknown" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "G",
+          type: "gate",
+          inputs: [{ name: "i", type: "unknown" }],
+          outputs: [],
+          config: {
+            question: { text: "approve or reject?", options: ["approve", "reject"] },
+            routing: { routes: { approve: "B", reject: "A" } },
+          },
+        },
+        {
+          name: "B",
+          type: "script",
+          inputs: [],
+          outputs: [{ name: "done", type: "boolean" }],
+          // backToStage=B means toReset={B} only — G stays in
+          // persistentFinalizedStages and G's answer should be replayed.
+          config: { moduleId: "m", retry: { maxRetries: 1, backToStage: "B" } },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "out" }, to: { stage: "G", port: "i" } },
+      ],
+    } as unknown as PipelineIR;
+
+    const vh = computeVersionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+    const broadcaster = new KernelNextBroadcaster();
+
+    let aCalls = 0;
+    let bCalls = 0;
+    const handlers: StageHandlerMap = {
+      A: () => {
+        aCalls++;
+        return { out: `a-${aCalls}` };
+      },
+      B: () => {
+        bCalls++;
+        // Fail on first call to trigger the retry rebuild; succeed on second.
+        if (bCalls === 1) throw new Error("B first-call failure");
+        return { done: true };
+      },
+    };
+
+    const runPromise = runPipeline(
+      { db, ir, taskId: "rb-retry", versionHash: vh, handlers, broadcaster },
+      30_000,
+    );
+    // Step 1: Wait for G's first gate row.
+    const firstGateId = await waitForOpenGate(db, "rb-retry", "G");
+    expect(aCalls).toBe(1);
+
+    // Step 2: Reject → rollback → A reruns, G reopens.
+    const disp = taskRegistry.get("rb-retry");
+    expect(disp).toBeDefined();
+    disp!.send({
+      type: "GATE_REJECTED",
+      gateId: firstGateId,
+      stageName: "G",
+      answer: "reject",
+      targetStage: "A",
+      affectedStages: ["A", "G"],
+    });
+
+    // Step 3: Wait for G to reopen (a second, different gate row).
+    const secondGateId = await waitForOpenGate(db, "rb-retry", "G", firstGateId);
+    expect(secondGateId).not.toBe(firstGateId);
+    expect(aCalls).toBe(2);
+
+    // Step 4: Approve → B runs and fails on first call (retry rebuild).
+    disp!.send({
+      type: "GATE_ANSWERED",
+      gateId: secondGateId,
+      stageName: "G",
+      answer: "approve",
+      targetStage: "B",
+    });
+
+    // Step 5: Let the retry rebuild and final run complete.
+    const result = await runPromise;
+
+    expect(result.finalState).toBe("completed");
+    expect(aCalls).toBe(2);
+    // B ran at least twice: first call fails (retry rebuild), second succeeds.
+    expect(bCalls).toBeGreaterThanOrEqual(2);
+
+    // Critical assertion: no third gate_queue row for G (meaning the retry
+    // rebuild replayed the approve answer instead of reopening the gate).
+    const allGateRows = db
+      .prepare("SELECT gate_id FROM gate_queue WHERE task_id='rb-retry' AND stage_name='G'")
+      .all() as Array<{ gate_id: string }>;
+    expect(allGateRows).toHaveLength(2); // first (rejected) + second (approved)
+
+    db.close();
+  }, 30_000);
 });
