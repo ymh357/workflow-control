@@ -64,4 +64,37 @@ describe("mapHumanConfirmGates", () => {
     if (!r.ok) return;
     expect(r.stages).toEqual(flat);
   });
+
+  it("synthesizes a predecessor signal wire so the gate waits for its preceding stage", () => {
+    const flat = [
+      { name: "A", type: "agent" },
+      { name: "gate1", type: "human_confirm", runtime: { on_reject_to: "A" } },
+      { name: "B", type: "agent" },
+    ];
+    const r = mapHumanConfirmGates(flat as any, new Map());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    // Gate gets a synthetic input port.
+    const gate = r.stages.find((s: any) => s.name === "gate1") as any;
+    expect(gate.inputs).toBeDefined();
+    expect(gate.inputs.length).toBe(1);
+    expect(gate.inputs[0].name).toBe("__gate_signal");
+    // A synthesized wire is surfaced for the legacy-yaml assembler.
+    expect(r.predecessorWires).toBeDefined();
+    expect(r.predecessorWires!).toHaveLength(1);
+    const w = r.predecessorWires![0]!;
+    expect(w.from.stage).toBe("A");
+    expect(w.to).toEqual({ stage: "gate1", port: "__gate_signal" });
+  });
+
+  it("no predecessor wire when the gate is the first flat stage (edge case)", () => {
+    const flat = [
+      { name: "gate1", type: "human_confirm", runtime: { on_reject_to: "B" } },
+      { name: "B", type: "agent" },
+    ];
+    const r = mapHumanConfirmGates(flat as any, new Map());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.predecessorWires ?? []).toHaveLength(0);
+  });
 });

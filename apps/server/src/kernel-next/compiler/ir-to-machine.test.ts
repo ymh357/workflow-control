@@ -225,6 +225,114 @@ describe("compileIRToMachine — gate routing (A1.2b.1)", () => {
   });
 });
 
+describe("compileIRToMachine — gate routing upstream exclusion", () => {
+  // A gate stage whose routing table names one of its own upstream
+  // stages (e.g. on_reject_to → the preceding stage) must NOT mark
+  // that upstream as gate-routed. If it did, the upstream would sit
+  // in `waiting` forever on the forward pass, stalling the pipeline.
+  //
+  // Observed in pipeline-generator: `analyzing` feeds `awaitingConfirm`
+  // AND is the gate's reject target, which used to prevent analyzing
+  // from ever reaching `executing`.
+  it("upstream of a gate referenced as a routing target stays non-gate-routed and activates on its inbound", () => {
+    const ir: PipelineIR = {
+      name: "upstream-exclusion",
+      stages: [
+        {
+          name: "UP",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "signal", type: "boolean" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "G",
+          type: "gate",
+          inputs: [{ name: "signal", type: "boolean" }],
+          outputs: [],
+          config: {
+            question: { text: "approve?", options: ["approve", "reject"] },
+            // reject target points back at UP — rollback semantics.
+            routing: { routes: { approve: "FWD", reject: "UP" } },
+          },
+        },
+        {
+          name: "FWD",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "ok", type: "boolean" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "UP", port: "signal" }, to: { stage: "G", port: "signal" } },
+      ],
+    };
+    const { machine } = compileIRToMachine(ir, { taskId: "t" });
+    const actor = createActor(machine);
+    actor.start();
+    actor.send({ type: "START" });
+    const running = readRunningValue(actor.getSnapshot());
+    // UP has no inbound wires and is only the gate's reject target —
+    // exclusion rule keeps it out of gateRoutedTargets, so it enters
+    // `executing` on START rather than staying in `waiting`.
+    expect(running?.UP).toBe("executing");
+    // FWD (forward target) is still gate-routed and must wait.
+    expect(running?.FWD).toBe("waiting");
+    // Gate itself is waiting on its inbound wire from UP.
+    expect(running?.G).toBe("waiting");
+    actor.stop();
+  });
+
+  it("routing target that is NOT an upstream of the gate stays gate-routed", () => {
+    // Control case: a downstream/approve target that is not feeding
+    // the gate must continue to wait for GATE_ANSWERED.
+    const ir: PipelineIR = {
+      name: "downstream-still-gate-routed",
+      stages: [
+        {
+          name: "SRC",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "G",
+          type: "gate",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [],
+          config: {
+            question: { text: "ok?", options: ["yes"] },
+            routing: { routes: { yes: "TGT" } },
+          },
+        },
+        {
+          name: "TGT",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "done", type: "boolean" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "SRC", port: "x" }, to: { stage: "G", port: "x" } },
+      ],
+    };
+    const { machine } = compileIRToMachine(ir, { taskId: "t" });
+    const actor = createActor(machine);
+    actor.start();
+    actor.send({ type: "START" });
+    const running = readRunningValue(actor.getSnapshot());
+    // SRC has no inbound wires and is not a gate target → executes on START.
+    expect(running?.SRC).toBe("executing");
+    // TGT is a gate target but not an upstream of the gate → still waits
+    // for GATE_ANSWERED.
+    expect(running?.TGT).toBe("waiting");
+    actor.stop();
+  });
+});
+
 describe("compileIRToMachine seedValues", () => {
   it("seeds external portValues into initial context", () => {
     const ir: PipelineIR = {

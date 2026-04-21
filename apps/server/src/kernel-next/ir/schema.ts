@@ -71,8 +71,13 @@ export const RetrySpecSchema = z.object({
 // (Slice D / Task D2). disallowedTools/skills/mcpServers are not
 // captured in this milestone; pipeline-generator's prompt-writer uses
 // only the five fields below.
+// SubAgent name is passed verbatim to the Claude Agent SDK's
+// AgentDefinition.name; it does not participate in TS codegen
+// (no `export namespace`), so the JS-identifier constraint used
+// elsewhere in the IR does not apply. Accept kebab-case and other
+// common shapes while keeping a sanity length bound.
 export const SubAgentDefSchema = z.object({
-  name: identifier,
+  name: z.string().min(1).max(64).regex(/^[a-zA-Z_][a-zA-Z0-9_-]*$/, "must start with a letter or underscore; letters, digits, underscore, dash only"),
   description: z.string().min(1),
   prompt: z.string().min(1),
   tools: z.array(z.string()).optional(),

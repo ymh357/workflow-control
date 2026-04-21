@@ -106,6 +106,25 @@ export function convertLegacyYaml(
   );
   if (!wiresRes.ok) return { ok: false, diagnostics: wiresRes.diagnostics };
 
+  // Stage 8.5: resolve synthesized gate-predecessor wires. Each entry
+  // from mapHumanConfirmGates carries a gate + its predecessor name;
+  // we look up the predecessor's first declared output port and
+  // materialise a real WireIR. Gates whose predecessor has zero
+  // declared outputs are left unsignaled — activation falls back to
+  // inbound.length === 0 semantics (immediate), which is no worse
+  // than the pre-fix behavior but also not reachable in practice
+  // because agent/script stages always declare at least one output.
+  const synthWires = gatesRes.predecessorWires ?? [];
+  for (const pw of synthWires) {
+    const prevOutputs = storeRes.stageOutputs.get(pw.from.stage) ?? [];
+    if (prevOutputs.length === 0) continue;
+    const firstPort = prevOutputs[0]!;
+    wiresRes.wires.push({
+      from: { source: "stage", stage: pw.from.stage, port: firstPort.name },
+      to: { stage: pw.to.stage, port: pw.to.port },
+    });
+  }
+
   // Stage 9: pipeline-level ignored fields → warnings (unchanged).
   if ("display" in legacy) {
     warnings.push({

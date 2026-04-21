@@ -48,6 +48,28 @@ describe("convertLegacyYaml(pipeline-generator.yaml) — Slice A", () => {
     expect(gate.config.routing.routes.reject).toBe("analyzing");
   });
 
+  it("awaitingConfirm gate has an inbound wire from analyzing (predecessor signal)", () => {
+    const yaml = readFileSync(PIPELINE_YAML, "utf8");
+    const r = convertLegacyYaml(yaml);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const gate = r.ir.stages.find(s => s.name === "awaitingConfirm");
+    expect(gate?.type).toBe("gate");
+    if (gate?.type !== "gate") return;
+    // Gate receives a synthetic predecessor-signal input port so it
+    // does not activate before analyzing completes.
+    expect(gate.inputs).toHaveLength(1);
+    expect(gate.inputs[0]!.name).toBe("__gate_signal");
+    // And a matching wire exists whose source is analyzing.
+    const gateWires = r.ir.wires.filter(
+      w => w.to.stage === "awaitingConfirm" && w.to.port === "__gate_signal",
+    );
+    expect(gateWires).toHaveLength(1);
+    const w = gateWires[0]!;
+    if (w.from.source !== "stage") throw new Error("expected stage source");
+    expect(w.from.stage).toBe("analyzing");
+  });
+
   it("persisting.retry extracted with back_to rewritten from block to first inner stage (genSkeleton)", () => {
     const yaml = readFileSync(PIPELINE_YAML, "utf8");
     const r = convertLegacyYaml(yaml);

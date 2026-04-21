@@ -328,7 +328,7 @@ describe("mapStagesToIR", () => {
     const r = mapStagesToIR(legacy, new Map([["collector", []]]), new Map(), externalKeys);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      expect(r.stages[0]!.inputs).toEqual([{ name: "pipelineConfig", type: "unknown" }]);
+      expect(r.stages[0]!.inputs).toEqual([{ name: "cfg", type: "unknown" }]);
     }
   });
 

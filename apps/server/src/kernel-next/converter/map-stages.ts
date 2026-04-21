@@ -82,7 +82,9 @@ export function mapStagesToIR(
       continue;
     }
     // Gate stage: config lifted verbatim. Shape guaranteed by upstream
-    // mapHumanConfirmGates; no reads/outputs derivation needed.
+    // mapHumanConfirmGates. Inputs are preserved from the upstream
+    // mapper because a gate may carry a synthetic predecessor-signal
+    // port (see map-human-confirm-gates.ts); outputs remain empty.
     if (s.type === "gate") {
       const name = s.name!;
       const cfg = (s as unknown as { config?: unknown }).config;
@@ -94,8 +96,9 @@ export function mapStagesToIR(
         });
         continue;
       }
+      const gateInputs = (s as unknown as { inputs?: PortIR[] }).inputs ?? [];
       stages.push({
-        name, type: "gate", inputs: [], outputs: [],
+        name, type: "gate", inputs: gateInputs, outputs: [],
         config: cfg as never,  // Shape guaranteed by upstream mapHumanConfirmGates.
       } as StageIR);
       continue;
@@ -121,17 +124,31 @@ export function mapStagesToIR(
     }
 
     // Derive inputs from runtime.reads.
+    // Entry-level read  (sourceKey = entry name): expand into one port per
+    //                    declared field, preserving field names.
+    // Dotted-field read (sourceKey = entry.field): single port whose name
+    //                    is the localKey; type inherits the referenced
+    //                    field's type.
+    // External read:     single port named after the localKey, type unknown.
     const reads = s.runtime?.reads ?? {};
     const inputs: PortIR[] = [];
     let readsErrored = false;
-    for (const sourceKey of Object.values(reads)) {
+    for (const [localKey, sourceKey] of Object.entries(reads)) {
       if (entryDirectory.has(sourceKey)) {
-        for (const f of entryDirectory.get(sourceKey)!.fields) {
-          if (!inputs.some((p) => p.name === f.name)) inputs.push({ ...f });
+        const isDottedField = sourceKey.includes(".");
+        if (isDottedField) {
+          const field = entryDirectory.get(sourceKey)!.fields[0]!;
+          if (!inputs.some((p) => p.name === localKey)) {
+            inputs.push({ name: localKey, type: field.type });
+          }
+        } else {
+          for (const f of entryDirectory.get(sourceKey)!.fields) {
+            if (!inputs.some((p) => p.name === f.name)) inputs.push({ ...f });
+          }
         }
       } else if (externalKeys.has(sourceKey)) {
-        if (!inputs.some((p) => p.name === sourceKey)) {
-          inputs.push({ name: sourceKey, type: "unknown" });
+        if (!inputs.some((p) => p.name === localKey)) {
+          inputs.push({ name: localKey, type: "unknown" });
         }
       } else {
         diagnostics.push({

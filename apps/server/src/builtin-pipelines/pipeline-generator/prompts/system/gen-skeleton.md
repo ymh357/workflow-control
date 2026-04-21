@@ -165,12 +165,12 @@ Custom `script_id` values are valid — they mean a script will be implemented s
 
 ## Naming Contracts
 
-`contracts` provides the authoritative naming for every stage. You MUST use these exact values:
-- Stage `name` — from `contracts[].name`
-- `system_prompt` — from `contracts[].systemPrompt` (agent stages only)
-- `writes` keys — from `contracts[].writes`
+`design.stageContracts` provides the authoritative naming for every stage. You MUST use these exact values:
+- Stage `name` — from `design.stageContracts[].name`
+- `system_prompt` — from `design.stageContracts[].systemPrompt` (agent stages only)
+- `writes` keys — from `design.stageContracts[].writes`
 
-Do NOT invent alternative names. If `design` prose uses different wording, follow `contracts`, not the prose.
+Do NOT invent alternative names. If `design.stageDesign` prose uses different wording, follow `design.stageContracts`, not the prose.
 
 ## Translation Rules
 
@@ -217,6 +217,11 @@ Do NOT invent alternative names. If `design` prose uses different wording, follo
     - `Timeout:` → `runtime.timeout_sec`
     - Pipeline call stages have NO system_prompt, effort, or budget
 13. **reads — Tier 1 only**: Only include data the agent needs immediately in its prompt. If a stage references large or optional upstream data, omit it from `reads` — the agent can fetch it at runtime via `get_store_value`. This keeps system prompts focused and within token budgets.
+
+    **No redundant parent+child reads on the same stage.** Inside a single stage's `reads`, do NOT simultaneously read an entry and a sub-field of the same entry. Pick one:
+    - If the stage needs the whole entry, read only the parent (e.g. `design: pipelineDesign`) — the agent sees every field and can reference `design.stageContracts` directly in its prompt.
+    - If the stage only needs specific sub-fields, read only those (e.g. `contracts: pipelineDesign.stageContracts`) — smaller Tier 1 footprint.
+    Reading both forms at once produces overlapping input wires to the same field and is rejected by the runtime. This rule applies per-stage; different stages may pick different shapes.
 14. **Output field types — avoid large text in StructuredOutput**: The agent's JSON output has a practical size limit (~10KB). Output fields of type `markdown` or `string` that may contain large content (full reports, code diffs, file contents) risk crashing the process. For such fields, the stage prompt should instruct the agent to write the content to a file in the worktree (e.g. `.workflow/{stageName}-report.md`) and return only the file path in the output field. Use type `string` with `display_hint: link` for file-path output fields.
 
 ## Quality Checklist
@@ -235,6 +240,7 @@ Do NOT invent alternative names. If `design` prose uses different wording, follo
 - [ ] Foreach: items path references a prior array, pipeline_name is set
 - [ ] condition/foreach/pipeline stages have NO system_prompt, outputs, effort, or budget fields
 - [ ] reads only includes must-have Tier 1 data — large/optional context left for Tier 2 get_store_value
+- [ ] Within one stage's `reads`, never read both a parent entry and a sub-field of the same entry (pick one shape per stage)
 - [ ] No output field contains potentially unbounded text (markdown reports, code diffs) — use file-path pattern instead
 - [ ] `skills` only references IDs from the Available Capabilities section — never fabricate skill names
 - [ ] Output fields referenced by foreach `items` use type `object[]` (not `object`)

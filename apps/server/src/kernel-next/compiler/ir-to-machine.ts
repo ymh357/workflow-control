@@ -147,18 +147,37 @@ export interface StageMeta {
 function indexStages(ir: PipelineIR): Map<string, StageMeta> {
   const index = new Map<string, StageMeta>();
 
-  // First pass: compute the set of stages that appear as a target in any
-  // gate's routing table. These stages are "gate-routed" — activation
-  // requires GATE_ANSWERED authorization in addition to inbound delivery.
+  // First pass: compute the set of stages that appear as a target in
+  // any gate's routing table. These stages are "gate-routed":
+  // activation requires GATE_ANSWERED authorization in addition to
+  // inbound delivery — UNLESS the stage is a known upstream of the
+  // gate (i.e. has a wire feeding the gate), in which case the routing
+  // entry is treated as a rollback target rather than a forward-only
+  // activation gate. That upstream stage must activate on its own
+  // inbound wires on the first pass; a later `reject`-style answer
+  // sends the pipeline back to it via runner-side reset logic, not
+  // via gate-authorization.
+  //
+  // Without this exclusion, `human_confirm` (mapped to a gate with
+  // `on_reject_to` → the preceding stage) would make its own
+  // predecessor wait for authorization it never receives on the
+  // forward path, stalling the entire pipeline. Observed with
+  // pipeline-generator where `analyzing` feeds `awaitingConfirm` AND
+  // is the gate's reject target.
+  const gateUpstreamByGate = new Map<string, Set<string>>();
+  for (const w of ir.wires) {
+    if (w.from.source !== "stage") continue;
+    gateUpstreamByGate.set(w.to.stage, (gateUpstreamByGate.get(w.to.stage) ?? new Set()).add(w.from.stage));
+  }
   const gateRoutedTargets = new Set<string>();
   for (const s of ir.stages) {
     if (s.type !== "gate") continue;
+    const upstreams = gateUpstreamByGate.get(s.name) ?? new Set();
     for (const target of Object.values(s.config.routing.routes)) {
-      // target may be a single stage name or an array of stage names (multi-target)
-      if (Array.isArray(target)) {
-        for (const t of target) gateRoutedTargets.add(t);
-      } else {
-        gateRoutedTargets.add(target);
+      const list = Array.isArray(target) ? target : [target];
+      for (const t of list) {
+        if (upstreams.has(t)) continue;  // rollback target, not a forward gate
+        gateRoutedTargets.add(t);
       }
     }
   }

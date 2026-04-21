@@ -56,6 +56,12 @@ apps/web/playwright-report/
 # Root-level test output
 /test-results/
 
+# Script-produced scratch artifacts in app roots (e.g.
+# persist_pipeline's deliverable-write error report written by a
+# running tech-research-writer task). These are per-run outputs, not
+# source.
+apps/*/.deliverable-error.md
+
 # Team env (shared secrets — use .env.team.example as template)
 .env.team
 

@@ -178,7 +178,6 @@ stages:
             system_prompt: gen-skeleton
             reads:
               design: pipelineDesign
-              contracts: pipelineDesign.stageContracts
           effort: high
           max_turns: 60
           max_budget_usd: 5
@@ -190,7 +189,6 @@ stages:
             system_prompt: gen-prompts
             reads:
               design: pipelineDesign
-              contracts: pipelineDesign.stageContracts
             agents:
               prompt-writer:
                 description: Generates a single system prompt for one pipeline stage

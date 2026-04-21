@@ -30,7 +30,7 @@ describe("mapReadsToWires", () => {
     }
   });
 
-  it("produces one external wire per injected_context read", () => {
+  it("produces one external wire per injected_context read (to.port = localKey)", () => {
     const legacy = {
       stages: [{ name: "collector", type: "agent", runtime: { reads: { cfg: "pipelineConfig" } } }],
     };
@@ -41,7 +41,41 @@ describe("mapReadsToWires", () => {
       expect(r.wires).toHaveLength(1);
       const w = r.wires[0]!;
       expect(w.from).toEqual({ source: "external", port: "pipelineConfig" });
-      expect(w.to).toEqual({ stage: "collector", port: "pipelineConfig" });
+      expect(w.to).toEqual({ stage: "collector", port: "cfg" });
+    }
+  });
+
+  it("dotted-field read: to.port = localKey, preserving source field name on from.port", () => {
+    const entryDirectoryWithDotted = new Map<string, EntryDescriptor>([
+      ["pipelineDesign", {
+        producerStage: "analyzing",
+        fields: [
+          { name: "stageContracts", type: "Record<string, unknown>[]" },
+          { name: "pipelineName", type: "string" },
+        ],
+      }],
+      ["pipelineDesign.stageContracts", {
+        producerStage: "analyzing",
+        fields: [{ name: "stageContracts", type: "Record<string, unknown>[]" }],
+      }],
+    ]);
+    const legacy: Parameters<typeof mapReadsToWires>[0] = {
+      stages: [
+        { name: "analyzing", type: "agent", runtime: { reads: {} } },
+        {
+          name: "genSkeleton",
+          type: "agent",
+          runtime: { reads: { contracts: "pipelineDesign.stageContracts" } },
+        },
+      ],
+    };
+    const r = mapReadsToWires(legacy, entryDirectoryWithDotted, new Set());
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.wires).toHaveLength(1);
+      const w = r.wires[0]!;
+      expect(w.from).toEqual({ source: "stage", stage: "analyzing", port: "stageContracts" });
+      expect(w.to).toEqual({ stage: "genSkeleton", port: "contracts" });
     }
   });
 

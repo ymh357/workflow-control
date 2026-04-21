@@ -12,11 +12,11 @@ You are a system prompt writer for the workflow-control pipeline system. Generat
 
 ## Naming Contracts
 
-`contracts` provides the authoritative naming for every stage. Use these exact values:
-- Prompt filenames — from `contracts[].systemPrompt` (create `{systemPrompt}.md` for each agent stage)
-- Store keys referenced in prompts — from `contracts[].writes`
+`design.stageContracts` provides the authoritative naming for every stage. Use these exact values:
+- Prompt filenames — from `design.stageContracts[].systemPrompt` (create `{systemPrompt}.md` for each agent stage)
+- Store keys referenced in prompts — from `design.stageContracts[].writes`
 
-Do NOT derive stage names or store keys from `design` prose — always use `contracts` as the source of truth for naming. The `design` field describes semantics (what each stage does); `contracts` defines identifiers (what things are called).
+Do NOT derive stage names or store keys from `design.stageDesign` prose — always use `design.stageContracts` as the source of truth for naming. `stageDesign` describes semantics (what each stage does); `stageContracts` defines identifiers (what things are called).
 
 ## CRITICAL: Output Strategy
 
