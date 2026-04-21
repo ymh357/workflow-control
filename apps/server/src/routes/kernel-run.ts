@@ -20,6 +20,9 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { KernelService } from "../kernel-next/mcp/kernel.js";
 import { createKernelMcp } from "../kernel-next/mcp/server.js";
 import { getKernelNextDb } from "../lib/kernel-next-db.js";
@@ -34,6 +37,20 @@ import type { StageExecutor } from "../kernel-next/runtime/executor.js";
 import type { PipelineIR } from "../kernel-next/ir/schema.js";
 import type { StageHandlerMap } from "../kernel-next/runtime/mock-executor.js";
 import { logger } from "../lib/logger.js";
+
+// Resolve the monorepo's tsc binary so that submit_pipeline's wire type
+// validation works regardless of where the executor's temp codegen dir
+// sits. Without this, `npx tsc` resolved from the temp dir prints
+// "This is not the tsc command you are looking for" and the MCP
+// submit_pipeline returns a bogus WIRE_TYPE_MISMATCH. Pass this path
+// explicitly to every KernelService / createKernelMcp constructed on
+// this route.
+const MONOREPO_TSC_PATH = (() => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  // routes/ -> src/ -> server/ -> node_modules/.bin/tsc
+  const candidate = join(here, "..", "..", "node_modules", ".bin", "tsc");
+  return existsSync(candidate) ? candidate : undefined;
+})();
 
 export const kernelRunRoute = new Hono();
 
@@ -150,7 +167,11 @@ function registerLegacyPipeline(
     executorFactory: (execDb, overrides) =>
       new RealStageExecutor({
         mcpServerFactory: (_dispatcher, portRuntime) =>
-          createKernelMcp(execDb, { surface: "combined", portRuntime }),
+          createKernelMcp(execDb, {
+            surface: "combined",
+            portRuntime,
+            tscPath: MONOREPO_TSC_PATH,
+          }),
         promptResolver: new DbPromptResolver(execDb, versionHash),
         model: overrides.model ?? opts.model ?? DEFAULT_REAL_MODEL,
         maxTurns: overrides.maxTurns ?? opts.maxTurns ?? DEFAULT_REAL_MAX_TURNS,
@@ -193,6 +214,7 @@ const pipelineRegistry: Record<string, () => PipelineRegistration> = {
             // (otherwise dashboard sees zero port_written events on
             // real-executor paths — discovered during A7.1 verify).
             portRuntime,
+            tscPath: MONOREPO_TSC_PATH,
           }),
         model: overrides.model ?? DEFAULT_REAL_MODEL,
         maxTurns: overrides.maxTurns ?? DEFAULT_REAL_MAX_TURNS,
