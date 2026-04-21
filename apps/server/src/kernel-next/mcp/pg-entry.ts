@@ -7,6 +7,7 @@ import type { KernelNextSSEEvent, RunFinalData, StageErrorData, StageExecutingDa
 import { KernelService } from "./kernel.js";
 import { LegacyPipelineLoadError } from "../runtime/load-legacy-pipeline.js";
 import { readLatestPort } from "../runtime/port-runtime.js";
+import { startPipelineRun } from "../runtime/start-pipeline-run.js";
 import { logger } from "../../lib/logger.js";
 
 export interface StartPipelineGeneratorInput {
@@ -30,7 +31,10 @@ export interface PgEntryDeps {
     warnings: Array<{ code: string; message?: string }>;
     prompts: Record<string, string>;
   };
-  runner: (args: {
+  // Optional runner injection — tests pass a stub to capture the
+  // background-run call without launching a real executor. Production
+  // callers omit this and the function delegates to startPipelineRun.
+  runner?: (args: {
     db: DatabaseSync;
     ir: PipelineIR;
     taskId: string;
@@ -56,6 +60,9 @@ export interface PgEntryDeps {
   model: string;
   maxTurns?: number;
   maxBudgetUsd?: number;
+  // Forwarded to startPipelineRun for MCP server construction in the
+  // production path (so monorepo tsc is available to stage agents).
+  tscPath?: string;
 }
 
 const MAX_DESCRIPTION_LEN = 8000;
@@ -110,49 +117,83 @@ export async function handleStartPipelineGenerator(
     };
   }
 
-  if (!deps.executorFactory) {
-    return {
-      ok: false,
-      error: "RUN_BOOTSTRAP_FAILED",
-      reason: "executorFactory is required",
-    };
+  // Delegate to startPipelineRun for executor construction + background run.
+  // Tests that inject a custom runner go through the deps.runner path below
+  // instead; production code always uses the shared startPipelineRun.
+  if (deps.runner) {
+    // Test injection path — build a minimal executor inline, same as before.
+    // (Kept to avoid forcing all tests to switch to startPipelineRun.)
+    if (!deps.executorFactory) {
+      return {
+        ok: false,
+        error: "RUN_BOOTSTRAP_FAILED",
+        reason: "executorFactory is required when runner is injected",
+      };
+    }
+    const taskId = input.taskId ?? randomUUID();
+    const executor = deps.executorFactory({
+      promptRoot: loaded.promptRoot,
+      versionHash: vh,
+      db: deps.db,
+      model: deps.model,
+      maxTurns: deps.maxTurns,
+      maxBudgetUsd: deps.maxBudgetUsd,
+    });
+    try {
+      const p = deps.runner({
+        db: deps.db,
+        ir: loaded.ir,
+        taskId,
+        versionHash: vh,
+        handlers: {},
+        executor,
+        seedValues: { taskDescription: desc },
+        broadcaster: deps.broadcaster,
+      });
+      void p.catch((err: unknown) => {
+        // Background run failure observed via broadcaster or
+        // wait_pipeline_result timeout. Logged for post-mortem visibility.
+        logger.error({ taskId, err }, "[pg-entry] background runPipeline rejected");
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        error: "RUN_BOOTSTRAP_FAILED",
+        reason: (err as Error).message,
+      };
+    }
+    return { ok: true, taskId, versionHash: vh, pipelineDir: "pipeline-generator" };
   }
 
-  const taskId = input.taskId ?? randomUUID();
-  const executor = deps.executorFactory({
-    promptRoot: loaded.promptRoot,
-    versionHash: vh,
+  // Production path — delegate executor construction and background
+  // runPipeline to startPipelineRun so pipeline-generator shares one
+  // kickoff code path with the MCP run_pipeline tool and the HTTP route.
+  const runRes = await startPipelineRun({
     db: deps.db,
+    broadcaster: deps.broadcaster,
+    versionHash: vh,
+    taskId: input.taskId,
+    seedValues: { taskDescription: desc },
     model: deps.model,
     maxTurns: deps.maxTurns,
     maxBudgetUsd: deps.maxBudgetUsd,
+    tscPath: deps.tscPath,
   });
 
-  try {
-    const p = deps.runner({
-      db: deps.db,
-      ir: loaded.ir,
-      taskId,
-      versionHash: vh,
-      handlers: {},
-      executor,
-      seedValues: { taskDescription: desc },
-      broadcaster: deps.broadcaster,
-    });
-    void p.catch((err: unknown) => {
-      // Background run failure observed via broadcaster or wait_pipeline_result timeout.
-      // Logged here for post-mortem visibility.
-      logger.error({ taskId, err }, "[pg-entry] background runPipeline rejected");
-    });
-  } catch (err) {
+  if (runRes.ok === false) {
     return {
       ok: false,
       error: "RUN_BOOTSTRAP_FAILED",
-      reason: (err as Error).message,
+      reason: `${runRes.code}: ${runRes.message}`,
     };
   }
 
-  return { ok: true, taskId, versionHash: vh, pipelineDir: "pipeline-generator" };
+  return {
+    ok: true,
+    taskId: runRes.taskId,
+    versionHash: runRes.versionHash,
+    pipelineDir: "pipeline-generator",
+  };
 }
 
 // --- handleWaitPipelineResult ---
