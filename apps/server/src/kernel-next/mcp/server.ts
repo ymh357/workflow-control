@@ -118,6 +118,14 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
+let cachedPipelineGeneratorIR: ReturnType<typeof loadLegacyPipelineIR> | undefined;
+function getPipelineGeneratorIR() {
+  if (!cachedPipelineGeneratorIR) {
+    cachedPipelineGeneratorIR = loadLegacyPipelineIR("pipeline-generator");
+  }
+  return cachedPipelineGeneratorIR;
+}
+
 export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}) {
   const kernel = new KernelService(db, options);
   const maxBytesDefault = options.defaultMaxBytes ?? MAX_VALUE_BYTES_DEFAULT;
@@ -673,7 +681,7 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
         handler: async (args: any) => {
           let ir: PipelineIR;
           try {
-            ir = loadLegacyPipelineIR("pipeline-generator").ir;
+            ir = getPipelineGeneratorIR().ir;
           } catch (err) {
             return errorResponse("LOAD_IR_FAILED", { reason: (err as Error).message });
           }
@@ -686,7 +694,7 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
           );
           return res.ok
             ? jsonResponse(res)
-            : errorResponse(res.error ?? "unknown", res as Record<string, unknown>);
+            : errorResponse(res.error, res as Record<string, unknown>);
         },
       },
   ];
