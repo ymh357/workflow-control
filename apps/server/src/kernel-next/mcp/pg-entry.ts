@@ -185,9 +185,16 @@ function readPortValue(
   return result?.value;
 }
 
-// Collect all direction='out' port values for a given (taskId, stageName),
-// keeping only the latest written row per port_name. Returns a plain object
-// mapping portName → parsed value. Returns {} when no rows are found.
+// collectStagePorts returns the latest value of every output port
+// written by a given stage for a given task. It mirrors the SQL
+// strategy of readLatestPort (see runtime/port-runtime.ts) — same
+// ORDER BY (written_at DESC, attempt_idx DESC) — but widens the scope
+// from a single (stage, port) to all ports of a stage in one query.
+// De-duplication per port_name keeps only the row that readLatestPort
+// would have returned if queried individually. We avoid calling
+// readLatestPort in a loop because we do not know the full set of
+// port names up front (IR declares them but runtime may skip some if
+// the stage short-circuits).
 function collectStagePorts(
   db: DatabaseSync,
   taskId: string,
