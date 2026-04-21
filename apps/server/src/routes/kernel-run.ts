@@ -20,8 +20,6 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { KernelService } from "../kernel-next/mcp/kernel.js";
 import { createKernelMcp } from "../kernel-next/mcp/server.js";
 import { getKernelNextDb } from "../lib/kernel-next-db.js";
@@ -32,7 +30,7 @@ import { slowDiamondHandlers } from "../kernel-next/demo/slow-diamond.js";
 import { RealStageExecutor } from "../kernel-next/runtime/real-executor.js";
 import { FsPromptResolver } from "../kernel-next/runtime/fs-prompt-resolver.js";
 import { smokeTestIR, smokeTestPromptRoot } from "../kernel-next/builtins/smoke-test.js";
-import { convertLegacyYaml } from "../kernel-next/converter/legacy-yaml.js";
+import { loadLegacyPipelineIR, LegacyPipelineLoadError } from "../kernel-next/runtime/load-legacy-pipeline.js";
 import type { StageExecutor } from "../kernel-next/runtime/executor.js";
 import type { PipelineIR } from "../kernel-next/ir/schema.js";
 import type { StageHandlerMap } from "../kernel-next/runtime/mock-executor.js";
@@ -107,22 +105,21 @@ interface LegacyPipelineRegistrationOpts {
 function registerLegacyPipeline(
   opts: LegacyPipelineRegistrationOpts,
 ): () => PipelineRegistration {
-  const yamlPath = join(
-    new URL(".", import.meta.url).pathname,
-    "..", "builtin-pipelines", opts.pipelineDir, "pipeline.yaml",
-  );
-  const yamlText = readFileSync(yamlPath, "utf-8");
-  const conv = convertLegacyYaml(yamlText, { yamlFilePath: yamlPath });
-  if (!conv.ok) {
-    throw new Error(
-      `legacy pipeline '${opts.pipelineDir}' failed to convert: ${conv.diagnostics.map((d) => d.code).join(", ")}`,
-    );
+  let loaded: ReturnType<typeof loadLegacyPipelineIR>;
+  try {
+    loaded = loadLegacyPipelineIR(opts.pipelineDir);
+  } catch (err) {
+    if (err instanceof LegacyPipelineLoadError) {
+      throw new Error(
+        `legacy pipeline '${opts.pipelineDir}' failed to convert: ${err.diagnostics.map((d) => d.code).join(", ")}`,
+      );
+    }
+    throw err;
   }
-  for (const w of conv.warnings) {
+  for (const w of loaded.warnings) {
     logger.info({ pipeline: opts.pipelineDir, warning: w }, "converter warning");
   }
-  const ir = conv.ir;
-  const promptRoot = conv.promptRoot!;
+  const { ir, promptRoot } = loaded;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_LEGACY_TIMEOUT_MS;
 
   return () => ({
