@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { initKernelNextSchema, insertPipelineVersion, getPipelineIR, listPipelineVersions } from "./sql.js";
+import { initKernelNextSchema, insertPipelineVersion, getPipelineIR, listPipelineVersions, insertPromptContent, insertPromptRefs, getPromptContent } from "./sql.js";
 import { versionHash } from "./canonical.js";
 import type { PipelineIR } from "./schema.js";
 
@@ -115,5 +115,54 @@ describe("kernel-next SQL persistence", () => {
     expect(pcFk?.to).toBe("content_hash");
     expect(pvFk?.from).toBe("version_hash");
     expect(pvFk?.to).toBe("version_hash");
+  });
+});
+
+describe("insertPromptContent + insertPromptRefs", () => {
+  it("inserts content once and is idempotent on same content_hash", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    insertPromptContent(db, "abc123", "hello world");
+    insertPromptContent(db, "abc123", "hello world");
+    const rows = db.prepare("SELECT content_hash FROM prompt_contents").all();
+    expect(rows.length).toBe(1);
+  });
+
+  it("inserts prompt refs referencing an existing version and content", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    db.prepare(
+      `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+       VALUES ('v1', 'test', 0, NULL, '{}', '')`,
+    ).run();
+    insertPromptContent(db, "h1", "content1");
+    insertPromptRefs(db, "v1", { analyzing: "h1", "system/analysis": "h1" });
+    const rows = db
+      .prepare("SELECT prompt_ref, content_hash FROM pipeline_prompt_refs WHERE version_hash = ? ORDER BY prompt_ref")
+      .all("v1") as Array<{ prompt_ref: string; content_hash: string }>;
+    expect(rows).toEqual([
+      { prompt_ref: "analyzing", content_hash: "h1" },
+      { prompt_ref: "system/analysis", content_hash: "h1" },
+    ]);
+  });
+
+  it("insertPromptRefs is idempotent on same (version_hash, prompt_ref)", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    db.prepare(
+      `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+       VALUES ('v1', 'test', 0, NULL, '{}', '')`,
+    ).run();
+    insertPromptContent(db, "h1", "c1");
+    insertPromptRefs(db, "v1", { analyzing: "h1" });
+    insertPromptRefs(db, "v1", { analyzing: "h1" });
+    const rows = db.prepare("SELECT prompt_ref FROM pipeline_prompt_refs WHERE version_hash = ?").all("v1");
+    expect(rows.length).toBe(1);
+  });
+
+  it("getPromptContent returns null for missing content_hash", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    expect(getPromptContent(db, "missing")).toBeNull();
   });
 });

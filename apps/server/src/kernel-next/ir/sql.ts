@@ -252,3 +252,38 @@ export function listPipelineVersions(db: DatabaseSync, pipelineName?: string): s
       ).all();
   return (rows as Array<{ version_hash: string }>).map((r) => r.version_hash);
 }
+
+export function insertPromptContent(
+  db: DatabaseSync,
+  contentHash: string,
+  content: string,
+): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO prompt_contents (content_hash, content, created_at)
+     VALUES (?, ?, ?)`,
+  ).run(contentHash, content, Date.now());
+}
+
+export function insertPromptRefs(
+  db: DatabaseSync,
+  versionHash: string,
+  refs: Record<string, string>,
+): void {
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO pipeline_prompt_refs (version_hash, prompt_ref, content_hash)
+     VALUES (?, ?, ?)`,
+  );
+  for (const [ref, contentHash] of Object.entries(refs)) {
+    stmt.run(versionHash, ref, contentHash);
+  }
+}
+
+export function getPromptContent(
+  db: DatabaseSync,
+  contentHash: string,
+): string | null {
+  const row = db
+    .prepare(`SELECT content FROM prompt_contents WHERE content_hash = ?`)
+    .get(contentHash) as { content: string } | undefined;
+  return row ? row.content : null;
+}
