@@ -346,6 +346,11 @@ export async function handleWaitPipelineResult(
         // terminal event or timeout.
         return;
       }
+      if (ev.type === "stage_rolled_back") {
+        // Transient event: pipeline will re-open a gate or reach a new
+        // terminal. Do not settle wait.
+        return;
+      }
       // stage_retry and other non-terminal events are ignored; wait continues until
       // the next terminal event or timeout.
     });

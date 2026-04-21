@@ -466,6 +466,51 @@ describe("handleStartPipelineGenerator — version idempotency", () => {
   });
 });
 
+describe("handleWaitPipelineResult — rollback transparency", () => {
+  it("ignores stage_rolled_back and keeps waiting for terminal event", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const taskId = "task-rb-wait";
+    const ir = realIR();
+
+    // Seed pipeline_versions row for FK constraint.
+    const versionHash = "test-vh-rb-wait";
+    db.prepare(
+      `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+       VALUES (?, 'test', ?, NULL, '{}', '')`,
+    ).run(versionHash, Date.now());
+
+    // Seed port values required by assembleDone.
+    const aP = seedAttempt(db, taskId, versionHash, "persistResult");
+    seedPortValue(db, aP, "persistResult", "pipelineId", "rb-pid");
+    seedPortValue(db, aP, "persistResult", "yamlPath", "/tmp/rb/pipeline.yaml");
+
+    const aD = seedAttempt(db, taskId, versionHash, "pipelineDesign");
+    seedPortValue(db, aD, "pipelineDesign", "pipelineName", "Rollback Pipeline");
+    seedPortValue(db, aD, "pipelineDesign", "description", "desc after rollback");
+
+    // Sequence: publish stage_rolled_back FIRST, then run_final completed.
+    // The wait must not settle on the transient rollback event.
+    broadcaster.publish({
+      taskId,
+      timestamp: new Date().toISOString(),
+      type: "stage_rolled_back",
+      data: { fromGate: "G", toStage: "A", affectedStages: ["A", "G"] },
+    });
+    broadcaster.publish({
+      taskId,
+      timestamp: new Date().toISOString(),
+      type: "run_final",
+      data: { finalState: "completed", stageErrors: [] } as any,
+    });
+
+    const res = await handleWaitPipelineResult({ taskId, timeoutMs: 2000 }, { db, broadcaster, ir });
+    expect(res.ok).toBe(true);
+    if (!res.ok || res.status !== "done") throw new Error(`expected done, got: ${JSON.stringify(res)}`);
+    expect(res.result.pipelineId).toBe("rb-pid");
+  });
+});
+
 describe("handleWaitPipelineResult — done", () => {
   it("returns done with result fields when run_final completed event arrives", async () => {
     const db = freshDb();
