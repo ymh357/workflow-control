@@ -214,6 +214,11 @@ export async function startPipelineRun(
     ?? `${nameForRegistry}-${Date.now()}-${randomUUID().slice(0, 8)}`;
 
   // --- Fire runPipeline in background ---
+  //
+  // runPipeline throws synchronously on setup errors (e.g.
+  // SEED_VALUES_MISSING_KEY) before any SSE event is published. Translate
+  // such a throw into a synthetic run_final=failed so SSE subscribers see
+  // a terminal event instead of a silent dangling task.
   void runPipeline({
     db,
     ir,
@@ -228,6 +233,27 @@ export async function startPipelineRun(
       { taskId, versionHash, err },
       "[startPipelineRun] background runPipeline rejected",
     );
+    try {
+      input.broadcaster.publish({
+        type: "run_final",
+        taskId,
+        timestamp: new Date().toISOString(),
+        data: {
+          finalState: "failed",
+          stageErrors: [
+            {
+              stage: "",
+              message: (err as Error).message ?? String(err),
+            },
+          ],
+        },
+      });
+    } catch (publishErr) {
+      logger.error(
+        { taskId, err: publishErr },
+        "[startPipelineRun] failed to publish synthetic run_final",
+      );
+    }
   });
 
   return { ok: true, taskId, versionHash };
