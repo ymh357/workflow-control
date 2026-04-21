@@ -157,6 +157,21 @@ type AttemptVerdict =
         maxRetries: number;
         errorMessage: string;
       };
+    }
+  | {
+      // Reject-rollback (Task 6). Produced by the dispatcher-level
+      // handleGateReject when a GATE_REJECTED event arrives on the
+      // shared run-scoped dispatcher. The outer loop prunes the affected
+      // stages out of persistent state and rebuilds the actor — the
+      // rebuilt actor re-enters the gate's `executing` substate so the
+      // gate blocks again for a fresh answer. The replay loop consults
+      // `fromGate` to skip synthesising a stale GATE_ANSWERED for the
+      // rejected gate.
+      verdict: "rollback";
+      contextAtRollback: MachineContext;
+      fromGate: string;
+      toStage: string;
+      affectedStages: string[];
     };
 
 // Safety cap on retry iterations: the per-stage RetrySpec caps
@@ -182,8 +197,22 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   // `currentActor` ref lets the closure forward to whichever actor is
   // alive at dispatch time.
   let currentActor: ReturnType<typeof createActor> | null = null;
+  // Attempt-scoped hook: each runOneAttempt installs a handler so the
+  // run-scoped dispatcher can deliver GATE_REJECTED to the correct
+  // attempt's resolveAttempt. Cleared at attempt teardown.
+  let rejectHandler:
+    | ((event: Extract<MachineEvent, { type: "GATE_REJECTED" }>) => void)
+    | null = null;
   const dispatcher: EventDispatcher = {
     send: (event: MachineEvent) => {
+      if (event.type === "GATE_REJECTED") {
+        // Intercept BEFORE reaching the XState actor — the machine has no
+        // handler for this event type. The attempt's handler owns pruning
+        // persistent state and resolving with a "rollback" verdict so the
+        // outer loop can rebuild the actor.
+        if (rejectHandler) rejectHandler(event);
+        return;
+      }
       if (currentActor) currentActor.send(event);
     },
   };
@@ -251,6 +280,14 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   let persistentLog: string[] = [];
   let persistentFinalizedStages: MachineContext["finalizedStages"] = [];
   let isRetryRebuild = false; // drives initialContext.portValues override
+  // Task 6 — gates that were rejected in the current run. On rebuild,
+  // the replay loop skips synthesising a GATE_ANSWERED for these so the
+  // gate re-enters `executing` and blocks for a fresh external answer.
+  // Scoped to the whole run (not just one attempt): a gate that was
+  // rejected earlier must never replay its stale answer on any later
+  // rebuild, even if a subsequent retry rebuild sits between the
+  // rollback and the approve.
+  const rejectFromGates = new Set<string>();
 
   // The most recent machine context from the subscriber. Updated on
   // every snapshot so the retry inspector can read the latest context
@@ -334,11 +371,86 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
         );
       }
       const verdict = await runOneAttempt();
-      if (verdict.verdict !== "retry") {
+      if (verdict.verdict === "completed" || verdict.verdict === "failed") {
         finalOutcome = verdict;
         break;
+      } else if (verdict.verdict === "rollback") {
+        // Task 6 — reject rollback. Prune every affectedStage out of
+        // persistent state and rebuild with isRetryRebuild = true so
+        // the next compile honours initialContext. The rejected gate is
+        // recorded in rejectFromGates so the gate-replay loop doesn't
+        // synthesise a GATE_ANSWERED for it; when the rebuilt machine
+        // enters the gate's region it will re-open the gate in
+        // `executing` and wait for a fresh external answer.
+        const { contextAtRollback, fromGate, affectedStages } = verdict;
+        const affected = new Set(affectedStages);
+
+        // Port values: drop every key whose `stageName` prefix is affected.
+        // Seeds live under `__external__.<port>` which is never added to
+        // affectedStages, so they survive the prune intact.
+        persistentPortValues = Object.fromEntries(
+          Object.entries(contextAtRollback.portValues).filter(([key]) => {
+            const [stageName] = key.split(".");
+            return !affected.has(stageName ?? "");
+          }),
+        );
+        // finalizedStages: drop entries for every affected stage so they
+        // re-enter `waiting` on the rebuilt actor instead of short-
+        // circuiting through the finalized-short-circuit branches.
+        persistentFinalizedStages = contextAtRollback.finalizedStages.filter(
+          (f) => !affected.has(f.name),
+        );
+        // Gate authorization state: drop entries that target the affected
+        // stages. An unpicked-sibling skip targeting the gate itself is
+        // dropped so the gate re-enters its waiting-then-executing path.
+        persistentGateAuthorized = contextAtRollback.gateAuthorizedTargets.filter(
+          (t) => !affected.has(t),
+        );
+        persistentGateSkipped = contextAtRollback.gateSkippedTargets.filter(
+          (t) => !affected.has(t),
+        );
+        // Retry counts: drop per-stage counts for affected stages so the
+        // rebuilt machine's retry budget starts fresh for those stages.
+        persistentRetryCounts = Object.fromEntries(
+          Object.entries(contextAtRollback.retryCounts).filter(
+            ([stageName]) => !affected.has(stageName),
+          ),
+        );
+        // Log continuity: drop entries for affected stages.
+        persistentLog = contextAtRollback.log.filter((entry) => {
+          const colonIdx = entry.indexOf(":");
+          if (colonIdx < 0) return true;
+          const stageName = entry.slice(0, colonIdx);
+          return !affected.has(stageName);
+        });
+        // stageErrors: drop entries for affected stages.
+        const preservedStageErrors = stageErrors.filter(
+          (e) => !affected.has(e.stage),
+        );
+        stageErrors.length = 0;
+        stageErrors.push(...preservedStageErrors);
+        // SSE dedupe + dispatched sets: clear entries for affected stages
+        // so their stage_executing / stage_done / stage_error events can
+        // re-emit on the rebuilt actor.
+        for (const name of affected) {
+          publishedStageExecuting.delete(name);
+          publishedStageFinal.delete(name);
+          dispatched.delete(name);
+        }
+        // Mark the rejected gate so the replay loop skips it. Stays set
+        // across subsequent rebuilds — a rejected gate must never replay
+        // its stale answer, even if an unrelated retry rebuild intervenes.
+        rejectFromGates.add(fromGate);
+        isRetryRebuild = true;
+        continue;
       }
       // verdict.verdict === "retry": apply the transformations and loop.
+      // Narrow explicitly because TS doesn't propagate control-flow
+      // narrowing through the else-if chain above across the `continue`
+      // that terminates the rollback branch.
+      if (verdict.verdict !== "retry") {
+        throw new Error(`runPipeline: unexpected verdict ${JSON.stringify(verdict)}`);
+      }
       const { failedStageName, backToStage, retryIdx, maxRetries, errorMessage } =
         verdict.event;
       // contextAtRetry carries the machine context at the moment the retry
@@ -621,6 +733,10 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       // if another snapshot landed between RETRY_TO_STAGE inspection and
       // the outer while-loop re-entering runOneAttempt.
       let retryTriggered = false;
+      // Task 6 — attempt-scoped rollback-triggered flag. Same role as
+      // retryTriggered: prevents the subscriber / inspector from racing
+      // against the rollback resolve.
+      let rollbackTriggered = false;
       let attemptEnded = false;
       // Forward-ref: the actor is assigned below; the inspector needs
       // to call .stop() on it when RETRY_TO_STAGE is observed so the
@@ -629,13 +745,54 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       // eslint-disable-next-line prefer-const
       let thisActor: ReturnType<typeof createActor> | null = null;
 
+      // Install the run-scoped rejectHandler so external GATE_REJECTED
+      // events routed through `dispatcher.send` land here. The handler
+      // captures context from `latestContext` (same technique as the
+      // retry inspector), publishes the stage_rolled_back SSE, stops
+      // the actor, and resolves the attempt with a "rollback" verdict.
+      // The outer loop reads the verdict and performs the persistent-
+      // state prune + rebuild.
+      rejectHandler = (ev) => {
+        if (rollbackTriggered || retryTriggered || attemptEnded) return;
+        rollbackTriggered = true;
+        const contextAtRollback =
+          latestContext
+          ?? (thisActor?.getSnapshot() as { context: MachineContext } | undefined)?.context
+          ?? null;
+        if (!contextAtRollback) {
+          // No actor yet — nothing to roll back. Ignore.
+          rollbackTriggered = false;
+          return;
+        }
+        publish({
+          type: "stage_rolled_back",
+          taskId: opts.taskId,
+          timestamp: isoNow(),
+          data: {
+            fromGate: ev.stageName,
+            toStage: ev.targetStage,
+            affectedStages: ev.affectedStages,
+          },
+        });
+        if (thisActor) {
+          try { thisActor.stop(); } catch { /* ignore */ }
+        }
+        resolveAttempt({
+          verdict: "rollback",
+          contextAtRollback,
+          fromGate: ev.stageName,
+          toStage: ev.targetStage,
+          affectedStages: ev.affectedStages,
+        });
+      };
+
       // Inspector catches raise'd events (the compiler's retry
       // transition uses raise()) which surface on either
       // @xstate.microstep or @xstate.event depending on XState v5's
       // internal routing. The compiler test (Task C1) also matches on
       // both — we reuse the exact shape here.
       const inspector = (inspEvent: { type?: string; event?: unknown }): void => {
-        if (retryTriggered || attemptEnded) return;
+        if (retryTriggered || rollbackTriggered || attemptEnded) return;
         if (
           inspEvent.type !== "@xstate.event" &&
           inspEvent.type !== "@xstate.microstep"
@@ -690,12 +847,13 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       latestContext = null;
 
       actor.subscribe((snapshot) => {
-        // Always update latestContext, even when retryTriggered — the
-        // inspector fires during microstep processing and needs the most
-        // recent committed snapshot context.
+        // Always update latestContext, even when retryTriggered /
+        // rollbackTriggered — the inspector + rejectHandler fire during
+        // microstep processing and need the most recent committed
+        // snapshot context.
         latestContext = snapshot.context as MachineContext;
 
-        if (retryTriggered || attemptEnded) return;
+        if (retryTriggered || rollbackTriggered || attemptEnded) return;
         if (timedOut) {
           attemptEnded = true;
           // Let the outer .finally handle actor.stop / unregister.
@@ -926,6 +1084,12 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       if (isRetryRebuild) {
         for (const finalized of persistentFinalizedStages) {
           if (finalized.outcome !== "done") continue;
+          // Task 6 — a gate that was rejected earlier in this run must
+          // not replay its stale answer on the rebuilt actor. Defense-
+          // in-depth: rejected gates are also pruned out of
+          // persistentFinalizedStages at rollback time, so this guard
+          // fires only if some later code path re-injects the entry.
+          if (rejectFromGates.has(finalized.name)) continue;
           const gateStage = opts.ir.stages.find(
             (s) => s.name === finalized.name && s.type === "gate",
           ) as GateStage | undefined;
@@ -963,6 +1127,10 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
         }
       }
     }).finally(() => {
+      // Task 6 — clear the attempt-scoped reject hook so a late-arriving
+      // GATE_REJECTED (e.g. user answered `reject` AFTER the pipeline
+      // completed) doesn't invoke a resolver from the previous attempt.
+      rejectHandler = null;
       if (currentActor) {
         try { currentActor.stop(); } catch { /* ignore */ }
       }
