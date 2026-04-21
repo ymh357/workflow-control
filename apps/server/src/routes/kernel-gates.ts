@@ -90,13 +90,20 @@ kernelGatesRoute.post("/kernel/gates/:id/answer", async (c) => {
   const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
   const result = svc.answerGate(id, parsed.data.answer);
   if (result.ok) {
-    // Dispatch GATE_ANSWERED to the live runner if present. If not (task
-    // already completed / process restarted), the persisted answer will
-    // be picked up by any rehydration path; REST just returns ok.
-    // Task 4 will add kind==="rejected" dispatch (GATE_REJECTED).
-    // For now only answered answers are forwarded to the runner.
-    if (result.kind === "answered") {
-      const dispatcher = taskRegistry.get(result.taskId);
+    // Dispatch to the live runner if present. If not (task already completed
+    // or process restarted), the persisted answer will be picked up by any
+    // rehydration path; REST just returns ok.
+    const dispatcher = taskRegistry.get(result.taskId);
+    if (result.kind === "rejected") {
+      dispatcher?.send({
+        type: "GATE_REJECTED",
+        gateId: result.gateId,
+        stageName: result.stageName,
+        answer: result.answer,
+        targetStage: result.targetStage,
+        affectedStages: result.affectedStages,
+      });
+    } else {
       dispatcher?.send({
         type: "GATE_ANSWERED",
         gateId: result.gateId,

@@ -9,6 +9,7 @@ import { initKernelNextSchema } from "../kernel-next/ir/sql.js";
 import { KernelService } from "../kernel-next/mcp/kernel.js";
 import { __setKernelNextDbForTest } from "../lib/kernel-next-db.js";
 import { kernelGatesRoute } from "./kernel-gates.js";
+import { taskRegistry } from "../kernel-next/runtime/task-registry.js";
 import type { PipelineIR } from "../kernel-next/ir/schema.js";
 
 function buildApp(): Hono {
@@ -221,5 +222,124 @@ describe("REST /api/kernel/gates", () => {
     expect(res.status).toBe(400);
     const body = await res.json() as { diagnostics: Array<{ code: string }> };
     expect(body.diagnostics[0]!.code).toBe("INVALID_REQUEST_BODY");
+  });
+});
+
+// Seeds a pipeline with gate G whose routes include a rollback:
+//   { approve: "B", reject: "A" }
+// with a wire A.out -> G.i, making "reject" a rollback answer (kernel
+// returns kind="rejected"). Mirrors setupRejectReadyDb() in server.test.ts.
+function seedRejectableGate(
+  db: DatabaseSync,
+): { gateId: string; taskId: string } {
+  const taskId = "http-reject-" + Math.random().toString(36).slice(2, 10);
+  const svc = new KernelService(db, { skipTypeCheck: true });
+
+  const ir = {
+    name: "http-reject-fixture",
+    stages: [
+      {
+        name: "A",
+        type: "agent" as const,
+        inputs: [],
+        outputs: [{ name: "out", type: "unknown" }],
+        config: { promptRef: "p", reads: [] },
+      },
+      {
+        name: "G",
+        type: "gate" as const,
+        inputs: [{ name: "i", type: "unknown" }],
+        outputs: [],
+        config: {
+          question: { text: "approve or reject?", options: ["approve", "reject"] },
+          routing: { routes: { approve: "B", reject: "A" } },
+        },
+      },
+      {
+        name: "B",
+        type: "agent" as const,
+        inputs: [],
+        outputs: [],
+        config: { promptRef: "p", reads: [] },
+      },
+    ],
+    wires: [
+      { from: { stage: "A", port: "out" }, to: { stage: "G", port: "i" } },
+    ],
+  };
+
+  const submit = svc.submit(ir);
+  if (!submit.ok) throw new Error("seedRejectableGate: submit failed");
+
+  const attemptId = "attempt-g-" + taskId;
+  db.prepare(
+    `INSERT INTO stage_attempts
+     (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+     VALUES (?, ?, ?, 'G', 1, ?, 'running')`,
+  ).run(attemptId, taskId, submit.versionHash, Date.now());
+
+  const { gateId } = svc.createGate({
+    taskId,
+    stageName: "G",
+    attemptId,
+    question: { text: "approve or reject?", options: ["approve", "reject"] },
+  });
+
+  return { gateId, taskId };
+}
+
+describe("REST /api/kernel/gates — GATE_REJECTED dispatch", () => {
+  let db: DatabaseSync;
+
+  beforeEach(() => {
+    db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    __setKernelNextDbForTest(db);
+  });
+
+  afterEach(() => {
+    taskRegistry.__clearForTest();
+    __setKernelNextDbForTest(undefined);
+    db.close();
+  });
+
+  it("POST /api/kernel/gates/:id/answer dispatches GATE_REJECTED for rollback answers", async () => {
+    const { gateId, taskId } = seedRejectableGate(db);
+
+    const captured: unknown[] = [];
+    taskRegistry.register(taskId, { send: (ev: unknown) => captured.push(ev) } as never);
+
+    const res = await buildApp().fetch(
+      new Request(`http://t/api/kernel/gates/${gateId}/answer`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ answer: "reject" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    const ev = captured[0] as Record<string, unknown>;
+    expect(ev["type"]).toBe("GATE_REJECTED");
+    expect(ev["targetStage"]).toBe("A");
+    expect(new Set(ev["affectedStages"] as string[])).toEqual(new Set(["A", "G"]));
+  });
+
+  it("POST /api/kernel/gates/:id/answer dispatches GATE_ANSWERED for approve", async () => {
+    const { gateId, taskId } = seedRejectableGate(db);
+
+    const captured: unknown[] = [];
+    taskRegistry.register(taskId, { send: (ev: unknown) => captured.push(ev) } as never);
+
+    const res = await buildApp().fetch(
+      new Request(`http://t/api/kernel/gates/${gateId}/answer`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ answer: "approve" }),
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(captured).toHaveLength(1);
+    const ev = captured[0] as Record<string, unknown>;
+    expect(ev["type"]).toBe("GATE_ANSWERED");
   });
 });
