@@ -145,9 +145,9 @@ CREATE TABLE IF NOT EXISTS prompt_contents (
 );
 
 CREATE TABLE IF NOT EXISTS pipeline_prompt_refs (
-  version_hash TEXT NOT NULL REFERENCES pipeline_versions(version_hash),
+  version_hash TEXT NOT NULL REFERENCES pipeline_versions(version_hash) ON DELETE RESTRICT,
   prompt_ref   TEXT NOT NULL,
-  content_hash TEXT NOT NULL REFERENCES prompt_contents(content_hash),
+  content_hash TEXT NOT NULL REFERENCES prompt_contents(content_hash) ON DELETE RESTRICT,
   PRIMARY KEY (version_hash, prompt_ref)
 );
 

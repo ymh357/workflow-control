@@ -93,11 +93,13 @@ describe("kernel-next SQL persistence", () => {
   it("creates prompt_contents table with content_hash PK", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
-    const cols = db.prepare("PRAGMA table_info(prompt_contents)").all() as Array<{ name: string; pk: number }>;
+    const cols = db.prepare("PRAGMA table_info(prompt_contents)").all() as Array<{ name: string; pk: number; notnull: number }>;
     const names = cols.map((c) => c.name).sort();
     expect(names).toEqual(["content", "content_hash", "created_at"]);
     const pk = cols.find((c) => c.name === "content_hash");
     expect(pk?.pk).toBe(1);
+    expect(cols.find((c) => c.name === "content")?.notnull).toBe(1);
+    expect(cols.find((c) => c.name === "created_at")?.notnull).toBe(1);
   });
 
   it("creates pipeline_prompt_refs table with composite PK and FK to prompt_contents", () => {
@@ -107,7 +109,11 @@ describe("kernel-next SQL persistence", () => {
     const names = cols.map((c) => c.name).sort();
     expect(names).toEqual(["content_hash", "prompt_ref", "version_hash"]);
     const fks = db.prepare("PRAGMA foreign_key_list(pipeline_prompt_refs)").all() as Array<{ table: string; from: string; to: string }>;
-    expect(fks.some((fk) => fk.table === "prompt_contents" && fk.from === "content_hash")).toBe(true);
-    expect(fks.some((fk) => fk.table === "pipeline_versions" && fk.from === "version_hash")).toBe(true);
+    const pcFk = fks.find((fk) => fk.table === "prompt_contents");
+    const pvFk = fks.find((fk) => fk.table === "pipeline_versions");
+    expect(pcFk?.from).toBe("content_hash");
+    expect(pcFk?.to).toBe("content_hash");
+    expect(pvFk?.from).toBe("version_hash");
+    expect(pvFk?.to).toBe("version_hash");
   });
 });
