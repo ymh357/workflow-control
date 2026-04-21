@@ -7,6 +7,12 @@ use_cases:
   - Generate pipeline configurations for recurring tasks
   - Bootstrap pipeline prototypes for iteration
 
+external_inputs:
+  taskDescription:
+    type: string
+    description: Natural language description of the pipeline to generate.
+    required: true
+
 display:
   title_path: pipelineDesign.pipelineName
   completion_summary_path: persistResult.pipelineId
@@ -155,7 +161,8 @@ stages:
     runtime:
       engine: llm
       system_prompt: analysis
-      reads: {}
+      reads:
+        description: taskDescription
     effort: high
     max_turns: 50
     max_budget_usd: 4

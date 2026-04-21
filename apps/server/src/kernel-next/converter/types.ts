@@ -30,6 +30,7 @@ export interface ConverterDiagnostic {
 export type WarningCode =
   | "LEGACY_TYPE_DOWNGRADED"
   | "INJECTED_CONTEXT_UNTYPED"
+  | "EXTERNAL_INPUT_TYPE_UNKNOWN"
   | "LEGACY_FIELD_IGNORED"
   | "DISPLAY_FIELDS_IGNORED"
   | "USE_CASES_IGNORED"
