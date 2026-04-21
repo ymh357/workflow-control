@@ -12,13 +12,14 @@
 // live events in dispatch order.
 
 export type KernelNextSSEEventType =
-  | "task_state"       // TaskMachine top-level state change
-  | "stage_executing"  // a stage region entered the executing substate
-  | "stage_done"       // a stage region reached its `done` final
-  | "stage_error"      // a stage region reached its `error` final (NO_ACTIVE_WIRE or executor failure)
-  | "stage_retry"      // runner caught RETRY_TO_STAGE: a script failed but retry is in budget, backToStage is being rerun
-  | "port_written"     // a single port_values row was written on the live PortRuntime
-  | "run_final";       // top-level machine reached `completed` or `failed`; carries aggregated diagnostics
+  | "task_state"         // TaskMachine top-level state change
+  | "stage_executing"    // a stage region entered the executing substate
+  | "stage_done"         // a stage region reached its `done` final
+  | "stage_error"        // a stage region reached its `error` final (NO_ACTIVE_WIRE or executor failure)
+  | "stage_retry"        // runner caught RETRY_TO_STAGE: a script failed but retry is in budget, backToStage is being rerun
+  | "port_written"       // a single port_values row was written on the live PortRuntime
+  | "stage_rolled_back"  // gate-reject rollback: runner pruned one or more stages back to a prior point
+  | "run_final";         // top-level machine reached `completed` or `failed`; carries aggregated diagnostics
 
 export type TaskTopLevelState =
   | "idle" | "running" | "completed" | "failed";
@@ -103,6 +104,15 @@ export interface PortWrittenData {
   valuePreview: string;
 }
 
+export interface StageRolledBackData {
+  // The gate stage whose reject decision triggered the rollback.
+  fromGate: string;
+  // The earliest stage being re-executed after rollback.
+  toStage: string;
+  // All stage IDs whose port writes were pruned (toStage … fromGate inclusive).
+  affectedStages: string[];
+}
+
 export interface RunFinalData {
   finalState: "completed" | "failed";
   // Flattened stage-level errors captured at run end. Matches
@@ -138,6 +148,10 @@ export interface KernelNextPortWrittenEvent extends KernelNextSSEEvent {
   type: "port_written";
   data: PortWrittenData;
 }
+export interface KernelNextStageRolledBackEvent extends KernelNextSSEEvent {
+  type: "stage_rolled_back";
+  data: StageRolledBackData;
+}
 export interface KernelNextRunFinalEvent extends KernelNextSSEEvent {
   type: "run_final";
   data: RunFinalData;
@@ -150,4 +164,5 @@ export type AnyKernelNextSSEEvent =
   | KernelNextStageErrorEvent
   | KernelNextStageRetryEvent
   | KernelNextPortWrittenEvent
+  | KernelNextStageRolledBackEvent
   | KernelNextRunFinalEvent;

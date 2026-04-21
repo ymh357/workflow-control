@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { KernelNextBroadcaster } from "./broadcaster.js";
-import type { KernelNextSSEEvent } from "./types.js";
+import type { AnyKernelNextSSEEvent, KernelNextSSEEvent } from "./types.js";
 
 function makeEvent(taskId: string, seq: number): KernelNextSSEEvent {
   return {
@@ -130,5 +130,24 @@ describe("KernelNextBroadcaster", () => {
     // channel.
     broadcaster.publish(makeEvent("A", 99));
     expect(aReceivedAgain).toHaveLength(1);
+  });
+
+  it("round-trips a stage_rolled_back event", () => {
+    const b = new KernelNextBroadcaster();
+    const received: AnyKernelNextSSEEvent[] = [];
+    b.subscribe("task-rb", (ev) => received.push(ev as AnyKernelNextSSEEvent));
+    b.publish({
+      taskId: "task-rb",
+      timestamp: new Date().toISOString(),
+      type: "stage_rolled_back",
+      data: { fromGate: "G", toStage: "A", affectedStages: ["A", "B", "G"] },
+    });
+    expect(received).toHaveLength(1);
+    expect(received[0].type).toBe("stage_rolled_back");
+    if (received[0].type === "stage_rolled_back") {
+      expect(received[0].data.fromGate).toBe("G");
+      expect(received[0].data.toStage).toBe("A");
+      expect(received[0].data.affectedStages).toEqual(["A", "B", "G"]);
+    }
   });
 });
