@@ -287,3 +287,17 @@ export function getPromptContent(
     .get(contentHash) as { content: string } | undefined;
   return row ? row.content : null;
 }
+
+export function getLatestVersionHashByName(
+  db: DatabaseSync,
+  pipelineName: string,
+): string | null {
+  const row = db
+    .prepare(
+      `SELECT version_hash FROM pipeline_versions
+       WHERE pipeline_name = ?
+       ORDER BY created_at DESC LIMIT 1`,
+    )
+    .get(pipelineName) as { version_hash: string } | undefined;
+  return row ? row.version_hash : null;
+}

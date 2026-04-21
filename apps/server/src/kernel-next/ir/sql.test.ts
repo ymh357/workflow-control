@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { initKernelNextSchema, insertPipelineVersion, getPipelineIR, listPipelineVersions, insertPromptContent, insertPromptRefs, getPromptContent } from "./sql.js";
+import { getLatestVersionHashByName } from "./sql.js";
 import { versionHash } from "./canonical.js";
 import type { PipelineIR } from "./schema.js";
 
@@ -170,5 +171,32 @@ describe("insertPromptContent + insertPromptRefs", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     expect(getPromptContent(db, "missing")).toBeNull();
+  });
+});
+
+describe("getLatestVersionHashByName", () => {
+  it("returns null when no row matches", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    expect(getLatestVersionHashByName(db, "missing")).toBeNull();
+  });
+
+  it("returns the most recently created version for the given name", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    db.prepare(
+      `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+       VALUES ('v1', 'p', 1000, NULL, '{}', '')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+       VALUES ('v2', 'p', 2000, 'v1', '{}', '')`,
+    ).run();
+    db.prepare(
+      `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+       VALUES ('vOther', 'q', 3000, NULL, '{}', '')`,
+    ).run();
+    expect(getLatestVersionHashByName(db, "p")).toBe("v2");
+    expect(getLatestVersionHashByName(db, "q")).toBe("vOther");
   });
 });
