@@ -137,6 +137,22 @@ CREATE TABLE IF NOT EXISTS hot_update_events (
 );
 CREATE INDEX IF NOT EXISTS idx_hue_task_started
   ON hot_update_events(task_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS prompt_contents (
+  content_hash TEXT PRIMARY KEY,
+  content      TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_prompt_refs (
+  version_hash TEXT NOT NULL REFERENCES pipeline_versions(version_hash),
+  prompt_ref   TEXT NOT NULL,
+  content_hash TEXT NOT NULL REFERENCES prompt_contents(content_hash),
+  PRIMARY KEY (version_hash, prompt_ref)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ppr_content
+  ON pipeline_prompt_refs(content_hash);
 `;
 
 export function initKernelNextSchema(db: DatabaseSync): void {
