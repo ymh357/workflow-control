@@ -3,10 +3,11 @@ import { DatabaseSync } from "node:sqlite";
 import { initKernelNextSchema } from "../ir/sql.js";
 import * as sqlMod from "../ir/sql.js";
 import { KernelNextBroadcaster } from "../sse/broadcaster.js";
-import { handleStartPipelineGenerator } from "./pg-entry.js";
+import { handleStartPipelineGenerator, handleWaitPipelineResult } from "./pg-entry.js";
 import { LegacyPipelineLoadError, loadLegacyPipelineIR } from "../runtime/load-legacy-pipeline.js";
 import type { PipelineIR } from "../ir/schema.js";
 import type { StageExecutor } from "../runtime/executor.js";
+import { randomUUID } from "node:crypto";
 
 function freshDb() {
   const db = new DatabaseSync(":memory:");
@@ -224,5 +225,88 @@ describe("handleStartPipelineGenerator — bootstrap errors", () => {
       expect(res.diagnostics[0].code).toBe("LOADER_ERROR");
       expect(res.diagnostics[0].message).toMatch(/permission denied/);
     }
+  });
+});
+
+// Helper: insert a stage_attempt row (required by port_values FK).
+function seedAttempt(
+  db: DatabaseSync,
+  taskId: string,
+  versionHash: string,
+  stageName: string,
+): string {
+  const attemptId = randomUUID();
+  db.prepare(
+    `INSERT INTO stage_attempts
+     (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status, kind)
+     VALUES (?, ?, ?, ?, 1, ?, 'success', 'regular')`,
+  ).run(attemptId, taskId, versionHash, stageName, Date.now());
+  return attemptId;
+}
+
+// Helper: insert a port_values row for a given attempt.
+function seedPortValue(
+  db: DatabaseSync,
+  attemptId: string,
+  stageName: string,
+  portName: string,
+  value: unknown,
+): void {
+  db.prepare(
+    `INSERT INTO port_values
+     (value_id, attempt_id, stage_name, port_name, direction, value_json, written_at)
+     VALUES (?, ?, ?, ?, 'out', ?, ?)`,
+  ).run(randomUUID(), attemptId, stageName, portName, JSON.stringify(value), Date.now());
+}
+
+describe("handleWaitPipelineResult — done", () => {
+  it("returns done with result fields when run_final completed event arrives", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const taskId = "task-done-1";
+    const ir = realIR();
+
+    // To satisfy port_values FK, we need a pipeline_versions row first.
+    // Use a simple placeholder version_hash for the seed data.
+    const versionHash = "test-vh-done-1";
+    db.prepare(
+      `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+       VALUES (?, 'test', ?, NULL, '{}', '')`,
+    ).run(versionHash, Date.now());
+
+    // Seed port values via stage_attempts + port_values.
+    const aP = seedAttempt(db, taskId, versionHash, "persistResult");
+    seedPortValue(db, aP, "persistResult", "pipelineId", "my-pid");
+
+    const aD = seedAttempt(db, taskId, versionHash, "pipelineDesign");
+    seedPortValue(db, aD, "pipelineDesign", "pipelineName", "My Pipeline");
+    seedPortValue(db, aD, "pipelineDesign", "description", "Short descr");
+
+    const aS = seedAttempt(db, taskId, versionHash, "skeletonResult");
+    seedPortValue(db, aS, "skeletonResult", "yamlPath", "/tmp/out/pipeline.yaml");
+
+    const aPF = seedAttempt(db, taskId, versionHash, "promptFiles");
+    seedPortValue(db, aPF, "promptFiles", "outputDir", "/tmp/out/prompts");
+
+    // Fire the terminal event BEFORE wait subscribes — broadcaster replays history.
+    broadcaster.publish({
+      type: "run_final",
+      taskId,
+      timestamp: new Date().toISOString(),
+      data: { finalState: "completed", stageErrors: [] },
+    });
+
+    const res = await handleWaitPipelineResult(
+      { taskId, timeoutMs: 1000 },
+      { db, broadcaster, ir },
+    );
+
+    expect(res.ok).toBe(true);
+    if (!res.ok || res.status !== "done") throw new Error("expected done");
+    expect(res.result.pipelineId).toBe("my-pid");
+    expect(res.result.pipelineName).toBe("My Pipeline");
+    expect(res.result.yamlPath).toBe("/tmp/out/pipeline.yaml");
+    expect(res.result.promptDir).toBe("/tmp/out/prompts");
+    expect(res.result.pipelineDesignSummary).toBe("Short descr");
   });
 });
