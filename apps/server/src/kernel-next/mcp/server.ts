@@ -23,6 +23,7 @@ import { kernelNextBroadcaster } from "../sse/singleton.js";
 import { runPipeline } from "../runtime/runner.js";
 import { RealStageExecutor } from "../runtime/real-executor.js";
 import { DbPromptResolver } from "../runtime/db-prompt-resolver.js";
+import { startPipelineRun } from "../runtime/start-pipeline-run.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
 
@@ -106,7 +107,8 @@ type ToolName =
   | "get_task_status" | "list_gates" | "answer_gate"
   | "read_port" | "query_lineage" | "diff_runs"
   | "write_port"
-  | "start_pipeline_generator" | "wait_pipeline_result";
+  | "start_pipeline_generator" | "wait_pipeline_result"
+  | "run_pipeline";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
@@ -115,6 +117,7 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "get_task_status", "list_gates", "answer_gate",
   "read_port", "query_lineage", "diff_runs",
   "start_pipeline_generator", "wait_pipeline_result",
+  "run_pipeline",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
@@ -168,6 +171,60 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
               prompts,
             });
             return jsonResponse(result);
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "run_pipeline",
+        description:
+          "Start a new task running a previously-submitted pipeline. " +
+          "Specify `name` (resolves to latest versionHash) or `versionHash` " +
+          "(exact). Returns the taskId — poll get_task_status to observe.",
+        inputSchema: {
+          name: z.string().optional().describe("Pipeline name; resolves to latest versionHash"),
+          versionHash: z.string().optional().describe("Exact pipeline versionHash; overrides name when both supplied"),
+          seedValues: z.record(z.string(), z.unknown()).optional().describe("Per-port external input values"),
+          policy: z.unknown().optional().describe("ExecutionPolicy (see terminal-design §5.3)"),
+          model: z.string().optional(),
+          maxTurns: z.number().int().positive().optional(),
+          maxBudgetUsd: z.number().positive().optional(),
+          taskId: z.string().optional(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            const result = await startPipelineRun({
+              db,
+              broadcaster: kernelNextBroadcaster,
+              name: typeof args.name === "string" ? args.name : undefined,
+              versionHash: typeof args.versionHash === "string" ? args.versionHash : undefined,
+              seedValues:
+                args.seedValues && typeof args.seedValues === "object"
+                  ? (args.seedValues as Record<string, unknown>)
+                  : undefined,
+              policy: args.policy as never,
+              model: typeof args.model === "string" ? args.model : undefined,
+              maxTurns: typeof args.maxTurns === "number" ? args.maxTurns : undefined,
+              maxBudgetUsd: typeof args.maxBudgetUsd === "number" ? args.maxBudgetUsd : undefined,
+              taskId: typeof args.taskId === "string" ? args.taskId : undefined,
+              tscPath: options.tscPath,
+            });
+            if (result.ok === true) {
+              return jsonResponse({
+                ok: true,
+                taskId: result.taskId,
+                versionHash: result.versionHash,
+              });
+            }
+            return {
+              content: [{
+                type: "text" as const,
+                text: JSON.stringify(result),
+              }],
+              isError: true,
+            };
           } catch (err) {
             return errorResponse(err instanceof Error ? err.message : String(err));
           }
