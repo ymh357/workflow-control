@@ -164,3 +164,24 @@ export function versionHash(ir: PipelineIR): string {
   const canon = canonicalJSON(ir);
   return createHash("sha256").update(canon).digest("hex");
 }
+
+/**
+ * Normalize prompt content to prevent hash drift from editor-induced
+ * whitespace differences:
+ *   - Strip UTF-8 BOM
+ *   - Normalize CRLF and lone CR to LF
+ *   - Strip trailing spaces/tabs per line
+ *   - Ensure exactly one trailing LF
+ */
+export function normalizePromptContent(raw: string): string {
+  let s = raw.replace(/^\uFEFF/, "");
+  s = s.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  s = s.split("\n").map((line) => line.replace(/[ \t]+$/, "")).join("\n");
+  if (!s.endsWith("\n")) s += "\n";
+  return s;
+}
+
+export function promptContentHash(content: string): string {
+  const normalized = normalizePromptContent(content);
+  return createHash("sha256").update(normalized, "utf8").digest("hex");
+}
