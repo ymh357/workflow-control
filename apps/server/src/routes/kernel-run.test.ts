@@ -159,14 +159,13 @@ describe("POST /api/kernel/tasks/run", () => {
     });
     expect(res.status).toBe(202);
 
-    // startPipelineRun always builds a RealStageExecutor (see Task 3),
-    // so mock-handler execution no longer completes end-to-end here —
-    // the SDK call will fail without a live Claude endpoint. We only
-    // verify that the singleton broadcaster is wired and the runner
-    // publishes initial task_state events before failing out.
-    const deadline = Date.now() + 1000;
+    // diamond is a mock pipeline: startPipelineRun detects the
+    // MOCK_HANDLER_REGISTRY entry with non-empty handlers and omits
+    // the RealStageExecutor, letting the runner fall back to
+    // MockStageExecutor. Wait for the pipeline to complete end-to-end.
+    const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
-      if (events.length > 0) break;
+      if (events.some((e) => e.type === "run_final")) break;
       await new Promise((r) => setTimeout(r, 50));
     }
 
@@ -175,6 +174,9 @@ describe("POST /api/kernel/tasks/run", () => {
 
     const types = events.map((e) => e.type);
     expect(types).toContain("task_state");
+    expect(types).toContain("stage_done");
+    expect(types).toContain("port_written");
+    expect(types).toContain("run_final");
   });
 
   it("accepts seedValues in body without validation errors", async () => {

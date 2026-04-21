@@ -185,20 +185,30 @@ export async function startPipelineRun(
     ?? DEFAULT_MAX_BUDGET_USD;
 
   // --- Build executor ---
+  //
+  // runner.ts picks `opts.executor ?? new MockStageExecutor({handlers})`.
+  // When a mock-registry entry carries synthetic handlers, omit the
+  // executor so the runner falls back to MockStageExecutor — otherwise
+  // the handlers are dead code. Mock entries with EMPTY handlers
+  // (e.g. diamond-real) still need RealStageExecutor. AI-submitted and
+  // legacy-YAML pipelines always go through RealStageExecutor.
   const db = input.db;
   const tscPath = input.tscPath;
-  const executor = new RealStageExecutor({
-    mcpServerFactory: (_dispatcher, portRuntime) =>
-      createKernelMcp(db, {
-        surface: "combined",
-        portRuntime,
-        tscPath,
-      }),
-    promptResolver: new DbPromptResolver(db, versionHash),
-    model,
-    maxTurns,
-    maxBudgetUsd,
-  });
+  const useMockHandlers = mockEntry !== undefined && Object.keys(mockEntry.handlers).length > 0;
+  const executor = useMockHandlers
+    ? undefined
+    : new RealStageExecutor({
+        mcpServerFactory: (_dispatcher, portRuntime) =>
+          createKernelMcp(db, {
+            surface: "combined",
+            portRuntime,
+            tscPath,
+          }),
+        promptResolver: new DbPromptResolver(db, versionHash),
+        model,
+        maxTurns,
+        maxBudgetUsd,
+      });
 
   const taskId = input.taskId
     ?? `${nameForRegistry}-${Date.now()}-${randomUUID().slice(0, 8)}`;
