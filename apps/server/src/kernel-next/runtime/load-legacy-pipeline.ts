@@ -6,6 +6,9 @@ import type { PipelineIR } from "../ir/schema.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+// Two levels up: runtime/ -> kernel-next/ -> src/
+const BUILTIN_PIPELINES_ROOT = join(__dirname, "..", "..", "builtin-pipelines");
+
 export interface LegacyPipelineLoadResult {
   ir: PipelineIR;
   promptRoot: string;
@@ -24,21 +27,14 @@ export class LegacyPipelineLoadError extends Error {
 }
 
 export function loadLegacyPipelineIR(pipelineDir: string): LegacyPipelineLoadResult {
-  const yamlFilePath = join(
-    __dirname,
-    "..",
-    "..",
-    "builtin-pipelines",
-    pipelineDir,
-    "pipeline.yaml",
-  );
+  const yamlFilePath = join(BUILTIN_PIPELINES_ROOT, pipelineDir, "pipeline.yaml");
   let yamlText: string;
   try {
     yamlText = readFileSync(yamlFilePath, "utf-8");
   } catch (err) {
     throw new LegacyPipelineLoadError(
       `failed to read pipeline YAML at ${yamlFilePath}: ${(err as Error).message}`,
-      [{ code: "YAML_READ_FAILED" }],
+      [{ code: "YAML_READ_FAILED", message: (err as Error).message }],
     );
   }
   const conv = convertLegacyYaml(yamlText, { yamlFilePath });
@@ -48,9 +44,15 @@ export function loadLegacyPipelineIR(pipelineDir: string): LegacyPipelineLoadRes
       conv.diagnostics,
     );
   }
+  if (!conv.promptRoot) {
+    throw new LegacyPipelineLoadError(
+      `legacy pipeline '${pipelineDir}' produced no promptRoot`,
+      [{ code: "MISSING_PROMPT_ROOT" }],
+    );
+  }
   return {
     ir: conv.ir,
-    promptRoot: conv.promptRoot!,
+    promptRoot: conv.promptRoot,
     yamlFilePath,
     warnings: conv.warnings,
   };
