@@ -259,9 +259,16 @@ function buildInitialPortValues(
   return out;
 }
 
+export interface RejectRollback {
+  answer: string;
+  targetStage: string;
+  affectedStages: string[];
+}
+
 export interface CompiledMachine {
   machine: AnyStateMachine;
   stageMeta: Map<string, StageMeta>;
+  rejectRollbackMap: Map<string, RejectRollback>;
 }
 
 export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): CompiledMachine {
@@ -290,6 +297,58 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
       }
     }
     gateRoutingMap.set(s.name, targets);
+  }
+
+  // Downstream adjacency: stageName -> set of immediate downstream stages.
+  // Used to compute BFS-downstream for rejectRollbackMap entries below.
+  const downstreamAdj = new Map<string, Set<string>>();
+  for (const w of ir.wires) {
+    if (w.from.source !== "stage") continue;
+    const src = w.from.stage;
+    const dst = w.to.stage;
+    if (!downstreamAdj.has(src)) downstreamAdj.set(src, new Set());
+    downstreamAdj.get(src)!.add(dst);
+  }
+
+  function bfsDownstream(start: string): string[] {
+    const visited = new Set<string>([start]);
+    const queue: string[] = [start];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      const nexts = downstreamAdj.get(cur);
+      if (!nexts) continue;
+      for (const n of nexts) {
+        if (visited.has(n)) continue;
+        visited.add(n);
+        queue.push(n);
+      }
+    }
+    return Array.from(visited);
+  }
+
+  // For each gate stage, check whether any routing answer's target is a
+  // transitive ancestor of the gate (i.e. BFS-downstream(target) reaches
+  // the gate). If so, that answer triggers rollback: record the answer,
+  // target stage, and the full set of affected stages (BFS-downstream of
+  // target, which includes target itself and the gate). Only the first
+  // matching rollback answer per gate is recorded; pipelines with multiple
+  // rollback answers are not supported in this milestone.
+  const rejectRollbackMap = new Map<string, RejectRollback>();
+  for (const s of ir.stages) {
+    if (s.type !== "gate") continue;
+    for (const [answer, target] of Object.entries(s.config.routing.routes)) {
+      if (typeof target !== "string") continue;
+      // Transitive rollback check: if BFS-downstream(target) reaches the gate,
+      // target is an ancestor and answer triggers rollback.
+      const downstream = new Set(bfsDownstream(target));
+      if (!downstream.has(s.name)) continue;
+      rejectRollbackMap.set(s.name, {
+        answer,
+        targetStage: target,
+        affectedStages: Array.from(downstream), // includes target and gate
+      });
+      break; // one rollback answer per gate
+    }
   }
 
   // Build parallel region children.
@@ -389,7 +448,7 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
     },
   });
 
-  return { machine, stageMeta };
+  return { machine, stageMeta, rejectRollbackMap };
 }
 
 // Per-stage region: waiting -> executing -> done.

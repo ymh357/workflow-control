@@ -418,6 +418,69 @@ describe("compileIRToMachine seedValues", () => {
   });
 });
 
+describe("compileIRToMachine — rejectRollbackMap", () => {
+  it("builds rollback entry when gate routes reject to a transitive upstream", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      version: "1.0.0",
+      externalInputs: [],
+      stages: [
+        { name: "A", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [{ name: "out1", type: "unknown" }] } as any,
+        { name: "B", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [{ name: "a", type: "unknown" }], outputs: [{ name: "o", type: "unknown" }] } as any,
+        { name: "G", type: "gate", config: { routing: { routes: { approve: "C", reject: "A" } } }, inputs: [{ name: "b", type: "unknown" }], outputs: [] } as any,
+        { name: "C", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [] } as any,
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "out1" }, to: { stage: "B", port: "a" } },
+        { from: { source: "stage", stage: "B", port: "o" }, to: { stage: "G", port: "b" } },
+      ],
+    } as unknown as PipelineIR;
+    const { rejectRollbackMap } = compileIRToMachine(ir, { taskId: "t1" });
+    const entry = rejectRollbackMap.get("G");
+    expect(entry).toBeDefined();
+    expect(entry!.answer).toBe("reject");
+    expect(entry!.targetStage).toBe("A");
+    // BFS downstream of A, then include G itself.
+    expect(new Set(entry!.affectedStages)).toEqual(new Set(["A", "B", "G"]));
+  });
+
+  it("no entry when reject target is not a transitive upstream", () => {
+    const ir: PipelineIR = {
+      name: "t2",
+      version: "1.0.0",
+      externalInputs: [],
+      stages: [
+        { name: "A", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [] } as any,
+        { name: "G", type: "gate", config: { routing: { routes: { approve: "C", reject: "X" } } }, inputs: [], outputs: [] } as any,
+        { name: "C", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [] } as any,
+        { name: "X", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [] } as any,
+      ],
+      wires: [],
+    } as unknown as PipelineIR;
+    const { rejectRollbackMap } = compileIRToMachine(ir, { taskId: "t2" });
+    expect(rejectRollbackMap.has("G")).toBe(false);
+  });
+
+  it("no entry for a gate whose only routes target downstream stages", () => {
+    const ir: PipelineIR = {
+      name: "t3",
+      version: "1.0.0",
+      externalInputs: [],
+      stages: [
+        { name: "A", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [] } as any,
+        { name: "G", type: "gate", config: { routing: { routes: { yes: "B", no: "C" } } }, inputs: [], outputs: [] } as any,
+        { name: "B", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [] } as any,
+        { name: "C", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [] } as any,
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "o" }, to: { stage: "G", port: "i" } },
+      ],
+    } as unknown as PipelineIR;
+    const { rejectRollbackMap } = compileIRToMachine(ir, { taskId: "t3" });
+    expect(rejectRollbackMap.has("G")).toBe(false);
+  });
+});
+
 // Slice C (Task C1): script stage retry transition.
 // These tests exercise only the compiler's emission side — the runner's
 // root-level RETRY_TO_STAGE handler (increment + RESET_STAGE) is Task C5.
