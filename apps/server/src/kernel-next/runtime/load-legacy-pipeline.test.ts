@@ -22,6 +22,29 @@ describe("loadLegacyPipelineIR", () => {
   });
 });
 
+describe("loadLegacyPipelineIR — prompt scanning", () => {
+  it("returns a prompts map scanned from <pipelineDir>/prompts/**/*.md", () => {
+    // smoke-test ships at least one prompt; confirm the map is populated.
+    const result = loadLegacyPipelineIR("smoke-test");
+    expect(Object.keys(result.prompts).length).toBeGreaterThan(0);
+    for (const v of Object.values(result.prompts)) {
+      expect(typeof v).toBe("string");
+      expect(v.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("uses /-joined relative paths without .md for nested prompts", () => {
+    // pipeline-generator has prompts/system/*.md
+    const result = loadLegacyPipelineIR("pipeline-generator");
+    const keys = Object.keys(result.prompts);
+    for (const k of keys) {
+      expect(k).not.toMatch(/\.md$/);
+      expect(k).not.toMatch(/\\/);
+    }
+    expect(keys.some((k) => k.includes("/"))).toBe(true);
+  });
+});
+
 describe("loadLegacyPipelineIR — conversion failure", () => {
   it("throws LegacyPipelineLoadError with converter diagnostics", async () => {
     vi.resetModules();
