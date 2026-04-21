@@ -18,15 +18,6 @@ const Nav = () => {
       <a href="/" className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors">
         {t("nav.tasks")}
       </a>
-      <a href="/config" className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors">
-        {t("nav.config")}
-      </a>
-      <a href="/registry" className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors">
-        {t("nav.store")}
-      </a>
-      <a href="/help" className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors border-l border-zinc-800 pl-6">
-        {t("nav.help")}
-      </a>
       <div className="ml-auto flex items-center gap-1 text-xs">
         <button
           onClick={() => switchLocale("en")}
