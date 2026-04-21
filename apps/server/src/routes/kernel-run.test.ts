@@ -3,9 +3,11 @@ import { Hono } from "hono";
 import { DatabaseSync } from "node:sqlite";
 import { kernelRunRoute } from "./kernel-run.js";
 import { __setKernelNextDbForTest } from "../lib/kernel-next-db.js";
+import { getKernelNextDb } from "../lib/kernel-next-db.js";
 import { initKernelNextSchema } from "../kernel-next/ir/sql.js";
 import { kernelNextBroadcaster } from "../kernel-next/sse/singleton.js";
 import type { KernelNextSSEEvent } from "../kernel-next/sse/types.js";
+import { loadLegacyPipelineIR } from "../kernel-next/runtime/load-legacy-pipeline.js";
 
 describe("POST /api/kernel/tasks/run", () => {
   let app: Hono;
@@ -267,4 +269,43 @@ describe("POST /api/kernel/tasks/run", () => {
     expect(data.stageErrors[0]!.message).toMatch(/SEED_VALUES_MISSING_KEY/);
   });
 
+});
+
+describe("registerLegacyPipeline populates pipeline_prompt_refs on module load", () => {
+  it("at least one row exists for every registered legacy pipeline", () => {
+    const db = getKernelNextDb();
+    // Registry-key -> builtin-pipelines/<dir> name (both happen to match
+    // for all current legacy entries). pipeline_versions.pipeline_name
+    // is the pipeline's IR-level name (sourced from YAML `name:`), which
+    // is NOT identical to the registry key — so look it up via the
+    // loader rather than hard-coding display names.
+    const dirs = ["smoke-test", "tech-research-collector", "tech-research-writer", "pipeline-generator"];
+    for (const dir of dirs) {
+      const fresh = loadLegacyPipelineIR(dir);
+      const pipelineName = fresh.ir.name;
+      const row = db
+        .prepare(
+          `SELECT pv.version_hash, COUNT(ppr.prompt_ref) AS n
+           FROM pipeline_versions pv
+           LEFT JOIN pipeline_prompt_refs ppr ON ppr.version_hash = pv.version_hash
+           WHERE pv.pipeline_name = ?
+           GROUP BY pv.version_hash
+           ORDER BY pv.created_at DESC
+           LIMIT 1`,
+        )
+        .get(pipelineName) as { version_hash: string; n: number } | undefined;
+      expect(row, `pipeline ${pipelineName} (dir=${dir}) not found`).toBeDefined();
+
+      // Cross-check: the count of pipeline_prompt_refs rows for the
+      // latest version must be at least the number of distinct
+      // AgentStage promptRefs in a fresh load. A placeholder-only
+      // submit that only registered one bogus ref would fail this.
+      const expectedAgentPromptCount = new Set(
+        fresh.ir.stages
+          .filter((s) => s.type === "agent")
+          .map((s) => (s as { config: { promptRef: string } }).config.promptRef),
+      ).size;
+      expect(row!.n).toBeGreaterThanOrEqual(expectedAgentPromptCount);
+    }
+  });
 });

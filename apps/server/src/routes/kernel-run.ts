@@ -28,8 +28,7 @@ import { kernelNextBroadcaster } from "../kernel-next/sse/singleton.js";
 import { diamondIR } from "../kernel-next/generator-mock/mini-generator.js";
 import { slowDiamondHandlers } from "../kernel-next/demo/slow-diamond.js";
 import { RealStageExecutor } from "../kernel-next/runtime/real-executor.js";
-import { FsPromptResolver } from "../kernel-next/runtime/fs-prompt-resolver.js";
-import { smokeTestIR, smokeTestPromptRoot } from "../kernel-next/builtins/smoke-test.js";
+import { DbPromptResolver } from "../kernel-next/runtime/db-prompt-resolver.js";
 import { loadLegacyPipelineIR, LegacyPipelineLoadError } from "../kernel-next/runtime/load-legacy-pipeline.js";
 import type { StageExecutor } from "../kernel-next/runtime/executor.js";
 import type { PipelineIR } from "../kernel-next/ir/schema.js";
@@ -89,18 +88,16 @@ interface LegacyPipelineRegistrationOpts {
 /**
  * Build a PipelineRegistration factory for a legacy-YAML builtin pipeline.
  *
- * The YAML is located at src/builtin-pipelines/<pipelineDir>/pipeline.yaml
- * (resolved relative to this module, matching smokeTestPromptRoot()'s
- * layout-anchoring convention). Conversion happens eagerly at registry
- * initialisation — readFileSync + convertLegacyYaml run once per process,
- * not once per POST. Warnings are logged via logger.info; a hard
- * conversion failure throws at module load so misconfigured fixtures
- * fail fast instead of surfacing as 500s at request time.
+ * The YAML is located at src/builtin-pipelines/<pipelineDir>/pipeline.yaml.
+ * Conversion + KernelService.submit happen eagerly at registry
+ * initialisation: readFileSync + convertLegacyYaml run once per process,
+ * real prompts from disk are persisted to the kernel-next DB via submit,
+ * and the captured versionHash is bound into a DbPromptResolver so the
+ * RealStageExecutor reads prompts from SQLite rather than the filesystem.
  *
- * The returned factory is invoked per POST and constructs a fresh
- * RealStageExecutor against the live DB so write_port goes through the
- * runner's PortRuntime (same rationale as the diamond-real / smoke-test
- * entries).
+ * Warnings are logged via logger.info. A hard conversion or submit
+ * failure throws at module load so misconfigured fixtures fail fast
+ * instead of surfacing as 500s at request time.
  */
 function registerLegacyPipeline(
   opts: LegacyPipelineRegistrationOpts,
@@ -119,17 +116,33 @@ function registerLegacyPipeline(
   for (const w of loaded.warnings) {
     logger.info({ pipeline: opts.pipelineDir, warning: w }, "converter warning");
   }
-  const { ir, promptRoot } = loaded;
+  const { ir } = loaded;
   const timeoutMs = opts.timeoutMs ?? DEFAULT_LEGACY_TIMEOUT_MS;
+
+  // Submit once at module load so the DB has real prompt rows keyed by
+  // versionHash. DbPromptResolver then reads from SQLite at stage
+  // execution time — no filesystem round-trip per stage.
+  const db = getKernelNextDb();
+  const svc = new KernelService(db, { skipTypeCheck: true });
+  const submitResult = svc.submit(ir, { prompts: loaded.prompts });
+  if (!submitResult.ok) {
+    const joined = submitResult.diagnostics
+      .map((d) => `${d.code}: ${d.message ?? ""}`)
+      .join("; ");
+    throw new Error(
+      `registerLegacyPipeline('${opts.pipelineDir}'): submit failed: ${joined}`,
+    );
+  }
+  const versionHash = submitResult.versionHash;
 
   return () => ({
     ir,
     handlers: {},
-    executorFactory: (db, overrides) =>
+    executorFactory: (execDb, overrides) =>
       new RealStageExecutor({
         mcpServerFactory: (_dispatcher, portRuntime) =>
-          createKernelMcp(db, { surface: "combined", portRuntime }),
-        promptResolver: new FsPromptResolver({ rootDir: promptRoot }),
+          createKernelMcp(execDb, { surface: "combined", portRuntime }),
+        promptResolver: new DbPromptResolver(execDb, versionHash),
         model: overrides.model ?? opts.model ?? DEFAULT_REAL_MODEL,
         maxTurns: overrides.maxTurns ?? opts.maxTurns ?? DEFAULT_REAL_MAX_TURNS,
         maxBudgetUsd: overrides.maxBudgetUsd ?? opts.maxBudgetUsd ?? DEFAULT_REAL_BUDGET_USD,
@@ -181,23 +194,13 @@ const pipelineRegistry: Record<string, () => PipelineRegistration> = {
     // upper bound is fine.
     timeoutMs: 5 * 60_000,
   }),
-  "smoke-test": () => ({
-    // A7.4 — hand-ported from legacy YAML. greet → echoBack, each
-    // legacy store_schema field becomes a kernel-next port. Legacy
-    // prompts reused verbatim; buildSystemPromptAppend supplies the
-    // kernel-next port contract at invocation time so the agent
-    // knows to call write_port rather than the legacy `writes` API.
-    ir: smokeTestIR(),
-    handlers: {},
-    executorFactory: (db, overrides) =>
-      new RealStageExecutor({
-        mcpServerFactory: (_dispatcher, portRuntime) =>
-          createKernelMcp(db, { surface: "combined", portRuntime }),
-        promptResolver: new FsPromptResolver({ rootDir: smokeTestPromptRoot() }),
-        model: overrides.model ?? DEFAULT_REAL_MODEL,
-        maxTurns: overrides.maxTurns ?? DEFAULT_REAL_MAX_TURNS,
-        maxBudgetUsd: overrides.maxBudgetUsd ?? DEFAULT_REAL_BUDGET_USD,
-      }),
+  // A7.4 — smoke-test builtin. Converted from legacy YAML via
+  // registerLegacyPipeline so prompts live in SQLite (see Task 10 of
+  // the prompts-in-SQLite plan). The IR that convertLegacyYaml
+  // produces is hash-identical to the former hand-coded smokeTestIR()
+  // (verified by converter/legacy-yaml.test.ts golden).
+  "smoke-test": registerLegacyPipeline({
+    pipelineDir: "smoke-test",
     timeoutMs: 3 * 60_000,
   }),
   "tech-research-collector": registerLegacyPipeline({
@@ -262,13 +265,16 @@ kernelRunRoute.post("/kernel/tasks/run", async (c) => {
   const { ir, handlers, executorFactory, timeoutMs } = factory();
   const db = getKernelNextDb();
   const svc = new KernelService(db, { skipTypeCheck: true });
-  // Placeholder prompts: submit now requires a prompts map for every
-  // AgentStage.promptRef. Task 10 of the prompts-in-SQLite plan will
-  // replace this with real prompts scanned from the pipeline's disk
-  // directory and bind a DbPromptResolver. Until then we fill in
-  // "placeholder" content so submit passes; the real-executor path
-  // continues to read prompts from disk via FsPromptResolver, not from
-  // the DB, so this placeholder is not observed at runtime.
+  // Placeholder prompts for the POST-time re-submit path: legacy
+  // pipelines already submitted their real prompts at module load via
+  // registerLegacyPipeline (and their RealStageExecutor resolves
+  // prompts from the DB via the module-load versionHash). The
+  // re-submit here exists so diamond/diamond-slow/diamond-real (which
+  // do not go through registerLegacyPipeline) still pass submit; for
+  // those, the prompts map is ignored since no AgentStage.promptRef
+  // is set. For legacy pipelines, this emits a second (harmless)
+  // pipeline_versions row keyed by placeholder content, which the
+  // runner uses but the DbPromptResolver does NOT consult.
   const placeholderPrompts: Record<string, string> = {};
   for (const stage of ir.stages) {
     if (stage.type === "agent" && stage.config.promptRef) {
