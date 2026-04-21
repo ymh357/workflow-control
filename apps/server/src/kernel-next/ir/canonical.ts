@@ -185,3 +185,37 @@ export function promptContentHash(content: string): string {
   const normalized = normalizePromptContent(content);
   return createHash("sha256").update(normalized, "utf8").digest("hex");
 }
+
+/**
+ * Canonical body for a pipeline = canonical IR + sorted promptRef→contentHash map.
+ * Shape: { ir: <canonicalIR>, prompts: { <promptRef>: "sha256:<hex>" } }.
+ * Empty prompts map is valid and produces a distinct hash from the IR-only one.
+ */
+export function canonicalizePipeline(input: {
+  ir: PipelineIR;
+  prompts: Record<string, string>;
+}): CanonicalValue {
+  const ir = canonicalizeIR(input.ir);
+  const promptEntries = Object.entries(input.prompts)
+    .sort(([a], [b]) => codepointCompare(a, b))
+    .map(([ref, content]) => [ref, `sha256:${promptContentHash(content)}`] as const);
+  const prompts: Record<string, CanonicalValue> = {};
+  for (const [ref, hash] of promptEntries) prompts[ref] = hash;
+  return sortKeys({ ir, prompts });
+}
+
+export function pipelineCanonicalJSON(input: {
+  ir: PipelineIR;
+  prompts: Record<string, string>;
+}): string {
+  return JSON.stringify(canonicalizePipeline(input));
+}
+
+export function pipelineVersionHash(input: {
+  ir: PipelineIR;
+  prompts: Record<string, string>;
+}): string {
+  return createHash("sha256")
+    .update(pipelineCanonicalJSON(input))
+    .digest("hex");
+}
