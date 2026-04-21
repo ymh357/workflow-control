@@ -37,7 +37,7 @@ export function mapInjectedContext(legacy: LegacyInput): MapInjectedContextResul
   const warnings: ConverterWarning[] = [];
   const diagnostics: ConverterDiagnostic[] = [];
 
-  // Helper: validate and register one external input entry.
+  // Mutates the closure-captured arrays: diagnostics, externalInputs, externalKeys, warnings.
   function registerEntry(entry: string, type: PortIR["type"], source: "injected_context" | "external_inputs"): void {
     if (entry === RESERVED_SENTINEL) {
       diagnostics.push({
@@ -90,10 +90,12 @@ export function mapInjectedContext(legacy: LegacyInput): MapInjectedContextResul
   // Process structured external_inputs{} dict (new format, preferred).
   for (const [name, def] of Object.entries(legacy.external_inputs ?? {})) {
     const rawType = def?.type ?? "unknown";
-    const resolvedType: PortIR["type"] = VALID_PORT_TYPES.has(rawType)
-      ? (rawType as PortIR["type"])
-      : "unknown";
-    if (rawType !== "unknown" && !VALID_PORT_TYPES.has(rawType)) {
+    const isValidType = VALID_PORT_TYPES.has(rawType);
+    const resolvedType: PortIR["type"] = isValidType ? (rawType as PortIR["type"]) : "unknown";
+    // `required` is parsed but not propagated: PortIR has no required field.
+    // Runtime enforcement of missing external inputs lives in the runner
+    // (SEED_VALUES_MISSING_KEY), not in the converter layer.
+    if (!isValidType && rawType !== "unknown") {
       warnings.push({
         code: "EXTERNAL_INPUT_TYPE_UNKNOWN",
         message: `external_inputs '${name}' declared type '${rawType}' is not a known PortIR type; defaulting to 'unknown'`,
