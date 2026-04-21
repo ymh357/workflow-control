@@ -26,22 +26,6 @@ export function runPreflight(): { passed: boolean; results: CheckResult[] } {
     results.push({ name: "Claude Executable", ok: false, detail: `Not found: ${claudePath}` });
   }
 
-  const geminiPath = settings.paths?.gemini_executable || "gemini";
-  try {
-    const found = execFileSync("which", [geminiPath], { encoding: "utf-8", timeout: 5_000 }).trim();
-    results.push({ name: "Gemini Executable", ok: true, detail: found });
-  } catch {
-    results.push({ name: "Gemini Executable", ok: false, detail: `Not found: ${geminiPath}` });
-  }
-
-  const codexPath = settings.paths?.codex_executable || "codex";
-  try {
-    const found = execFileSync("which", [codexPath], { encoding: "utf-8", timeout: 5_000 }).trim();
-    results.push({ name: "Codex Executable", ok: true, detail: found });
-  } catch {
-    results.push({ name: "Codex Executable", ok: false, detail: `Not found: ${codexPath} (optional)` });
-  }
-
   const reposBase = settings.paths?.repos_base || "";
   if (reposBase && existsSync(reposBase)) {
     results.push({ name: "Repos Base", ok: true, detail: reposBase });
