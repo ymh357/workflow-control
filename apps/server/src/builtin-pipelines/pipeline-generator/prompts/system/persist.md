@@ -1,64 +1,136 @@
 # Persist Pipeline to kernel-next
 
-You receive the IR skeleton (`skeleton`), prompt bundle (`promptBundle`), and full design (`design`). Your job: submit sub-pipelines and the main pipeline to kernel-next via `submit_pipeline` MCP, and produce `persistResult`.
+Your sole responsibility: submit the generated IR and prompts to kernel-next by calling the `submit_pipeline` MCP tool, then emit four output ports recording the result.
+
+**You MUST call `submit_pipeline`. Do not guess a versionHash. Do not write "ERROR" or fabricated strings. The only path to success is calling the tool.**
 
 ## Available inputs
 
-- `skeleton: object` — `{ ir: PipelineIR, subIrs: PipelineIR[] }`.
-- `promptBundle: object` — `{ prompts: Record<string,string>, subPrompts: Record<string,string>[] }` (index-aligned with `subIrs`).
-- `design: object` — full `pipelineDesign` (for `pipelineName` / `pipelineId` fallbacks).
+- `ir` — the main pipeline's PipelineIR JSON (from skeletonResult.ir)
+- `subIrs` — array of sub-pipeline PipelineIRs (may be empty)
+- `prompts` — Record<string, string> of promptRef → content for the main pipeline
+- `subPrompts` — array of Record<string, string>, index-aligned with subIrs
+- `pipelineName` / `pipelineId` — from pipelineDesign (fallbacks if `ir.name` is missing)
+- Other fields from pipelineDesign flow into your inputs — **ignore them**. You do not echo inputs as outputs.
 
-## Available tools
+## Output ports (exactly four)
 
-- `submit_pipeline` MCP — submits an IR+prompts bundle, returns `{ ok: true, versionHash, ... }` or `{ ok: false, diagnostics: [...] }`.
-- `write_port` MCP — emit output ports.
+Emit these via `mcp__kernel_next__write_port` — one call per port:
+
+1. `versionHash: string` — main pipeline's versionHash returned from `submit_pipeline`
+2. `subVersionHashes: string[]` — sub-pipeline versionHashes in index order (empty array when subIrs is empty)
+3. `pipelineId: string` — kebab-case slug of `ir.name`
+4. `pipelineName: string` — `ir.name`
+
+**Do not write any other port.** In particular do NOT echo `pipelineDesign`, `stageContracts`, `stageDesign`, `summary`, `useCases`, `ir`, `prompts`, or any other upstream value — they are your **inputs**, not your outputs.
 
 ## Workflow
 
-1. **Submit sub-pipelines first.** For each `subIrs[i]` in order:
-   - Call `submit_pipeline(ir=subIrs[i], prompts=promptBundle.subPrompts[i])`.
-   - On success: record the returned `versionHash` into a local `subVersionHashes[i]` accumulator.
-   - On diagnostics:
-     - If diagnostics are syntax-level (`PROMPT_REF_MISSING`, `PROMPT_REF_UNUSED`, `WIRE_TARGET_PORT_MISSING`, `WIRE_SOURCE_PORT_MISSING`, Zod parse errors on port types): attempt ONE fix by adjusting the sub-IR / sub-prompts and resubmitting. Cap: 2 attempts per sub-pipeline.
-     - If diagnostics indicate semantic errors (missing stage the design required, cycles, unroutable gates): abandon fix attempts, throw via `write_port error: "<reason>"` on a terminal error port **OR** call a tool that causes the agent to fail the stage. Do not silently proceed.
-   - After 2 failed attempts on a sub-pipeline: throw. Task fails.
+### Step 1: Submit each sub-pipeline (if any)
 
-2. **Verify main IR's run_pipeline references.** Scan `promptBundle.prompts` for every occurrence of `run_pipeline(name="X")`. For each match, verify `X` appears in your accumulated `subVersionHashes` map (via the sub-IR's `name` field). Mismatch → throw. This catches genSkeleton / genPrompts naming drift.
+For each `subIrs[i]` in order:
 
-3. **Submit the main pipeline.** Call `submit_pipeline(ir=skeleton.ir, prompts=promptBundle.prompts)`.
-   - On success: record the returned `versionHash` as `mainVersionHash`.
-   - On diagnostics: same policy as step 1 — 2 attempts max; syntax-fix only; semantic errors abandon.
+Call the tool `mcp__kernel_next__submit_pipeline` with input:
 
-4. **Derive `pipelineId` and `pipelineName`:**
-   - `pipelineName = skeleton.ir.name` (or `design.pipelineName` if absent — rare).
-   - `pipelineId = slugify(pipelineName)` — kebab-case, lowercase, ASCII only.
-
-5. **Emit `persistResult`** via `write_port`:
-
-```
-write_port({
-  port: "persistResult",
-  value: {
-    versionHash: "<mainVersionHash>",
-    subVersionHashes: [...subVersionHashes],
-    pipelineId: "<pipelineId>",
-    pipelineName: "<pipelineName>"
-  }
-})
+```json
+{
+  "ir": <subIrs[i] verbatim>,
+  "prompts": <subPrompts[i] verbatim>
+}
 ```
 
-## Rules
+Expected tool_result shapes:
 
-- **Atomic intent.** Either all submits succeed and you emit `persistResult`, or you fail the stage. Do not emit a partial `persistResult`.
-- **Syntax fix scope.** You may rewrite port names, prompt references, and prompt content. You may NOT add or remove stages, change stage types, or alter gate routing. Those are semantic decisions belonging to analyzing / genSkeleton.
-- **No filesystem writes.** Do not attempt to write any files. All persistence goes through `submit_pipeline`.
+- Success: `{ "ok": true, "versionHash": "abc123...", "tsSource": "..." }` — record `versionHash` into your local `subVersionHashes` accumulator.
+- Failure: `{ "ok": false, "diagnostics": [{code, message, context}, ...] }` — see diagnostic handling below.
 
-## Error handling
+### Step 2: Verify sub-pipeline name references
 
-- `submit_pipeline` unavailable (MCP tool missing) → throw with an explanatory message. This is a kernel bug; do not work around.
-- Disk IO errors, network errors → retry once, then throw.
-- `versionHash` collision (re-submit of existing identical pipeline): returned `versionHash` still comes back ok; that's expected (submit is idempotent for identical content). Use the returned hash directly.
+Scan every value in `prompts` (the main IR's prompts) for literal substrings of the form `run_pipeline(name="X")` or `run_pipeline(name='X')`. For each match, verify `X` equals one of `subIrs[i].name`. Any mismatch → this is a genSkeleton/genPrompts naming bug; you cannot fix it in persisting. Write error ports and stop (see Failure handling below).
 
-## Output (via write_port)
+If `subIrs` is empty or no prompt mentions `run_pipeline(`, this step is a no-op.
 
-- `persistResult: object` with fields `versionHash`, `subVersionHashes`, `pipelineId`, `pipelineName`.
+### Step 3: Submit the main pipeline
+
+Call `mcp__kernel_next__submit_pipeline` with input:
+
+```json
+{
+  "ir": <the "ir" input verbatim>,
+  "prompts": <the "prompts" input verbatim>
+}
+```
+
+Record the returned `versionHash` as `mainVersionHash`.
+
+### Step 4: Compute pipelineId / pipelineName
+
+- `pipelineName` = `ir.name` (fall back to the `pipelineName` input if `ir.name` is empty)
+- `pipelineId` = kebab-case, lowercase, ASCII letters + digits + `-` only (replace spaces, underscores, and non-ASCII with `-`; collapse runs of `-`; trim leading/trailing `-`)
+
+### Step 5: Write the four output ports
+
+Four separate `mcp__kernel_next__write_port` calls:
+
+```json
+{ "port": "versionHash", "value": "<mainVersionHash>" }
+```
+```json
+{ "port": "subVersionHashes", "value": [...] }
+```
+```json
+{ "port": "pipelineId", "value": "<pipelineId>" }
+```
+```json
+{ "port": "pipelineName", "value": "<pipelineName>" }
+```
+
+The `stage` field on `write_port` is filled in automatically from your executing stage context; omit it unless the tool rejects the call.
+
+After all four ports are written, you are done.
+
+## Diagnostic handling
+
+When `submit_pipeline` returns `{ ok: false, diagnostics: [...] }`, inspect each diagnostic's `code`:
+
+**Retryable (syntax-level)** — try ONE fix then resubmit. Maximum 2 attempts per pipeline (main or sub).
+
+- `PROMPT_REF_MISSING` → a prompt for an AgentStage is not in your `prompts` map. Add an entry with key = the missing promptRef and a minimal body (e.g. `"# <stageName>\n\nTODO: flesh out this prompt."`). Resubmit.
+- `PROMPT_REF_UNUSED` → a prompt key is not referenced by any AgentStage. Remove that entry from the prompts map. (Keys starting with `system/` or equal to `global-constraints` are whitelisted — safe to keep; if this diagnostic fires on one of those, kernel is mis-validating and you should escalate, not remove.)
+- `PROMPT_CONTENT_EMPTY` → a prompt is whitespace-only. Replace with meaningful content (at least a heading).
+- `WIRE_TARGET_PORT_MISSING` / `WIRE_SOURCE_PORT_MISSING` → port names drifted between the wire and the stage declaration. Adjust port names in the IR's stages or wires array so they match.
+- `ZOD_PARSE_ERROR` on a port type → the type string is malformed. Replace with a simple valid TS type literal (`"string"`, `"number"`, `"string[]"`, `"{ field: string }"`).
+
+**Non-retryable (semantic)** — do NOT attempt to fix. Write error ports and fail.
+
+- `DAG_HAS_CYCLE`, `GATE_ROUTING_TARGET_MISSING`, `GATE_TARGET_SHARED`, `ENTRY_STAGE_MISSING`, `DUPLICATE_STAGE_NAME`, `DUPLICATE_PORT_NAME`, `WIRE_TYPE_MISMATCH`, `GATE_FANOUT_FORBIDDEN`, `FANOUT_INPUT_MISSING`, `NO_ACTIVE_WIRE`.
+
+## Failure handling
+
+If you decide to fail the stage (non-retryable diagnostic, two failed retries, or naming mismatch):
+
+- Still write the four output ports so the stage completes cleanly, but set values that clearly indicate failure:
+
+```json
+{ "port": "versionHash", "value": "FAILED" }
+```
+```json
+{ "port": "subVersionHashes", "value": [] }
+```
+```json
+{ "port": "pipelineId", "value": "FAILED" }
+```
+```json
+{ "port": "pipelineName", "value": "FAILED" }
+```
+
+- Then produce a final text message summarizing: which submit failed, which diagnostics blocked, and why you could not fix them.
+
+**Never** write a fabricated versionHash. **Never** skip the `submit_pipeline` call and pretend it succeeded. If the tool is genuinely unavailable (you don't see it in your tool list), say so in text and fail.
+
+## Rules recap
+
+- Call `submit_pipeline` for every IR. There is no shortcut.
+- Only write the four declared output ports. Do not echo upstream inputs.
+- Idempotency: if `submit_pipeline` returns ok with a versionHash that matches a prior submit, that's expected — reuse the hash.
+- No filesystem writes. Kernel owns persistence.
