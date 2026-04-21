@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { initKernelNextSchema } from "../ir/sql.js";
+import * as sqlMod from "../ir/sql.js";
 import { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import { handleStartPipelineGenerator } from "./pg-entry.js";
 import { LegacyPipelineLoadError, loadLegacyPipelineIR } from "../runtime/load-legacy-pipeline.js";
@@ -13,6 +14,10 @@ function freshDb() {
   return db;
 }
 
+// realIR loads the actual pipeline-generator YAML via the loader.
+// Used in tests that need a schema-valid IR for versionHash computation
+// and insertPipelineVersion; a minimal cast stub would fail the strict
+// schema checks in those paths.
 function realIR(): PipelineIR {
   return loadLegacyPipelineIR("pipeline-generator").ir;
 }
@@ -167,5 +172,57 @@ describe("handleStartPipelineGenerator — bootstrap errors", () => {
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error).toBe("RUN_BOOTSTRAP_FAILED");
+  });
+
+  it("returns RUN_BOOTSTRAP_FAILED when insertPipelineVersion throws", async () => {
+    const spy = vi.spyOn(sqlMod, "insertPipelineVersion").mockImplementation(() => {
+      throw new Error("db blew up");
+    });
+    const ir = realIR();
+    try {
+      const res = await handleStartPipelineGenerator(
+        { description: "x" },
+        {
+          db: freshDb(),
+          broadcaster: new KernelNextBroadcaster(),
+          loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [] })),
+          runner: vi.fn(async () => undefined),
+          executorFactory: vi.fn(() => ({ executeStage: vi.fn() }) as any),
+          model: "m",
+        },
+      );
+      expect(res.ok).toBe(false);
+      if (res.ok) return;
+      expect(res.error).toBe("RUN_BOOTSTRAP_FAILED");
+      if (res.error === "RUN_BOOTSTRAP_FAILED") {
+        expect(res.reason).toMatch(/insertPipelineVersion/);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("returns CONVERT_FAILED with LOADER_ERROR code when loader throws unexpected error", async () => {
+    const loader = vi.fn(() => {
+      throw new Error("filesystem permission denied");
+    });
+    const res = await handleStartPipelineGenerator(
+      { description: "x" },
+      {
+        db: freshDb(),
+        broadcaster: new KernelNextBroadcaster(),
+        loader,
+        runner: vi.fn() as any,
+        executorFactory: vi.fn() as any,
+        model: "m",
+      },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.error).toBe("CONVERT_FAILED");
+    if (res.error === "CONVERT_FAILED") {
+      expect(res.diagnostics[0].code).toBe("LOADER_ERROR");
+      expect(res.diagnostics[0].message).toMatch(/permission denied/);
+    }
   });
 });

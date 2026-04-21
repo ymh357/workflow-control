@@ -6,6 +6,7 @@ import type { StageExecutor } from "../runtime/executor.js";
 import { versionHash as computeVersionHash } from "../ir/canonical.js";
 import { insertPipelineVersion } from "../ir/sql.js";
 import { LegacyPipelineLoadError } from "../runtime/load-legacy-pipeline.js";
+import { logger } from "../../lib/logger.js";
 
 export interface StartPipelineGeneratorInput {
   description: string;
@@ -73,7 +74,7 @@ export async function handleStartPipelineGenerator(
     return {
       ok: false,
       error: "CONVERT_FAILED",
-      diagnostics: [{ code: "UNKNOWN", message: (err as Error).message }],
+      diagnostics: [{ code: "LOADER_ERROR", message: (err as Error).message }],
     };
   }
 
@@ -119,7 +120,7 @@ export async function handleStartPipelineGenerator(
     void p.catch((err: unknown) => {
       // Background run failure observed via broadcaster or wait_pipeline_result timeout.
       // Logged here for post-mortem visibility.
-      console.error("[pg-entry] background runPipeline rejected", { taskId, err });
+      logger.error({ taskId, err }, "[pg-entry] background runPipeline rejected");
     });
   } catch (err) {
     return {
