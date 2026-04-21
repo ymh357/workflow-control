@@ -310,10 +310,14 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
       expect(pending[0]!.question).toEqual({ text: "continue?", options: ["yes", "no"] });
 
       const result = svc.answerGate(gateId, "yes");
-      expect(result).toEqual({
-        ok: true, gateId, taskId: "task-1", stageName: "G",
-        targetStage: "A", answer: "yes",
-      });
+      // Both routes (yes/no) target "A" which is upstream of G —
+      // the compiler detects this as a rollback answer. Only the
+      // first matching answer is recorded, so "yes" → kind="rejected".
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.kind).toBe("rejected");
+      expect(result.answer).toBe("yes");
+      expect(result.targetStage).toBe("A");
 
       const after = svc.listGates({ taskId: "task-1", answered: true });
       expect(after[0]!.answer).toBe("yes");
@@ -359,7 +363,7 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
       });
       const r = svc.answerGate(gateId, "surprise");
       expect(r).toEqual({
-        ok: true, gateId, taskId: "t1", stageName: "G",
+        ok: true, kind: "answered", gateId, taskId: "t1", stageName: "G",
         targetStage: "A", answer: "surprise",
       });
     } finally {
@@ -621,6 +625,95 @@ describe("KernelService — getTaskStatus (A4)", () => {
       openAttempt(db, "t1", hash, "A", "success", 2);
       openAttempt(db, "t1", hash, "G", "success");
       expect(svc.getTaskStatus("t1").status).toBe("completed");
+    } finally {
+      db.close();
+    }
+  });
+});
+
+import type { PipelineIR } from "../ir/schema.js";
+import { insertPipelineVersion } from "../ir/sql.js";
+
+describe("KernelService.answerGate — reject rollback kind", () => {
+  // Pipeline shape: A -> G (gate with routes: {approve: B, reject: A}) -> B
+  // One open gate_queue row for stage G.
+  function setupRejectReadyDb() {
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "rb-t",
+      version: "1.0.0",
+      externalInputs: [],
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          config: { promptRef: "p", reads: [] },
+          inputs: [],
+          outputs: [{ name: "o", type: "unknown" }],
+        } as unknown as PipelineIR["stages"][number],
+        {
+          name: "G",
+          type: "gate",
+          config: { routing: { routes: { approve: "B", reject: "A" } } },
+          inputs: [{ name: "i", type: "unknown" }],
+          outputs: [],
+        } as unknown as PipelineIR["stages"][number],
+        {
+          name: "B",
+          type: "agent",
+          config: { promptRef: "p", reads: [] },
+          inputs: [],
+          outputs: [],
+        } as unknown as PipelineIR["stages"][number],
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "o" }, to: { stage: "G", port: "i" } },
+      ],
+    } as unknown as PipelineIR;
+
+    const vh = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+
+    const attemptId = "a-1";
+    const taskId = "t-1";
+    db.prepare(
+      "INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, kind, started_at, status) VALUES (?,?,?,?,?,?,?,?)",
+    ).run(attemptId, taskId, vh, "G", 0, "regular", Date.now(), "running");
+
+    const gateId = "g-1";
+    db.prepare(
+      "INSERT INTO gate_queue (gate_id, task_id, stage_name, attempt_id, question_json, created_at) VALUES (?,?,?,?,?,?)",
+    ).run(gateId, taskId, "G", attemptId, "{}", Date.now());
+
+    return { db, gateId };
+  }
+
+  it("returns kind='rejected' with affectedStages when reject target is upstream", () => {
+    const { db, gateId } = setupRejectReadyDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const result = svc.answerGate(gateId, "reject");
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.kind).toBe("rejected");
+      if (result.kind === "rejected") {
+        expect(result.targetStage).toBe("A");
+        expect(new Set(result.affectedStages)).toEqual(new Set(["A", "G"]));
+        expect(result.answer).toBe("reject");
+      }
+    } finally {
+      db.close();
+    }
+  });
+
+  it("returns kind='answered' for approve (non-rollback)", () => {
+    const { db, gateId } = setupRejectReadyDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const result = svc.answerGate(gateId, "approve");
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.kind).toBe("answered");
     } finally {
       db.close();
     }

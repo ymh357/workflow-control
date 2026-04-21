@@ -17,6 +17,7 @@ import { versionHash } from "../ir/canonical.js";
 import { insertPipelineVersion, getPipelineIR } from "../ir/sql.js";
 import { applyPatch, PatchApplyError } from "./patch.js";
 import { taskRegistry } from "../runtime/task-registry.js";
+import { compileIRToMachine } from "../compiler/ir-to-machine.js";
 
 // Process-local in-progress migration set (design §10.2: "a task can be
 // migrated to at most one new version at a time"). Keyed by taskId; the
@@ -124,8 +125,29 @@ export interface GateRow {
 }
 
 export type AnswerGateResult =
-  | { ok: true; gateId: string; taskId: string; stageName: string; targetStage: string | string[]; answer: string }
-  | { ok: false; diagnostics: Diagnostic[] };
+  | {
+      ok: true;
+      kind: "answered";
+      gateId: string;
+      taskId: string;
+      stageName: string;
+      targetStage: string | string[];
+      answer: string;
+    }
+  | {
+      ok: true;
+      kind: "rejected";
+      gateId: string;
+      taskId: string;
+      stageName: string;
+      targetStage: string;
+      answer: string;
+      affectedStages: string[];
+    }
+  | {
+      ok: false;
+      diagnostics: Diagnostic[];
+    };
 
 export type TaskStatus = "not_found" | "running" | "gated" | "completed" | "failed";
 
@@ -598,6 +620,18 @@ export class KernelService {
       };
     }
 
+    // Determine whether this answer triggers a rollback. compileIRToMachine
+    // is called here (not cached) because the IR snapshot is tied to the
+    // attempt's version_hash; callers should treat this as a read-only
+    // classification, not a side-effectful compile.
+    const compiled = compileIRToMachine(ir, { taskId: row.task_id });
+    const rollback = compiled.rejectRollbackMap.get(row.stage_name);
+    const isReject =
+      rollback !== undefined &&
+      rollback.answer === answer &&
+      typeof targetStage === "string" &&
+      targetStage === rollback.targetStage;
+
     // Atomic answer write + concurrent-answer defense. Both updates live
     // in a single transaction so the gate row and the attempt row stay
     // consistent — if the gate was resolved concurrently the UPDATE
@@ -636,8 +670,21 @@ export class KernelService {
       };
     }
 
+    if (isReject) {
+      return {
+        ok: true,
+        kind: "rejected",
+        gateId,
+        taskId: row.task_id,
+        stageName: row.stage_name,
+        targetStage: rollback!.targetStage,
+        answer,
+        affectedStages: rollback!.affectedStages,
+      };
+    }
     return {
       ok: true,
+      kind: "answered",
       gateId,
       taskId: row.task_id,
       stageName: row.stage_name,

@@ -93,14 +93,18 @@ kernelGatesRoute.post("/kernel/gates/:id/answer", async (c) => {
     // Dispatch GATE_ANSWERED to the live runner if present. If not (task
     // already completed / process restarted), the persisted answer will
     // be picked up by any rehydration path; REST just returns ok.
-    const dispatcher = taskRegistry.get(result.taskId);
-    dispatcher?.send({
-      type: "GATE_ANSWERED",
-      gateId: result.gateId,
-      stageName: result.stageName,
-      answer: result.answer,
-      targetStage: result.targetStage,
-    });
+    // Task 4 will add kind==="rejected" dispatch (GATE_REJECTED).
+    // For now only answered answers are forwarded to the runner.
+    if (result.kind === "answered") {
+      const dispatcher = taskRegistry.get(result.taskId);
+      dispatcher?.send({
+        type: "GATE_ANSWERED",
+        gateId: result.gateId,
+        stageName: result.stageName,
+        answer: result.answer,
+        targetStage: result.targetStage,
+      });
+    }
     return c.json(result);
   }
   return c.json(result, statusForDiagnostic(result.diagnostics[0]?.code));
