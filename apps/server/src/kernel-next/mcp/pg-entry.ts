@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import type { PipelineIR } from "../ir/schema.js";
 import type { StageExecutor } from "../runtime/executor.js";
-import type { KernelNextSSEEvent, RunFinalData, StageErrorData } from "../sse/types.js";
+import type { KernelNextSSEEvent, RunFinalData, StageErrorData, StageExecutingData } from "../sse/types.js";
 import { versionHash as computeVersionHash } from "../ir/canonical.js";
 import { insertPipelineVersion } from "../ir/sql.js";
 import { LegacyPipelineLoadError } from "../runtime/load-legacy-pipeline.js";
@@ -185,6 +185,40 @@ function readPortValue(
   return result?.value;
 }
 
+// Collect all direction='out' port values for a given (taskId, stageName),
+// keeping only the latest written row per port_name. Returns a plain object
+// mapping portName → parsed value. Returns {} when no rows are found.
+function collectStagePorts(
+  db: DatabaseSync,
+  taskId: string,
+  stageName: string,
+): Record<string, unknown> {
+  const rows = db
+    .prepare(
+      `SELECT pv.port_name, pv.value_json
+       FROM port_values pv
+       JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
+       WHERE sa.task_id = ?
+         AND pv.stage_name = ?
+         AND pv.direction = 'out'
+       ORDER BY pv.written_at DESC, sa.attempt_idx DESC`,
+    )
+    .all(taskId, stageName) as Array<{ port_name: string; value_json: string }>;
+
+  const snapshot: Record<string, unknown> = {};
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (seen.has(row.port_name)) continue;
+    seen.add(row.port_name);
+    try {
+      snapshot[row.port_name] = JSON.parse(row.value_json);
+    } catch {
+      // skip malformed rows
+    }
+  }
+  return snapshot;
+}
+
 function assembleDone(db: DatabaseSync, taskId: string): DoneResult {
   const pipelineId = String(readPortValue(db, taskId, "persistResult", "pipelineId") ?? "");
   const pipelineName = String(readPortValue(db, taskId, "pipelineDesign", "pipelineName") ?? "");
@@ -273,8 +307,26 @@ export async function handleWaitPipelineResult(
         });
         return;
       }
+      if (ev.type === "stage_executing") {
+        const data = ev.data as StageExecutingData;
+        const stage = deps.ir.stages.find((s) => s.name === data.stage);
+        if (stage && stage.type === "gate") {
+          const pipelineDesignSnapshot = collectStagePorts(deps.db, input.taskId, "pipelineDesign");
+          settle({
+            ok: true,
+            status: "gate_pending",
+            taskId: input.taskId,
+            gateName: data.stage,
+            gateContext: { pipelineDesign: pipelineDesignSnapshot },
+            hint: "Call answer_gate to approve/reject, then wait_pipeline_result again.",
+          });
+        }
+        // Non-gate stage_executing is ignored; wait continues until the next
+        // terminal event or timeout.
+        return;
+      }
       // stage_retry and other non-terminal events are ignored; wait continues until
-      // the next terminal event or timeout. Gate detection lands in Task 8.
+      // the next terminal event or timeout.
     });
 
     // If already settled (synchronous history replay resolved the promise),

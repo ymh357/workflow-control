@@ -330,6 +330,60 @@ describe("handleWaitPipelineResult — error paths", () => {
   });
 });
 
+describe("handleWaitPipelineResult — gate_pending", () => {
+  it("returns gate_pending when stage_executing fires for a gate-type stage", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const taskId = "task-gate-1";
+    const ir = realIR();
+
+    // Seed a pipeline_versions row so stage_attempts FK succeeds.
+    const versionHash = "test-vh-gate-1";
+    db.prepare(
+      `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+       VALUES (?, 'test', ?, NULL, '{}', '')`,
+    ).run(versionHash, Date.now());
+
+    // Seed pipelineDesign port values so gateContext snapshot has something.
+    const aD = seedAttempt(db, taskId, versionHash, "pipelineDesign");
+    seedPortValue(db, aD, "pipelineDesign", "pipelineName", "My Gate Pipeline");
+    seedPortValue(db, aD, "pipelineDesign", "description", "A design description");
+
+    broadcaster.publish({
+      taskId,
+      timestamp: new Date().toISOString(),
+      type: "stage_executing",
+      data: { stage: "awaitingConfirm" } as any,
+    });
+
+    const res = await handleWaitPipelineResult({ taskId, timeoutMs: 1000 }, { db, broadcaster, ir });
+    expect(res.ok).toBe(true);
+    if (!res.ok || res.status !== "gate_pending") throw new Error(`expected gate_pending, got: ${JSON.stringify(res)}`);
+    expect(res.gateName).toBe("awaitingConfirm");
+    expect(res.gateContext).toBeDefined();
+    // pipelineDesign snapshot should contain the seeded ports
+    expect(typeof res.gateContext.pipelineDesign).toBe("object");
+    expect((res.gateContext.pipelineDesign as any).pipelineName).toBe("My Gate Pipeline");
+  });
+
+  it("ignores stage_executing for non-gate stage (falls through to timeout)", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const taskId = "task-nongate-1";
+    const ir = realIR();
+    broadcaster.publish({
+      taskId,
+      timestamp: new Date().toISOString(),
+      type: "stage_executing",
+      data: { stage: "analyzing" } as any,
+    });
+    const res = await handleWaitPipelineResult({ taskId, timeoutMs: 1000 }, { db, broadcaster, ir });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error();
+    expect(res.status).toBe("running");
+  });
+});
+
 describe("handleWaitPipelineResult — done", () => {
   it("returns done with result fields when run_final completed event arrives", async () => {
     const db = freshDb();
