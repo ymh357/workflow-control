@@ -138,6 +138,10 @@ store_schema:
         type: string
         description: Human-readable pipeline name (defaults to pipelineId when not supplied)
         required: true
+      yamlPath:
+        type: string
+        description: Absolute path to the written pipeline.yaml file.
+        required: true
       savedFiles:
         type: string[]
         description: Files written to disk

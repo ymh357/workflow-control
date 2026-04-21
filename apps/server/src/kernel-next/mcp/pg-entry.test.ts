@@ -484,13 +484,11 @@ describe("handleWaitPipelineResult — done", () => {
     // Seed port values via stage_attempts + port_values.
     const aP = seedAttempt(db, taskId, versionHash, "persistResult");
     seedPortValue(db, aP, "persistResult", "pipelineId", "my-pid");
+    seedPortValue(db, aP, "persistResult", "yamlPath", "/tmp/out/pipeline.yaml");
 
     const aD = seedAttempt(db, taskId, versionHash, "pipelineDesign");
     seedPortValue(db, aD, "pipelineDesign", "pipelineName", "My Pipeline");
     seedPortValue(db, aD, "pipelineDesign", "description", "Short descr");
-
-    const aS = seedAttempt(db, taskId, versionHash, "skeletonResult");
-    seedPortValue(db, aS, "skeletonResult", "yamlPath", "/tmp/out/pipeline.yaml");
 
     const aPF = seedAttempt(db, taskId, versionHash, "promptFiles");
     seedPortValue(db, aPF, "promptFiles", "outputDir", "/tmp/out/prompts");

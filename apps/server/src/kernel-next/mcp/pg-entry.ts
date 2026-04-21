@@ -243,7 +243,7 @@ function collectStagePorts(
 function assembleDone(db: DatabaseSync, taskId: string): DoneResult {
   const pipelineId = String(readPortValue(db, taskId, "persistResult", "pipelineId") ?? "");
   const pipelineName = String(readPortValue(db, taskId, "pipelineDesign", "pipelineName") ?? "");
-  const yamlPath = String(readPortValue(db, taskId, "skeletonResult", "yamlPath") ?? "");
+  const yamlPath = String(readPortValue(db, taskId, "persistResult", "yamlPath") ?? "");
   const promptDir = readPortValue(db, taskId, "promptFiles", "outputDir");
   const mcpsNeedingKeys = readPortValue(db, taskId, "persistResult", "mcpsNeedingKeys");
   const descRaw = String(readPortValue(db, taskId, "pipelineDesign", "description") ?? "");

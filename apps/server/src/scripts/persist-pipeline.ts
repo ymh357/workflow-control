@@ -271,6 +271,7 @@ If validation fails, an error is thrown and nothing is written.
       persistResult: {
         pipelineId: safeId,
         pipelineName: pipelineName ?? safeId,
+        yamlPath,
         savedFiles,
         validationPassed: true,
         ...(mcpSetupNeeded.length > 0 ? { mcpSetupNeeded } : {}),

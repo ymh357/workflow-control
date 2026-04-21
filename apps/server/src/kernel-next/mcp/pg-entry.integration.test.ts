@@ -57,13 +57,11 @@ function seedDone(db: DatabaseSync, taskId: string, versionHash: string): void {
 
   const aP = seedAttempt(db, taskId, versionHash, "persistResult");
   seedPortValue(db, aP, "persistResult", "pipelineId", pipelineId);
+  seedPortValue(db, aP, "persistResult", "yamlPath", `/tmp/${pipelineId}/pipeline.yaml`);
 
   const aD = seedAttempt(db, taskId, versionHash, "pipelineDesign");
   seedPortValue(db, aD, "pipelineDesign", "pipelineName", `Pipeline ${pipelineId}`);
   seedPortValue(db, aD, "pipelineDesign", "description", `Description for ${pipelineId}`);
-
-  const aS = seedAttempt(db, taskId, versionHash, "skeletonResult");
-  seedPortValue(db, aS, "skeletonResult", "yamlPath", `/tmp/${pipelineId}/pipeline.yaml`);
 
   const aPF = seedAttempt(db, taskId, versionHash, "promptFiles");
   seedPortValue(db, aPF, "promptFiles", "outputDir", `/tmp/${pipelineId}/prompts`);
