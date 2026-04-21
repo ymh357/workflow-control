@@ -75,19 +75,14 @@ describe("pg-entry integration — concurrent start + wait", () => {
     const broadcaster = new KernelNextBroadcaster();
     const ir = realIR();
 
-    // Mock loader: each call returns a distinct IR name so versionHash differs
-    // per task, avoiding the UNIQUE constraint on pipeline_versions when two
-    // concurrent starts share the same DB.
-    let loaderCallIdx = 0;
-    const loader = () => {
-      const idx = loaderCallIdx++;
-      return {
-        ir: { ...ir, name: `pipeline-generator-${idx}` },
-        promptRoot: "/tmp/prompts",
-        yamlFilePath: "/tmp/pipeline.yaml",
-        warnings: [] as Array<{ code: string; message?: string }>,
-      };
-    };
+    // Both calls share the same loader (same IR → same versionHash).
+    // insertPipelineVersion is now idempotent so the second insert is a no-op.
+    const loader = () => ({
+      ir,
+      promptRoot: "/tmp/prompts",
+      yamlFilePath: "/tmp/pipeline.yaml",
+      warnings: [] as Array<{ code: string; message?: string }>,
+    });
 
     // Mock executorFactory: returns a stub StageExecutor.
     const executorFactory = () =>

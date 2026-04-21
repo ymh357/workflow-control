@@ -443,6 +443,29 @@ describe("handleWaitPipelineResult — running", () => {
   // require actually waiting 5 minutes, so it is intentionally skipped here.
 });
 
+describe("handleStartPipelineGenerator — version idempotency", () => {
+  it("two starts with identical inputs both succeed (insertPipelineVersion is idempotent)", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const ir = realIR();
+    const loader = vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [] }));
+    const runner = vi.fn(async () => undefined);
+    const executorFactory = vi.fn(() => ({ executeStage: vi.fn() }) as any);
+
+    const deps = { db, broadcaster, loader, runner, executorFactory, model: "m" };
+
+    const r1 = await handleStartPipelineGenerator({ description: "same" }, deps);
+    const r2 = await handleStartPipelineGenerator({ description: "same" }, deps);
+
+    expect(r1.ok).toBe(true);
+    expect(r2.ok).toBe(true);
+    if (r1.ok && r2.ok) {
+      expect(r1.versionHash).toBe(r2.versionHash);
+      expect(r1.taskId).not.toBe(r2.taskId);
+    }
+  });
+});
+
 describe("handleWaitPipelineResult — done", () => {
   it("returns done with result fields when run_final completed event arrives", async () => {
     const db = freshDb();

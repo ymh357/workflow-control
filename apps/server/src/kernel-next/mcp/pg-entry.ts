@@ -81,14 +81,28 @@ export async function handleStartPipelineGenerator(
   }
 
   const vh = computeVersionHash(loaded.ir);
-  try {
-    insertPipelineVersion(deps.db, loaded.ir, { versionHash: vh, tsSource: "" });
-  } catch (err) {
-    return {
-      ok: false,
-      error: "RUN_BOOTSTRAP_FAILED",
-      reason: `insertPipelineVersion: ${(err as Error).message}`,
-    };
+  const existing = deps.db
+    .prepare("SELECT version_hash FROM pipeline_versions WHERE version_hash = ?")
+    .get(vh);
+  if (!existing) {
+    try {
+      insertPipelineVersion(deps.db, loaded.ir, { versionHash: vh, tsSource: "" });
+    } catch (err) {
+      // Another concurrent caller may have won the race between our SELECT
+      // and INSERT. If the row now exists, treat as success. Otherwise
+      // propagate.
+      const nowExists = deps.db
+        .prepare("SELECT version_hash FROM pipeline_versions WHERE version_hash = ?")
+        .get(vh);
+      if (!nowExists) {
+        return {
+          ok: false,
+          error: "RUN_BOOTSTRAP_FAILED",
+          reason: `insertPipelineVersion: ${(err as Error).message}`,
+        };
+      }
+      // Row exists — another caller completed it; proceed.
+    }
   }
 
   if (!deps.executorFactory) {
