@@ -6,29 +6,16 @@ import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
 import { logger as honoLogger } from "hono/logger";
 import { serve } from "@hono/node-server";
-import { triggerRoute } from "./routes/trigger.js";
-import { streamRoute } from "./routes/stream.js";
-import { tasksRoute } from "./routes/tasks.js";
-import { confirmRoute } from "./routes/confirm.js";
-import { answerRoute } from "./routes/answer.js";
-import { retryRoute } from "./routes/retry.js";
-import { cancelRoute } from "./routes/cancel.js";
-import { configRoute } from "./routes/config.js";
-import { registryRoute } from "./routes/registry.js";
 import { kernelProposalsRoute } from "./routes/kernel-proposals.js";
 import { kernelGatesRoute } from "./routes/kernel-gates.js";
 import { kernelTasksRoute } from "./routes/kernel-tasks.js";
 import { kernelNextStreamRoute } from "./routes/kernel-next-stream.js";
 import { kernelRunRoute } from "./routes/kernel-run.js";
-import { edgeMcpRoute } from "./edge/route.js";
-import { buildWrapperRoute } from "./edge/wrapper-api.js";
 import { runPreflight, printPreflightResults } from "./lib/preflight.js";
 import { logger } from "./lib/logger.js";
 import { getFragmentRegistry, loadPipelineConfig, listAvailablePipelines, loadSystemSettings, isParallelGroup } from "./lib/config-loader.js";
 import { getDb, cleanupOldData, startPeriodicCleanup } from "./lib/db.js";
-import { validateTaskId } from "./middleware/validate.js";
 import { errorResponse, ErrorCode } from "./lib/error-response.js";
-import { stopSweepTimer } from "./machine/actor-registry.js";
 import { mkdirSync } from "node:fs";
 import { writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -118,11 +105,6 @@ app.use("*", honoLogger());
 app.use("*", cors({ origin: ["http://localhost:3004", "http://localhost:3000"] }));
 app.use("*", bodyLimit({ maxSize: 2 * 1024 * 1024 })); // 2MB
 
-const UUID_REGEX = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
-app.use(`/api/tasks/:taskId{${UUID_REGEX}}/*`, validateTaskId);
-app.use(`/api/tasks/:taskId{${UUID_REGEX}}`, validateTaskId);
-app.use(`/api/stream/:taskId{${UUID_REGEX}}`, validateTaskId);
-
 app.get("/health", (c) => c.json({ ok: true }));
 
 app.get("/health/ready", async (c) => {
@@ -148,22 +130,11 @@ app.get("/health/ready", async (c) => {
   return c.json({ ok, checks }, ok ? 200 : 503);
 });
 
-app.route("/api", triggerRoute);
-app.route("/api", streamRoute);
-app.route("/api", tasksRoute);
-app.route("/api", confirmRoute);
-app.route("/api", answerRoute);
-app.route("/api", retryRoute);
-app.route("/api", cancelRoute);
-app.route("/api", configRoute);
-app.route("/api", registryRoute);
 app.route("/api", kernelProposalsRoute);
 app.route("/api", kernelGatesRoute);
 app.route("/api", kernelTasksRoute);
 app.route("/api", kernelNextStreamRoute);
 app.route("/api", kernelRunRoute);
-app.route("/mcp", edgeMcpRoute);
-app.route("/api/edge", buildWrapperRoute());
 
 const port = Number(process.env.PORT ?? 3001);
 
@@ -174,11 +145,6 @@ const server = serve({ fetch: app.fetch, port });
 async function gracefulShutdown(signal: string): Promise<void> {
   logger.info(`${signal} received — shutting down gracefully`);
   try { server.close(); } catch { /* best-effort */ }
-  try { stopSweepTimer(); } catch { /* best-effort */ }
-  try {
-    const { closeAllSessionManagers } = await import("./agent/session-manager-registry.js");
-    closeAllSessionManagers();
-  } catch { /* best-effort */ }
   try {
     const { closeDb } = await import("./lib/db.js");
     closeDb();

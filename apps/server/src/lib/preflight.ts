@@ -1,38 +1,13 @@
-import { existsSync, statSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve, join } from "node:path";
-import { loadSystemSettings, getNestedValue } from "./config-loader.js";
+import { loadSystemSettings } from "./config-loader.js";
 import { loadMcpRegistry, buildMcpFromRegistry } from "./config/mcp.js";
-import { scriptRegistry } from "../scripts/index.js";
 
 interface CheckResult {
   name: string;
   ok: boolean;
   detail: string;
-}
-
-/**
- * Helper to validate a setting path and add results, masking sensitive values.
- */
-function checkSettingPath(path: string, settings: any, checkedPaths: Set<string>, results: CheckResult[], optional = false) {
-  if (checkedPaths.has(path)) return;
-  checkedPaths.add(path);
-
-  const value = getNestedValue(settings, path);
-  if (value) {
-    // Mask sensitive looking values (token, secret, key)
-    const displayValue = /token|secret|key|id/i.test(path) && typeof value === "string" 
-      ? value.slice(0, 4) + "..." + value.slice(-4)
-      : String(value);
-      
-    results.push({ name: `Setting: ${path}`, ok: true, detail: displayValue });
-  } else {
-    results.push({ 
-      name: `Setting: ${path}`, 
-      ok: optional, 
-      detail: optional ? "(Optional) Missing or empty" : "Missing or empty" 
-    });
-  }
 }
 
 export function runPreflight(): { passed: boolean; results: CheckResult[] } {
@@ -41,7 +16,6 @@ export function runPreflight(): { passed: boolean; results: CheckResult[] } {
   }
   const results: CheckResult[] = [];
   const settings = loadSystemSettings();
-  const checkedPaths = new Set<string>();
 
   // 1. Core Framework Paths
   const claudePath = settings.paths?.claude_executable || "claude";
@@ -91,17 +65,8 @@ export function runPreflight(): { passed: boolean; results: CheckResult[] } {
     results.push({ name: "gh CLI", ok: false, detail: "gh CLI not installed" });
   }
 
-  // 3. DYNAMIC REQUIREMENTS (Scripts & Pipeline MCPs)
-  const scripts = scriptRegistry.getAllScripts();
-
-  // 3a. From Scripts (optional — only needed when a pipeline actually uses the script)
-  for (const script of scripts) {
-    for (const path of script.metadata.requiredSettings || []) {
-      checkSettingPath(path, settings, checkedPaths, results, true);
-    }
-  }
-
-  // 3b. From MCP registry — check which MCPs can be built (have required env vars)
+  // 3. DYNAMIC REQUIREMENTS (Pipeline MCPs)
+  // From MCP registry — check which MCPs can be built (have required env vars)
   const mcpRegistry = loadMcpRegistry();
   if (mcpRegistry) {
     for (const [name, entry] of Object.entries(mcpRegistry)) {
