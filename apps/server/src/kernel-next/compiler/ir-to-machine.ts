@@ -753,6 +753,17 @@ function buildStageRegion(
                   !picked.includes(stageName)
                 );
               },
+              // Record this stage in gateSkippedTargets so retry rebuild
+              // can preserve the skip decision. XState v5 consumes the
+              // event at this descendant transition and does NOT fire
+              // the root-level `on: GATE_ANSWERED` handler — so we must
+              // update context here.
+              actions: assign({
+                gateSkippedTargets: ({ context }) =>
+                  context.gateSkippedTargets.includes(stageName)
+                    ? context.gateSkippedTargets
+                    : [...context.gateSkippedTargets, stageName],
+              }),
             },
             {
               target: "executing",
@@ -765,6 +776,17 @@ function buildStageRegion(
                 if (!isTarget) return false;
                 return meta.inbound.every((w) => wireDelivers(w, context.portValues));
               },
+              // Record this stage in gateAuthorizedTargets so retry rebuild
+              // can re-synthesize GATE_ANSWERED for it. XState v5 consumes
+              // the event at this descendant transition and does NOT fire
+              // the root-level `on: GATE_ANSWERED` handler — so we must
+              // update context here.
+              actions: assign({
+                gateAuthorizedTargets: ({ context }) =>
+                  context.gateAuthorizedTargets.includes(stageName)
+                    ? context.gateAuthorizedTargets
+                    : [...context.gateAuthorizedTargets, stageName],
+              }),
             },
             {
               target: "error",
@@ -780,7 +802,10 @@ function buildStageRegion(
               },
               // Gate authorised this stage but its inbound has at least
               // one dropped wire — same underlying cause as the plain
-              // PORT_WRITTEN NO_ACTIVE_WIRE branch.
+              // PORT_WRITTEN NO_ACTIVE_WIRE branch. Also record the gate
+              // authorisation here — XState v5 consumes GATE_ANSWERED at
+              // this descendant transition and does not fire the
+              // root-level handler.
               actions: assign({
                 log: ({ context }) => [...context.log, `${stageName}:error`],
                 finalizedStages: ({ context }) => [
@@ -791,6 +816,10 @@ function buildStageRegion(
                     reason: "no_active_wire" as const,
                   },
                 ],
+                gateAuthorizedTargets: ({ context }) =>
+                  context.gateAuthorizedTargets.includes(stageName)
+                    ? context.gateAuthorizedTargets
+                    : [...context.gateAuthorizedTargets, stageName],
               }),
             },
           ],
@@ -806,6 +835,28 @@ function buildStageRegion(
         //   3. error — NO_ACTIVE_WIRE dead-end (suppressed for
         //      gate-routed stages until they're authorised).
         always: [
+          // Rebuild short-circuit: if this stage already appears in
+          // context.finalizedStages (populated by runner's initialContext.
+          // finalizedStages on retry rebuild), jump directly to the
+          // corresponding terminal state without re-running anything.
+          // Ensures rebuilt actors don't re-invoke agents / re-create
+          // gate_queue rows / re-run scripts for stages that completed
+          // in a prior attempt. No actions here — the terminal-state
+          // entry / original transition already recorded the outcome.
+          {
+            target: "done",
+            guard: ({ context }: { context: MachineContext }) =>
+              context.finalizedStages.some(
+                (f) => f.name === stageName && f.outcome === "done",
+              ),
+          },
+          {
+            target: "error",
+            guard: ({ context }: { context: MachineContext }) =>
+              context.finalizedStages.some(
+                (f) => f.name === stageName && f.outcome === "error",
+              ),
+          },
           {
             target: "done",
             guard: ({ context }: { context: MachineContext }) =>
@@ -835,12 +886,22 @@ function buildStageRegion(
       executing: executingBody,
       done: {
         type: "final",
+        // Idempotent: the rebuild short-circuit in waiting.always can
+        // target "done" when this stage's outcome was already recorded
+        // by a prior attempt. Skip the push in that case to avoid a
+        // duplicate finalizedStages entry / duplicate log line.
         entry: assign({
-          log: ({ context }) => [...context.log, `${stageName}:done`],
-          finalizedStages: ({ context }) => [
-            ...context.finalizedStages,
-            { name: stageName, outcome: "done" as const },
-          ],
+          log: ({ context }: { context: MachineContext }) =>
+            context.finalizedStages.some((f) => f.name === stageName)
+              ? context.log
+              : [...context.log, `${stageName}:done`],
+          finalizedStages: ({ context }: { context: MachineContext }) =>
+            context.finalizedStages.some((f) => f.name === stageName)
+              ? context.finalizedStages
+              : [
+                  ...context.finalizedStages,
+                  { name: stageName, outcome: "done" as const },
+                ],
         }),
       },
       error: {
