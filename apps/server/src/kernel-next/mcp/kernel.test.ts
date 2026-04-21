@@ -829,4 +829,14 @@ describe("KernelService.submit with prompts", () => {
     });
     expect(res.ok).toBe(true);
   });
+
+  it("allows 'global-constraints' prompt even if no AgentStage references it (legacy claude_md.global)", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const res = svc.submit(agentOnlyIR(), {
+      prompts: { a: "X", "global-constraints": "RULES" },
+    });
+    expect(res.ok).toBe(true);
+  });
 });

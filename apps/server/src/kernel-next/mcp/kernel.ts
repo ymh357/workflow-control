@@ -254,10 +254,11 @@ export class KernelService {
     }
     for (const ref of providedRefs) {
       if (!agentPromptRefs.has(ref)) {
-        // Allow 'system/*' prompts that serve as fragments pulled in by
-        // userland prompt assembly. They do not appear as direct AgentStage
-        // promptRefs but must still be stored and version-hashed.
-        if (ref.startsWith("system/")) continue;
+        // Allow 'system/*' prompts and the well-known 'global-constraints'
+        // fragment. Both are pulled in by userland prompt assembly (e.g.
+        // claude_md.global) rather than referenced directly by an
+        // AgentStage, but must still be stored and version-hashed.
+        if (ref.startsWith("system/") || ref === "global-constraints") continue;
         diagnostics.push({
           code: "PROMPT_REF_UNUSED",
           message: `prompt '${ref}' is not referenced by any AgentStage`,
