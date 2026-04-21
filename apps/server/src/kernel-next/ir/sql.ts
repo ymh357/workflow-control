@@ -183,7 +183,7 @@ export function insertPipelineVersion(
   db.exec("BEGIN");
   try {
     db.prepare(
-      `INSERT INTO pipeline_versions
+      `INSERT OR IGNORE INTO pipeline_versions
        (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(
@@ -196,16 +196,16 @@ export function insertPipelineVersion(
     );
 
     const insertStage = db.prepare(
-      `INSERT INTO stages (version_hash, stage_name, stage_type, config_json)
+      `INSERT OR IGNORE INTO stages (version_hash, stage_name, stage_type, config_json)
        VALUES (?, ?, ?, ?)`,
     );
     const insertPort = db.prepare(
-      `INSERT INTO ports
+      `INSERT OR IGNORE INTO ports
        (version_hash, stage_name, port_name, direction, type_signature, zod_schema)
        VALUES (?, ?, ?, ?, ?, ?)`,
     );
     const insertWire = db.prepare(
-      `INSERT INTO wires
+      `INSERT OR IGNORE INTO wires
        (version_hash, from_stage, from_port, to_stage, to_port)
        VALUES (?, ?, ?, ?, ?)`,
     );

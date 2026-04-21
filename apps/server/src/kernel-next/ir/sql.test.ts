@@ -58,17 +58,23 @@ describe("kernel-next SQL persistence", () => {
     db.close();
   });
 
-  it("rolls back on insert failure (duplicate PK)", () => {
+  it("is idempotent on duplicate versionHash (no-op second insert)", () => {
     const db = makeDb();
     const ir = sampleIR();
     const hash = versionHash(ir);
     insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "// gen" });
-    // Second insert with same hash violates pipeline_versions PK.
+    // Second insert with same hash is a no-op (INSERT OR IGNORE).
     expect(() =>
       insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "// gen" }),
-    ).toThrow();
-    // Only one version present (second attempt rolled back).
+    ).not.toThrow();
+    // Only one version persisted; child rows unchanged.
     expect(listPipelineVersions(db)).toEqual([hash]);
+    const stages = db.prepare("SELECT stage_name FROM stages WHERE version_hash = ?").all(hash);
+    expect((stages as Array<{ stage_name: string }>).map((r) => r.stage_name).sort()).toEqual(["A", "B"]);
+    const ports = db.prepare("SELECT stage_name, port_name, direction FROM ports WHERE version_hash = ?").all(hash);
+    expect((ports as Array<unknown>).length).toBe(2);
+    const wires = db.prepare("SELECT from_stage FROM wires WHERE version_hash = ?").all(hash);
+    expect((wires as Array<unknown>).length).toBe(1);
     db.close();
   });
 
