@@ -17,6 +17,12 @@ import { IRPatchSchema } from "../ir/schema.js";
 import type { PipelineIR } from "../ir/schema.js";
 import { PortRuntime, type EventDispatcher } from "../runtime/port-runtime.js";
 import { taskRegistry } from "../runtime/task-registry.js";
+import { handleStartPipelineGenerator, handleWaitPipelineResult } from "./pg-entry.js";
+import { loadLegacyPipelineIR } from "../runtime/load-legacy-pipeline.js";
+import { kernelNextBroadcaster } from "../sse/singleton.js";
+import { runPipeline } from "../runtime/runner.js";
+import { RealStageExecutor } from "../runtime/real-executor.js";
+import { FsPromptResolver } from "../runtime/fs-prompt-resolver.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
 
@@ -75,13 +81,21 @@ export interface KernelMcpOptions extends KernelServiceOptions {
    *
    *   "external" — AI-facing. submit/validate/propose/list/approve/
    *                reject/get_task_status/list_gates/answer_gate/
-   *                read_port/query_lineage/diff_runs. NO write_port.
+   *                read_port/query_lineage/diff_runs/
+   *                start_pipeline_generator/wait_pipeline_result.
+   *                NO write_port.
    *   "internal" — executor-facing. write_port only (sidecar TBD).
    *   "combined" — legacy: every tool. Default for backwards compat
    *                while callers migrate. New code should pick a
    *                specific surface.
    */
   surface?: "external" | "internal" | "combined";
+  /** Model for the pipeline-generator builtin. Default "claude-sonnet-4-6". */
+  pipelineGeneratorModel?: string;
+  /** Max turns for the pipeline-generator run. Default 80. */
+  pipelineGeneratorMaxTurns?: number;
+  /** Per-run budget ceiling in USD for pipeline-generator. Default 8. */
+  pipelineGeneratorMaxBudgetUsd?: number;
 }
 
 /** Every tool name emitted by createKernelMcp across all surfaces. */
@@ -91,7 +105,8 @@ type ToolName =
   | "migrate_task"
   | "get_task_status" | "list_gates" | "answer_gate"
   | "read_port" | "query_lineage" | "diff_runs"
-  | "write_port";
+  | "write_port"
+  | "start_pipeline_generator" | "wait_pipeline_result";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
@@ -99,6 +114,7 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "migrate_task",
   "get_task_status", "list_gates", "answer_gate",
   "read_port", "query_lineage", "diff_runs",
+  "start_pipeline_generator", "wait_pipeline_result",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
@@ -591,6 +607,86 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
           } catch (err) {
             return errorResponse(err instanceof Error ? err.message : String(err));
           }
+        },
+      },
+      {
+        name: "start_pipeline_generator",
+        description:
+          "Trigger the pipeline-generator builtin with a natural-language task " +
+          "description. Returns {taskId, versionHash} immediately; use " +
+          "wait_pipeline_result to retrieve the generated pipeline.",
+        inputSchema: {
+          description: z.string().min(1).max(8000),
+          taskId: z.string().min(1).optional(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          const res = await handleStartPipelineGenerator(
+            {
+              description: String(args.description),
+              taskId: typeof args.taskId === "string" ? args.taskId : undefined,
+            },
+            {
+              db,
+              broadcaster: kernelNextBroadcaster,
+              loader: loadLegacyPipelineIR,
+              runner: async (a) => {
+                return runPipeline({
+                  db: a.db,
+                  ir: a.ir,
+                  taskId: a.taskId,
+                  versionHash: a.versionHash,
+                  handlers: a.handlers as Record<string, never>,
+                  executor: a.executor,
+                  seedValues: a.seedValues,
+                  broadcaster: a.broadcaster,
+                });
+              },
+              executorFactory: ({ promptRoot, model, maxTurns, maxBudgetUsd }) =>
+                new RealStageExecutor({
+                  mcpServerFactory: (_dispatcher, pr) =>
+                    createKernelMcp(db, { surface: "internal", portRuntime: pr }),
+                  promptResolver: new FsPromptResolver({ rootDir: promptRoot }),
+                  model,
+                  maxTurns: maxTurns ?? 80,
+                  maxBudgetUsd: maxBudgetUsd ?? 8,
+                }),
+              model: options.pipelineGeneratorModel ?? "claude-sonnet-4-6",
+              maxTurns: options.pipelineGeneratorMaxTurns ?? 80,
+              maxBudgetUsd: options.pipelineGeneratorMaxBudgetUsd ?? 8,
+            },
+          );
+          return res.ok ? jsonResponse(res) : errorResponse(res.error, res as Record<string, unknown>);
+        },
+      },
+      {
+        name: "wait_pipeline_result",
+        description:
+          "Wait for a previously started pipeline-generator run to reach a " +
+          "terminal state (done/gate_pending/running/error). Safe to call " +
+          "repeatedly to continue waiting.",
+        inputSchema: {
+          taskId: z.string().min(1),
+          timeoutMs: z.number().int().optional(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          let ir: PipelineIR;
+          try {
+            ir = loadLegacyPipelineIR("pipeline-generator").ir;
+          } catch (err) {
+            return errorResponse("LOAD_IR_FAILED", { reason: (err as Error).message });
+          }
+          const res = await handleWaitPipelineResult(
+            {
+              taskId: String(args.taskId),
+              timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
+            },
+            { db, broadcaster: kernelNextBroadcaster, ir },
+          );
+          return res.ok
+            ? jsonResponse(res)
+            : errorResponse(res.error ?? "unknown", res as Record<string, unknown>);
         },
       },
   ];

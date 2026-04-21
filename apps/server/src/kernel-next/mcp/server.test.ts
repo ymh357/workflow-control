@@ -60,7 +60,7 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("combined surface exposes 14 tools with expected names", () => {
+  it("combined surface exposes 16 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
@@ -77,8 +77,10 @@ describe("kernel-next MCP server", () => {
       "query_lineage",
       "read_port",
       "reject_proposal",
+      "start_pipeline_generator",
       "submit_pipeline",
       "validate_pipeline",
+      "wait_pipeline_result",
       "write_port",
     ]);
     db.close();
@@ -369,8 +371,10 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
       "query_lineage",
       "read_port",
       "reject_proposal",
+      "start_pipeline_generator",
       "submit_pipeline",
       "validate_pipeline",
+      "wait_pipeline_result",
     ]);
     db.close();
   });
@@ -401,10 +405,12 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
     const tools = getTools(mcp);
-    expect(tools.size).toBe(14);
+    expect(tools.size).toBe(16);
     expect(tools.has("write_port")).toBe(true);
     expect(tools.has("submit_pipeline")).toBe(true);
     expect(tools.has("migrate_task")).toBe(true);
+    expect(tools.has("start_pipeline_generator")).toBe(true);
+    expect(tools.has("wait_pipeline_result")).toBe(true);
     db.close();
   });
 
@@ -413,10 +419,30 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
     const tools = getTools(mcp);
-    // 'external' = EXTERNAL_TOOLS only (13 tools; excludes write_port).
-    expect(tools.size).toBe(13);
+    // 'external' = EXTERNAL_TOOLS only (15 tools; excludes write_port).
+    expect(tools.size).toBe(15);
     expect(tools.has("write_port")).toBe(false);
     expect(tools.has("submit_pipeline")).toBe(true);
+    db.close();
+  });
+
+  it("external surface includes start_pipeline_generator and wait_pipeline_result", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "external" });
+    const tools = getTools(mcp);
+    expect(tools.has("start_pipeline_generator")).toBe(true);
+    expect(tools.has("wait_pipeline_result")).toBe(true);
+    db.close();
+  });
+
+  it("internal surface does NOT include pg-entry tools", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "internal" });
+    const tools = getTools(mcp);
+    expect(tools.has("start_pipeline_generator")).toBe(false);
+    expect(tools.has("wait_pipeline_result")).toBe(false);
     db.close();
   });
 });
