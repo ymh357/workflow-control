@@ -22,7 +22,7 @@ import { loadLegacyPipelineIR } from "../runtime/load-legacy-pipeline.js";
 import { kernelNextBroadcaster } from "../sse/singleton.js";
 import { runPipeline } from "../runtime/runner.js";
 import { RealStageExecutor } from "../runtime/real-executor.js";
-import { FsPromptResolver } from "../runtime/fs-prompt-resolver.js";
+import { DbPromptResolver } from "../runtime/db-prompt-resolver.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
 
@@ -672,11 +672,11 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
                   broadcaster: a.broadcaster,
                 });
               },
-              executorFactory: ({ promptRoot, model, maxTurns, maxBudgetUsd }) =>
+              executorFactory: ({ versionHash, db: execDb, model, maxTurns, maxBudgetUsd }) =>
                 new RealStageExecutor({
                   mcpServerFactory: (_dispatcher, pr) =>
                     createKernelMcp(db, { surface: "internal", portRuntime: pr }),
-                  promptResolver: new FsPromptResolver({ rootDir: promptRoot }),
+                  promptResolver: new DbPromptResolver(execDb, versionHash),
                   model,
                   maxTurns: maxTurns ?? 80,
                   maxBudgetUsd: maxBudgetUsd ?? 8,
