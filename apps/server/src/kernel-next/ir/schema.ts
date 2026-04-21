@@ -297,6 +297,10 @@ export const DiagnosticSchema = z.object({
     "DUPLICATE_EXTERNAL_INPUT_NAME",
     "EXTERNAL_INPUT_COLLIDES_WITH_STAGE",
     "RESERVED_STAGE_NAME",
+    // 2026-04-24 — prompts-in-SQLite submit extension
+    "PROMPT_REF_MISSING",
+    "PROMPT_REF_UNUSED",
+    "PROMPT_CONTENT_EMPTY",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

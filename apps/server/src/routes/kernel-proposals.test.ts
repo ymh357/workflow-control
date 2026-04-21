@@ -17,9 +17,17 @@ function buildApp(): Hono {
   return app;
 }
 
+function diamondPrompts(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const s of diamondIR().stages) {
+    if (s.type === "agent") out[s.config.promptRef] = "dummy";
+  }
+  return out;
+}
+
 function seedProposal(db: DatabaseSync, actor = "ai:test"): { proposalId: string; baseVersion: string } {
   const svc = new KernelService(db, { skipTypeCheck: true });
-  const submitted = svc.submit(diamondIR());
+  const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
   if (!submitted.ok) throw new Error("setup submit failed");
   const proposed = svc.propose({
     currentVersion: submitted.versionHash,
@@ -56,7 +64,7 @@ describe("REST /api/kernel/proposals", () => {
 
     // Second proposal with a different patch to avoid version-hash collision.
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR());
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
     const p2 = svc.propose({
       currentVersion: submitted.versionHash,

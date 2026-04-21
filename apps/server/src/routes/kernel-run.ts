@@ -262,7 +262,20 @@ kernelRunRoute.post("/kernel/tasks/run", async (c) => {
   const { ir, handlers, executorFactory, timeoutMs } = factory();
   const db = getKernelNextDb();
   const svc = new KernelService(db, { skipTypeCheck: true });
-  const submit = svc.submit(ir);
+  // Placeholder prompts: submit now requires a prompts map for every
+  // AgentStage.promptRef. Task 10 of the prompts-in-SQLite plan will
+  // replace this with real prompts scanned from the pipeline's disk
+  // directory and bind a DbPromptResolver. Until then we fill in
+  // "placeholder" content so submit passes; the real-executor path
+  // continues to read prompts from disk via FsPromptResolver, not from
+  // the DB, so this placeholder is not observed at runtime.
+  const placeholderPrompts: Record<string, string> = {};
+  for (const stage of ir.stages) {
+    if (stage.type === "agent" && stage.config.promptRef) {
+      placeholderPrompts[stage.config.promptRef] = "placeholder";
+    }
+  }
+  const submit = svc.submit(ir, { prompts: placeholderPrompts });
   if (!submit.ok) {
     return c.json(
       { ok: false, diagnostics: submit.diagnostics },

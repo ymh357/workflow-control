@@ -76,7 +76,7 @@ describe("REST /api/kernel/tasks/:taskId/status", () => {
 
   it("returns 200 + running when an attempt is running", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(seedIR());
+    const submit = svc.submit(seedIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-run", submit.versionHash, "A", "running");
     const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-run/status"));
@@ -86,7 +86,7 @@ describe("REST /api/kernel/tasks/:taskId/status", () => {
 
   it("returns 200 + gated with pending[] when a gate is open", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(seedIR());
+    const submit = svc.submit(seedIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-gt", submit.versionHash, "A", "success");
     const gAtt = openAttempt(db, "t-gt", submit.versionHash, "G", "running");
@@ -108,7 +108,7 @@ describe("REST /api/kernel/tasks/:taskId/status", () => {
 
   it("returns 200 + completed when all attempts succeeded and no gates pending", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(seedIR());
+    const submit = svc.submit(seedIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-ok", submit.versionHash, "A", "success");
     openAttempt(db, "t-ok", submit.versionHash, "G", "success");
@@ -119,7 +119,7 @@ describe("REST /api/kernel/tasks/:taskId/status", () => {
 
   it("returns 200 + failed when any attempt has error status", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(seedIR());
+    const submit = svc.submit(seedIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-err", submit.versionHash, "A", "error");
     const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-err/status"));
@@ -166,7 +166,7 @@ describe("REST POST /api/kernel/tasks/:taskId/migrate", () => {
     rerunFrom?: string;
   }): { v1: string; proposalId: string; proposedVersion: string } {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(linearIR());
+    const submit = svc.submit(linearIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     const v1 = submit.versionHash;
     openAttempt(db, opts.taskId, v1, "A", "success");
@@ -220,7 +220,7 @@ describe("REST POST /api/kernel/tasks/:taskId/migrate", () => {
   it("returns 409 when the proposal is not approved yet (still pending)", async () => {
     // Build a pending proposal manually without approveProposal.
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(linearIR());
+    const submit = svc.submit(linearIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-p", submit.versionHash, "A", "success");
     const prop = svc.propose({

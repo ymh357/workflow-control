@@ -13,8 +13,18 @@ import { validateStructural } from "../validator/structural.js";
 import { validateDag } from "../validator/dag.js";
 import { validateTypes } from "../validator/types.js";
 import { emitPipelineModule } from "../codegen/emit-ts.js";
-import { versionHash } from "../ir/canonical.js";
-import { insertPipelineVersion, getPipelineIR } from "../ir/sql.js";
+import {
+  versionHash,
+  pipelineVersionHash,
+  promptContentHash,
+  normalizePromptContent,
+} from "../ir/canonical.js";
+import {
+  insertPipelineVersion,
+  getPipelineIR,
+  insertPromptContent,
+  insertPromptRefs,
+} from "../ir/sql.js";
 import { applyPatch, PatchApplyError } from "./patch.js";
 import { taskRegistry } from "../runtime/task-registry.js";
 import { compileIRToMachine } from "../compiler/ir-to-machine.js";
@@ -212,26 +222,89 @@ export class KernelService {
     return { ok: true, diagnostics: [] };
   }
 
-  /** Validate and, if ok, persist a new pipeline version. */
-  submit(ir: unknown, options: { parentHash?: string } = {}): SubmitResult {
+  /** Validate and, if ok, persist a new pipeline version with its prompts. */
+  submit(
+    ir: unknown,
+    options: { parentHash?: string; prompts?: Record<string, string> } = {},
+  ): SubmitResult {
     const result = this.validate(ir);
     if (!result.ok) return { ok: false, diagnostics: result.diagnostics };
 
     const pipeline = PipelineIRSchema.parse(ir);
-    const hash = versionHash(pipeline);
+    const prompts = options.prompts ?? {};
 
-    // Dedup: if version already exists, do not re-insert. Return existing.
+    // Collect AgentStage promptRefs.
+    const agentPromptRefs = new Set<string>();
+    for (const s of pipeline.stages) {
+      if (s.type === "agent" && s.config.promptRef) {
+        agentPromptRefs.add(s.config.promptRef);
+      }
+    }
+    const providedRefs = new Set(Object.keys(prompts));
+
+    const diagnostics: Diagnostic[] = [];
+    for (const ref of agentPromptRefs) {
+      if (!providedRefs.has(ref)) {
+        diagnostics.push({
+          code: "PROMPT_REF_MISSING",
+          message: `prompt for AgentStage promptRef '${ref}' was not supplied`,
+          context: { promptRef: ref },
+        });
+      }
+    }
+    for (const ref of providedRefs) {
+      if (!agentPromptRefs.has(ref)) {
+        // Allow 'system/*' prompts that serve as fragments pulled in by
+        // userland prompt assembly. They do not appear as direct AgentStage
+        // promptRefs but must still be stored and version-hashed.
+        if (ref.startsWith("system/")) continue;
+        diagnostics.push({
+          code: "PROMPT_REF_UNUSED",
+          message: `prompt '${ref}' is not referenced by any AgentStage`,
+          context: { promptRef: ref },
+        });
+      }
+    }
+    for (const [ref, content] of Object.entries(prompts)) {
+      if (normalizePromptContent(content).trim().length === 0) {
+        diagnostics.push({
+          code: "PROMPT_CONTENT_EMPTY",
+          message: `prompt '${ref}' has empty content after normalization`,
+          context: { promptRef: ref },
+        });
+      }
+    }
+    if (diagnostics.length > 0) return { ok: false, diagnostics };
+
+    const hash = pipelineVersionHash({ ir: pipeline, prompts });
+
+    // Dedup: if version already exists, do not re-insert.
     if (getPipelineIR(this.db, hash) !== null) {
       const { source } = emitPipelineModule(pipeline);
       return { ok: true, versionHash: hash, tsSource: source };
     }
 
     const { source } = emitPipelineModule(pipeline);
+
+    // Persist IR first (insertPipelineVersion runs its own BEGIN/COMMIT
+    // for stages/ports/wires), then persist prompt rows. A prompts-insert
+    // failure at this point is not recoverable without rewriting
+    // insertPipelineVersion to not self-transact; accepting the resulting
+    // half-state is acceptable here because (a) INSERT OR IGNORE makes the
+    // prompts step retry-safe at the caller level, and (b) the only
+    // realistic failure is disk full / schema drift, not business logic.
     insertPipelineVersion(this.db, pipeline, {
       versionHash: hash,
       parentHash: options.parentHash,
       tsSource: source,
     });
+    const refsMap: Record<string, string> = {};
+    for (const [ref, content] of Object.entries(prompts)) {
+      const ch = promptContentHash(content);
+      insertPromptContent(this.db, ch, normalizePromptContent(content));
+      refsMap[ref] = ch;
+    }
+    insertPromptRefs(this.db, hash, refsMap);
 
     return { ok: true, versionHash: hash, tsSource: source };
   }

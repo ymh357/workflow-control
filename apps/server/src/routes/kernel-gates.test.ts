@@ -49,7 +49,7 @@ function seedGateRow(
   svc: KernelService,
   taskId: string,
 ): { gateId: string } {
-  const submit = svc.submit(gateIR());
+  const submit = svc.submit(gateIR(), { prompts: { p: "dummy" } });
   if (!submit.ok) throw new Error("seed submit failed");
   const attemptId = "a-" + Math.random().toString(36).slice(2, 10);
   db.prepare(
@@ -268,7 +268,7 @@ function seedRejectableGate(
     ],
   };
 
-  const submit = svc.submit(ir);
+  const submit = svc.submit(ir, { prompts: { p: "dummy" } });
   if (!submit.ok) throw new Error("seedRejectableGate: submit failed");
 
   const attemptId = "attempt-g-" + taskId;

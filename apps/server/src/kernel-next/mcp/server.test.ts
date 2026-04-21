@@ -39,6 +39,21 @@ function resolveTscPath(): string {
 }
 const TSC_PATH = resolveTscPath();
 
+// Build a prompts map covering every AgentStage.promptRef in an IR so
+// submit_pipeline does not fail with PROMPT_REF_MISSING. Uses "dummy"
+// content — these tests don't exercise prompt content, only the
+// submit/propose wiring.
+function promptsForIR(ir: { stages: readonly { type: string; config: unknown }[] }): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const s of ir.stages) {
+    if (s.type === "agent") {
+      const cfg = s.config as { promptRef?: string };
+      if (cfg.promptRef) out[cfg.promptRef] = "dummy";
+    }
+  }
+  return out;
+}
+
 interface McpTool {
   name: string;
   handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
@@ -95,10 +110,12 @@ describe("kernel-next MCP server", () => {
     const t = getTools(mcp);
 
     const gen = generatePipeline({ task: "diamond" });
-    const resp = await t.get("submit_pipeline")!.handler({ ir: gen.ir });
+    const prompts = promptsForIR(gen.ir);
+    const resp = await t.get("submit_pipeline")!.handler({ ir: gen.ir, prompts });
     const payload = parsePayload(resp) as { ok: boolean; versionHash?: string };
     expect(payload.ok).toBe(true);
-    expect(payload.versionHash).toBe(versionHash(gen.ir));
+    // Pipeline-level hash now includes prompts — differs from IR-only hash.
+    expect(payload.versionHash).not.toBe(versionHash(gen.ir));
 
     // Row in pipeline_versions.
     const row = db2.prepare("SELECT pipeline_name FROM pipeline_versions WHERE version_hash = ?")
@@ -196,7 +213,8 @@ describe("kernel-next MCP server", () => {
     const mcp = createKernelMcp(db2, { tscPath: TSC_PATH, skipTypeCheck: true });
     const t = getTools(mcp);
 
-    const submitResp = await t.get("submit_pipeline")!.handler({ ir: diamondIR() });
+    const ir = diamondIR();
+    const submitResp = await t.get("submit_pipeline")!.handler({ ir, prompts: promptsForIR(ir) });
     const submitPayload = parsePayload(submitResp) as { ok: true; versionHash: string };
 
     const proposeResp = await t.get("propose_pipeline_change")!.handler({
@@ -265,7 +283,7 @@ describe("kernel-next MCP server", () => {
 
     const ir = diamondIR();
     const submit = parsePayload(
-      await t.get("submit_pipeline")!.handler({ ir }),
+      await t.get("submit_pipeline")!.handler({ ir, prompts: promptsForIR(ir) }),
     ) as { ok: true; versionHash: string };
 
     const proposed = parsePayload(
@@ -311,7 +329,7 @@ describe("kernel-next MCP server", () => {
 
     const ir = diamondIR();
     const submit = parsePayload(
-      await t.get("submit_pipeline")!.handler({ ir }),
+      await t.get("submit_pipeline")!.handler({ ir, prompts: promptsForIR(ir) }),
     ) as { ok: true; versionHash: string };
 
     const proposed = parsePayload(
@@ -463,7 +481,10 @@ describe("A7.2: createKernelMcp reuses caller-supplied PortRuntime", () => {
     const tExternal = getTools(mcpExternal);
     const { diamondIR: diamondIrFn } = await import("../generator-mock/mini-generator.js");
     const ir = diamondIrFn();
-    const submitResp = await tExternal.get("submit_pipeline")!.handler({ ir });
+    const submitResp = await tExternal.get("submit_pipeline")!.handler({
+      ir,
+      prompts: promptsForIR(ir),
+    });
     const submit = JSON.parse(submitResp.content[0]!.text) as { versionHash: string };
     const taskId = "portRuntime-reuse-test";
 
@@ -597,7 +618,7 @@ describe("answer_gate MCP handler — reject dispatch", () => {
         { from: { stage: "A", port: "out" }, to: { stage: "G", port: "i" } },
       ],
     };
-    const submit = svc.submit(ir);
+    const submit = svc.submit(ir, { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("submit failed");
 
     // Open a running stage_attempt for G so createGate has an FK to reference.

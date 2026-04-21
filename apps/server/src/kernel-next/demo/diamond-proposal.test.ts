@@ -41,6 +41,14 @@ function baseHandlers(): StageHandlerMap {
   };
 }
 
+function diamondPrompts(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const s of diamondIR().stages) {
+    if (s.type === "agent") out[s.config.promptRef] = "dummy";
+  }
+  return out;
+}
+
 describe("P2.4 end-to-end proposal acceptance", () => {
   let db: DatabaseSync;
 
@@ -60,7 +68,7 @@ describe("P2.4 end-to-end proposal acceptance", () => {
     const app = buildApp();
 
     // --- 1. Submit baseline pipeline V1 ---
-    const submitted = svc.submit(diamondIR());
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
     expect(submitted.ok).toBe(true);
     if (!submitted.ok) return;
     const versionV1 = submitted.versionHash;
@@ -188,7 +196,7 @@ describe("P2.4 end-to-end proposal acceptance", () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
     const app = buildApp();
 
-    const v1 = svc.submit(diamondIR());
+    const v1 = svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!v1.ok) throw new Error("submit failed");
     const proposed = svc.propose({
       currentVersion: v1.versionHash,

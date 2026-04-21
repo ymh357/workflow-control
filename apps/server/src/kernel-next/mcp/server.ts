@@ -145,16 +145,27 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
         name: "submit_pipeline",
         description:
           "Submit a pipeline IR for validation + persistence. Returns the " +
-          "version hash on success, or structured diagnostics on failure.",
+          "version hash on success, or structured diagnostics on failure. " +
+          "AgentStage prompts must be supplied via the 'prompts' map " +
+          "(promptRef -> content).",
         inputSchema: {
           ir: z.unknown().describe("PipelineIR object (see kernel-next docs)"),
           parentHash: z.string().optional(),
+          prompts: z
+            .record(z.string(), z.string())
+            .optional()
+            .describe("Map of promptRef to prompt content; required if the IR contains AgentStage entries"),
         },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         handler: async (args: any) => {
           try {
+            const prompts =
+              args.prompts && typeof args.prompts === "object"
+                ? (args.prompts as Record<string, string>)
+                : undefined;
             const result = kernel.submit(args.ir, {
               parentHash: typeof args.parentHash === "string" ? args.parentHash : undefined,
+              prompts,
             });
             return jsonResponse(result);
           } catch (err) {

@@ -6,8 +6,19 @@ import { DatabaseSync } from "node:sqlite";
 import { initKernelNextSchema, getPipelineIR } from "../ir/sql.js";
 import { KernelService } from "./kernel.js";
 import { diamondIR } from "../generator-mock/mini-generator.js";
-import { versionHash } from "../ir/canonical.js";
+import { versionHash, pipelineVersionHash } from "../ir/canonical.js";
 import type { IRPatch } from "../ir/schema.js";
+
+// Prompts map covering every agent stage in diamondIR. Diamond stages A/B/C/D
+// each have a unique promptRef (the full prompt text); this helper rebuilds
+// that map so tests can submit a diamond without PROMPT_REF_MISSING noise.
+function diamondPrompts(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const s of diamondIR().stages) {
+    if (s.type === "agent") out[s.config.promptRef] = "dummy";
+  }
+  return out;
+}
 
 function makeDb(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
@@ -46,10 +57,15 @@ describe("KernelService", () => {
   it("submit persists a valid IR", () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const r = svc.submit(diamondIR());
+    const prompts = diamondPrompts();
+    const r = svc.submit(diamondIR(), { prompts });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.versionHash).toBe(versionHash(diamondIR()));
+    // Pipeline-level hash (IR + prompts), not the IR-only hash. The
+    // IR-only versionHash goldens live in canonical.test.ts and remain
+    // byte-identical.
+    expect(r.versionHash).toBe(pipelineVersionHash({ ir: diamondIR(), prompts }));
+    expect(r.versionHash).not.toBe(versionHash(diamondIR()));
     expect(getPipelineIR(db, r.versionHash)).not.toBeNull();
     db.close();
   });
@@ -57,8 +73,9 @@ describe("KernelService", () => {
   it("submit is idempotent (same IR returns same hash without re-insert)", () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const r1 = svc.submit(diamondIR());
-    const r2 = svc.submit(diamondIR());
+    const prompts = diamondPrompts();
+    const r1 = svc.submit(diamondIR(), { prompts });
+    const r2 = svc.submit(diamondIR(), { prompts });
     expect(r1.ok && r2.ok).toBe(true);
     if (!r1.ok || !r2.ok) return;
     expect(r1.versionHash).toBe(r2.versionHash);
@@ -84,7 +101,7 @@ describe("KernelService", () => {
   it("propose applies patch, persists new version, and records pending proposal", () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR());
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup failed");
 
     // Remove stage D (the leaf) — valid structural patch.
@@ -118,7 +135,7 @@ describe("KernelService", () => {
   it("approveProposal flips pending → approved", () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR());
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup failed");
     const proposed = svc.propose({
       currentVersion: submitted.versionHash,
@@ -143,7 +160,7 @@ describe("KernelService", () => {
   it("rejectProposal flips pending → rejected and persists reason", () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR());
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup failed");
     const proposed = svc.propose({
       currentVersion: submitted.versionHash,
@@ -178,7 +195,7 @@ describe("KernelService", () => {
   it("approveProposal rejects an already-resolved proposal", () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR());
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup failed");
     const proposed = svc.propose({
       currentVersion: submitted.versionHash,
@@ -203,7 +220,7 @@ describe("KernelService", () => {
   it("listProposals returns newest-first and filters by status", () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR());
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup failed");
     const p1 = svc.propose({
       currentVersion: submitted.versionHash,
@@ -232,7 +249,7 @@ describe("KernelService", () => {
   it("propose fails validation when patch produces structurally invalid IR", () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR());
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup failed");
 
     // Remove A; this makes all wires from A cascade-deleted, but B/C still
@@ -274,7 +291,7 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
       ],
       wires: [{ from: { stage: "A", port: "x" }, to: { stage: "G", port: "x" } }],
     };
-    const submit = svc.submit(ir);
+    const submit = svc.submit(ir, { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("submit failed");
     return { ir, versionHash: submit.versionHash };
   }
@@ -355,7 +372,7 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
         ],
         wires: [],
       };
-      const submit = svc.submit(ir);
+      const submit = svc.submit(ir, { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
       const attemptId = openAttempt(db, "t1", submit.versionHash, "G");
       const { gateId } = svc.createGate({
@@ -466,7 +483,7 @@ describe("KernelService — getTaskStatus (A4)", () => {
       ],
       wires: [{ from: { stage: "A", port: "x" }, to: { stage: "G", port: "x" } }],
     };
-    const submit = svc.submit(ir);
+    const submit = svc.submit(ir, { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("submit failed");
     return submit.versionHash;
   }
@@ -717,5 +734,99 @@ describe("KernelService.answerGate — reject rollback kind", () => {
     } finally {
       db.close();
     }
+  });
+});
+
+function agentOnlyIR(): PipelineIR {
+  return {
+    name: "pg",
+    stages: [{
+      name: "a",
+      type: "agent",
+      inputs: [],
+      outputs: [{ name: "out", type: "string" }],
+      config: { promptRef: "a" },
+    }],
+    wires: [],
+  };
+}
+
+describe("KernelService.submit with prompts", () => {
+  it("accepts { ir, prompts } and records pipeline_prompt_refs", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const ir = agentOnlyIR();
+    const res = svc.submit(ir, { prompts: { a: "HELLO" } });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const rows = db
+      .prepare("SELECT prompt_ref, content_hash FROM pipeline_prompt_refs WHERE version_hash = ?")
+      .all(res.versionHash);
+    expect(rows.length).toBe(1);
+  });
+
+  it("dedups content across two submits with the same prompt text", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const irA = agentOnlyIR();
+    const irB: PipelineIR = { ...agentOnlyIR(), name: "pg2" };
+    svc.submit(irA, { prompts: { a: "SHARED" } });
+    svc.submit(irB, { prompts: { a: "SHARED" } });
+    const contentRows = db.prepare("SELECT content_hash FROM prompt_contents").all();
+    expect(contentRows.length).toBe(1);
+  });
+
+  it("is idempotent on repeat submit of same { ir, prompts }", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const ir = agentOnlyIR();
+    const r1 = svc.submit(ir, { prompts: { a: "X" } });
+    const r2 = svc.submit(ir, { prompts: { a: "X" } });
+    expect(r1.ok && r2.ok && r1.versionHash === r2.versionHash).toBe(true);
+  });
+
+  it("emits PROMPT_REF_MISSING when an AgentStage promptRef is not in prompts", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const res = svc.submit(agentOnlyIR(), { prompts: {} });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.diagnostics.some((d) => d.code === "PROMPT_REF_MISSING")).toBe(true);
+  });
+
+  it("emits PROMPT_REF_UNUSED when prompts contains keys no AgentStage references", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const res = svc.submit(agentOnlyIR(), { prompts: { a: "X", orphan: "Y" } });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.diagnostics.some((d) => d.code === "PROMPT_REF_UNUSED")).toBe(true);
+  });
+
+  it("emits PROMPT_CONTENT_EMPTY on whitespace-only prompt content", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const res = svc.submit(agentOnlyIR(), { prompts: { a: "   \n  " } });
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.diagnostics.some((d) => d.code === "PROMPT_CONTENT_EMPTY")).toBe(true);
+  });
+
+  // Allow 'system/*' fragments (referenced by userland prompt assembly,
+  // not directly by AgentStage.promptRef)
+  it("allows 'system/*' prompts even if no AgentStage references them directly", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const res = svc.submit(agentOnlyIR(), {
+      prompts: { a: "X", "system/fragment": "INVARIANT CONTENT" },
+    });
+    expect(res.ok).toBe(true);
   });
 });

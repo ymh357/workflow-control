@@ -17,7 +17,7 @@ import { queryLineage, diffRuns } from "../mcp/lineage.js";
 import { runPipeline } from "../runtime/runner.js";
 import { PortRuntime } from "../runtime/port-runtime.js";
 import { generatePipeline, diamondIR } from "../generator-mock/mini-generator.js";
-import { versionHash } from "../ir/canonical.js";
+import { pipelineVersionHash } from "../ir/canonical.js";
 import type { StageHandlerMap } from "../runtime/mock-executor.js";
 import type { IRPatch } from "../ir/schema.js";
 
@@ -59,10 +59,20 @@ export async function runDemo(options: { skipTypeCheck?: boolean; tscPath?: stri
   try {
     // Step 1 (§8.2 #1): mini generator produces IR, submit_pipeline accepts.
     const gen = generatePipeline({ task: "diamond fan-out/fan-in" });
-    const submit = kernel.submit(gen.ir);
+    // AgentStage prompts must accompany the IR since prompts-in-SQLite
+    // landed — the demo's content is dummy since it doesn't exercise the
+    // resolver path.
+    const demoPrompts: Record<string, string> = {};
+    for (const s of gen.ir.stages) {
+      if (s.type === "agent" && s.config.promptRef) demoPrompts[s.config.promptRef] = "dummy";
+    }
+    const submit = kernel.submit(gen.ir, { prompts: demoPrompts });
     log({
       step: "1. submit_pipeline",
-      ok: submit.ok && submit.versionHash === versionHash(gen.ir),
+      ok:
+        submit.ok &&
+        submit.versionHash ===
+          pipelineVersionHash({ ir: gen.ir, prompts: demoPrompts }),
       detail: submit.ok
         ? `versionHash=${submit.versionHash.slice(0, 12)}...`
         : `FAILED: ${submit.diagnostics.map((d) => `${d.code}: ${d.message}`).join("; ")}`,
