@@ -62,6 +62,11 @@ apps/web/playwright-report/
 # source.
 apps/*/.deliverable-error.md
 
+# Per-app runtime output directories from pipeline runs (e.g.
+# pipeline-generator's persist_pipeline writes a deliverable-error.txt
+# here when a downstream write fails). Not source.
+apps/*/.workflow/
+
 # Team env (shared secrets — use .env.team.example as template)
 .env.team
 
