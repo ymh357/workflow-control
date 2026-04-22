@@ -210,7 +210,22 @@ interface ExecuteStageInvokeInput {
   portValues: Record<string, unknown>;
 }
 
-export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Promise<RunResult> {
+// Runtime safety cap. Not a product SLO — this is the floor that prevents
+// a stuck machine from hanging the process forever. Callers who need a
+// tighter per-run bound (tests, fast fail-fast mock paths) pass their
+// own explicit value. 30 minutes covers every realistic Claude Agent
+// session chain in the 4 builtin pipelines; truly long-running tasks
+// are expected to use gate-driven resumption rather than uninterrupted
+// runs.
+//
+// Prior default was 10_000ms (P6-2): too short for any real agent,
+// fine for mock handlers but catastrophic for HTTP-triggered runs since
+// the runner threw mid-agent-turn and only the first stage's DB rows
+// survived, which — pre-task_finals (P6-1) — looked like success to
+// the status endpoint.
+export const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
+
+export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_TIMEOUT_MS): Promise<RunResult> {
   const executor: StageExecutor =
     opts.executor ?? new MockStageExecutor({ handlers: opts.handlers });
 

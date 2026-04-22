@@ -12,7 +12,7 @@ import { describe, it, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { initKernelNextSchema, insertPipelineVersion } from "../ir/sql.js";
 import { versionHash } from "../ir/canonical.js";
-import { runPipeline } from "./runner.js";
+import { runPipeline, DEFAULT_RUN_TIMEOUT_MS } from "./runner.js";
 import { KernelService } from "../mcp/kernel.js";
 import type { PipelineIR } from "../ir/schema.js";
 import type { StageHandlerMap } from "./mock-executor.js";
@@ -161,6 +161,17 @@ describe("P6-1: task_finals authoritative final-state tracking", () => {
     } finally {
       db.close();
     }
+  });
+
+  it("P6-2: DEFAULT_RUN_TIMEOUT_MS is long enough for real agent chains (sanity check on the magic number)", () => {
+    // 30 min — tighter than this and a multi-stage real agent run will
+    // false-positive timeout. Looser than a single stage's natural
+    // budget and runaway machines stay stuck forever. If the constant
+    // changes intentionally, update this assertion.
+    expect(DEFAULT_RUN_TIMEOUT_MS).toBeGreaterThanOrEqual(30 * 60 * 1000);
+    // And a sanity ceiling so the constant can't silently balloon to
+    // 'effectively infinity' without an explicit code change.
+    expect(DEFAULT_RUN_TIMEOUT_MS).toBeLessThanOrEqual(6 * 60 * 60 * 1000);
   });
 
   it("getTaskStatus falls back to stage_attempts when task_finals is absent (legacy row or in-flight)", async () => {
