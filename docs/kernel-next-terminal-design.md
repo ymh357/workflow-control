@@ -1100,7 +1100,7 @@ Not part of terminal design; acknowledged and parked:
 | `PreCompact` hook | AgentMachine's `compacting` state | §4 |
 | `outputs` schema field | part of StageConfig (kind: 'agent') | §5 |
 | Fragment system | userland-defined prompt assembly interface | §2.3 |
-| YAML DSL | IR (JSON or typescript literal) | YAML is a user-facing format; IR is canonical |
+| YAML DSL | IR (JSON or typescript literal) | YAML is a user-facing format; IR is canonical. Converter deleted 2026-04-24. |
 | Budget / max_turns on stage | `ExecutionPolicy` layer | §5 |
 | Edge Runner | **removed** | Not in terminal. Deleted 2026-04-24 (Stage 4a). |
 | Gemini / Codex engines | **removed from kernel** | Future `agent` subtypes possible, but not designed. Deleted 2026-04-24. |

@@ -48,6 +48,9 @@ The following modules were deleted as part of Stage 4a of the kernel-next migrat
 - `apps/server/src/__integration__/`, `__audit__/`, `__regression__/` — legacy test suites
 - Legacy routes under `apps/server/src/routes/` (trigger, stream, tasks, confirm, answer, retry, cancel, config*, registry, action-helpers)
 - Legacy Next.js pages under `apps/web/src/app/` (task/[id], config, registry, help)
+- `apps/server/src/kernel-next/converter/` — legacy YAML → IR translator (deleted 2026-04-24 Stage 4b)
+- `apps/server/src/builtin-pipelines/web3-research-writer/` — orphan sub-pipeline (deleted 2026-04-24 Stage 4b)
+- All `apps/server/src/builtin-pipelines/*/pipeline.yaml` files replaced by `pipeline.ir.json` (canonical IR is the on-disk representation)
 
 **Legacy task data not migrated.** Task JSON files under `{data_dir}/tasks/*.json` produced by the legacy engine are inert after this milestone. Per `docs/kernel-next-terminal-design.md §1.3`, zero historical compatibility.
 
