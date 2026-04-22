@@ -305,6 +305,10 @@ export const DiagnosticSchema = z.object({
     "CONFLICT",
     "VERSION_NOT_IN_HISTORY",
     "REGISTRY_PIPELINE_NOT_FOUND",
+    // Stage 5B — migration execution
+    "MIGRATION_INTERRUPT_TIMEOUT",
+    "MIGRATION_RESUME_FAILED",
+    "ROLLBACK_EMPTY_DIFF",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),
