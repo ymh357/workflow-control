@@ -50,6 +50,12 @@ apps/web/playwright-report/
 # Local MCP config backup
 .mcp.json.bak
 
+# Local SQLite databases (kernel-next runtime DB, created by tests / runs)
+apps/server/kernel-next.db
+apps/server/kernel-next.db-*
+apps/server/workflow.db
+apps/server/workflow.db-*
+
 # Scratch images / screenshots
 /*.png
 
