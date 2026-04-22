@@ -40,14 +40,18 @@ interface SeedArgs {
 
 function seed(a: SeedArgs): string {
   const attemptId = randomUUID();
+  // B17 full — fanout_element rows require non-NULL fanout_element_idx
+  // (schema CHECK). Use attemptIdx as a stand-in; actual value doesn't
+  // matter to the preserve/supersede logic exercised here.
+  const fanoutIdx = a.kind === "fanout_element" ? a.attemptIdx : null;
   a.db.prepare(
     `INSERT INTO stage_attempts
      (attempt_id, task_id, version_hash, stage_name, attempt_idx, status,
-      started_at, kind)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      started_at, kind, fanout_element_idx)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     attemptId, a.taskId, a.versionHash, a.stageName,
-    a.attemptIdx, a.status, Date.now(), a.kind,
+    a.attemptIdx, a.status, Date.now(), a.kind, fanoutIdx,
   );
   return attemptId;
 }

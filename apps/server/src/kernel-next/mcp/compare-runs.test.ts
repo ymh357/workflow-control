@@ -41,13 +41,17 @@ interface SeedAttemptArgs {
 function seedAttempt(a: SeedAttemptArgs): void {
   const status = a.status ?? "success";
   const kind = a.kind ?? "regular";
+  // B17 full — fanout_element rows need non-NULL fanout_element_idx
+  // (schema CHECK). Derive from attemptIdx as a deterministic stand-in;
+  // this test fixture doesn't care about the actual value, only presence.
+  const fanoutIdx = kind === "fanout_element" ? a.attemptIdx : null;
   a.db.prepare(
     `INSERT INTO stage_attempts
      (attempt_id, task_id, version_hash, stage_name, attempt_idx, status,
-      started_at, kind)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      started_at, kind, fanout_element_idx)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(a.attemptId, a.taskId, a.versionHash, a.stageName,
-    a.attemptIdx, status, 1000, kind);
+    a.attemptIdx, status, 1000, kind, fanoutIdx);
 
   if (a.aed) {
     insertPromptContent(a.db, a.aed.promptHash, "prompt " + a.aed.promptHash);

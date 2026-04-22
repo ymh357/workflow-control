@@ -63,10 +63,22 @@ CREATE TABLE IF NOT EXISTS stage_attempts (
   -- A4 replay_stage: points to the original attempt this replay
   -- reproduces. NULL for non-replay attempts. No FK enforcement to
   -- allow replaying an attempt that has since been pruned.
-  replayed_from_attempt_id TEXT
+  replayed_from_attempt_id TEXT,
+  -- B17 full: the 0-based element index this attempt represents
+  -- inside its parent fanout stage. Only populated for fanout_element
+  -- rows; CHECK below enforces non-NULL whenever kind='fanout_element'.
+  -- Used by orchestrateFanoutStage to skip already-succeeded indices
+  -- after a hot-update migration (Roadmap §7.4 B17 full version).
+  fanout_element_idx INTEGER,
+  CHECK (kind != 'fanout_element' OR fanout_element_idx IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_sa_task_stage     ON stage_attempts(task_id, stage_name, attempt_idx DESC);
 CREATE INDEX IF NOT EXISTS idx_sa_version_stage  ON stage_attempts(version_hash, stage_name);
+-- B17 full: hot path for "which element indices already succeeded for this
+-- (task, stage)?" — used by orchestrateFanoutStage on migrated re-runs.
+CREATE INDEX IF NOT EXISTS idx_sa_fanout_success
+  ON stage_attempts(task_id, stage_name, fanout_element_idx)
+  WHERE kind = 'fanout_element' AND status = 'success';
 
 CREATE TABLE IF NOT EXISTS port_values (
   value_id       TEXT PRIMARY KEY,
@@ -295,6 +307,47 @@ CREATE INDEX IF NOT EXISTS idx_sed_open
 export function initKernelNextSchema(db: DatabaseSync): void {
   db.exec("PRAGMA journal_mode = WAL");
   db.exec("PRAGMA foreign_keys = ON");
+
+  // B17 full: zero-historical-compat drop+rebuild trigger. If
+  // stage_attempts exists but lacks fanout_element_idx, this is a
+  // pre-B17 kernel-next.db (dev cache). Per CLAUDE.md §Retired areas,
+  // kernel-next promises no task-data migration across schema evolutions
+  // — wipe every kernel-next table so CREATE TABLE IF NOT EXISTS below
+  // rebuilds from scratch with the current schema + CHECK constraints.
+  //
+  // Guarded by pragma check so fresh in-memory DBs used by unit tests
+  // pay zero cost (no stage_attempts row → no columns to inspect).
+  const saExists = db.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='stage_attempts'`,
+  ).get() as { name: string } | undefined;
+  if (saExists) {
+    const cols = db.prepare(`PRAGMA table_info(stage_attempts)`).all() as Array<{ name: string }>;
+    const hasFanoutIdx = cols.some((c) => c.name === "fanout_element_idx");
+    if (!hasFanoutIdx) {
+      // Drop in FK-dependency-safe order. foreign_keys=ON is set above;
+      // disable temporarily so the drops don't cascade-reject.
+      db.exec("PRAGMA foreign_keys = OFF");
+      db.exec(`
+        DROP TABLE IF EXISTS script_execution_details;
+        DROP TABLE IF EXISTS stage_checkpoints;
+        DROP TABLE IF EXISTS agent_execution_details;
+        DROP TABLE IF EXISTS pipeline_prompt_refs;
+        DROP TABLE IF EXISTS prompt_contents;
+        DROP TABLE IF EXISTS migration_hints;
+        DROP TABLE IF EXISTS hot_update_events;
+        DROP TABLE IF EXISTS gate_queue;
+        DROP TABLE IF EXISTS pipeline_proposals;
+        DROP TABLE IF EXISTS port_values;
+        DROP TABLE IF EXISTS stage_attempts;
+        DROP TABLE IF EXISTS wires;
+        DROP TABLE IF EXISTS ports;
+        DROP TABLE IF EXISTS stages;
+        DROP TABLE IF EXISTS pipeline_versions;
+      `);
+      db.exec("PRAGMA foreign_keys = ON");
+    }
+  }
+
   db.exec(KERNEL_NEXT_SCHEMA);
 }
 
