@@ -1838,172 +1838,172 @@ EOF
 **Files:**
 - Modify: `apps/server/src/kernel-next/mcp/server.ts`
 
-- [ ] **Step 1: Read the existing `run_pipeline` tool schema**
+### Background — existing run_pipeline schema is camelCase
 
-Run: `grep -n "run_pipeline\|checkpoint_config\|CheckpointConfig" /Users/minghao/workflow-control/apps/server/src/kernel-next/mcp/server.ts | head -30`
-Then `Read` the relevant region to understand the shape of the current schema (likely zod with snake_case input).
+The existing `run_pipeline` tool in `mcp/server.ts` (around lines 188–240) uses a flat camelCase zod `inputSchema` (`name`, `versionHash`, `seedValues`, `maxTurns`, `maxBudgetUsd`, `taskId`, etc.) and the handler narrows each field with `typeof args.xxx === "..."` before forwarding to `startPipelineRun`. No generic `translateRunPipelineInput` helper exists; the handler inlines the narrowing. We extend this convention — do NOT switch to snake_case just for the new field.
 
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 1: Write the failing test**
+
+Pattern: follow `apps/server/src/kernel-next/mcp/server.run-pipeline.test.ts` — it mocks `@anthropic-ai/claude-agent-sdk` (so `createKernelMcp` returns its raw `{ name, version, tools }` descriptor), submits the pipeline via `KernelService.submit`, then invokes the tool handler directly. Reuse that pattern; do NOT poke `_registeredTools`.
 
 Create `apps/server/src/kernel-next/mcp/server.checkpoint-config.test.ts`:
 
 ```ts
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
+
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+  createSdkMcpServer: (opts: { name: string; version: string; tools: unknown[] }) => opts,
+  query: () => ({
+    async *[Symbol.asyncIterator]() { /* no messages */ },
+  }),
+}));
+
+// eslint-disable-next-line import/first
+import { createKernelMcp } from "./server.js";
 import { initKernelNextSchema } from "../ir/sql.js";
 import { KernelService } from "./kernel.js";
-// The MCP server exposes tools; we exercise the KernelService surface
-// that the run_pipeline tool resolves into. If the file's public helper
-// is createKernelMcp, import that instead and call the handler manually.
+import { diamondIR } from "../generator-mock/mini-generator.js";
+import type { PipelineIR } from "../ir/schema.js";
 
-// Minimal: verify that startPipelineRun accepts checkpointConfig
-// threaded through snake_case parsing in the tool layer.
-// (We test the translation, not MCP transport.)
+interface McpTool {
+  name: string;
+  inputSchema: Record<string, unknown>;
+  handler: (args: Record<string, unknown>) => Promise<{
+    content: Array<{ type: string; text: string }>;
+    isError?: boolean;
+  }>;
+}
 
-import { startPipelineRun } from "../runtime/start-pipeline-run.js";
+function getTools(mcp: unknown): Map<string, McpTool> {
+  const toolsArray = (mcp as { tools: McpTool[] }).tools;
+  const map = new Map<string, McpTool>();
+  for (const t of toolsArray) map.set(t.name, t);
+  return map;
+}
 
-describe("run_pipeline tool — checkpoint_config translation", () => {
-  it("forwards snake_case checkpoint_config as camelCase to startPipelineRun", async () => {
-    const db = new DatabaseSync(":memory:");
-    initKernelNextSchema(db);
-    // Seed a trivial agent-free pipeline via MOCK_HANDLER_REGISTRY.
-    // For this test we rely on the fact that startPipelineRun itself
-    // accepts checkpointConfig; the MCP layer only has to rename.
-    // Build the translation helper at the site of the tool definition
-    // and assert it produces the expected input shape.
-    // If no such helper is factored out yet, write one and export it.
-
-    // This test doubles as a placeholder that will be adapted once
-    // the MCP layer is inspected. The hard requirement: when the MCP
-    // tool receives { checkpoint_config: { enabled: false } }, the
-    // resulting StartPipelineRunInput contains
-    // { checkpointConfig: { enabled: false } }.
-    //
-    // Implementation: expose a `translateRunPipelineInput` function
-    // from mcp/server.ts and assert directly.
-
-    const mod = await import("./server.js");
-    const translate = (mod as any).translateRunPipelineInput;
-    expect(typeof translate).toBe("function");
-    const out = translate({
-      name: "x",
-      checkpoint_config: {
-        enabled: false,
-        workdir: "/w",
-        max_diff_bytes: 123,
-        timeouts: { rev_parse_ms: 1, snapshot_ms: 2, diff_ms: 3 },
-      },
-    });
-    expect(out.checkpointConfig).toEqual({
-      enabled: false,
-      workdir: "/w",
-      maxDiffBytes: 123,
-      timeouts: { revParseMs: 1, snapshotMs: 2, diffMs: 3 },
-    });
-  });
-
-  it("omits checkpointConfig when absent", async () => {
-    const mod = await import("./server.js");
-    const translate = (mod as any).translateRunPipelineInput;
-    const out = translate({ name: "x" });
-    expect(out.checkpointConfig).toBeUndefined();
-  });
-});
-```
-
-- [ ] **Step 3: Run to verify fail**
-
-Run: `cd /Users/minghao/workflow-control/apps/server && npx vitest run src/kernel-next/mcp/server.checkpoint-config.test.ts`
-Expected: FAIL — `translateRunPipelineInput` is not defined.
-
-- [ ] **Step 4: Add schema + translator to `mcp/server.ts`**
-
-In `apps/server/src/kernel-next/mcp/server.ts`, locate the zod schema for the `run_pipeline` tool input. Add a snake_case `checkpoint_config` block:
-
-```ts
-// Near the top of the run_pipeline tool's zod input schema, alongside
-// name / version_hash / seed_values / etc.:
-const CheckpointConfigInputSchema = z.object({
-  enabled: z.boolean().optional(),
-  workdir: z.string().optional(),
-  max_diff_bytes: z.number().int().positive().optional(),
-  timeouts: z.object({
-    rev_parse_ms: z.number().int().positive().optional(),
-    snapshot_ms: z.number().int().positive().optional(),
-    diff_ms: z.number().int().positive().optional(),
-  }).optional(),
-}).optional();
-
-// Extend the existing run_pipeline input zod schema with:
-//   checkpoint_config: CheckpointConfigInputSchema,
-```
-
-**Export the translator** (keep it colocated with the tool handler):
-
-```ts
-import type { CheckpointConfig } from "../runtime/checkpoint/checkpoint.js";
-import type { StartPipelineRunInput } from "../runtime/start-pipeline-run.js";
-
-export function translateRunPipelineInput(raw: any): Partial<StartPipelineRunInput> {
-  const out: Partial<StartPipelineRunInput> = {};
-  if (raw.name !== undefined) out.name = raw.name;
-  if (raw.version_hash !== undefined) out.versionHash = raw.version_hash;
-  if (raw.task_id !== undefined) out.taskId = raw.task_id;
-  if (raw.seed_values !== undefined) out.seedValues = raw.seed_values;
-  if (raw.resume_from !== undefined) out.resumeFrom = raw.resume_from;
-  // …preserve existing fields as they were…
-
-  const cp = raw.checkpoint_config;
-  if (cp !== undefined) {
-    const config: CheckpointConfig = {};
-    if (cp.enabled !== undefined) config.enabled = cp.enabled;
-    if (cp.workdir !== undefined) config.workdir = cp.workdir;
-    if (cp.max_diff_bytes !== undefined) config.maxDiffBytes = cp.max_diff_bytes;
-    if (cp.timeouts) {
-      const t: NonNullable<CheckpointConfig["timeouts"]> = {};
-      if (cp.timeouts.rev_parse_ms !== undefined) t.revParseMs = cp.timeouts.rev_parse_ms;
-      if (cp.timeouts.snapshot_ms !== undefined) t.snapshotMs = cp.timeouts.snapshot_ms;
-      if (cp.timeouts.diff_ms !== undefined) t.diffMs = cp.timeouts.diff_ms;
-      config.timeouts = t;
+function promptsForIR(ir: PipelineIR): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const s of ir.stages) {
+    if (s.type === "agent" && s.config.promptRef) {
+      out[s.config.promptRef] = s.config.promptRef;
     }
-    out.checkpointConfig = config;
   }
   return out;
 }
-```
 
-**Inside the `run_pipeline` tool handler**, replace the ad-hoc input-to-startPipelineRun translation with:
+describe("run_pipeline MCP tool — checkpointConfig", () => {
+  it("inputSchema exposes checkpointConfig at the top level", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { surface: "external", skipTypeCheck: true });
+    const tool = getTools(mcp).get("run_pipeline");
+    expect(tool).toBeDefined();
+    expect(tool!.inputSchema).toHaveProperty("checkpointConfig");
+    db.close();
+  });
 
-```ts
-const translated = translateRunPipelineInput(parsedInput);
-const result = await startPipelineRun({
-  db: this.db,
-  broadcaster: this.broadcaster,
-  ...translated,
+  it("handler forwards checkpointConfig and the run produces zero stage_checkpoints rows when enabled=false", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const ir = diamondIR();
+    const submit = svc.submit(ir, { prompts: promptsForIR(ir) });
+    expect(submit.ok).toBe(true);
+    if (!submit.ok) return;
+
+    const mcp = createKernelMcp(db, { surface: "external", skipTypeCheck: true });
+    const tool = getTools(mcp).get("run_pipeline");
+    expect(tool).toBeDefined();
+
+    const resp = await tool!.handler({
+      name: "diamond",
+      checkpointConfig: { enabled: false },
+    });
+    const payload = JSON.parse(resp.content[0]!.text) as {
+      ok: boolean;
+      taskId?: string;
+    };
+    expect(payload.ok).toBe(true);
+
+    // The mocked SDK returns no messages so the stubbed query's
+    // async iterator exits immediately. RealStageExecutor will
+    // treat that as a run without completion, but the background
+    // runPipeline still registers attempts — and since checkpointConfig
+    // has enabled=false, no stage_checkpoints rows should ever be
+    // written regardless of attempt count. Give the background run a
+    // generous moment to record any would-be rows before asserting.
+    await new Promise((r) => setTimeout(r, 500));
+    const count = (db
+      .prepare(`SELECT COUNT(*) AS c FROM stage_checkpoints`)
+      .get() as { c: number }).c;
+    expect(count).toBe(0);
+
+    db.close();
+  });
 });
 ```
 
-(If the existing handler spreads fields by name, factor those through `translateRunPipelineInput` so the test can exercise it directly.)
+- [ ] **Step 2: Verify test fails**
 
-- [ ] **Step 5: Run tests**
+Run: `cd /Users/minghao/workflow-control/apps/server && npx vitest run src/kernel-next/mcp/server.checkpoint-config.test.ts`
+Expected: FAIL — `inputSchema` missing `checkpointConfig`, and/or handler ignores the field.
+
+- [ ] **Step 3: Modify `mcp/server.ts`**
+
+In `apps/server/src/kernel-next/mcp/server.ts`, locate the `run_pipeline` tool definition (around line 188). Extend it in two ways:
+
+**3a. Add `checkpointConfig` to the camelCase `inputSchema`** (alongside `name`, `versionHash`, `seedValues`, etc.):
+
+```ts
+checkpointConfig: z
+  .object({
+    enabled: z.boolean().optional(),
+    workdir: z.string().optional(),
+    maxDiffBytes: z.number().int().positive().optional(),
+    timeouts: z
+      .object({
+        revParseMs: z.number().int().positive().optional(),
+        snapshotMs: z.number().int().positive().optional(),
+        diffMs: z.number().int().positive().optional(),
+      })
+      .optional(),
+  })
+  .optional()
+  .describe("Per-task checkpoint config; omit to use defaults (enabled=true, workdir=process.cwd())"),
+```
+
+**3b. Forward it in the handler body.** Inside the `handler: async (args: any) => { ... startPipelineRun({ ... }) ... }` call (around line 206), add:
+
+```ts
+checkpointConfig:
+  args.checkpointConfig && typeof args.checkpointConfig === "object"
+    ? (args.checkpointConfig as import("../runtime/checkpoint/checkpoint.js").CheckpointConfig)
+    : undefined,
+```
+
+Place it alongside the other field-narrowing lines (`seedValues: ...`, `model: ...`, etc.) so the call to `startPipelineRun` stays a single expression. No new imports at module scope are required — the `import type` is inline. No translator function; the handler's existing idiom inlines the check.
+
+- [ ] **Step 4: Run tests**
 
 Run: `cd /Users/minghao/workflow-control/apps/server && npx vitest run src/kernel-next/mcp/`
-Expected: PASS (including new `server.checkpoint-config.test.ts`).
+Expected: PASS (including new test). If existing mcp tests also touch `run_pipeline`, they must continue to pass without modification.
 
 Run: `cd /Users/minghao/workflow-control/apps/server && npx tsc --noEmit`
 Expected: 0 errors.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add apps/server/src/kernel-next/mcp/server.ts apps/server/src/kernel-next/mcp/server.checkpoint-config.test.ts
 git commit -m "$(cat <<'EOF'
-feat(mcp): run_pipeline accepts checkpoint_config
+feat(mcp): run_pipeline accepts checkpointConfig
 
-Snake_case zod schema (max_diff_bytes, rev_parse_ms, etc.) +
-exported translateRunPipelineInput that maps to the camelCase
-StartPipelineRunInput shape. MCP callers can now opt out of
-checkpointing or override workdir/caps/timeouts.
+Adds optional checkpointConfig (camelCase, matching the existing tool's
+idiom) to the run_pipeline zod inputSchema with all four optional
+fields (enabled / workdir / maxDiffBytes / timeouts). Handler forwards
+it to startPipelineRun. MCP callers can opt out of checkpointing or
+override workdir / caps / timeouts.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
