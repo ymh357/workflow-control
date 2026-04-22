@@ -16,7 +16,7 @@
 
 **New files:**
 - `apps/server/src/kernel-next/runtime/checkpoint/types.ts` — `CheckpointStatus`, `CheckpointConfig`, `CheckpointRow`, `GitResult`
-- `apps/server/src/kernel-next/runtime/checkpoint/git-commands.ts` — `isGitRepo` / `gitRevParseHead` / `gitStashCreate` / `gitDiff` over `spawnWithTimeout`
+- `apps/server/src/kernel-next/runtime/checkpoint/git-commands.ts` — `isGitRepo` / `gitRevParseHead` / `snapshotWorkTree` (scratch-index capture) / `gitDiff` over `spawnWithTimeout`
 - `apps/server/src/kernel-next/runtime/checkpoint/checkpoint.ts` — `captureBefore` / `captureAfter` / `resolveCheckpointConfig` / `buildCheckpointDeps`
 - `apps/server/src/kernel-next/runtime/checkpoint/checkpoint.test.ts` — unit tests (mock `execGit`)
 - `apps/server/src/kernel-next/runtime/checkpoint/checkpoint.integration.test.ts` — end-to-end with real tmp git repo
@@ -216,7 +216,7 @@ export type CheckpointStatus =
 
 export interface CheckpointTimeouts {
   revParseMs: number;
-  stashCreateMs: number;
+  snapshotMs: number;
   diffMs: number;
 }
 
@@ -257,7 +257,7 @@ export interface GitResult {
 
 export const DEFAULT_CHECKPOINT_TIMEOUTS: CheckpointTimeouts = {
   revParseMs: 5_000,
-  stashCreateMs: 10_000,
+  snapshotMs: 10_000,
   diffMs: 10_000,
 };
 
@@ -294,13 +294,36 @@ EOF
 - Create: `apps/server/src/kernel-next/runtime/checkpoint/git-commands.ts`
 - Create: `apps/server/src/kernel-next/runtime/checkpoint/git-commands.test.ts`
 
+### Background — why `snapshotWorkTree` is not `git stash create -u`
+
+`git stash create -u` does NOT honour the `-u` flag on current git
+versions (verified 2.50.1). It silently accepts `-u` as the message
+argument and never captures untracked files into the dangling commit.
+
+Instead, `snapshotWorkTree` uses a **scratch-index** pattern that
+captures the full working tree (including untracked files but still
+honouring `.gitignore`) as a dangling commit, without mutating
+`.git/index`, any ref, or the working tree:
+
+1. Create a scratch index file in `os.tmpdir()` via `mkdtemp`.
+2. `GIT_INDEX_FILE=<scratch> git read-tree HEAD` — prime the scratch index.
+3. `GIT_INDEX_FILE=<scratch> git add -A` — stage tracked + untracked changes into the scratch index.
+4. `GIT_INDEX_FILE=<scratch> git write-tree` — write a tree object.
+5. `git commit-tree <tree-sha> -p HEAD -m "wfc-checkpoint"` — wrap in a commit.
+6. `rm -rf <scratch-dir>` (best-effort, ignores errors).
+
+If step 2 fails because the repo has no HEAD (freshly `git init`ed,
+zero commits), the helper returns `ok=false` immediately.
+
+### Test + implementation
+
 - [ ] **Step 1: Write the failing tests**
 
 Create `git-commands.test.ts`:
 
 ```ts
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
@@ -308,7 +331,7 @@ import { promisify } from "node:util";
 import {
   isGitRepo,
   gitRevParseHead,
-  gitStashCreate,
+  snapshotWorkTree,
   gitDiff,
 } from "./git-commands.js";
 
@@ -358,38 +381,66 @@ describe("git-commands", () => {
     expect(r.stderr.length).toBeGreaterThan(0);
   });
 
-  it("gitStashCreate — empty stdout on clean tree", async () => {
+  it("snapshotWorkTree — clean tree produces commit whose tree equals HEAD^{tree}", async () => {
     await initRepo(dir);
-    const r = await gitStashCreate(dir, 10_000);
+    const r = await snapshotWorkTree(dir, 10_000);
     expect(r.ok).toBe(true);
-    expect(r.stdout.trim()).toBe("");
+    const commitSha = r.stdout.trim();
+    expect(commitSha).toMatch(/^[a-f0-9]{40}$/);
+    const snapTree = (await exec("git", ["rev-parse", `${commitSha}^{tree}`], { cwd: dir })).stdout.trim();
+    const headTree = (await exec("git", ["rev-parse", "HEAD^{tree}"], { cwd: dir })).stdout.trim();
+    expect(snapTree).toBe(headTree);
   });
 
-  it("gitStashCreate — SHA on dirty tree", async () => {
+  it("snapshotWorkTree — SHA on dirty tracked file", async () => {
     await initRepo(dir);
-    await writeFile(join(dir, "a.txt"), "change\n");
-    const r = await gitStashCreate(dir, 10_000);
+    await writeFile(join(dir, "README.md"), "modified\n");
+    const r = await snapshotWorkTree(dir, 10_000);
     expect(r.ok).toBe(true);
-    expect(r.stdout.trim()).toMatch(/^[a-f0-9]{40}$/);
+    const sha = r.stdout.trim();
+    expect(sha).toMatch(/^[a-f0-9]{40}$/);
+    const show = await exec("git", ["show", "--stat", sha], { cwd: dir });
+    expect(show.stdout).toContain("README.md");
   });
 
-  it("gitStashCreate — includes untracked (-u)", async () => {
+  it("snapshotWorkTree — captures untracked files (.gitignore honoured)", async () => {
     await initRepo(dir);
+    await writeFile(join(dir, ".gitignore"), "ignored.txt\n");
+    await exec("git", ["add", ".gitignore"], { cwd: dir });
+    await exec("git", ["commit", "-qm", "ignore"], { cwd: dir });
     await writeFile(join(dir, "new.txt"), "new\n");
-    const r = await gitStashCreate(dir, 10_000);
+    await writeFile(join(dir, "ignored.txt"), "should not appear\n");
+    const r = await snapshotWorkTree(dir, 10_000);
     expect(r.ok).toBe(true);
-    expect(r.stdout.trim()).toMatch(/^[a-f0-9]{40}$/);
     const sha = r.stdout.trim();
     const show = await exec("git", ["show", "--stat", sha], { cwd: dir });
     expect(show.stdout).toContain("new.txt");
+    expect(show.stdout).not.toContain("ignored.txt");
+  });
+
+  it("snapshotWorkTree — does not mutate .git/index", async () => {
+    await initRepo(dir);
+    await writeFile(join(dir, "staged.txt"), "staged\n");
+    await exec("git", ["add", "staged.txt"], { cwd: dir });
+    await writeFile(join(dir, "unstaged.txt"), "unstaged\n");
+    const statusBefore = (await exec("git", ["status", "--porcelain"], { cwd: dir })).stdout;
+    await snapshotWorkTree(dir, 10_000);
+    const statusAfter = (await exec("git", ["status", "--porcelain"], { cwd: dir })).stdout;
+    expect(statusAfter).toBe(statusBefore);
+  });
+
+  it("snapshotWorkTree — ok=false on repo with no HEAD (fresh git init)", async () => {
+    await exec("git", ["init", "-q", "-b", "main"], { cwd: dir });
+    const r = await snapshotWorkTree(dir, 10_000);
+    expect(r.ok).toBe(false);
   });
 
   it("gitDiff — returns unified diff between two SHAs", async () => {
     await initRepo(dir);
     const before = (await exec("git", ["rev-parse", "HEAD"], { cwd: dir })).stdout.trim();
     await writeFile(join(dir, "b.txt"), "line\n");
-    const afterStash = await gitStashCreate(dir, 10_000);
-    const after = afterStash.stdout.trim();
+    const afterSnap = await snapshotWorkTree(dir, 10_000);
+    const after = afterSnap.stdout.trim();
     const r = await gitDiff(dir, before, after, 10_000);
     expect(r.ok).toBe(true);
     expect(r.stdout).toContain("b.txt");
@@ -415,19 +466,27 @@ Expected: FAIL — module does not exist.
 // Minimal, structured wrappers around git subcommands used by the
 // checkpoint module. None throw — failure always surfaces as ok=false
 // on GitResult. All respect per-call timeouts via spawnWithTimeout.
+//
+// snapshotWorkTree uses a scratch GIT_INDEX_FILE to build a dangling
+// commit that includes the full working tree (tracked modifications
+// + untracked files, minus .gitignore'd paths) without mutating the
+// caller's index, refs, or working tree.
 
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { spawnWithTimeout } from "../../../lib/spawn-utils.js";
 import type { GitResult } from "./types.js";
 
 const EXTRA_PATH = "/opt/homebrew/bin:/usr/local/bin";
 
-function buildEnv(): NodeJS.ProcessEnv {
+function buildEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   return {
     ...process.env,
     PATH: `${process.env.PATH ?? ""}:${EXTRA_PATH}`,
-    // Ensure predictable output regardless of user's git config.
     GIT_TERMINAL_PROMPT: "0",
     LC_ALL: "C",
+    ...extra,
   };
 }
 
@@ -435,12 +494,13 @@ async function run(
   args: string[],
   cwd: string,
   timeoutMs: number,
+  envExtra: Record<string, string> = {},
 ): Promise<GitResult> {
   try {
     const r = await spawnWithTimeout("git", args, {
       cwd,
       timeoutMs,
-      env: buildEnv(),
+      env: buildEnv(envExtra),
     });
     return {
       ok: !r.timedOut && r.exitCode === 0,
@@ -450,8 +510,6 @@ async function run(
       timedOut: r.timedOut,
     };
   } catch (err) {
-    // spawnWithTimeout itself rarely throws (spawn failure). Represent
-    // it as a non-ok GitResult so callers don't need try/catch.
     return {
       ok: false,
       stdout: "",
@@ -474,12 +532,71 @@ export async function gitRevParseHead(
   return run(["rev-parse", "HEAD"], cwd, timeoutMs);
 }
 
-export async function gitStashCreate(
+/**
+ * Capture working-tree state (tracked + untracked, honouring
+ * .gitignore) as a dangling commit SHA on stdout. Does not mutate
+ * .git/index, any ref, or the working tree.
+ *
+ * Uses a temporary GIT_INDEX_FILE so the 4 sub-steps do not touch
+ * the runtime's .git/index. Cleans up the scratch index even on
+ * partial failure.
+ *
+ * Returns ok=false if HEAD is unavailable (repo with zero commits),
+ * if any sub-step fails, or if the overall timeout is hit.
+ */
+export async function snapshotWorkTree(
   cwd: string,
   timeoutMs: number,
 ): Promise<GitResult> {
-  // `-u` includes untracked files. Clean tree → empty stdout, exit 0.
-  return run(["stash", "create", "-u"], cwd, timeoutMs);
+  const deadline = Date.now() + timeoutMs;
+  const remaining = (): number => Math.max(0, deadline - Date.now());
+
+  let scratchDir: string | null = null;
+  try {
+    scratchDir = await mkdtemp(join(tmpdir(), "wfc-cp-idx-"));
+    const indexFile = join(scratchDir, "index");
+    const env = { GIT_INDEX_FILE: indexFile };
+
+    const readTree = await run(["read-tree", "HEAD"], cwd, remaining(), env);
+    if (!readTree.ok) return readTree;
+
+    const addAll = await run(["add", "-A"], cwd, remaining(), env);
+    if (!addAll.ok) return addAll;
+
+    const writeTree = await run(["write-tree"], cwd, remaining(), env);
+    if (!writeTree.ok) return writeTree;
+    const treeSha = writeTree.stdout.trim();
+    if (!/^[a-f0-9]{40}$/.test(treeSha)) {
+      return {
+        ok: false,
+        stdout: "",
+        stderr: `write-tree returned unexpected output: ${treeSha}`,
+        exitCode: -1,
+        timedOut: false,
+      };
+    }
+
+    // commit-tree does not need the scratch index; use default env.
+    return run(
+      ["commit-tree", treeSha, "-p", "HEAD", "-m", "wfc-checkpoint"],
+      cwd,
+      remaining(),
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      stdout: "",
+      stderr: err instanceof Error ? err.message : String(err),
+      exitCode: -1,
+      timedOut: false,
+    };
+  } finally {
+    if (scratchDir) {
+      await rm(scratchDir, { recursive: true, force: true }).catch(() => {
+        // scratch cleanup failure is not the caller's problem
+      });
+    }
+  }
 }
 
 export async function gitDiff(
@@ -495,7 +612,7 @@ export async function gitDiff(
 - [ ] **Step 4: Run tests to verify pass**
 
 Run: `cd /Users/minghao/workflow-control/apps/server && npx vitest run src/kernel-next/runtime/checkpoint/git-commands.test.ts`
-Expected: PASS (10 tests).
+Expected: PASS (11 tests).
 
 Run: `cd /Users/minghao/workflow-control/apps/server && npx tsc --noEmit`
 Expected: 0 errors.
@@ -507,9 +624,12 @@ git add apps/server/src/kernel-next/runtime/checkpoint/git-commands.ts apps/serv
 git commit -m "$(cat <<'EOF'
 feat(checkpoint): git-commands over spawnWithTimeout
 
-isGitRepo / gitRevParseHead / gitStashCreate / gitDiff — structured
-GitResult, never throws, uses `git stash create -u` to produce
-dangling commit SHAs without mutating refs.
+isGitRepo / gitRevParseHead / snapshotWorkTree / gitDiff — structured
+GitResult, never throws. snapshotWorkTree uses a scratch
+GIT_INDEX_FILE (read-tree HEAD → add -A → write-tree → commit-tree)
+to capture the full working tree (including untracked, honouring
+.gitignore) as a dangling commit without mutating the runtime's
+index, refs, or working tree.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>
 EOF
@@ -569,7 +689,7 @@ function mkDeps(overrides: Partial<CheckpointDeps> = {}): CheckpointDeps {
   return {
     isGitRepo: vi.fn().mockResolvedValue(true),
     gitRevParseHead: vi.fn().mockResolvedValue(ok("a".repeat(40))),
-    gitStashCreate: vi.fn().mockResolvedValue(ok("b".repeat(40))),
+    snapshotWorkTree: vi.fn().mockResolvedValue(ok("b".repeat(40))),
     gitDiff: vi.fn().mockResolvedValue(ok("diff body")),
     pathExists: vi.fn().mockResolvedValue(true),
     now: () => 1_700_000_000_000,
@@ -599,7 +719,7 @@ describe("resolveCheckpointConfig", () => {
     expect(r.workdir).toBe("/x");
     expect(r.maxDiffBytes).toBe(1);
     expect(r.timeouts.revParseMs).toBe(999);
-    expect(r.timeouts.stashCreateMs).toBe(DEFAULT_CHECKPOINT_TIMEOUTS.stashCreateMs);
+    expect(r.timeouts.snapshotMs).toBe(DEFAULT_CHECKPOINT_TIMEOUTS.snapshotMs);
   });
 });
 
@@ -622,7 +742,7 @@ describe("captureBefore", () => {
 
   it("clean tree — stash returns empty, falls back to rev-parse HEAD", async () => {
     const deps = mkDeps({
-      gitStashCreate: vi.fn().mockResolvedValue(ok("")),
+      snapshotWorkTree: vi.fn().mockResolvedValue(ok("")),
       gitRevParseHead: vi.fn().mockResolvedValue(ok("c".repeat(40))),
     });
     await captureBefore(db, deps, { attemptId: "a1", workdir: "/repo", timeouts: TIMEOUTS });
@@ -649,7 +769,7 @@ describe("captureBefore", () => {
 
   it("both stash and rev-parse fail — status='before_failed' with diagnostic", async () => {
     const deps = mkDeps({
-      gitStashCreate: vi.fn().mockResolvedValue(fail("stash boom")),
+      snapshotWorkTree: vi.fn().mockResolvedValue(fail("snap boom")),
       gitRevParseHead: vi.fn().mockResolvedValue(fail("head boom")),
     });
     await captureBefore(db, deps, { attemptId: "a1", workdir: "/repo", timeouts: TIMEOUTS });
@@ -691,7 +811,7 @@ describe("captureAfter", () => {
   it("happy path — fills after_sha + diff_text + bytes + status='captured'", async () => {
     await seedCapturing();
     const deps = mkDeps({
-      gitStashCreate: vi.fn().mockResolvedValue(ok("d".repeat(40))),
+      snapshotWorkTree: vi.fn().mockResolvedValue(ok("d".repeat(40))),
       gitDiff: vi.fn().mockResolvedValue(ok("DIFF")),
     });
     await captureAfter(db, deps, {
@@ -709,7 +829,7 @@ describe("captureAfter", () => {
     await seedCapturing();
     const big = "x".repeat(1024);
     const deps = mkDeps({
-      gitStashCreate: vi.fn().mockResolvedValue(ok("d".repeat(40))),
+      snapshotWorkTree: vi.fn().mockResolvedValue(ok("d".repeat(40))),
       gitDiff: vi.fn().mockResolvedValue(ok(big)),
     });
     await captureAfter(db, deps, {
@@ -726,7 +846,7 @@ describe("captureAfter", () => {
   it("diff command fails — status='after_failed', after_sha kept, diff_text=null", async () => {
     await seedCapturing();
     const deps = mkDeps({
-      gitStashCreate: vi.fn().mockResolvedValue(ok("d".repeat(40))),
+      snapshotWorkTree: vi.fn().mockResolvedValue(ok("d".repeat(40))),
       gitDiff: vi.fn().mockResolvedValue(fail("diff boom")),
     });
     await captureAfter(db, deps, {
@@ -742,7 +862,7 @@ describe("captureAfter", () => {
   it("after SHA resolution fails — status='after_failed', after_sha=null", async () => {
     await seedCapturing();
     const deps = mkDeps({
-      gitStashCreate: vi.fn().mockResolvedValue(fail("stash boom")),
+      snapshotWorkTree: vi.fn().mockResolvedValue(fail("snap boom")),
       gitRevParseHead: vi.fn().mockResolvedValue(fail("head boom")),
     });
     await captureAfter(db, deps, {
@@ -757,7 +877,7 @@ describe("captureAfter", () => {
   it("second call is no-op (row already 'captured')", async () => {
     await seedCapturing();
     const deps = mkDeps({
-      gitStashCreate: vi.fn().mockResolvedValue(ok("d".repeat(40))),
+      snapshotWorkTree: vi.fn().mockResolvedValue(ok("d".repeat(40))),
       gitDiff: vi.fn().mockResolvedValue(ok("DIFF")),
     });
     await captureAfter(db, deps, {
@@ -765,7 +885,7 @@ describe("captureAfter", () => {
     });
     // second call with different mocked data should NOT overwrite
     const deps2 = mkDeps({
-      gitStashCreate: vi.fn().mockResolvedValue(ok("e".repeat(40))),
+      snapshotWorkTree: vi.fn().mockResolvedValue(ok("e".repeat(40))),
       gitDiff: vi.fn().mockResolvedValue(ok("DIFF2")),
     });
     await captureAfter(db, deps2, {
@@ -831,7 +951,7 @@ export type { CheckpointConfig, GitResult, ResolvedCheckpointConfig } from "./ty
 export interface CheckpointDeps {
   isGitRepo: (cwd: string, timeoutMs: number) => Promise<boolean>;
   gitRevParseHead: (cwd: string, timeoutMs: number) => Promise<GitResult>;
-  gitStashCreate: (cwd: string, timeoutMs: number) => Promise<GitResult>;
+  snapshotWorkTree: (cwd: string, timeoutMs: number) => Promise<GitResult>;
   gitDiff: (cwd: string, from: string, to: string, timeoutMs: number) => Promise<GitResult>;
   pathExists: (p: string) => Promise<boolean>;
   now: () => number;
@@ -846,7 +966,7 @@ export function resolveCheckpointConfig(
     maxDiffBytes: config?.maxDiffBytes ?? DEFAULT_MAX_DIFF_BYTES,
     timeouts: {
       revParseMs: config?.timeouts?.revParseMs ?? DEFAULT_CHECKPOINT_TIMEOUTS.revParseMs,
-      stashCreateMs: config?.timeouts?.stashCreateMs ?? DEFAULT_CHECKPOINT_TIMEOUTS.stashCreateMs,
+      snapshotMs: config?.timeouts?.snapshotMs ?? DEFAULT_CHECKPOINT_TIMEOUTS.snapshotMs,
       diffMs: config?.timeouts?.diffMs ?? DEFAULT_CHECKPOINT_TIMEOUTS.diffMs,
     },
   };
@@ -1034,20 +1154,20 @@ async function resolveSha(
   workdir: string,
   timeouts: CheckpointTimeouts,
 ): Promise<ShaResult> {
-  const stash = await deps.gitStashCreate(workdir, timeouts.stashCreateMs);
-  if (stash.ok && stash.stdout.trim() !== "") {
-    return { kind: "ok", sha: stash.stdout.trim() };
+  const snap = await deps.snapshotWorkTree(workdir, timeouts.snapshotMs);
+  if (snap.ok && snap.stdout.trim() !== "") {
+    return { kind: "ok", sha: snap.stdout.trim() };
   }
   const head = await deps.gitRevParseHead(workdir, timeouts.revParseMs);
   if (head.ok && head.stdout.trim() !== "") {
     return { kind: "ok", sha: head.stdout.trim() };
   }
   const diag =
-    !stash.ok && !head.ok
-      ? `stash create failed: ${stash.stderr || `exit ${stash.exitCode}`}; rev-parse HEAD failed: ${head.stderr || `exit ${head.exitCode}`}`
+    !snap.ok && !head.ok
+      ? `snapshotWorkTree failed: ${snap.stderr || `exit ${snap.exitCode}`}; rev-parse HEAD failed: ${head.stderr || `exit ${head.exitCode}`}`
       : !head.ok
         ? `rev-parse HEAD failed: ${head.stderr || `exit ${head.exitCode}`}`
-        : `stash create returned empty, rev-parse HEAD returned empty`;
+        : `snapshotWorkTree returned empty, rev-parse HEAD returned empty`;
   return { kind: "error", diagnostic: diag };
 }
 
@@ -1135,7 +1255,7 @@ import type { CheckpointDeps } from "./checkpoint.js";
 import {
   isGitRepo,
   gitRevParseHead,
-  gitStashCreate,
+  snapshotWorkTree,
   gitDiff,
 } from "./git-commands.js";
 import { DEFAULT_CHECKPOINT_TIMEOUTS, DEFAULT_MAX_DIFF_BYTES } from "./types.js";
@@ -1146,7 +1266,7 @@ function mkDeps(): CheckpointDeps {
   return {
     isGitRepo,
     gitRevParseHead,
-    gitStashCreate,
+    snapshotWorkTree,
     gitDiff,
     pathExists: async (p) => access(p).then(() => true).catch(() => false),
     now: () => Date.now(),
@@ -1592,7 +1712,7 @@ import type { AttemptHooks } from "./port-runtime.js";
   const cpDeps: CheckpointDeps = {
     isGitRepo: gitCommands.isGitRepo,
     gitRevParseHead: gitCommands.gitRevParseHead,
-    gitStashCreate: gitCommands.gitStashCreate,
+    snapshotWorkTree: gitCommands.snapshotWorkTree,
     gitDiff: gitCommands.gitDiff,
     pathExists: async (p) => access(p).then(() => true).catch(() => false),
     now: () => Date.now(),
@@ -1761,14 +1881,14 @@ describe("run_pipeline tool — checkpoint_config translation", () => {
         enabled: false,
         workdir: "/w",
         max_diff_bytes: 123,
-        timeouts: { rev_parse_ms: 1, stash_create_ms: 2, diff_ms: 3 },
+        timeouts: { rev_parse_ms: 1, snapshot_ms: 2, diff_ms: 3 },
       },
     });
     expect(out.checkpointConfig).toEqual({
       enabled: false,
       workdir: "/w",
       maxDiffBytes: 123,
-      timeouts: { revParseMs: 1, stashCreateMs: 2, diffMs: 3 },
+      timeouts: { revParseMs: 1, snapshotMs: 2, diffMs: 3 },
     });
   });
 
@@ -1799,7 +1919,7 @@ const CheckpointConfigInputSchema = z.object({
   max_diff_bytes: z.number().int().positive().optional(),
   timeouts: z.object({
     rev_parse_ms: z.number().int().positive().optional(),
-    stash_create_ms: z.number().int().positive().optional(),
+    snapshot_ms: z.number().int().positive().optional(),
     diff_ms: z.number().int().positive().optional(),
   }).optional(),
 }).optional();
@@ -1832,7 +1952,7 @@ export function translateRunPipelineInput(raw: any): Partial<StartPipelineRunInp
     if (cp.timeouts) {
       const t: NonNullable<CheckpointConfig["timeouts"]> = {};
       if (cp.timeouts.rev_parse_ms !== undefined) t.revParseMs = cp.timeouts.rev_parse_ms;
-      if (cp.timeouts.stash_create_ms !== undefined) t.stashCreateMs = cp.timeouts.stash_create_ms;
+      if (cp.timeouts.snapshot_ms !== undefined) t.snapshotMs = cp.timeouts.snapshot_ms;
       if (cp.timeouts.diff_ms !== undefined) t.diffMs = cp.timeouts.diff_ms;
       config.timeouts = t;
     }
@@ -1909,7 +2029,7 @@ captures per-attempt prompt + tool calls + agent stream + cost +
 lifecycle. **A1 field #7 (worktree diff) landed in Phase 4.5 Step 1**:
 new `stage_checkpoints` table FK'd to stage_attempts records
 `before_sha` / `after_sha` / cached `diff_text` using
-`git stash create -u` (no ref mutation). Fire-and-forget capture
+scratch-index snapshot (no ref mutation, includes untracked). Fire-and-forget capture
 via PortRuntime AttemptHooks; awaited before run_final. **Remaining:
 field #8 (scratch pad + PreCompact trigger)** — Phase 4.5 Step 2.
 Legacy `workflow.db.execution_records` table + `lib/execution-record/`
@@ -2026,7 +2146,7 @@ EOF
 | §6.1 unit test matrix | Task 4 (~15 cases) |
 | §6.2 integration tests | Task 5 (5 cases) |
 | §6.3 runner integration | Task 7 (3 cases) |
-| §7 design decisions | Encoded in implementations (stash create -u, fallback to HEAD, diff cap, etc.) |
+| §7 design decisions | Encoded in implementations (scratch-index snapshot, fallback to HEAD, diff cap, etc.) |
 | §8 file churn | Matches Task list |
 | §9 rollout | 9 commits on main, matches |
 
@@ -2040,7 +2160,7 @@ All sections mapped.
 - `AttemptHooks` defined in `port-runtime.ts`, imported by `runner.ts` — Task 6 and Task 7 use identical method names (`onAttemptStarted` / `onAttemptFinishing`)
 - MCP snake_case (`max_diff_bytes`, `rev_parse_ms`, …) translated to camelCase in Task 8's `translateRunPipelineInput` — matches camelCase field names used in Tasks 2 / 4 / 7
 
-Functions referenced across tasks (`captureBefore`, `captureAfter`, `resolveCheckpointConfig`, `gitStashCreate`, `gitRevParseHead`, `gitDiff`, `isGitRepo`, `translateRunPipelineInput`) — all defined in their own creation task before any consumer task.
+Functions referenced across tasks (`captureBefore`, `captureAfter`, `resolveCheckpointConfig`, `snapshotWorkTree`, `gitRevParseHead`, `gitDiff`, `isGitRepo`, `translateRunPipelineInput`) — all defined in their own creation task before any consumer task.
 
 ---
 
