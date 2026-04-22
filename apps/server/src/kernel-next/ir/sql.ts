@@ -188,6 +188,34 @@ CREATE INDEX IF NOT EXISTS idx_aed_prompt_hash
 CREATE INDEX IF NOT EXISTS idx_aed_open
   ON agent_execution_details(last_heartbeat_at)
   WHERE ended_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS stage_checkpoints (
+  attempt_id          TEXT PRIMARY KEY
+                      REFERENCES stage_attempts(attempt_id) ON DELETE CASCADE,
+  workdir             TEXT NOT NULL,
+  before_sha          TEXT,
+  after_sha           TEXT,
+  diff_text           TEXT,
+  diff_bytes          INTEGER,
+  status              TEXT NOT NULL CHECK (status IN (
+                        'capturing',
+                        'captured',
+                        'before_failed',
+                        'after_failed',
+                        'not_a_repo',
+                        'disabled',
+                        'diff_too_large'
+                      )),
+  diagnostic          TEXT,
+  captured_before_at  INTEGER NOT NULL,
+  captured_after_at   INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_sc_status
+  ON stage_checkpoints(status);
+CREATE INDEX IF NOT EXISTS idx_sc_has_diff
+  ON stage_checkpoints(attempt_id)
+  WHERE diff_text IS NOT NULL;
 `;
 
 export function initKernelNextSchema(db: DatabaseSync): void {
