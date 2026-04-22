@@ -1,28 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockClearSettingsCache = vi.fn();
-const mockClearPipelineCache = vi.fn();
 const mockClearFragmentCache = vi.fn();
 const mockClearDynamicScriptCache = vi.fn();
 
 vi.mock("./settings.js", () => ({
-  clearSettingsCache: (...a: any[]) => mockClearSettingsCache(...a),
+  clearSettingsCache: (...a: unknown[]) => mockClearSettingsCache(...a),
   CONFIG_DIR: "/fake/config",
   interpolateEnvVar: vi.fn((v: string) => v),
-  interpolateObject: vi.fn((v: any) => v),
+  interpolateObject: vi.fn((v: unknown) => v),
   getNestedValue: vi.fn(),
   loadSystemSettings: vi.fn(() => ({})),
-}));
-
-vi.mock("./pipeline.js", () => ({
-  clearPipelineCache: (...a: any[]) => mockClearPipelineCache(...a),
-  loadPipelineConfig: vi.fn(),
-  listAvailablePipelines: vi.fn(() => []),
-  deepMergePipeline: vi.fn(),
+  SystemSettingsSchema: { safeParse: vi.fn() },
 }));
 
 vi.mock("./fragments.js", () => ({
-  clearFragmentCache: (...a: any[]) => mockClearFragmentCache(...a),
+  clearFragmentCache: (...a: unknown[]) => mockClearFragmentCache(...a),
   getFragmentRegistry: vi.fn(),
   parseFrontmatter: vi.fn(),
   FragmentRegistry: vi.fn(),
@@ -30,7 +23,7 @@ vi.mock("./fragments.js", () => ({
 }));
 
 vi.mock("../script-loader.js", () => ({
-  clearDynamicScriptCache: (...a: any[]) => mockClearDynamicScriptCache(...a),
+  clearDynamicScriptCache: (...a: unknown[]) => mockClearDynamicScriptCache(...a),
   loadDynamicScript: vi.fn(),
 }));
 
@@ -63,33 +56,19 @@ beforeEach(() => {
 describe("clearConfigCache error isolation", () => {
   it("clearSettingsCache throws — error propagates and stops subsequent calls", () => {
     mockClearSettingsCache.mockImplementation(() => { throw new Error("settings cache error"); });
-
-    // The implementation calls them sequentially without try/catch,
-    // so an error in the first one stops the rest
     expect(() => clearConfigCache()).toThrow("settings cache error");
   });
 
-  it("clearPipelineCache throws — error propagates", () => {
-    mockClearPipelineCache.mockImplementation(() => { throw new Error("pipeline cache error"); });
-
-    expect(() => clearConfigCache()).toThrow("pipeline cache error");
-    expect(mockClearSettingsCache).toHaveBeenCalled();
-  });
-
-  it("clearFragmentCache throws — settings and pipeline were already called", () => {
+  it("clearFragmentCache throws — settings was already called", () => {
     mockClearFragmentCache.mockImplementation(() => { throw new Error("fragment cache error"); });
-
     expect(() => clearConfigCache()).toThrow("fragment cache error");
     expect(mockClearSettingsCache).toHaveBeenCalled();
-    expect(mockClearPipelineCache).toHaveBeenCalled();
   });
 
-  it("clearDynamicScriptCache throws — other three were already called", () => {
+  it("clearDynamicScriptCache throws — other two were already called", () => {
     mockClearDynamicScriptCache.mockImplementation(() => { throw new Error("script cache error"); });
-
     expect(() => clearConfigCache()).toThrow("script cache error");
     expect(mockClearSettingsCache).toHaveBeenCalled();
-    expect(mockClearPipelineCache).toHaveBeenCalled();
     expect(mockClearFragmentCache).toHaveBeenCalled();
   });
 });
@@ -107,7 +86,6 @@ describe("clearConfigCache idempotency", () => {
       clearConfigCache();
     }
     expect(mockClearSettingsCache).toHaveBeenCalledTimes(10);
-    expect(mockClearPipelineCache).toHaveBeenCalledTimes(10);
     expect(mockClearFragmentCache).toHaveBeenCalledTimes(10);
     expect(mockClearDynamicScriptCache).toHaveBeenCalledTimes(10);
   });
@@ -116,10 +94,9 @@ describe("clearConfigCache idempotency", () => {
 // ── Call order ──
 
 describe("clearConfigCache call order", () => {
-  it("all four sub-functions are called in a single invocation", () => {
+  it("all three sub-functions are called in a single invocation", () => {
     clearConfigCache();
     expect(mockClearSettingsCache).toHaveBeenCalledOnce();
-    expect(mockClearPipelineCache).toHaveBeenCalledOnce();
     expect(mockClearFragmentCache).toHaveBeenCalledOnce();
     expect(mockClearDynamicScriptCache).toHaveBeenCalledOnce();
   });
@@ -127,7 +104,6 @@ describe("clearConfigCache call order", () => {
   it("sub-functions are called with no arguments", () => {
     clearConfigCache();
     expect(mockClearSettingsCache).toHaveBeenCalledWith();
-    expect(mockClearPipelineCache).toHaveBeenCalledWith();
     expect(mockClearFragmentCache).toHaveBeenCalledWith();
     expect(mockClearDynamicScriptCache).toHaveBeenCalledWith();
   });
