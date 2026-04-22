@@ -73,6 +73,13 @@ apps/*/.deliverable-error.md
 # here when a downstream write fails). Not source.
 apps/*/.workflow/
 
+# P6-3: when the server is launched from the monorepo root (rather
+# than apps/server/), pipeline agents write the same reportPath
+# relative to that cwd — so .workflow/ may appear here too. Per-task
+# workspace isolation (Phase 5C worktree hookup) will make this
+# redundant later.
+/.workflow/
+
 # Team env (shared secrets — use .env.team.example as template)
 .env.team
 
