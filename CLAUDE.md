@@ -52,6 +52,9 @@ The following modules were deleted as part of Stage 4a of the kernel-next migrat
 - `apps/server/src/builtin-pipelines/web3-research-writer/` — orphan sub-pipeline (deleted 2026-04-24 Stage 4b)
 - All `apps/server/src/builtin-pipelines/*/pipeline.yaml` files replaced by `pipeline.ir.json` (canonical IR is the on-disk representation)
 - `apps/server/src/lib/execution-record/` + `apps/server/src/cli/execution-record.ts` + `apps/server/src/cli/lib/prune-execution-records.ts` — legacy execution-record writer module + CLI (deleted 2026-04-24 Stage 6). kernel-next now writes `agent_execution_details` in kernel-next.db via `kernel-next/runtime/execution-record-writer.ts`.
+- `apps/server/src/lib/config/{pipeline,schema,stage-lookup,store-schema,fragments,prompts,mcp,types}.ts` — legacy YAML pipeline loader + schema + helpers (deleted 2026-04-24 Phase 4.5 T4). kernel-next loads builtins from `src/builtin-pipelines/*/pipeline.ir.json` and manages MCP surfaces in-process. `lib/config/` now contains only `settings.ts` (SystemSettings) + `index.ts` + `clearConfigCache` wrapper.
+- `apps/server/src/lib/script-loader.ts` — legacy dynamic script loader for `config/scripts/<name>/manifest.yaml` (deleted 2026-04-24 Phase 4.5 T4). kernel-next `ScriptStageExecutor` uses `ScriptModuleResolver` with in-process module registration; filesystem scanning path is dead.
+- The startup fragment-registry validation block in `src/index.ts` (used legacy YAML loader) was also removed; preflight no longer checks `config/pipelines/` or MCP registry.
 
 **Legacy task data not migrated.** Task JSON files under `{data_dir}/tasks/*.json` produced by the legacy engine are inert after this milestone. Per `docs/kernel-next-terminal-design.md §1.3`, zero historical compatibility.
 
