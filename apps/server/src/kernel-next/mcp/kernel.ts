@@ -976,15 +976,26 @@ export class KernelService {
    * observation path).
    */
   getTaskStatus(taskId: string): TaskStatusReport {
+    // P6-1 / P6-9: task_finals is the authoritative terminal-state source.
+    // Check it BEFORE the stage_attempts existence check — an empty-shell
+    // IR (no wired stages) completes without producing any stage_attempts
+    // row, which the pre-P6-9 order mis-reported as 'not_found' when the
+    // task had actually run (and recorded a final). Fallbacks in order:
+    //   1. task_finals row exists -> return its final_state
+    //   2. no stage_attempts AND no task_finals -> truly unknown
+    //   3. otherwise derive from stage_attempts latest-per-stage
+    const finalRow = this.db.prepare(
+      `SELECT final_state FROM task_finals WHERE task_id = ?`,
+    ).get(taskId) as { final_state: "completed" | "failed" } | undefined;
+
     const attempts = this.db.prepare(
       `SELECT stage_name, attempt_idx, status FROM stage_attempts
        WHERE task_id = ?`,
     ).all(taskId) as Array<{ stage_name: string; attempt_idx: number; status: string }>;
 
-    if (attempts.length === 0) {
-      return { ok: true, status: "not_found", taskId };
-    }
-
+    // Gate check fires regardless of row counts so in-flight tasks with
+    // pending gates still surface correctly. listGates uses task_id
+    // directly, not derived from attempts.
     const pendingGates = this.listGates({ taskId, answered: false });
     if (pendingGates.length > 0) {
       return {
@@ -1000,22 +1011,12 @@ export class KernelService {
       };
     }
 
-    // P6-1: task_finals is the authoritative terminal-state source. A row
-    // here means runner.finally ran — whether via natural completion,
-    // timeout, interrupt, explicit failure, or thrown error. Without
-    // this check, getTaskStatus derived 'completed' from stage_attempts
-    // latest-per-stage and silently misreported timed-out / thrown runs
-    // as successful because the un-reached stages simply had no rows.
-    //
-    // The row is authoritative even if pipeline_versions has more stages
-    // than stage_attempts shows — abnormal exits legitimately leave some
-    // stages un-visited, and we want the final verdict, not a coverage
-    // check.
-    const finalRow = this.db.prepare(
-      `SELECT final_state FROM task_finals WHERE task_id = ?`,
-    ).get(taskId) as { final_state: "completed" | "failed" } | undefined;
     if (finalRow) {
       return { ok: true, status: finalRow.final_state, taskId };
+    }
+
+    if (attempts.length === 0) {
+      return { ok: true, status: "not_found", taskId };
     }
 
     // Fallback (task still in-flight, or legacy rows predating P6-1):

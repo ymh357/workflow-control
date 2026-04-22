@@ -174,6 +174,44 @@ describe("P6-1: task_finals authoritative final-state tracking", () => {
     expect(DEFAULT_RUN_TIMEOUT_MS).toBeLessThanOrEqual(6 * 60 * 60 * 1000);
   });
 
+  it("P6-9: getTaskStatus returns task_finals.final_state even when stage_attempts is empty (empty-shell IR case)", async () => {
+    const db = makeDb();
+    try {
+      const ir = linearIR();
+      const hash = versionHash(ir);
+      insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+      // No stage_attempts rows for this task — simulates the AI-generated
+      // empty-shell pipeline case where all stages have inputs=[] outputs=[]
+      // and no wires, causing the machine to reach parallel.onDone without
+      // activating any region.
+      db.prepare(
+        `INSERT INTO task_finals (task_id, version_hash, final_state, reason, detail, ended_at)
+         VALUES ('t-empty', ?, 'completed', 'natural', NULL, 100)`,
+      ).run(hash);
+
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      // Pre-P6-9 bug would return not_found because stage_attempts is empty.
+      expect(svc.getTaskStatus("t-empty")).toEqual({
+        ok: true, status: "completed", taskId: "t-empty",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("getTaskStatus still returns not_found when both tables are empty for the taskId", async () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      expect(svc.getTaskStatus("truly-nonexistent")).toEqual({
+        ok: true, status: "not_found", taskId: "truly-nonexistent",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
   it("getTaskStatus falls back to stage_attempts when task_finals is absent (legacy row or in-flight)", async () => {
     const db = makeDb();
     try {
