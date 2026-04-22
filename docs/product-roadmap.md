@@ -317,7 +317,7 @@ module deleted in Stage 6.
 | B14 | **乐观锁**：propose 时必须带当前 pipeline 版本 hash，不匹配 reject with CONFLICT ✅ 5A（dry-run + propose 路径均在 baseVersion 缺失时返回 CONFLICT） |
 | B15 | **删 stage**：允许，但前提是无下游 reads 引用它的 writes。校验规则：删 stage 后，其 writes 在旧版本中无被引用 ✅ 5A（`impact.ts` 判定 `removed_stage_with_downstream_readers` 与 `resumable=false` 触发 blockingReason） |
 | B16 | **结构性 schema drift**：必须原子地一起改，否则在 propose 阶段 reject ✅ 5A（`port_type_change_with_live_values` 在 dry-run impact 中暴露，safeRange 降为 unsafe） |
-| B17 | **Foreach 中途改子 pipeline**：强制新旧子 pipeline 的 outputs schema 兼容。已跑 item 保留，剩余 item 用新子 pipeline，append 到同一 collect_to —— foreach stage 尚未在 kernel-next 实现；hook 位置预留 |
+| B17 | **Foreach 中途改子 pipeline**：强制新旧子 pipeline 的 outputs schema 兼容。已跑 item 保留，剩余 item 用新子 pipeline，append 到同一 collect_to ⚠️ 部分落地 Phase 4.5 T2 (2026-04-24)。kernel-next 的"数据驱动 foreach" 对应 `fanout`（schema.ts:49 + AttemptKind fanout_element/fanout_aggregate）— 能力已在。migration-orchestrator 现在保留 `kind='fanout_element' AND status='success'` 的 attempts，只 supersede 未完成 element + aggregate + 其他 regular attempt。**未做**：orchestrateFanoutStage 跳过已 success 的 element index（需要 `stage_attempts.fanout_element_idx` schema 扩展，独立议题）。当前行为：新 runner 会开新 element 尝试，旧 success element 保留为 audit，outputs 由新 pipeline 产出 → 语义正确但 element 数量上有冗余。schema 兼容强制仍由 validateTypes / validateStoreSchema 统一覆盖，不是 B17 独立实现。|
 | B18 | **AI 决定 retry_from**：dry-run 返回 impact 分析给 AI → AI 根据分析结果在 propose 参数内显式声明 `rerun_from: stage_1` 或 `null` ✅ 5A（dry-run 返回 `impact.activeTasks[].affectedStages`；`propose.rerunFrom` 已有） |
 
 ### 7.6 兜底与审计
