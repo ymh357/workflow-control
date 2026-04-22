@@ -334,6 +334,10 @@ export const DiagnosticSchema = z.object({
     "STORE_SCHEMA_STAGE_MISSING",
     "STORE_SCHEMA_PORT_MISSING",
     "STORE_SCHEMA_TYPE_MISMATCH",
+    // Phase 6 P6-8 — pipeline-generator agent stripped I/O schema
+    // before calling submit_pipeline. Without a dataflow the submitted
+    // pipeline is a no-op but schema-legal. Reject.
+    "EMPTY_DATAFLOW",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

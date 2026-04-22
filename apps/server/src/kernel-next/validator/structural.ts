@@ -282,5 +282,33 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
     drivenInputs.add(targetKey);
   }
 
+  // P6-8: reject pipelines where no data can ever flow anywhere. This
+  // catches the pipeline-generator agent bug where the persist stage
+  // strips every stage's inputs/outputs + wires before calling
+  // submit_pipeline. Prior to this rule the empty-shell IR validated,
+  // submit_pipeline stored it, runPipeline reached parallel.onDone
+  // immediately (nothing to activate), and downstream callers saw a
+  // 'completed' task that had done nothing.
+  //
+  // Criteria for EMPTY_DATAFLOW: zero wires AND zero externalInputs
+  // AND every stage's inputs and outputs are both empty. A pipeline
+  // that legitimately has no wires (eg. a single self-contained
+  // stage) still declares inputs/outputs, so it won't trip here.
+  //
+  // Gate-only fixtures in unit tests (agent stages with no ports used
+  // purely as routing targets) don't fail because they still carry at
+  // least externals or wires; the rule only trips when EVERYTHING is
+  // stripped, which is the real-world failure mode.
+  const hasWires = ir.wires.length > 0;
+  const hasExternals = (ir.externalInputs?.length ?? 0) > 0;
+  const hasAnyPort = ir.stages.some((s) => s.inputs.length > 0 || s.outputs.length > 0);
+  if (!hasWires && !hasExternals && !hasAnyPort) {
+    diagnostics.push({
+      code: "EMPTY_DATAFLOW",
+      message: "Pipeline has no wires, no external inputs, and no stage declares any input or output port. Nothing can flow, nothing can execute. Did the submitter strip the schema before submitting?",
+      context: { stageCount: ir.stages.length },
+    });
+  }
+
   return diagnostics.length === 0 ? { ok: true } : { ok: false, diagnostics };
 }

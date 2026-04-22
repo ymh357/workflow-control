@@ -397,21 +397,26 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      // Pipeline with _default in routing.
+      // Pipeline with _default in routing. P6-8: seed a minimal
+      // dataflow so EMPTY_DATAFLOW doesn't fire; fixture still asserts
+      // on gate answer routing behavior unchanged.
       const ir = {
         name: "t",
+        externalInputs: [{ name: "sig", type: "unknown" as const }],
         stages: [
-          { name: "A", type: "agent" as const, inputs: [], outputs: [], config: { promptRef: "p" } },
+          { name: "A", type: "agent" as const, inputs: [{ name: "ack", type: "unknown" as const }], outputs: [], config: { promptRef: "p" } },
           {
             name: "G", type: "gate" as const,
-            inputs: [], outputs: [],
+            inputs: [{ name: "__gate_signal", type: "unknown" as const }], outputs: [],
             config: {
               question: { text: "?" },
               routing: { routes: { _default: "A" } },
             },
           },
         ],
-        wires: [],
+        wires: [
+          { from: { source: "external" as const, port: "sig" }, to: { stage: "G", port: "__gate_signal" } },
+        ],
       };
       const submit = svc.submit(ir, { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");

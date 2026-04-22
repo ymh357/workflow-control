@@ -257,19 +257,25 @@ describe("structural validator", () => {
   // NOT a conflict — it's legitimate ("yes" and "confirm" both advance
   // to SUMMARY). Only cross-gate overlap is rejected.
   it("accepts the same target for multiple answers of a single gate", () => {
+    // P6-8: fixture now seeds a minimal external-driven dataflow so
+    // EMPTY_DATAFLOW doesn't fire. The assertion target (gate routing
+    // with repeated same-target) is unchanged.
     const ir: PipelineIR = {
       name: "t-same-gate",
+      externalInputs: [{ name: "sig", type: "unknown" }],
       stages: [
         { name: "G", type: "gate",
-          inputs: [], outputs: [],
+          inputs: [{ name: "__gate_signal", type: "unknown" }], outputs: [],
           config: {
             question: { text: "?", options: ["yes", "confirm", "no"] },
             routing: { routes: { yes: "OK", confirm: "OK", no: "CANCEL" } },
           } },
-        { name: "OK", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
-        { name: "CANCEL", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+        { name: "OK", type: "agent", inputs: [{ name: "ack", type: "unknown" }], outputs: [], config: { promptRef: "p" } },
+        { name: "CANCEL", type: "agent", inputs: [{ name: "ack", type: "unknown" }], outputs: [], config: { promptRef: "p" } },
       ],
-      wires: [],
+      wires: [
+        { from: { source: "external", port: "sig" }, to: { stage: "G", port: "__gate_signal" } },
+      ],
     };
     expect(validateStructural(ir)).toEqual({ ok: true });
   });

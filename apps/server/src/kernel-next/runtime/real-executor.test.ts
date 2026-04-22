@@ -452,8 +452,14 @@ describe("RealStageExecutor sidecar integration", () => {
     // production). KernelService.submit persists pipeline_versions +
     // prompt_contents + pipeline_prompt_refs for the resolver to look
     // up. skipTypeCheck avoids spawning tsc in the test harness.
+    // P6-8: validator now rejects fully empty-shell pipelines. Declare
+    // a dummy externalInput (not wired anywhere) so hasExternals is
+    // true; EMPTY_DATAFLOW then doesn't fire. The stage still has
+    // inputs=[] outputs=[] so the fake handler that produces neither
+    // reaches success without hitting port schema checks.
     const ir: PipelineIR = {
       name: "sidecar-p1",
+      externalInputs: [{ name: "unused", type: "unknown" }],
       stages: [
         {
           name: "S",
