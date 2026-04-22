@@ -1422,7 +1422,51 @@ async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<FanoutResult
   const aggregated: Record<string, unknown[]> = {};
   for (const name of declaredOutputs) aggregated[name] = [];
 
+  // B17 full — discover fanout_element attempts that already succeeded
+  // for this (task, stage) on a prior pipeline version. These survived
+  // the migration supersede (see migration-orchestrator §7.4 B17 T2).
+  // Fetch their idx + output port values so we can skip re-executing
+  // them and still produce an N-length aggregate.
+  //
+  // Index filter (`fanout_element_idx < sourceValue.length`) guards
+  // against a shrunk source array — out-of-range preserved attempts
+  // are not relevant to this run.
+  const preservedRows = db.prepare(
+    `SELECT sa.attempt_id, sa.fanout_element_idx
+       FROM stage_attempts sa
+       WHERE sa.task_id = ?
+         AND sa.stage_name = ?
+         AND sa.kind = 'fanout_element'
+         AND sa.status = 'success'
+         AND sa.fanout_element_idx IS NOT NULL
+         AND sa.fanout_element_idx < ?`,
+  ).all(taskId, stageDef.name, sourceValue.length) as Array<{ attempt_id: string; fanout_element_idx: number }>;
+  const preservedByIdx = new Map<number, Record<string, unknown>>();
+  for (const r of preservedRows) {
+    // Read the attempt's declared output port values from port_values.
+    const outs = db.prepare(
+      `SELECT port_name, value_json FROM port_values
+         WHERE attempt_id = ? AND direction = 'out'`,
+    ).all(r.attempt_id) as Array<{ port_name: string; value_json: string }>;
+    const map: Record<string, unknown> = {};
+    for (const o of outs) map[o.port_name] = JSON.parse(o.value_json);
+    preservedByIdx.set(r.fanout_element_idx, map);
+  }
+
   for (let i = 0; i < sourceValue.length; i++) {
+    // B17 full — if an earlier successful fanout_element attempt
+    // already covered this index, reuse its outputs instead of
+    // re-running the executor. Keeps lineage intact (the preserved
+    // attempt row remains; we don't open a new one) and avoids
+    // redoing expensive agent work after a hot-update migration.
+    const preserved = preservedByIdx.get(i);
+    if (preserved) {
+      for (const name of declaredOutputs) {
+        aggregated[name]!.push(preserved[name]);
+      }
+      continue;
+    }
+
     // Override the fanout source in the executor's portValues view so
     // the executor reads a single element (typed T) instead of T[].
     const elementPortValues = { ...basePortValues, [sourceKey]: sourceValue[i] };
