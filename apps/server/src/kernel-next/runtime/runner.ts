@@ -15,12 +15,14 @@
 
 import { createActor, fromCallback } from "xstate";
 import type { DatabaseSync } from "node:sqlite";
+import { access } from "node:fs/promises";
 import { logger } from "../../lib/logger.js";
 import { compileIRToMachine } from "../compiler/ir-to-machine.js";
 import type {
   MachineContext, MachineEvent, StageMeta, InboundWireMeta,
 } from "../compiler/ir-to-machine.js";
 import { PortRuntime, type EventDispatcher } from "./port-runtime.js";
+import type { AttemptHooks } from "./port-runtime.js";
 import { MockStageExecutor, type StageHandlerMap } from "./mock-executor.js";
 import type { StageExecutor } from "./executor.js";
 import type { PipelineIR, GateStage } from "../ir/schema.js";
@@ -34,6 +36,13 @@ import type {
   KernelNextSSEEvent,
   TaskTopLevelState,
 } from "../sse/types.js";
+import {
+  captureBefore,
+  captureAfter,
+  resolveCheckpointConfig,
+} from "./checkpoint/checkpoint.js";
+import type { CheckpointConfig, CheckpointDeps } from "./checkpoint/checkpoint.js";
+import * as gitCommands from "./checkpoint/git-commands.js";
 
 export interface RunnerOptions {
   db: DatabaseSync;
@@ -67,6 +76,11 @@ export interface RunnerOptions {
   // resumeFrom is expected to re-invoke; stages wire-reachable from it but
   // currently superseded are re-run by the retry machinery.
   resumeFrom?: string;
+  // Phase 4.5 Step 1 — per-task checkpoint config. When omitted,
+  // defaults resolve to { enabled: true, workdir: process.cwd(),
+  // maxDiffBytes: 5 MiB, timeouts: {5s, 10s, 10s} }. Set
+  // enabled: false to disable entirely (no stage_checkpoints rows).
+  checkpointConfig?: CheckpointConfig;
 }
 
 // Design §6.2 — why the inbound wire to a stage failed. NO_ACTIVE_WIRE
@@ -234,6 +248,40 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   // rewriter. The PortRuntime's dispatcher points at currentActor via
   // the shared `dispatcher` above so port writes route to the live
   // actor across rebuilds.
+  // ---- Phase 4.5 Step 1: checkpoint hooks ---------------------------
+  const cpConfig = resolveCheckpointConfig(opts.checkpointConfig);
+  const cpDeps: CheckpointDeps = {
+    isGitRepo: gitCommands.isGitRepo,
+    gitRevParseHead: gitCommands.gitRevParseHead,
+    snapshotWorkTree: gitCommands.snapshotWorkTree,
+    gitDiff: gitCommands.gitDiff,
+    pathExists: async (p) => access(p).then(() => true).catch(() => false),
+    now: () => Date.now(),
+  };
+  const checkpointInFlight = new Set<Promise<void>>();
+  const trackHook = (p: Promise<void>): void => {
+    const wrapped = p.finally(() => { checkpointInFlight.delete(wrapped); });
+    checkpointInFlight.add(wrapped);
+  };
+  const attemptHooks: AttemptHooks = cpConfig.enabled
+    ? {
+        onAttemptStarted: (attemptId) => trackHook(
+          captureBefore(opts.db, cpDeps, {
+            attemptId,
+            workdir: cpConfig.workdir,
+            timeouts: cpConfig.timeouts,
+          }),
+        ),
+        onAttemptFinishing: (attemptId) => trackHook(
+          captureAfter(opts.db, cpDeps, {
+            attemptId,
+            maxDiffBytes: cpConfig.maxDiffBytes,
+            timeouts: cpConfig.timeouts,
+          }),
+        ),
+      }
+    : {};
+
   const portRuntime = new PortRuntime(
     opts.db,
     dispatcher,
@@ -254,6 +302,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
           } catch { /* broadcaster failure must not abort the run */ }
         }
       : undefined,
+    attemptHooks,
   );
   taskRegistry.register(opts.taskId, dispatcher);
   const kernel = new KernelService(opts.db, { skipTypeCheck: true });
@@ -606,6 +655,12 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       isRetryRebuild = true;
     }
   } finally {
+    // Drain pending checkpoint captures before tearing down the task
+    // so stage_checkpoints rows are committed by the time SSE run_final
+    // and downstream queries observe the task's terminal state.
+    if (checkpointInFlight.size > 0) {
+      await Promise.allSettled([...checkpointInFlight]);
+    }
     clearTimeout(timer);
     if (currentActor) {
       try { currentActor.stop(); } catch { /* ignore */ }

@@ -28,6 +28,7 @@ import { MOCK_HANDLER_REGISTRY } from "./mock-handler-registry.js";
 import type { StageHandlerMap } from "./mock-executor.js";
 import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import { logger } from "../../lib/logger.js";
+import type { CheckpointConfig } from "./checkpoint/checkpoint.js";
 
 export interface StartPipelineRunInput {
   db: DatabaseSync;
@@ -49,6 +50,9 @@ export interface StartPipelineRunInput {
   // resumeFrom plus its wire-reachable descendants (currently superseded)
   // are re-invoked; upstream stages stay finalized.
   resumeFrom?: string;
+  // Phase 4.5 Step 1 — forwarded to runPipeline. Optional; when omitted,
+  // runner applies defaults (enabled: true, workdir: process.cwd(), etc.).
+  checkpointConfig?: CheckpointConfig;
 }
 
 // Minimal ExecutionPolicy shape — only policy.default is consumed by
@@ -236,6 +240,7 @@ export async function startPipelineRun(
     seedValues: input.seedValues,
     broadcaster: input.broadcaster,
     resumeFrom: input.resumeFrom,
+    checkpointConfig: input.checkpointConfig,
   }, input.timeoutMs).catch((err: unknown) => {
     logger.error(
       { taskId, versionHash, err },

@@ -7,6 +7,9 @@
 
 import { describe, it, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { initKernelNextSchema, insertPipelineVersion } from "../ir/sql.js";
 import { versionHash } from "../ir/canonical.js";
 import { runPipeline } from "./runner.js";
@@ -1761,5 +1764,85 @@ describe("runPipeline — Stage 5B resumeFrom", () => {
     // Ensure taskRegistry is clean after the throw
     expect(taskRegistry.get("tx-resume-invalid")).toBeUndefined();
     db.close();
+  });
+});
+
+describe("checkpointConfig integration", () => {
+  it("no rows written when checkpointConfig.enabled=false", async () => {
+    const db = makeDb();
+    const ir = diamondIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    await runPipeline({
+      db, ir,
+      taskId: "t-cp-disabled",
+      versionHash: hash,
+      handlers: diamondHandlers(),
+      checkpointConfig: { enabled: false },
+    });
+    const count = (db.prepare(
+      `SELECT COUNT(*) AS c FROM stage_checkpoints`,
+    ).get() as { c: number }).c;
+    expect(count).toBe(0);
+  });
+
+  it("writes status='not_a_repo' for every attempt when workdir is a non-git tmpdir", async () => {
+    const db = makeDb();
+    const ir = diamondIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const tmp = await mkdtemp(join(tmpdir(), "runner-cp-"));
+    try {
+      await runPipeline({
+        db, ir,
+        taskId: "t-cp-not-repo",
+        versionHash: hash,
+        handlers: diamondHandlers(),
+        checkpointConfig: { enabled: true, workdir: tmp },
+      });
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+    const rows = db.prepare(
+      `SELECT status, workdir FROM stage_checkpoints`,
+    ).all() as Array<{ status: string; workdir: string }>;
+    // diamond IR has 4 stages (A/B/C/D) → 4 attempts → 4 checkpoint rows
+    expect(rows.length).toBe(4);
+    expect(rows.every((r) => r.status === "not_a_repo")).toBe(true);
+    expect(rows.every((r) => r.workdir === tmp)).toBe(true);
+  });
+
+  it("every checkpoint row has a distinct attempt_id matching stage_attempts", async () => {
+    const db = makeDb();
+    const ir = diamondIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const tmp = await mkdtemp(join(tmpdir(), "runner-cp-"));
+    try {
+      await runPipeline({
+        db, ir,
+        taskId: "t-cp-fk",
+        versionHash: hash,
+        handlers: diamondHandlers(),
+        checkpointConfig: { enabled: true, workdir: tmp },
+      });
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+    const cpRows = db.prepare(
+      `SELECT attempt_id FROM stage_checkpoints ORDER BY attempt_id`,
+    ).all() as Array<{ attempt_id: string }>;
+    const saRows = db.prepare(
+      `SELECT attempt_id FROM stage_attempts
+       WHERE task_id = 't-cp-fk' AND kind = 'regular'
+       ORDER BY attempt_id`,
+    ).all() as Array<{ attempt_id: string }>;
+    expect(cpRows.length).toBe(saRows.length);
+    expect(cpRows.length).toBe(4);
+    // One-to-one correspondence: every checkpoint row maps to a
+    // stage_attempts row from this run.
+    const cpSet = new Set(cpRows.map((r) => r.attempt_id));
+    const saSet = new Set(saRows.map((r) => r.attempt_id));
+    expect(cpSet).toEqual(saSet);
   });
 });
