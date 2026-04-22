@@ -108,7 +108,9 @@ type ToolName =
   | "read_port" | "query_lineage" | "diff_runs"
   | "write_port"
   | "start_pipeline_generator" | "wait_pipeline_result"
-  | "run_pipeline";
+  | "run_pipeline"
+  // Stage 5A
+  | "dry_run_proposal" | "update_registry_pipeline" | "rollback_hot_update";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
@@ -118,6 +120,8 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "read_port", "query_lineage", "diff_runs",
   "start_pipeline_generator", "wait_pipeline_result",
   "run_pipeline",
+  // Stage 5A additions
+  "dry_run_proposal", "update_registry_pipeline", "rollback_hot_update",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
@@ -268,6 +272,11 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
             z.literal("none"),
             z.array(z.string()),
           ]).optional(),
+          autoApprove: z.boolean().optional().describe(
+            "Stage 5A — when true and dry-run safeRange.verdict==='safe', " +
+            "flips proposal to 'approved' in same tx. Structural patches " +
+            "ignore this flag and stay pending.",
+          ),
         },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         handler: async (args: any) => {
@@ -298,8 +307,105 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
                 actor: String(args.actor ?? "unknown"),
                 rerunFrom,
                 migrateRunningTasks,
+                autoApprove: typeof args.autoApprove === "boolean" ? args.autoApprove : undefined,
               }),
             );
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "dry_run_proposal",
+        description:
+          "Stage 5A — read-only preview of a pipeline patch. Returns " +
+          "{diff, impact, safeRange, wouldAutoApprove, proposedVersion} " +
+          "without touching pipeline_proposals or pipeline_versions. " +
+          "Safe to call concurrently; idempotent.",
+        inputSchema: {
+          currentVersion: z.string(),
+          patch: z.unknown(),
+          rerunFrom: z.string().optional(),
+          migrateRunningTasks: z.union([
+            z.literal("all"),
+            z.literal("none"),
+            z.array(z.string()),
+          ]).optional(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            const parsedPatch = IRPatchSchema.safeParse(args.patch);
+            if (!parsedPatch.success) {
+              return jsonResponse({
+                ok: false,
+                diagnostics: parsedPatch.error.issues.map((i) => ({
+                  code: "ZOD_PARSE_ERROR",
+                  message: `patch.${i.path.join(".") || "<root>"}: ${i.message}`,
+                  context: { path: i.path },
+                })),
+              });
+            }
+            return jsonResponse(kernel.dryRunProposal({
+              currentVersion: String(args.currentVersion),
+              patch: parsedPatch.data,
+              rerunFrom: typeof args.rerunFrom === "string" ? args.rerunFrom : null,
+              migrateRunningTasks:
+                args.migrateRunningTasks === "all" || args.migrateRunningTasks === "none"
+                  ? args.migrateRunningTasks
+                  : Array.isArray(args.migrateRunningTasks)
+                    ? args.migrateRunningTasks.map((x: unknown) => String(x))
+                    : undefined,
+            }));
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "update_registry_pipeline",
+        description:
+          "Stage 5A — replace a registry pipeline's IR definition and " +
+          "register a new pipeline_versions row. Does NOT migrate running " +
+          "tasks. REGISTRY_ROOT env var can override the registry root " +
+          "for tests.",
+        inputSchema: {
+          pipelineName: z.string().min(1),
+          newIR: z.unknown(),
+          actor: z.string().default("unknown"),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            return jsonResponse(kernel.updateRegistryPipeline({
+              pipelineName: String(args.pipelineName),
+              newIR: args.newIR as never,
+              actor: String(args.actor ?? "unknown"),
+            }));
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "rollback_hot_update",
+        description:
+          "Stage 5A skeleton — writes an audit row indicating rollback " +
+          "intent. Does NOT execute state rollback (that lands in Stage 5B). " +
+          "Validates that toVersion exists in this task's migration history.",
+        inputSchema: {
+          taskId: z.string(),
+          toVersion: z.string(),
+          actor: z.string().default("unknown"),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            return jsonResponse(kernel.rollbackHotUpdate({
+              taskId: String(args.taskId),
+              toVersion: String(args.toVersion),
+              actor: String(args.actor ?? "unknown"),
+            }));
           } catch (err) {
             return errorResponse(err instanceof Error ? err.message : String(err));
           }

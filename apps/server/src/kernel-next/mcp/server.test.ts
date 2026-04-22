@@ -77,7 +77,7 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("combined surface exposes 17 tools with expected names", () => {
+  it("combined surface exposes 20 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
@@ -86,6 +86,7 @@ describe("kernel-next MCP server", () => {
       "answer_gate",
       "approve_proposal",
       "diff_runs",
+      "dry_run_proposal",
       "get_task_status",
       "list_gates",
       "list_proposals",
@@ -94,9 +95,11 @@ describe("kernel-next MCP server", () => {
       "query_lineage",
       "read_port",
       "reject_proposal",
+      "rollback_hot_update",
       "run_pipeline",
       "start_pipeline_generator",
       "submit_pipeline",
+      "update_registry_pipeline",
       "validate_pipeline",
       "wait_pipeline_result",
       "write_port",
@@ -384,6 +387,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
       "answer_gate",
       "approve_proposal",
       "diff_runs",
+      "dry_run_proposal",
       "get_task_status",
       "list_gates",
       "list_proposals",
@@ -392,9 +396,11 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
       "query_lineage",
       "read_port",
       "reject_proposal",
+      "rollback_hot_update",
       "run_pipeline",
       "start_pipeline_generator",
       "submit_pipeline",
+      "update_registry_pipeline",
       "validate_pipeline",
       "wait_pipeline_result",
     ]);
@@ -427,13 +433,17 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
     const tools = getTools(mcp);
-    expect(tools.size).toBe(17);
+    // Stage 5A: +3 tools (dry_run_proposal / update_registry_pipeline / rollback_hot_update)
+    expect(tools.size).toBe(20);
     expect(tools.has("write_port")).toBe(true);
     expect(tools.has("submit_pipeline")).toBe(true);
     expect(tools.has("migrate_task")).toBe(true);
     expect(tools.has("start_pipeline_generator")).toBe(true);
     expect(tools.has("wait_pipeline_result")).toBe(true);
     expect(tools.has("run_pipeline")).toBe(true);
+    expect(tools.has("dry_run_proposal")).toBe(true);
+    expect(tools.has("update_registry_pipeline")).toBe(true);
+    expect(tools.has("rollback_hot_update")).toBe(true);
     db.close();
   });
 
@@ -442,8 +452,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
     const tools = getTools(mcp);
-    // 'external' = EXTERNAL_TOOLS only (16 tools; excludes write_port).
-    expect(tools.size).toBe(16);
+    // 'external' = EXTERNAL_TOOLS only (19 tools after Stage 5A; excludes write_port).
+    expect(tools.size).toBe(19);
     expect(tools.has("write_port")).toBe(false);
     expect(tools.has("submit_pipeline")).toBe(true);
     db.close();
