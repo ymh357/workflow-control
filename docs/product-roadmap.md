@@ -251,7 +251,7 @@ module deleted in Stage 6.
   `STORE_SCHEMA_STAGE_MISSING` / `STORE_SCHEMA_PORT_MISSING` / `STORE_SCHEMA_TYPE_MISMATCH`
 - 已挂到 `KernelService.validate`（`submit_pipeline` 走通这条链）和 `dryRunProposal`（propose_pipeline_change + dry_run）
 - Deep TS 等价延 defer 到 tsc（与 port.type 一致）
-- **未做**：4 个 builtin pipeline 尚未携带 store_schema（需 AI 通过 pipeline-generator 补写或由用户触发；属于 non-autonomous 工作，见 §3 原则）
+- **4 个 builtin pipeline 已迁移 store_schema** (Phase 4.5 T5, 2026-04-24)：smoke-test (3 entries) / tech-research-collector (8) / tech-research-writer (5) / pipeline-generator (24)。采用机械镜像策略（每个 stage output → 一个 store_schema entry），type 从 port 直接复制以满足 STORE_SCHEMA_TYPE_MISMATCH 规则；不走 pipeline-generator 真 API 重生成路径以保留历代手工调优。
 
 ---
 
