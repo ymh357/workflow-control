@@ -250,6 +250,41 @@ CREATE INDEX IF NOT EXISTS idx_sc_status
 CREATE INDEX IF NOT EXISTS idx_sc_has_diff
   ON stage_checkpoints(attempt_id)
   WHERE diff_text IS NOT NULL;
+
+-- Sidecar for script stage attempts. Parallel to agent_execution_details,
+-- captures the execution trail of a ScriptStage attempt. Written by the
+-- script-execution-record-writer module; read by debug / replay tooling.
+--
+-- stdout/stderr/exit_code are pre-provisioned for future script executor
+-- modes (ctx.logger, child_process.spawn). Current TS-function ScriptModule
+-- leaves them NULL. Do not remove these columns just because the current
+-- executor does not populate them.
+CREATE TABLE IF NOT EXISTS script_execution_details (
+  attempt_id         TEXT PRIMARY KEY
+                     REFERENCES stage_attempts(attempt_id) ON DELETE RESTRICT,
+
+  module_id          TEXT NOT NULL,
+  inputs_json        TEXT NOT NULL DEFAULT '{}',
+  outputs_json       TEXT NOT NULL DEFAULT '{}',
+
+  stdout             TEXT,
+  stderr             TEXT,
+  exit_code          INTEGER,
+
+  error_message      TEXT,
+  error_stack        TEXT,
+
+  duration_ms        INTEGER NOT NULL,
+  started_at         INTEGER NOT NULL,
+  ended_at           INTEGER NOT NULL,
+
+  termination_reason TEXT NOT NULL
+                     CHECK (termination_reason IN
+                       ('natural_completion','error','module_not_found','superseded'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_sed_module
+  ON script_execution_details(module_id);
 `;
 
 export function initKernelNextSchema(db: DatabaseSync): void {

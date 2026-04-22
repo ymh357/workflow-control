@@ -259,3 +259,84 @@ describe("agent_execution_details table", () => {
     ).run()).toThrow(/CHECK/i);
   });
 });
+
+describe("script_execution_details table", () => {
+  it("creates table with attempt_id PK + required columns", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const cols = db.prepare("PRAGMA table_info(script_execution_details)").all() as Array<{ name: string; pk: number; notnull: number }>;
+    const names = cols.map((c) => c.name).sort();
+    expect(names).toContain("attempt_id");
+    expect(names).toContain("module_id");
+    expect(names).toContain("inputs_json");
+    expect(names).toContain("outputs_json");
+    expect(names).toContain("stdout");
+    expect(names).toContain("stderr");
+    expect(names).toContain("exit_code");
+    expect(names).toContain("error_message");
+    expect(names).toContain("error_stack");
+    expect(names).toContain("duration_ms");
+    expect(names).toContain("started_at");
+    expect(names).toContain("ended_at");
+    expect(names).toContain("termination_reason");
+    const pk = cols.find((c) => c.name === "attempt_id");
+    expect(pk?.pk).toBe(1);
+  });
+
+  it("has FK attempt_id → stage_attempts ON DELETE RESTRICT", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const fks = db.prepare("PRAGMA foreign_key_list(script_execution_details)").all() as Array<{ table: string; from: string; on_delete: string }>;
+    const fk = fks.find((f) => f.table === "stage_attempts" && f.from === "attempt_id");
+    expect(fk).toBeDefined();
+    expect(fk!.on_delete).toBe("RESTRICT");
+  });
+
+  it("rejects rows without matching stage_attempts row (FK enforcement)", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    expect(() => db.prepare(
+      `INSERT INTO script_execution_details
+       (attempt_id, module_id, inputs_json, outputs_json,
+        duration_ms, started_at, ended_at, termination_reason)
+       VALUES ('no-such-attempt', 'mod', '{}', '{}', 0, 0, 0, 'natural_completion')`,
+    ).run()).toThrow(/FOREIGN KEY/i);
+  });
+
+  it("rejects bad termination_reason via CHECK", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    db.prepare(`INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source) VALUES ('v', 't', 0, NULL, '{}', '')`).run();
+    db.prepare(`INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES ('a1', 'tk', 'v', 's', 1, 0, 'running')`).run();
+    expect(() => db.prepare(
+      `INSERT INTO script_execution_details
+       (attempt_id, module_id, inputs_json, outputs_json,
+        duration_ms, started_at, ended_at, termination_reason)
+       VALUES ('a1', 'mod', '{}', '{}', 0, 0, 0, 'bogus_reason')`,
+    ).run()).toThrow(/CHECK/i);
+  });
+
+  it("accepts all four legal termination_reason values", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    db.prepare(`INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source) VALUES ('v', 't', 0, NULL, '{}', '')`).run();
+    const reasons = ["natural_completion", "error", "module_not_found", "superseded"] as const;
+    for (let i = 0; i < reasons.length; i++) {
+      const aid = `a${i}`;
+      db.prepare(`INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES (?, 'tk', 'v', 's', ?, 0, 'running')`).run(aid, i + 1);
+      expect(() => db.prepare(
+        `INSERT INTO script_execution_details
+         (attempt_id, module_id, inputs_json, outputs_json,
+          duration_ms, started_at, ended_at, termination_reason)
+         VALUES (?, 'mod', '{}', '{}', 0, 0, 0, ?)`,
+      ).run(aid, reasons[i]!)).not.toThrow();
+    }
+  });
+
+  it("has idx_sed_module index on module_id", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const rows = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='script_execution_details'").all() as Array<{ name: string }>;
+    expect(rows.map((r) => r.name)).toContain("idx_sed_module");
+  });
+});
