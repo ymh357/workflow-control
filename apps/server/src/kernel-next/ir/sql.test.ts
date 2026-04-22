@@ -200,3 +200,62 @@ describe("getLatestVersionHashByName", () => {
     expect(getLatestVersionHashByName(db, "q")).toBe("vOther");
   });
 });
+
+describe("agent_execution_details table", () => {
+  it("creates table with attempt_id PK + FKs", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const cols = db.prepare("PRAGMA table_info(agent_execution_details)").all() as Array<{ name: string; pk: number; notnull: number }>;
+    const names = cols.map((c) => c.name).sort();
+    expect(names).toContain("attempt_id");
+    expect(names).toContain("prompt_ref");
+    expect(names).toContain("prompt_content_hash");
+    expect(names).toContain("prompt_content");
+    expect(names).toContain("model");
+    expect(names).toContain("tool_calls_json");
+    expect(names).toContain("agent_stream_json");
+    expect(names).toContain("cost_usd");
+    expect(names).toContain("token_input");
+    expect(names).toContain("token_output");
+    expect(names).toContain("session_id");
+    expect(names).toContain("duration_ms");
+    expect(names).toContain("started_at");
+    expect(names).toContain("ended_at");
+    expect(names).toContain("termination_reason");
+    expect(names).toContain("last_heartbeat_at");
+    const pk = cols.find((c) => c.name === "attempt_id");
+    expect(pk?.pk).toBe(1);
+
+    const fks = db.prepare("PRAGMA foreign_key_list(agent_execution_details)").all() as Array<{ table: string; from: string }>;
+    expect(fks.some((fk) => fk.table === "stage_attempts" && fk.from === "attempt_id")).toBe(true);
+    expect(fks.some((fk) => fk.table === "prompt_contents" && fk.from === "prompt_content_hash")).toBe(true);
+  });
+
+  it("rejects rows without matching stage_attempts row (FK enforcement)", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    expect(() => db.prepare(
+      `INSERT INTO agent_execution_details
+       (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model,
+        tool_calls_json, agent_stream_json,
+        started_at, last_heartbeat_at)
+       VALUES ('no-such-attempt', 'r', 'h', 'c', 'm', '[]', '[]', 1, 1)`,
+    ).run()).toThrow(/FOREIGN KEY/i);
+  });
+
+  it("rejects bad termination_reason via CHECK", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    // Seed required rows: version + attempt + prompt_content.
+    db.prepare(`INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source) VALUES ('v', 't', 0, NULL, '{}', '')`).run();
+    db.prepare(`INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES ('a1', 'tk', 'v', 's', 1, 0, 'running')`).run();
+    db.prepare(`INSERT OR IGNORE INTO prompt_contents (content_hash, content, created_at) VALUES ('h', 'c', 0)`).run();
+    expect(() => db.prepare(
+      `INSERT INTO agent_execution_details
+       (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model,
+        tool_calls_json, agent_stream_json,
+        started_at, ended_at, termination_reason, last_heartbeat_at)
+       VALUES ('a1', 'r', 'h', 'c', 'm', '[]', '[]', 1, 2, 'bogus_reason', 2)`,
+    ).run()).toThrow(/CHECK/i);
+  });
+});

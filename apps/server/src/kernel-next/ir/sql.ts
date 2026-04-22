@@ -153,6 +153,41 @@ CREATE TABLE IF NOT EXISTS pipeline_prompt_refs (
 
 CREATE INDEX IF NOT EXISTS idx_ppr_content
   ON pipeline_prompt_refs(content_hash);
+
+CREATE TABLE IF NOT EXISTS agent_execution_details (
+  attempt_id           TEXT PRIMARY KEY
+                       REFERENCES stage_attempts(attempt_id) ON DELETE RESTRICT,
+
+  prompt_ref           TEXT NOT NULL,
+  prompt_content_hash  TEXT NOT NULL
+                       REFERENCES prompt_contents(content_hash) ON DELETE RESTRICT,
+  prompt_content       TEXT NOT NULL,
+  model                TEXT NOT NULL,
+  sub_agents_json      TEXT,
+
+  tool_calls_json      TEXT NOT NULL DEFAULT '[]',
+  agent_stream_json    TEXT NOT NULL DEFAULT '[]',
+
+  cost_usd             REAL,
+  token_input          INTEGER,
+  token_output         INTEGER,
+  session_id           TEXT,
+  duration_ms          INTEGER,
+
+  started_at           INTEGER NOT NULL,
+  ended_at             INTEGER,
+  termination_reason   TEXT
+                       CHECK (termination_reason IS NULL
+                              OR termination_reason IN
+                              ('natural_completion','interrupted','error','superseded')),
+  last_heartbeat_at    INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_aed_prompt_hash
+  ON agent_execution_details(prompt_content_hash);
+CREATE INDEX IF NOT EXISTS idx_aed_open
+  ON agent_execution_details(last_heartbeat_at)
+  WHERE ended_at IS NULL;
 `;
 
 export function initKernelNextSchema(db: DatabaseSync): void {
