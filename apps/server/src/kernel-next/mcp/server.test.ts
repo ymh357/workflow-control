@@ -77,7 +77,7 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("combined surface exposes 20 tools with expected names", () => {
+  it("combined surface exposes 21 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
@@ -92,6 +92,7 @@ describe("kernel-next MCP server", () => {
       "list_proposals",
       "migrate_task",
       "propose_pipeline_change",
+      "query_hot_update_stats",
       "query_lineage",
       "read_port",
       "reject_proposal",
@@ -393,6 +394,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
       "list_proposals",
       "migrate_task",
       "propose_pipeline_change",
+      "query_hot_update_stats",
       "query_lineage",
       "read_port",
       "reject_proposal",
@@ -434,7 +436,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
     const tools = getTools(mcp);
     // Stage 5A: +3 tools (dry_run_proposal / update_registry_pipeline / rollback_hot_update)
-    expect(tools.size).toBe(20);
+    // Stage 5E: +1 tool (query_hot_update_stats)
+    expect(tools.size).toBe(21);
     expect(tools.has("write_port")).toBe(true);
     expect(tools.has("submit_pipeline")).toBe(true);
     expect(tools.has("migrate_task")).toBe(true);
@@ -444,6 +447,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     expect(tools.has("dry_run_proposal")).toBe(true);
     expect(tools.has("update_registry_pipeline")).toBe(true);
     expect(tools.has("rollback_hot_update")).toBe(true);
+    expect(tools.has("query_hot_update_stats")).toBe(true);
     db.close();
   });
 
@@ -452,8 +456,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
     const tools = getTools(mcp);
-    // 'external' = EXTERNAL_TOOLS only (19 tools after Stage 5A; excludes write_port).
-    expect(tools.size).toBe(19);
+    // 'external' = EXTERNAL_TOOLS only (20 tools after Stage 5E; excludes write_port).
+    expect(tools.size).toBe(20);
     expect(tools.has("write_port")).toBe(false);
     expect(tools.has("submit_pipeline")).toBe(true);
     db.close();

@@ -37,6 +37,11 @@ import {
   __resetOrchestratorLocksForTest,
 } from "../hot-update/migration-orchestrator.js";
 import { executeRollback } from "../hot-update/rollback.js";
+import {
+  computeHotUpdateStats,
+  type StatsInput,
+  type StatsOutput,
+} from "../hot-update/stats.js";
 
 // Stage 5B — per-task migration lock now lives in
 // hot-update/migration-orchestrator.ts. The test hooks below forward to
@@ -591,6 +596,15 @@ export class KernelService {
         `rollback complete — divergenceStage='${outcome.divergenceStage}', ` +
         `migrationEventId='${outcome.migrationEventId}'`,
     };
+  }
+
+  /**
+   * Stage 5E — aggregate queries over hot_update_events. Supports
+   * scoping by taskId / pipelineName / time window / actor. All filters
+   * are optional and combined with AND.
+   */
+  queryHotUpdateStats(input: StatsInput): StatsOutput {
+    return computeHotUpdateStats(this.db, input);
   }
 
   /**

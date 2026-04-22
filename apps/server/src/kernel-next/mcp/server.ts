@@ -110,7 +110,9 @@ type ToolName =
   | "start_pipeline_generator" | "wait_pipeline_result"
   | "run_pipeline"
   // Stage 5A
-  | "dry_run_proposal" | "update_registry_pipeline" | "rollback_hot_update";
+  | "dry_run_proposal" | "update_registry_pipeline" | "rollback_hot_update"
+  // Stage 5E
+  | "query_hot_update_stats";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
@@ -122,6 +124,8 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "run_pipeline",
   // Stage 5A additions
   "dry_run_proposal", "update_registry_pipeline", "rollback_hot_update",
+  // Stage 5E addition
+  "query_hot_update_stats",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
@@ -406,6 +410,37 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
               toVersion: String(args.toVersion),
               actor: String(args.actor ?? "unknown"),
             }));
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "query_hot_update_stats",
+        description:
+          "Stage 5E — aggregate queries over hot_update_events. Returns " +
+          "total/success/failed/rolled_back counts, byPipelineName breakdown, " +
+          "byActor counts, and topChurnPipelines ranking. All filters optional.",
+        inputSchema: {
+          taskId: z.string().optional(),
+          pipelineName: z.string().optional(),
+          sinceMs: z.number().int().optional(),
+          untilMs: z.number().int().optional(),
+          actor: z.string().optional(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            return jsonResponse({
+              ok: true,
+              stats: kernel.queryHotUpdateStats({
+                taskId: typeof args.taskId === "string" ? args.taskId : undefined,
+                pipelineName: typeof args.pipelineName === "string" ? args.pipelineName : undefined,
+                sinceMs: typeof args.sinceMs === "number" ? args.sinceMs : undefined,
+                untilMs: typeof args.untilMs === "number" ? args.untilMs : undefined,
+                actor: typeof args.actor === "string" ? args.actor : undefined,
+              }),
+            });
           } catch (err) {
             return errorResponse(err instanceof Error ? err.message : String(err));
           }
