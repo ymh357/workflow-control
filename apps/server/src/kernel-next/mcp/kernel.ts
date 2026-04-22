@@ -1020,18 +1020,25 @@ export class KernelService {
 
   /**
    * List proposals, optionally filtered by status. Ordered newest-first.
+   *
+   * Stable tie-break: `rowid DESC` — two proposals created in the same
+   * millisecond (`created_at` ties) fall back to SQLite's insertion
+   * order. Without it, ORDER BY is non-deterministic under ties and
+   * tests that submit proposals back-to-back are flaky.
    */
   listProposals(filter: { status?: ProposalStatus } = {}): ProposalRow[] {
     const rows = filter.status
       ? this.db.prepare(
           `SELECT proposal_id, base_version, proposed_version, actor, status,
                   diagnostic_json, created_at, rerun_from, migrate_running
-           FROM pipeline_proposals WHERE status = ? ORDER BY created_at DESC`,
+           FROM pipeline_proposals WHERE status = ?
+           ORDER BY created_at DESC, rowid DESC`,
         ).all(filter.status)
       : this.db.prepare(
           `SELECT proposal_id, base_version, proposed_version, actor, status,
                   diagnostic_json, created_at, rerun_from, migrate_running
-           FROM pipeline_proposals ORDER BY created_at DESC`,
+           FROM pipeline_proposals
+           ORDER BY created_at DESC, rowid DESC`,
         ).all();
     return (rows as Array<{
       proposal_id: string;
