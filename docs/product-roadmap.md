@@ -178,11 +178,17 @@
 - `superseded_by_retry`
 - `superseded_by_hot_update`
 
-**Status (2026-04-24 Stage 6)**: kernel-next-adapted A1 landed. Sidecar
-table `agent_execution_details` in kernel-next.db captures per-attempt
-prompt + tool calls + agent stream + cost + lifecycle. Legacy
-`workflow.db.execution_records` table + `lib/execution-record/` module
-deleted. `worktree_diff` + `scratch_pad_snapshot` not captured (deferred).
+**Status (2026-04-24 Phase 4.5 Step 1)**: kernel-next-adapted A1 nearly
+complete. Sidecar table `agent_execution_details` in kernel-next.db
+captures per-attempt prompt + tool calls + agent stream + cost +
+lifecycle. **A1 field #7 (worktree diff) landed in Phase 4.5 Step 1**:
+new `stage_checkpoints` table FK'd to stage_attempts records
+`before_sha` / `after_sha` / cached `diff_text` using
+scratch-index snapshot (no ref mutation, includes untracked). Fire-and-forget capture
+via PortRuntime AttemptHooks; awaited before run_final. **Remaining:
+field #8 (scratch pad + PreCompact trigger)** — Phase 4.5 Step 2.
+Legacy `workflow.db.execution_records` table + `lib/execution-record/`
+module deleted in Stage 6.
 
 ---
 
