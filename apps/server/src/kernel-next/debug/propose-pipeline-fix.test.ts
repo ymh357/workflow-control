@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { buildFixSuggestions, proposePipelineFix } from "./propose-pipeline-fix.js";
+import {
+  buildFixSuggestions,
+  proposePipelineFix,
+  proposePipelineFixWithAi,
+} from "./propose-pipeline-fix.js";
 import { initKernelNextSchema, insertPipelineVersion } from "../ir/sql.js";
 import { versionHash } from "../ir/canonical.js";
 import type { TaskFailureReport } from "../../lib/debug-queries.js";
-import type { PipelineIR } from "../ir/schema.js";
+import type { PipelineIR, IRPatch } from "../ir/schema.js";
 
 function simpleIR(): PipelineIR {
   return {
@@ -222,5 +226,158 @@ describe("proposePipelineFix (integration)", () => {
     };
     const r = proposePipelineFix({ db, taskId: "t2", report });
     expect(r.suggestions.every((s) => s.targetStage !== "DEAD")).toBe(true);
+  });
+});
+
+describe("proposePipelineFix — AI patch synthesis", () => {
+  function mkDb(): DatabaseSync {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    return db;
+  }
+
+  function seedTaskAttempt(db: DatabaseSync, taskId: string, vh: string, stageName: string): void {
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+        started_at, status, kind)
+       VALUES (?, ?, ?, ?, 1, ?, 'error', 'regular')`,
+    ).run(`att-${taskId}`, taskId, vh, stageName, Date.now());
+  }
+
+  it("calls the synthesizer for each suggestion and fills proposedPatch on success", async () => {
+    const db = mkDb();
+    const ir = simpleIR();
+    const vh = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+    seedTaskAttempt(db, "t-ai", vh, "B");
+
+    const report: TaskFailureReport = {
+      taskId: "t-ai", found: true, totalAttempts: 1, totalCostUsd: 0,
+      firstStartedAt: null, lastHeartbeatAt: null,
+      stages: [],
+      failingStages: ["B"],
+      hints: [{ kind: "error_status", stageName: "B", detail: "error" }],
+    };
+
+    const synthesize = async (): Promise<IRPatch | null> => ({
+      ops: [{
+        op: "update_stage_config",
+        stage: "B",
+        configPatch: { promptRef: "p-b-v2" },
+      }],
+    });
+
+    const r = await proposePipelineFixWithAi({
+      db, taskId: "t-ai", report,
+      aiPatchSynthesizer: { synthesize },
+    });
+    expect(r.found).toBe(true);
+    expect(r.suggestions.length).toBe(1);
+    expect(r.suggestions[0]!.proposedPatch).toBeDefined();
+    expect(r.suggestions[0]!.proposedPatch!.ops[0]).toMatchObject({
+      op: "update_stage_config",
+      stage: "B",
+    });
+  });
+
+  it("synthesizer returning null leaves proposedPatch undefined on that suggestion", async () => {
+    const db = mkDb();
+    const ir = simpleIR();
+    const vh = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+    seedTaskAttempt(db, "t-null", vh, "B");
+    const report: TaskFailureReport = {
+      taskId: "t-null", found: true, totalAttempts: 1, totalCostUsd: 0,
+      firstStartedAt: null, lastHeartbeatAt: null,
+      stages: [],
+      failingStages: ["B"],
+      hints: [{ kind: "error_status", stageName: "B", detail: "" }],
+    };
+    const r = await proposePipelineFixWithAi({
+      db, taskId: "t-null", report,
+      aiPatchSynthesizer: { synthesize: async () => null },
+    });
+    expect(r.suggestions.length).toBe(1);
+    expect(r.suggestions[0]!.proposedPatch).toBeUndefined();
+  });
+
+  it("synthesizer throwing does NOT break the result — suggestion still ships without a patch", async () => {
+    const db = mkDb();
+    const ir = simpleIR();
+    const vh = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+    seedTaskAttempt(db, "t-throw", vh, "B");
+    const report: TaskFailureReport = {
+      taskId: "t-throw", found: true, totalAttempts: 1, totalCostUsd: 0,
+      firstStartedAt: null, lastHeartbeatAt: null,
+      stages: [],
+      failingStages: ["B"],
+      hints: [{ kind: "error_status", stageName: "B", detail: "" }],
+    };
+    const r = await proposePipelineFixWithAi({
+      db, taskId: "t-throw", report,
+      aiPatchSynthesizer: {
+        synthesize: async () => { throw new Error("API boom"); },
+      },
+    });
+    expect(r.suggestions.length).toBe(1);
+    expect(r.suggestions[0]!.proposedPatch).toBeUndefined();
+  });
+
+  it("synthesizer is NOT invoked for info-severity suggestions (interrupted / superseded)", async () => {
+    // info-level suggestions aren't pipeline defects; do not burn API on them.
+    const db = mkDb();
+    const ir = simpleIR();
+    const vh = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+    seedTaskAttempt(db, "t-info", vh, "A");
+    const report: TaskFailureReport = {
+      taskId: "t-info", found: true, totalAttempts: 1, totalCostUsd: 0,
+      firstStartedAt: null, lastHeartbeatAt: null,
+      stages: [],
+      failingStages: ["A"],
+      hints: [{ kind: "interrupted", stageName: "A", detail: "" }],
+    };
+    const calls: number[] = [];
+    const r = await proposePipelineFixWithAi({
+      db, taskId: "t-info", report,
+      aiPatchSynthesizer: {
+        synthesize: async () => {
+          calls.push(1);
+          return null;
+        },
+      },
+    });
+    expect(calls.length).toBe(0);
+    expect(r.suggestions[0]!.severity).toBe("info");
+  });
+
+  it("synthesizer output that is NOT an update_stage_config patch is rejected", async () => {
+    // Safe range constraint (roadmap §7.2 B4): AI-driven patches are
+    // limited to update_stage_config. Rogue add_stage / remove_wire
+    // output is ignored.
+    const db = mkDb();
+    const ir = simpleIR();
+    const vh = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+    seedTaskAttempt(db, "t-unsafe", vh, "B");
+    const report: TaskFailureReport = {
+      taskId: "t-unsafe", found: true, totalAttempts: 1, totalCostUsd: 0,
+      firstStartedAt: null, lastHeartbeatAt: null,
+      stages: [],
+      failingStages: ["B"],
+      hints: [{ kind: "error_status", stageName: "B", detail: "" }],
+    };
+    const r = await proposePipelineFixWithAi({
+      db, taskId: "t-unsafe", report,
+      aiPatchSynthesizer: {
+        synthesize: async () => ({
+          ops: [{ op: "remove_stage", stageName: "B" }],
+        }),
+      },
+    });
+    expect(r.suggestions.length).toBe(1);
+    expect(r.suggestions[0]!.proposedPatch).toBeUndefined();
   });
 });

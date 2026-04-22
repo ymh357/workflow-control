@@ -27,7 +27,8 @@ import { DbPromptResolver } from "../runtime/db-prompt-resolver.js";
 import { startPipelineRun } from "../runtime/start-pipeline-run.js";
 import { replayStage } from "../debug/replay-stage.js";
 import { dryRunStage } from "../debug/dry-run-stage.js";
-import { proposePipelineFix } from "../debug/propose-pipeline-fix.js";
+import { proposePipelineFix, proposePipelineFixWithAi } from "../debug/propose-pipeline-fix.js";
+import { createClaudeSdkPatchSynthesizer } from "../debug/claude-sdk-patch-synthesizer.js";
 import { analyzeTaskFailure } from "../../lib/debug-queries.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
@@ -733,20 +734,34 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
         description:
           "Given a failing taskId, analyse its stage_attempts + agent " +
           "execution detail and produce a list of concrete pipeline-change " +
-          "suggestions. This is a RULE-BASED analyser — it surfaces stuck-open " +
-          "attempts, error_status failures, error markers in agent streams, " +
+          "suggestions. Rule-based foundation surfaces stuck-open attempts, " +
+          "error_status failures, error markers in agent streams, " +
           "supersede/interrupt provenance, and zero-attempt anomalies as " +
-          "human-readable suggestions tagged with severity. Some suggestions " +
-          "include a proposedPatch (deterministic IRPatch); most leave patch " +
-          "construction to an AI-driven follow-up step.",
+          "human-readable suggestions tagged with severity. Each suggestion " +
+          "may carry a proposedPatch (IRPatch) — the rule layer leaves these " +
+          "undefined. Set aiPatch=true to let a Claude sub-session propose " +
+          "update_stage_config patches for every non-info suggestion (safe " +
+          "range only; other patch shapes are rejected). aiPatch costs API " +
+          "tokens and adds latency; default off.",
         inputSchema: {
           taskId: z.string().describe("task_id whose failure we want suggestions for"),
+          aiPatch: z.boolean().optional().describe("When true, use a Claude sub-session to synthesise update_stage_config patches. Default false."),
         },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         handler: async (args: any) => {
           try {
             const taskId = String(args.taskId);
+            const useAi = Boolean(args.aiPatch);
             const report = analyzeTaskFailure(taskId);
+            if (useAi) {
+              const synth = createClaudeSdkPatchSynthesizer({
+                model: options.pipelineGeneratorModel,
+              });
+              const result = await proposePipelineFixWithAi({
+                db, taskId, report, aiPatchSynthesizer: synth,
+              });
+              return jsonResponse(result);
+            }
             const result = proposePipelineFix({ db, taskId, report });
             return jsonResponse(result);
           } catch (err) {

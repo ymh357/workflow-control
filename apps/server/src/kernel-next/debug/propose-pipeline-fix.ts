@@ -35,6 +35,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { PipelineIR, IRPatch } from "../ir/schema.js";
 import { getPipelineIR } from "../ir/sql.js";
 import type { TaskFailureReport, FailureHint } from "../../lib/debug-queries.js";
+import { logger } from "../../lib/logger.js";
 
 export type FixSuggestionKind =
   | "stuck_open"
@@ -232,4 +233,85 @@ function hintToSuggestion(h: FailureHint): FixSuggestion | null {
           "This is usually a wiring / configuration problem upstream of the pipeline itself.",
       };
   }
+}
+
+// ---------------------------------------------------------------------------
+// AI-driven patch synthesis (opt-in)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pluggable synthesiser. Given a suggestion + pipeline context, returns a
+ * concrete IRPatch the caller might apply, or null if the synthesiser
+ * couldn't produce one. Implementations are free to call a real language
+ * model, use a cached table, or return null on every call.
+ *
+ * The integration point (proposePipelineFixWithAi) calls this once per
+ * non-info suggestion in parallel. Errors are swallowed — the suggestion
+ * still ships without a patch rather than failing the whole report.
+ */
+export interface AiPatchSynthesizer {
+  synthesize(ctx: {
+    suggestion: FixSuggestion;
+    ir: PipelineIR;
+  }): Promise<IRPatch | null>;
+}
+
+export interface ProposePipelineFixAiInput extends ProposePipelineFixInput {
+  aiPatchSynthesizer: AiPatchSynthesizer;
+}
+
+/**
+ * Same as proposePipelineFix, but for every non-info suggestion asks the
+ * synthesiser to produce a concrete IRPatch and attaches it to
+ * suggestion.proposedPatch. Safe range: only update_stage_config patches
+ * are accepted (roadmap §7.2 B4 — AI-driven changes are restricted to
+ * prompt / reads / writes / budget on existing stages). Any rogue patch
+ * shape is rejected and the suggestion goes out without a patch.
+ */
+export async function proposePipelineFixWithAi(
+  input: ProposePipelineFixAiInput,
+): Promise<ProposePipelineFixResult> {
+  const base = proposePipelineFix(input);
+  if (!base.found || base.suggestions.length === 0) return base;
+
+  const ir = base.sourceReport.found
+    ? getPipelineIR(input.db, base.versionHash ?? "")
+    : null;
+  if (!ir) return base;
+
+  const augmented = await Promise.all(
+    base.suggestions.map(async (s) => {
+      if (s.severity === "info") return s;
+      try {
+        const patch = await input.aiPatchSynthesizer.synthesize({
+          suggestion: s, ir,
+        });
+        if (!patch) return s;
+        if (!isSafeRangePatch(patch)) {
+          logger.warn(
+            { stage: s.targetStage, kind: s.kind, patch },
+            "[propose_pipeline_fix] AI patch rejected — outside safe range",
+          );
+          return s;
+        }
+        return { ...s, proposedPatch: patch };
+      } catch (err) {
+        logger.warn(
+          { stage: s.targetStage, kind: s.kind, err: (err as Error).message },
+          "[propose_pipeline_fix] AI synth threw; suggestion shipped without a patch",
+        );
+        return s;
+      }
+    }),
+  );
+
+  return { ...base, suggestions: augmented };
+}
+
+function isSafeRangePatch(patch: IRPatch): boolean {
+  if (!patch || !Array.isArray(patch.ops) || patch.ops.length === 0) return false;
+  for (const op of patch.ops) {
+    if (op.op !== "update_stage_config") return false;
+  }
+  return true;
 }
