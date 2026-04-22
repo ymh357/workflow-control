@@ -201,6 +201,7 @@ CREATE TABLE IF NOT EXISTS agent_execution_details (
 
   tool_calls_json      TEXT NOT NULL DEFAULT '[]',
   agent_stream_json    TEXT NOT NULL DEFAULT '[]',
+  compact_events_json  TEXT NOT NULL DEFAULT '[]',
 
   cost_usd             REAL,
   token_input          INTEGER,

@@ -344,6 +344,14 @@ export class RealStageExecutor implements StageExecutor {
               if (typeof ev.cost_usd === "number") {
                 capturedCostUsd = ev.cost_usd;
               }
+            } else if (ev.type === "COMPACT_STARTED") {
+              writer.appendCompactEvent({
+                trigger: ev.trigger,
+                preTokens: ev.pre_tokens,
+                startedAt: new Date().toISOString(),
+              });
+            } else if (ev.type === "COMPACT_ENDED") {
+              writer.completeCompactEvent(new Date().toISOString());
             }
             agentActor.send(ev);
           },

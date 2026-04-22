@@ -162,6 +162,73 @@ describe("execution-record-writer", () => {
     expect(row.n).toBe(0);
   });
 
+  it("appendCompactEvent + completeCompactEvent persist via flush", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    seedAttempt(db, "c1");
+    const w = openExecutionRecordWriter(db, {
+      attemptId: "c1", promptRef: "r", promptContentHash: "hash-1",
+      promptContent: "p", model: "m",
+    });
+    w.appendCompactEvent({
+      trigger: "auto", preTokens: 45000,
+      startedAt: "2026-04-24T00:00:00Z",
+    });
+    w.completeCompactEvent("2026-04-24T00:00:05Z");
+    w.__flushForTests();
+    const row = db.prepare(
+      "SELECT compact_events_json FROM agent_execution_details WHERE attempt_id = ?",
+    ).get("c1") as { compact_events_json: string };
+    const events = JSON.parse(row.compact_events_json);
+    expect(events.length).toBe(1);
+    expect(events[0]).toMatchObject({
+      trigger: "auto", preTokens: 45000,
+      startedAt: "2026-04-24T00:00:00Z",
+      endedAt: "2026-04-24T00:00:05Z",
+    });
+    w.close({ terminationReason: "natural_completion" });
+  });
+
+  it("completeCompactEvent with no open compact is a no-op", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    seedAttempt(db, "c2");
+    const w = openExecutionRecordWriter(db, {
+      attemptId: "c2", promptRef: "r", promptContentHash: "hash-1",
+      promptContent: "p", model: "m",
+    });
+    // completeCompactEvent before any appendCompactEvent — no row open
+    expect(() => w.completeCompactEvent("2026-04-24T00:00:01Z")).not.toThrow();
+    w.__flushForTests();
+    const row = db.prepare(
+      "SELECT compact_events_json FROM agent_execution_details WHERE attempt_id = ?",
+    ).get("c2") as { compact_events_json: string };
+    expect(JSON.parse(row.compact_events_json)).toEqual([]);
+    w.close({ terminationReason: "natural_completion" });
+  });
+
+  it("attempt ending while still in compact leaves endedAt null", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    seedAttempt(db, "c3");
+    const w = openExecutionRecordWriter(db, {
+      attemptId: "c3", promptRef: "r", promptContentHash: "hash-1",
+      promptContent: "p", model: "m",
+    });
+    w.appendCompactEvent({
+      trigger: "manual", preTokens: 5000,
+      startedAt: "2026-04-24T00:01:00Z",
+    });
+    // close WITHOUT calling completeCompactEvent
+    w.close({ terminationReason: "interrupted" });
+    const row = db.prepare(
+      "SELECT compact_events_json FROM agent_execution_details WHERE attempt_id = ?",
+    ).get("c3") as { compact_events_json: string };
+    const events = JSON.parse(row.compact_events_json);
+    expect(events.length).toBe(1);
+    expect(events[0].endedAt).toBeNull();
+  });
+
   it("heartbeat updates last_heartbeat_at without closing", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);

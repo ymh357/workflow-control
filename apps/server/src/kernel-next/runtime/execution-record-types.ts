@@ -20,6 +20,18 @@ export interface AgentStreamEvent {
   timestamp: string;
 }
 
+export interface CompactEvent {
+  /** "auto" when the SDK auto-compacts, "manual" when the agent asked. */
+  trigger: "auto" | "manual";
+  /** Context size (tokens) at the moment the compact started. */
+  preTokens: number;
+  /** ISO-8601 timestamp when COMPACT_STARTED fired. */
+  startedAt: string;
+  /** ISO-8601 timestamp of the next non-compact message. null if the
+   * attempt ended while still inside the compact window. */
+  endedAt: string | null;
+}
+
 export type TerminationReason =
   | "natural_completion"
   | "interrupted"

@@ -8,6 +8,7 @@ import { logger } from "../../lib/logger.js";
 import type {
   AgentStreamEvent,
   CloseWriterInput,
+  CompactEvent,
   OpenWriterInput,
   ToolCallRecord,
 } from "./execution-record-types.js";
@@ -19,6 +20,10 @@ export interface ExecutionRecordWriter {
   appendToolCall(call: ToolCallRecord): void;
   completeToolCall(id: string, patch: Partial<ToolCallRecord>): void;
   appendAgentStream(event: AgentStreamEvent): void;
+  /** Append a COMPACT_STARTED event to the sidecar. */
+  appendCompactEvent(event: Omit<CompactEvent, "endedAt">): void;
+  /** Fill the endedAt of the most recent still-open compact event. */
+  completeCompactEvent(endedAt: string): void;
   updateCost(patch: { costUsd?: number | null; tokenInput?: number | null; tokenOutput?: number | null }): void;
   updateSessionId(sessionId: string | null): void;
   heartbeat(): void;
@@ -31,6 +36,8 @@ class NoopWriter implements ExecutionRecordWriter {
   appendToolCall(): void {}
   completeToolCall(): void {}
   appendAgentStream(): void {}
+  appendCompactEvent(): void {}
+  completeCompactEvent(): void {}
   updateCost(): void {}
   updateSessionId(): void {}
   heartbeat(): void {}
@@ -44,6 +51,7 @@ class ActiveWriter implements ExecutionRecordWriter {
   private readonly startedAt: number;
   private toolCalls: ToolCallRecord[] = [];
   private agentStream: AgentStreamEvent[] = [];
+  private compactEvents: CompactEvent[] = [];
   private costUsd: number | null = null;
   private tokenInput: number | null = null;
   private tokenOutput: number | null = null;
@@ -85,6 +93,28 @@ class ActiveWriter implements ExecutionRecordWriter {
     this.scheduleFlush();
   }
 
+  appendCompactEvent(event: Omit<CompactEvent, "endedAt">): void {
+    if (this.closed) return;
+    this.compactEvents.push({ ...event, endedAt: null });
+    this.dirtyAppend = true;
+    this.scheduleFlush();
+  }
+
+  completeCompactEvent(endedAt: string): void {
+    if (this.closed) return;
+    // Fill the endedAt of the most recent still-open event; silent no-op
+    // when there is none (e.g., adapter emitted a synthetic COMPACT_ENDED
+    // without a matching COMPACT_STARTED we tracked — defensive).
+    for (let i = this.compactEvents.length - 1; i >= 0; i--) {
+      if (this.compactEvents[i]!.endedAt === null) {
+        this.compactEvents[i]!.endedAt = endedAt;
+        this.dirtyAppend = true;
+        this.scheduleFlush();
+        return;
+      }
+    }
+  }
+
   updateCost(patch: { costUsd?: number | null; tokenInput?: number | null; tokenOutput?: number | null }): void {
     if (this.closed) return;
     if (patch.costUsd !== undefined) this.costUsd = patch.costUsd;
@@ -121,7 +151,7 @@ class ActiveWriter implements ExecutionRecordWriter {
     try {
       this.db.prepare(
         `UPDATE agent_execution_details
-         SET tool_calls_json = ?, agent_stream_json = ?,
+         SET tool_calls_json = ?, agent_stream_json = ?, compact_events_json = ?,
              cost_usd = ?, token_input = ?, token_output = ?, session_id = ?,
              ended_at = ?, termination_reason = ?, duration_ms = ?,
              last_heartbeat_at = ?
@@ -129,6 +159,7 @@ class ActiveWriter implements ExecutionRecordWriter {
       ).run(
         JSON.stringify(this.toolCalls),
         JSON.stringify(this.agentStream),
+        JSON.stringify(this.compactEvents),
         this.costUsd,
         this.tokenInput,
         this.tokenOutput,
@@ -165,13 +196,14 @@ class ActiveWriter implements ExecutionRecordWriter {
     try {
       this.db.prepare(
         `UPDATE agent_execution_details
-         SET tool_calls_json = ?, agent_stream_json = ?,
+         SET tool_calls_json = ?, agent_stream_json = ?, compact_events_json = ?,
              cost_usd = ?, token_input = ?, token_output = ?, session_id = ?,
              last_heartbeat_at = ?
          WHERE attempt_id = ?`,
       ).run(
         JSON.stringify(this.toolCalls),
         JSON.stringify(this.agentStream),
+        JSON.stringify(this.compactEvents),
         this.costUsd,
         this.tokenInput,
         this.tokenOutput,
