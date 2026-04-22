@@ -380,4 +380,78 @@ describe("proposePipelineFix — AI patch synthesis", () => {
     expect(r.suggestions.length).toBe(1);
     expect(r.suggestions[0]!.proposedPatch).toBeUndefined();
   });
+
+  it("synthesizer output with an update_stage_config containing a disallowed key is rejected", async () => {
+    // Safe-range key whitelist: configPatch may only carry promptRef
+    // or subAgents (the two fields AgentStageSchema.config declares).
+    // Any other key — budget / reads / writes / moduleId — must be
+    // rejected at the wrapper layer even if the parser let it through.
+    const db = mkDb();
+    const ir = simpleIR();
+    const vh = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+    seedTaskAttempt(db, "t-bad-key", vh, "B");
+    const report: TaskFailureReport = {
+      taskId: "t-bad-key", found: true, totalAttempts: 1, totalCostUsd: 0,
+      firstStartedAt: null, lastHeartbeatAt: null,
+      stages: [],
+      failingStages: ["B"],
+      hints: [{ kind: "error_status", stageName: "B", detail: "" }],
+    };
+    const r = await proposePipelineFixWithAi({
+      db, taskId: "t-bad-key", report,
+      aiPatchSynthesizer: {
+        // Bypass the parser by returning an IRPatch directly. The
+        // wrapper's isSafeRangePatch must still reject it because
+        // "budget" is not in the AgentStage config schema.
+        synthesize: async () => ({
+          ops: [{
+            op: "update_stage_config",
+            stage: "B",
+            configPatch: { budget: 1000 } as never,
+          }],
+        }),
+      },
+    });
+    expect(r.suggestions.length).toBe(1);
+    expect(r.suggestions[0]!.proposedPatch).toBeUndefined();
+  });
+
+  it("synthesizer output with subAgents (safe-range expanded) is accepted", async () => {
+    const db = mkDb();
+    const ir = simpleIR();
+    const vh = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+    seedTaskAttempt(db, "t-sa", vh, "B");
+    const report: TaskFailureReport = {
+      taskId: "t-sa", found: true, totalAttempts: 1, totalCostUsd: 0,
+      firstStartedAt: null, lastHeartbeatAt: null,
+      stages: [],
+      failingStages: ["B"],
+      hints: [{ kind: "error_status", stageName: "B", detail: "" }],
+    };
+    const r = await proposePipelineFixWithAi({
+      db, taskId: "t-sa", report,
+      aiPatchSynthesizer: {
+        synthesize: async () => ({
+          ops: [{
+            op: "update_stage_config",
+            stage: "B",
+            configPatch: {
+              subAgents: [{
+                name: "scout",
+                description: "ad-hoc helper",
+                prompt: "Inspect inputs and summarise...",
+              }],
+            },
+          }],
+        }),
+      },
+    });
+    expect(r.suggestions.length).toBe(1);
+    expect(r.suggestions[0]!.proposedPatch).toBeDefined();
+    const op = r.suggestions[0]!.proposedPatch!.ops[0]!;
+    if (op.op !== "update_stage_config") throw new Error("unexpected op");
+    expect(Array.isArray((op.configPatch as { subAgents?: unknown[] }).subAgents)).toBe(true);
+  });
 });

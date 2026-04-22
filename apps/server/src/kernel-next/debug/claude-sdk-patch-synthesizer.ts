@@ -17,6 +17,7 @@ import type {
   AiPatchSynthesizer,
   FixSuggestion,
 } from "./propose-pipeline-fix.js";
+import { SubAgentDefSchema } from "../ir/schema.js";
 import type { IRPatch, PipelineIR } from "../ir/schema.js";
 
 export interface ClaudeSdkSynthesizerOptions {
@@ -42,7 +43,16 @@ OUTPUT FORMAT — output ONLY a JSON code block matching this shape:
     {
       "op": "update_stage_config",
       "stage": "<stage name>",
-      "configPatch": { "promptRef": "<new prompt ref>" }
+      "configPatch": {
+        "promptRef": "<new prompt ref>",
+        "subAgents": [
+          { "name": "<identifier>", "description": "<one line>",
+            "prompt": "<sub-agent prompt body>",
+            "tools": ["Read", "Grep", ...],
+            "model": "sonnet" | "opus" | "haiku" | "inherit",
+            "maxTurns": <positive integer> }
+        ]
+      }
     }
   ]
 }
@@ -52,9 +62,17 @@ HARD CONSTRAINTS (violation → your patch is rejected):
 1. You may ONLY emit update_stage_config. No add_stage / remove_stage /
    add_wire / remove_wire / update_port_type.
 2. The "stage" field MUST match the target stage named in the input.
-3. configPatch may only change "promptRef" in this iteration. Other
-   fields (budget / reads / writes / MCP) are not yet synthesised.
-4. If you cannot confidently propose a fix, output exactly the string
+3. configPatch may ONLY contain these keys: "promptRef", "subAgents".
+   Any other key (budget / reads / writes / MCP / etc.) is rejected.
+   Either key is optional; you may include one, both, or neither
+   (but include at least one, otherwise the patch is a no-op).
+4. subAgents entries MUST have non-empty "name" (starts with letter or
+   underscore; letters/digits/underscore/dash only; ≤ 64 chars),
+   non-empty "description", non-empty "prompt". "tools" is an optional
+   array of strings. "model" is one of sonnet/opus/haiku/inherit.
+   "maxTurns" is a positive integer. Passing an empty subAgents array
+   is allowed and means "remove all sub-agents from this stage".
+5. If you cannot confidently propose a fix, output exactly the string
    \`NO_PATCH\` (no JSON, no code block) — never fabricate.`;
 
 function buildUserPrompt(
@@ -103,13 +121,24 @@ function parsePatch(raw: unknown, expectedStage: string): IRPatch | null {
     if (typeof typed.stage !== "string" || typed.stage !== expectedStage) return null;
     if (!typed.configPatch || typeof typed.configPatch !== "object") return null;
     const configPatch = typed.configPatch as Record<string, unknown>;
-    // For this iteration only promptRef is allowed. Future iterations
-    // may relax to reads / writes / budget.
-    const allowedKeys = ["promptRef"];
+    // Safe-range allowlist — only AgentStage config fields that currently
+    // exist in schema.ts. Expansion to a new field requires updating
+    // schema.ts first, then this list + the SYSTEM_PROMPT description.
+    const allowedKeys = ["promptRef", "subAgents"];
     for (const k of Object.keys(configPatch)) {
       if (!allowedKeys.includes(k)) return null;
     }
     if (configPatch.promptRef !== undefined && typeof configPatch.promptRef !== "string") return null;
+    if (configPatch.subAgents !== undefined) {
+      if (!Array.isArray(configPatch.subAgents)) return null;
+      // Validate every entry against the SubAgentDefSchema (same Zod
+      // schema used by IR submit). A single bad entry rejects the
+      // whole patch — the synthesiser can retry or emit NO_PATCH.
+      for (const entry of configPatch.subAgents) {
+        const parsed = SubAgentDefSchema.safeParse(entry);
+        if (!parsed.success) return null;
+      }
+    }
     ops.push({ op: "update_stage_config", stage: typed.stage, configPatch });
   }
   return ops.length > 0 ? { ops } : null;

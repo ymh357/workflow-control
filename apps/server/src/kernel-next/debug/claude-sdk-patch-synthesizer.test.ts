@@ -95,12 +95,16 @@ describe("createClaudeSdkPatchSynthesizer", () => {
     expect(patch).toBeNull();
   });
 
-  it("rejects configPatch with disallowed keys (only promptRef is currently safe)", async () => {
+  it("rejects configPatch with disallowed keys (only promptRef + subAgents are safe)", async () => {
+    // `budget` is not in the current AgentStage schema, so it must be
+    // rejected. subAgents became allowed in the follow-up expansion
+    // (claude-sdk-patch-synthesizer.subagents.test.ts covers the
+    // positive cases for that key).
     const synth = createClaudeSdkPatchSynthesizer({
       queryFn: (() => fakeStream([
         {
           type: "assistant",
-          text: "```json\n{ \"ops\": [ { \"op\": \"update_stage_config\", \"stage\": \"B\", \"configPatch\": { \"subAgents\": [] } } ] }\n```",
+          text: "```json\n{ \"ops\": [ { \"op\": \"update_stage_config\", \"stage\": \"B\", \"configPatch\": { \"budget\": 1000 } } ] }\n```",
         },
       ])) as never,
     });

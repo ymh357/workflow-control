@@ -308,10 +308,22 @@ export async function proposePipelineFixWithAi(
   return { ...base, suggestions: augmented };
 }
 
+// AgentStage.config keys that the AI synthesiser layer is permitted
+// to mutate. Must stay in sync with claude-sdk-patch-synthesizer's
+// parser allowedKeys and schema.ts AgentStageSchema.config. Adding a
+// new field here without updating the parser would silently let
+// unvalidated patches through.
+const SAFE_CONFIG_KEYS = new Set<string>(["promptRef", "subAgents"]);
+
 function isSafeRangePatch(patch: IRPatch): boolean {
   if (!patch || !Array.isArray(patch.ops) || patch.ops.length === 0) return false;
   for (const op of patch.ops) {
     if (op.op !== "update_stage_config") return false;
+    const cp = (op as { configPatch?: unknown }).configPatch;
+    if (!cp || typeof cp !== "object") return false;
+    for (const k of Object.keys(cp as Record<string, unknown>)) {
+      if (!SAFE_CONFIG_KEYS.has(k)) return false;
+    }
   }
   return true;
 }
