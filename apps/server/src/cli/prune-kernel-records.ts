@@ -4,8 +4,9 @@
  *
  * Targets kernel-next.db (NOT the legacy workflow.db.execution_records
  * table removed in Stage 4a). Deletes rows from stage_attempts and its
- * FK children (agent_execution_details, stage_checkpoints, port_values,
- * gate_queue) matching the given filter.
+ * FK children (agent_execution_details, script_execution_details,
+ * stage_checkpoints, port_values, gate_queue) plus migration_hints
+ * scoped to the matched task_ids.
  *
  * Usage:
  *   pnpm --filter server exec tsx src/cli/prune-kernel-records.ts prune \
@@ -35,8 +36,10 @@ workflow-control prune-kernel-records CLI
 
 Usage:
   prune-kernel-records prune [options]
-    Delete rows from stage_attempts + FK children (agent_execution_details,
-    stage_checkpoints, port_values, gate_queue).
+    Delete rows from stage_attempts + FK children
+    (agent_execution_details, script_execution_details,
+    stage_checkpoints, port_values, gate_queue) plus migration_hints
+    scoped to the matched task_ids.
     Options:
       --task-id=<id>          Restrict to a single task.
       --older-than=<N>d|h|m|s Restrict to attempts started more than N
@@ -97,9 +100,11 @@ function formatCounts(c: PruneCounts): string {
   return [
     `  stage_attempts:             ${c.attempts}`,
     `  agent_execution_details:    ${c.agent_execution_details}`,
+    `  script_execution_details:   ${c.script_execution_details}`,
     `  stage_checkpoints:          ${c.stage_checkpoints}`,
     `  port_values:                ${c.port_values}`,
     `  gate_queue:                 ${c.gate_queue}`,
+    `  migration_hints:            ${c.migration_hints}`,
   ].join("\n");
 }
 
@@ -167,7 +172,8 @@ function runStats(): number {
       `Total stage_attempts: ${s.total}`,
       `Oldest started_at:    ${formatTimestamp(s.oldestStartedAt)}`,
       `Newest started_at:    ${formatTimestamp(s.newestStartedAt)}`,
-      `Open agent_execution_details (ended_at IS NULL): ${s.openAgentExecutionDetails}`,
+      `Open agent_execution_details  (ended_at IS NULL): ${s.openAgentExecutionDetails}`,
+      `Open script_execution_details (ended_at IS NULL): ${s.openScriptExecutionDetails}`,
       "",
       "Top tasks by attempt count:",
       s.byTask.length === 0

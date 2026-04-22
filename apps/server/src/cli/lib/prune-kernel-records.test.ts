@@ -20,9 +20,11 @@ interface SeedArgs {
   taskId: string;
   startedAt?: number;
   withAed?: boolean;
+  withSed?: boolean;
   withPortValue?: boolean;
   withGate?: boolean;
   withCheckpoint?: boolean;
+  withMigrationHint?: boolean;
 }
 
 function seedAttempt(db: DatabaseSync, a: SeedArgs): void {
@@ -30,9 +32,11 @@ function seedAttempt(db: DatabaseSync, a: SeedArgs): void {
     attemptId, taskId,
     startedAt = Date.now(),
     withAed = false,
+    withSed = false,
     withPortValue = false,
     withGate = false,
     withCheckpoint = false,
+    withMigrationHint = false,
   } = a;
 
   db.prepare(
@@ -75,6 +79,20 @@ function seedAttempt(db: DatabaseSync, a: SeedArgs): void {
        (attempt_id, workdir, status, captured_before_at)
        VALUES (?, '/tmp', 'capturing', ?)`,
     ).run(attemptId, startedAt);
+  }
+  if (withSed) {
+    db.prepare(
+      `INSERT INTO script_execution_details
+       (attempt_id, module_id, inputs_json, started_at)
+       VALUES (?, 'mod', '{}', ?)`,
+    ).run(attemptId, startedAt);
+  }
+  if (withMigrationHint) {
+    db.prepare(
+      `INSERT INTO migration_hints
+       (hint_id, task_id, stage_name, from_version, to_version, created_at)
+       VALUES (?, ?, 's1', 'v1', 'v2', ?)`,
+    ).run(`mh-${attemptId}`, taskId, startedAt);
   }
 }
 
@@ -138,25 +156,53 @@ describe("pruneAttempts", () => {
   it("deletes matching stage_attempts + all FK children atomically", () => {
     seedAttempt(db, {
       attemptId: "a1", taskId: "t1",
-      withAed: true, withPortValue: true, withGate: true, withCheckpoint: true,
+      withAed: true, withSed: true, withPortValue: true, withGate: true,
+      withCheckpoint: true, withMigrationHint: true,
     });
     seedAttempt(db, {
       attemptId: "a2", taskId: "t2",
-      withAed: true, withCheckpoint: true,
+      withAed: true, withSed: true, withCheckpoint: true,
+      withMigrationHint: true,
     });
 
     const counts = pruneAttempts(db, { taskId: "t1" });
 
     expect(counts.attempts).toBe(1);
     expect(counts.agent_execution_details).toBe(1);
+    expect(counts.script_execution_details).toBe(1);
     expect(counts.port_values).toBe(1);
     expect(counts.gate_queue).toBe(1);
     expect(counts.stage_checkpoints).toBe(1);
+    expect(counts.migration_hints).toBe(1);
 
     // t2 untouched
     expect((db.prepare(`SELECT COUNT(*) AS n FROM stage_attempts`).get() as { n: number }).n).toBe(1);
     expect((db.prepare(`SELECT COUNT(*) AS n FROM agent_execution_details`).get() as { n: number }).n).toBe(1);
+    expect((db.prepare(`SELECT COUNT(*) AS n FROM script_execution_details`).get() as { n: number }).n).toBe(1);
     expect((db.prepare(`SELECT COUNT(*) AS n FROM stage_checkpoints`).get() as { n: number }).n).toBe(1);
+    expect((db.prepare(`SELECT COUNT(*) AS n FROM migration_hints`).get() as { n: number }).n).toBe(1);
+  });
+
+  it("script_execution_details ON DELETE RESTRICT is respected (manual delete)", () => {
+    // If the CLI were to DELETE stage_attempts without first clearing the
+    // sidecar, the RESTRICT FK would raise — this test guards against that
+    // regression by seeding a sidecar row without the rest.
+    seedAttempt(db, { attemptId: "a1", taskId: "t1", withSed: true });
+    const counts = pruneAttempts(db, { taskId: "t1" });
+    expect(counts.attempts).toBe(1);
+    expect(counts.script_execution_details).toBe(1);
+    expect((db.prepare(`SELECT COUNT(*) AS n FROM script_execution_details`).get() as { n: number }).n).toBe(0);
+  });
+
+  it("deletes migration_hints scoped to task_id (not by attempt FK)", () => {
+    // migration_hints has no FK to stage_attempts — it references task_id
+    // directly. Delete them when pruning by task.
+    seedAttempt(db, { attemptId: "a1", taskId: "t1", withMigrationHint: true });
+    seedAttempt(db, { attemptId: "a2", taskId: "t2", withMigrationHint: true });
+    const counts = pruneAttempts(db, { taskId: "t1" });
+    expect(counts.migration_hints).toBe(1);
+    expect((db.prepare(`SELECT COUNT(*) AS n FROM migration_hints WHERE task_id = 't1'`).get() as { n: number }).n).toBe(0);
+    expect((db.prepare(`SELECT COUNT(*) AS n FROM migration_hints WHERE task_id = 't2'`).get() as { n: number }).n).toBe(1);
   });
 
   it("CASCADE removes stage_checkpoints without manual DELETE", () => {
@@ -214,12 +260,13 @@ describe("attemptStats", () => {
     expect(s.oldestStartedAt).toBeNull();
     expect(s.newestStartedAt).toBeNull();
     expect(s.openAgentExecutionDetails).toBe(0);
+    expect(s.openScriptExecutionDetails).toBe(0);
   });
 
   it("reports totals + top tasks + range + open rows", () => {
-    seedAttempt(db, { attemptId: "a1", taskId: "t1", startedAt: 1000, withAed: true });
+    seedAttempt(db, { attemptId: "a1", taskId: "t1", startedAt: 1000, withAed: true, withSed: true });
     seedAttempt(db, { attemptId: "a2", taskId: "t1", startedAt: 2000 });
-    seedAttempt(db, { attemptId: "a3", taskId: "t2", startedAt: 3000 });
+    seedAttempt(db, { attemptId: "a3", taskId: "t2", startedAt: 3000, withSed: true });
 
     const s = attemptStats(db);
     expect(s.total).toBe(3);
@@ -229,8 +276,9 @@ describe("attemptStats", () => {
     ]);
     expect(s.oldestStartedAt).toBe(1000);
     expect(s.newestStartedAt).toBe(3000);
-    // aed row 'a1' was seeded with ended_at = null (writer default), so it
-    // counts as open.
+    // aed row 'a1' was seeded with ended_at = null (writer default).
     expect(s.openAgentExecutionDetails).toBe(1);
+    // sed rows 'a1' + 'a3' have ended_at = null too.
+    expect(s.openScriptExecutionDetails).toBe(2);
   });
 });

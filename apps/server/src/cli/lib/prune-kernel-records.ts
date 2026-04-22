@@ -4,16 +4,22 @@
 //
 // Table chain anchored on stage_attempts:
 //
-//   stage_attempts                       <-- primary row to delete
-//     ├── agent_execution_details (FK ON DELETE RESTRICT)
-//     ├── stage_checkpoints       (FK ON DELETE CASCADE)
-//     ├── port_values             (FK NO ACTION = blocks)
-//     └── gate_queue              (FK NO ACTION = blocks)
+//   stage_attempts                        <-- primary row to delete
+//     ├── agent_execution_details  (FK ON DELETE RESTRICT)
+//     ├── script_execution_details (FK ON DELETE RESTRICT)
+//     ├── stage_checkpoints        (FK ON DELETE CASCADE)
+//     ├── port_values              (FK NO ACTION = blocks)
+//     └── gate_queue               (FK NO ACTION = blocks)
 //
-// Because three of the four FKs block deletion, prune runs in a
-// transaction that deletes children first (agent_execution_details,
-// port_values, gate_queue) then the parent stage_attempts row (which
-// CASCADE-drops stage_checkpoints).
+//   migration_hints                        <-- task_id referenced (no FK)
+//
+// Because four of the five attempt-linked children block deletion, prune
+// runs in a transaction that deletes children first
+// (agent_execution_details, script_execution_details, port_values,
+// gate_queue) then the parent stage_attempts row (which CASCADE-drops
+// stage_checkpoints). migration_hints is deleted by task_id when the
+// filter includes taskId (or unconditionally for the matched attempt's
+// task_ids under an olderThan filter).
 //
 // hot_update_events has a task_id reference but no FK (standalone audit
 // trail), so it is NOT touched by prune. Callers who want to purge the
@@ -33,9 +39,11 @@ export interface PruneFilter {
 export interface PruneCounts {
   attempts: number;
   agent_execution_details: number;
+  script_execution_details: number;
   port_values: number;
   gate_queue: number;
   stage_checkpoints: number;
+  migration_hints: number;
 }
 
 function assertFilterNonEmpty(filter: PruneFilter): void {
@@ -105,9 +113,11 @@ export function pruneAttempts(
   const counts: PruneCounts = {
     attempts: 0,
     agent_execution_details: 0,
+    script_execution_details: 0,
     port_values: 0,
     gate_queue: 0,
     stage_checkpoints: 0,
+    migration_hints: 0,
   };
 
   // Enable FK enforcement for this connection so RESTRICT / CASCADE
@@ -117,13 +127,15 @@ export function pruneAttempts(
 
   db.exec("BEGIN");
   try {
-    // 1. Resolve target attempt_ids once. Reusing this list in every
-    //    child DELETE avoids re-evaluating buildAttemptSelectWhere
-    //    against stage_attempts after we start mutating it.
-    const idRows = db
-      .prepare(`SELECT attempt_id FROM stage_attempts ${clause}`)
-      .all(...params) as Array<{ attempt_id: string }>;
-    const ids = idRows.map((r) => r.attempt_id);
+    // 1. Resolve target attempt_ids + their task_ids once. Reusing this
+    //    list in every child DELETE avoids re-evaluating
+    //    buildAttemptSelectWhere against stage_attempts after we start
+    //    mutating it.
+    const rows = db
+      .prepare(`SELECT attempt_id, task_id FROM stage_attempts ${clause}`)
+      .all(...params) as Array<{ attempt_id: string; task_id: string }>;
+    const ids = rows.map((r) => r.attempt_id);
+    const taskIds = Array.from(new Set(rows.map((r) => r.task_id)));
     if (ids.length === 0) {
       db.exec("COMMIT");
       return counts;
@@ -139,11 +151,18 @@ export function pruneAttempts(
       .get(...ids) as { n: number }).n;
     counts.stage_checkpoints = cpCount;
 
-    // 4. Delete children that do NOT cascade.
+    // 4. Delete children that do NOT cascade. FK ON DELETE RESTRICT on
+    //    agent_execution_details + script_execution_details means the
+    //    parent DELETE in step 5 would fail if we skipped these.
     const aedDel = db
       .prepare(`DELETE FROM agent_execution_details WHERE attempt_id IN (${placeholders})`)
       .run(...ids);
     counts.agent_execution_details = Number(aedDel.changes ?? 0);
+
+    const sedDel = db
+      .prepare(`DELETE FROM script_execution_details WHERE attempt_id IN (${placeholders})`)
+      .run(...ids);
+    counts.script_execution_details = Number(sedDel.changes ?? 0);
 
     const pvDel = db
       .prepare(`DELETE FROM port_values WHERE attempt_id IN (${placeholders})`)
@@ -162,6 +181,16 @@ export function pruneAttempts(
       .run(...ids);
     counts.attempts = Number(saDel.changes ?? 0);
 
+    // 6. Delete migration_hints tied to the now-pruned tasks. These have
+    //    no FK relationship with stage_attempts — they reference task_id
+    //    directly — so the order relative to step 5 does not matter. We
+    //    delete any hint whose task_id appeared in the pruned set.
+    const taskPlaceholders = taskIds.map(() => "?").join(",");
+    const mhDel = db
+      .prepare(`DELETE FROM migration_hints WHERE task_id IN (${taskPlaceholders})`)
+      .run(...taskIds);
+    counts.migration_hints = Number(mhDel.changes ?? 0);
+
     db.exec("COMMIT");
   } catch (err) {
     db.exec("ROLLBACK");
@@ -177,6 +206,7 @@ export interface AttemptStats {
   oldestStartedAt: number | null;
   newestStartedAt: number | null;
   openAgentExecutionDetails: number;
+  openScriptExecutionDetails: number;
 }
 
 /**
@@ -207,12 +237,17 @@ export function attemptStats(db: DatabaseSync): AttemptStats {
     .prepare(`SELECT COUNT(*) AS n FROM agent_execution_details WHERE ended_at IS NULL`)
     .get() as { n: number }).n;
 
+  const openSed = (db
+    .prepare(`SELECT COUNT(*) AS n FROM script_execution_details WHERE ended_at IS NULL`)
+    .get() as { n: number }).n;
+
   return {
     total,
     byTask,
     oldestStartedAt: range.oldest,
     newestStartedAt: range.newest,
     openAgentExecutionDetails: openAed,
+    openScriptExecutionDetails: openSed,
   };
 }
 
