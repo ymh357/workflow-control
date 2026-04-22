@@ -29,6 +29,30 @@
 - **覆盖的 builtin**: 3 / 4 （✅ `smoke-test`, ✅ `Tech Research Collector`, ✅ `Pipeline Generator`（但不稳定）, `Tech Research Writer` pending）
 - **AI-generated pipeline 实际可用率**: 0 / 1（产出了 pipeline_version 但 IR 是空壳）
 
+## 结论：B5 / B12 决策（基于实际使用数据）
+
+### B5 Confirm UI — 建议：**高优先级，立刻做**
+
+理由，**基于 run #4 和 run #6,#7 的实际观察**：
+
+1. 当前 gate `"question": { text: "Approve this result?" }` 完全没有给用户判断依据。Run #4 里 user（我）不得不**去 DB 查 analyzing 输出**才能决定 approve/reject。这破坏了 gate 的产品意义——gate 应该是"用户看一眼就能决策"的交互点。
+2. 当前答 gate 的唯一渠道是 `curl -X POST`，对"开朋友试用（M2）"完全不可行。
+3. B5 能同步解决 P6-7（gate question 缺 context）：Confirm UI 必须渲染 analyzing 输出的 summary/stageDesign/pipelineName 才能做出有意义的决策，UI 实现必然顺带把 question template 问题一起解决。
+
+**不做 B5 的代价**：M2 = 0（无人愿意通过 curl 看 raw JSON 来做决策）。这是阻塞 M2 的**唯一**最大问题。
+
+### B12 Single-session 回补 — 建议：**不做，替换为 resumability**
+
+理由：
+
+1. **B12 原始动机**是热更新后 resume 时，在同一 Claude Agent session 里"重放已执行 stage 的 compact prompt"以保持连续性。但 Phase 6 实际使用中，**热更新还没发生过**（M4 分母=0），也就没有验证这个假想的价值。
+2. **B12 的代价很具体**：需要 session 快照 + compact prompt 存储 + per-message replay 协议。额外数据模型 + Claude Agent SDK 集成。
+3. **P6-10 暴露的才是真阻塞**：runner 连 **tsx watch reload** 都无法 survive，跨 process resume 根本没做（内存 taskRegistry 丢失时 gate 永远卡住）。这是**通用 resumability 问题**，和 single-session token 节约完全不同主题，但优先级高得多。
+4. **替换动作**：把 B12 的预算投到 **"跨 process runner resumption"**——pending gate + stage attempt 已经在 DB，还缺 "哪些 runner 在等哪个 gate" 的持久化 + server 启动时扫描 DB 重建 taskRegistry 条目 + 从 snapshot 重建 XState actor。这本质是 Phase 5C/5D 做了一半的 worktree ownership 契约要延伸到 runner actor ownership。
+5. **Single-session token 成本**：等 M2 出现真实反馈再说。目前一次 pipeline-generator 真跑 $0.355，没人抱怨过 token 成本。
+
+**做 B12（single-session）**的净效果：未验证的 token 节约 vs 明显的 resumability 不稳定。**不做 B12，做 resumability**净效果：M3 从 43% 提到 >90% 的硬路径。
+
 ## Bug 清单
 
 按发现时间倒序。每条给出：发现场景 / 根因 / 修复 commit / 回归测试。
