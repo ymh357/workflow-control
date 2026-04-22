@@ -49,12 +49,31 @@ function mkDeps(overrides: Partial<CheckpointDeps> = {}): CheckpointDeps {
 const TIMEOUTS = DEFAULT_CHECKPOINT_TIMEOUTS;
 
 describe("resolveCheckpointConfig", () => {
-  it("fills defaults", () => {
+  it("undefined config → enabled=false (no implicit capture of server cwd)", () => {
     const r = resolveCheckpointConfig(undefined);
-    expect(r.enabled).toBe(true);
+    expect(r.enabled).toBe(false);
+    // Fallback workdir is still process.cwd() in case `enabled` is
+    // later toggled on at runtime, but no capture fires while disabled.
     expect(r.workdir).toBe(process.cwd());
     expect(r.maxDiffBytes).toBe(DEFAULT_MAX_DIFF_BYTES);
     expect(r.timeouts).toEqual(DEFAULT_CHECKPOINT_TIMEOUTS);
+  });
+
+  it("explicit workdir → enabled=true by default", () => {
+    const r = resolveCheckpointConfig({ workdir: "/tmp/agent-wt" });
+    expect(r.enabled).toBe(true);
+    expect(r.workdir).toBe("/tmp/agent-wt");
+  });
+
+  it("explicit enabled=false overrides workdir-based default", () => {
+    const r = resolveCheckpointConfig({ workdir: "/tmp/agent-wt", enabled: false });
+    expect(r.enabled).toBe(false);
+  });
+
+  it("explicit enabled=true without workdir still enables (caller opted in)", () => {
+    const r = resolveCheckpointConfig({ enabled: true });
+    expect(r.enabled).toBe(true);
+    expect(r.workdir).toBe(process.cwd());
   });
 
   it("respects explicit overrides", () => {

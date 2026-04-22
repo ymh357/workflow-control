@@ -40,8 +40,16 @@ export interface CheckpointDeps {
 export function resolveCheckpointConfig(
   config: CheckpointConfig | undefined,
 ): ResolvedCheckpointConfig {
+  // Default enabled requires an EXPLICIT workdir. The server's
+  // process.cwd() is almost never the agent's subject repo, so
+  // capturing it silently would describe "what changed in the server
+  // repo" rather than "what the agent changed" — the opposite of
+  // useful. Callers that want checkpointing must tell us where to
+  // capture from; otherwise checkpointing is off.
+  const hasExplicitWorkdir = typeof config?.workdir === "string" && config.workdir.length > 0;
+  const enabled = config?.enabled ?? hasExplicitWorkdir;
   return {
-    enabled: config?.enabled ?? true,
+    enabled,
     workdir: config?.workdir ?? process.cwd(),
     maxDiffBytes: config?.maxDiffBytes ?? DEFAULT_MAX_DIFF_BYTES,
     timeouts: {
