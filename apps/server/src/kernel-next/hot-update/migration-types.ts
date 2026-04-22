@@ -1,9 +1,10 @@
 // Shared types for Stage 5B migration execution engine.
 
-export interface TerminationReason {
-  kind: "natural" | "interrupted" | "error" | "never_started";
-  detail?: string;
-}
+// TerminationReason canonical source lives in runtime/task-registry.ts
+// (runner + registry own the lifecycle signal). Re-export here so
+// hot-update/ consumers don't need to reach across the runtime
+// boundary for a type shape.
+export type { TerminationReason } from "../runtime/task-registry.js";
 
 export interface PreSupersedeSnapshot {
   attemptId: string;
