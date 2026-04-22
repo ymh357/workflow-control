@@ -13,6 +13,7 @@ import { z } from "zod";
 import type { DatabaseSync } from "node:sqlite";
 import { KernelService, type KernelServiceOptions } from "./kernel.js";
 import { queryLineage, diffRuns } from "./lineage.js";
+import { compareRuns } from "./compare-runs.js";
 import { IRPatchSchema } from "../ir/schema.js";
 import type { PipelineIR } from "../ir/schema.js";
 import { PortRuntime, type EventDispatcher } from "../runtime/port-runtime.js";
@@ -109,7 +110,7 @@ type ToolName =
   | "list_proposals" | "approve_proposal" | "reject_proposal"
   | "migrate_task"
   | "get_task_status" | "list_gates" | "answer_gate"
-  | "read_port" | "query_lineage" | "diff_runs"
+  | "read_port" | "query_lineage" | "diff_runs" | "compare_runs"
   | "write_port"
   | "start_pipeline_generator" | "wait_pipeline_result"
   | "run_pipeline"
@@ -127,7 +128,7 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "list_proposals", "approve_proposal", "reject_proposal",
   "migrate_task",
   "get_task_status", "list_gates", "answer_gate",
-  "read_port", "query_lineage", "diff_runs",
+  "read_port", "query_lineage", "diff_runs", "compare_runs",
   "start_pipeline_generator", "wait_pipeline_result",
   "run_pipeline",
   // Stage 5A additions
@@ -593,6 +594,33 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
             return jsonResponse({
               ok: true,
               report: diffRuns(db, String(args.taskA), String(args.taskB)),
+            });
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "compare_runs",
+        description:
+          "Compare two task runs at the execution-record level. Per stage, " +
+          "reports delta on cost / token / duration, prompt-content-hash " +
+          "equality (did the prompt change between runs?), tool-call count + " +
+          "name-set differences, compact-event counts, and termination_reason. " +
+          "Complements diff_runs (port-output-level only). Selection: the " +
+          "LAST attempt per (task, stage) whose kind is regular / " +
+          "fanout_aggregate / replay / dry_run. Script attempts (no agent " +
+          "execution-record row) surface null deltas.",
+        inputSchema: {
+          taskA: z.string(),
+          taskB: z.string(),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            return jsonResponse({
+              ok: true,
+              report: compareRuns(db, String(args.taskA), String(args.taskB)),
             });
           } catch (err) {
             return errorResponse(err instanceof Error ? err.message : String(err));

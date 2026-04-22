@@ -77,7 +77,7 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("combined surface exposes 24 tools with expected names", () => {
+  it("combined surface exposes 25 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
@@ -85,6 +85,7 @@ describe("kernel-next MCP server", () => {
     expect([...tools.keys()].sort()).toEqual([
       "answer_gate",
       "approve_proposal",
+      "compare_runs",
       "diff_runs",
       "dry_run_proposal",
       "dry_run_stage",
@@ -390,6 +391,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     expect([...tools.keys()].sort()).toEqual([
       "answer_gate",
       "approve_proposal",
+      "compare_runs",
       "diff_runs",
       "dry_run_proposal",
       "dry_run_stage",
@@ -445,7 +447,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     // Stage 5E: +1 tool (query_hot_update_stats)
     // Phase 4.5 Tier2: +1 tool (replay_stage)
     // Phase 4.5 Tier3: +2 tools (dry_run_stage, propose_pipeline_fix)
-    expect(tools.size).toBe(24);
+    // Phase 4.5 T3: +1 tool (compare_runs)
+    expect(tools.size).toBe(25);
     expect(tools.has("write_port")).toBe(true);
     expect(tools.has("submit_pipeline")).toBe(true);
     expect(tools.has("migrate_task")).toBe(true);
@@ -459,6 +462,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     expect(tools.has("replay_stage")).toBe(true);
     expect(tools.has("dry_run_stage")).toBe(true);
     expect(tools.has("propose_pipeline_fix")).toBe(true);
+    expect(tools.has("compare_runs")).toBe(true);
     db.close();
   });
 
@@ -467,8 +471,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
     const tools = getTools(mcp);
-    // 'external' = EXTERNAL_TOOLS only (23 tools after Phase 4.5 Tier3; excludes write_port).
-    expect(tools.size).toBe(23);
+    // 'external' = EXTERNAL_TOOLS only (24 tools after Phase 4.5 T3; excludes write_port).
+    expect(tools.size).toBe(24);
     expect(tools.has("write_port")).toBe(false);
     expect(tools.has("submit_pipeline")).toBe(true);
     db.close();
