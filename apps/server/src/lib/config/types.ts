@@ -292,35 +292,6 @@ export interface McpRegistryEntry {
   };
 }
 
-export interface SandboxConfig {
-  enabled?: boolean;
-  auto_allow_bash?: boolean;
-  allow_unsandboxed_commands?: boolean;
-  network?: {
-    allowed_domains?: string[];
-  };
-  filesystem?: {
-    allow_write?: string[];
-    deny_write?: string[];
-    deny_read?: string[];
-  };
-}
-
-export interface SystemSettings extends Record<string, any> {
-  paths?: {
-    repos_base?: string;
-    worktrees_base?: string;
-    data_dir?: string;
-    claude_executable?: string;
-  };
-  agent?: {
-    default_model?: string; // Legacy
-    claude_model?: string;
-    max_budget_usd?: number;
-  };
-  sandbox?: SandboxConfig;
-}
-
 export interface HookConfig {
   event: string;
   matcher?: string;

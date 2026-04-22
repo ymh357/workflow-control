@@ -1,11 +1,82 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parse as parseYAML } from "yaml";
-
-import type { SystemSettings } from "./types.js";
-import { SystemSettingsSchema } from "./schema.js";
+import { z } from "zod";
 
 export const CONFIG_DIR = resolve(import.meta.dirname, "../../../config");
+
+// --- Types ---
+
+export interface SandboxConfig {
+  enabled?: boolean;
+  auto_allow_bash?: boolean;
+  allow_unsandboxed_commands?: boolean;
+  network?: {
+    allowed_domains?: string[];
+  };
+  filesystem?: {
+    allow_write?: string[];
+    deny_write?: string[];
+    deny_read?: string[];
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export interface SystemSettings extends Record<string, any> {
+  paths?: {
+    repos_base?: string;
+    worktrees_base?: string;
+    data_dir?: string;
+    claude_executable?: string;
+  };
+  agent?: {
+    default_model?: string; // Legacy
+    claude_model?: string;
+    max_budget_usd?: number;
+  };
+  sandbox?: SandboxConfig;
+}
+
+// --- Schema (runtime validation) ---
+
+const SandboxConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  auto_allow_bash: z.boolean().optional(),
+  allow_unsandboxed_commands: z.boolean().optional(),
+  network: z
+    .object({
+      allowed_domains: z.array(z.string()).optional(),
+    })
+    .optional(),
+  filesystem: z
+    .object({
+      allow_write: z.array(z.string()).optional(),
+      deny_write: z.array(z.string()).optional(),
+      deny_read: z.array(z.string()).optional(),
+    })
+    .optional(),
+});
+
+export const SystemSettingsSchema = z
+  .object({
+    paths: z
+      .object({
+        repos_base: z.string().optional(),
+        worktrees_base: z.string().optional(),
+        data_dir: z.string().optional(),
+        claude_executable: z.string().optional(),
+      })
+      .optional(),
+    agent: z
+      .object({
+        default_model: z.string().optional(),
+        claude_model: z.string().optional(),
+        max_budget_usd: z.number().optional(),
+      })
+      .optional(),
+    sandbox: SandboxConfigSchema.optional(),
+  })
+  .catchall(z.unknown());
 
 const CACHE_TTL_MS = 60_000;
 let settingsCache: { value: SystemSettings; ts: number } | null = null;
