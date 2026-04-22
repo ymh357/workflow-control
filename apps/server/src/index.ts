@@ -13,7 +13,7 @@ import { kernelNextStreamRoute } from "./routes/kernel-next-stream.js";
 import { kernelRunRoute } from "./routes/kernel-run.js";
 import { runPreflight, printPreflightResults } from "./lib/preflight.js";
 import { logger } from "./lib/logger.js";
-import { getFragmentRegistry, loadPipelineConfig, listAvailablePipelines, loadSystemSettings, isParallelGroup } from "./lib/config-loader.js";
+import { loadSystemSettings } from "./lib/config-loader.js";
 import { getDb, cleanupOldData, startPeriodicCleanup } from "./lib/db.js";
 import { errorResponse, ErrorCode } from "./lib/error-response.js";
 import { mkdirSync } from "node:fs";
@@ -67,29 +67,6 @@ startPeriodicCleanup();
 {
   const { installBuiltinPipelines } = await import("./lib/builtin-installer.js");
   installBuiltinPipelines();
-}
-
-// --- Fragment registry validation ---
-{
-  const allManifests = listAvailablePipelines();
-  const allStageNames = new Set<string>();
-  for (const m of allManifests) {
-    const pipeline = loadPipelineConfig(m.id);
-    if (pipeline) {
-      for (const entry of pipeline.stages) {
-        if (isParallelGroup(entry)) {
-          allStageNames.add(entry.parallel.name);
-          for (const s of entry.parallel.stages) allStageNames.add(s.name);
-        } else {
-          allStageNames.add(entry.name);
-        }
-      }
-    }
-  }
-  const warnings = getFragmentRegistry().validate([...allStageNames]);
-  for (const w of warnings) {
-    logger.warn(`[FragmentRegistry] ${w}`);
-  }
 }
 
 // --- Middleware & Routes ---

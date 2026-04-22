@@ -1,8 +1,6 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { resolve, join } from "node:path";
 import { loadSystemSettings } from "./config-loader.js";
-import { loadMcpRegistry, buildMcpFromRegistry } from "./config/mcp.js";
 
 interface CheckResult {
   name: string;
@@ -47,43 +45,6 @@ export function runPreflight(): { passed: boolean; results: CheckResult[] } {
     results.push({ name: "gh CLI", ok: true, detail: ghVersion });
   } catch {
     results.push({ name: "gh CLI", ok: false, detail: "gh CLI not installed" });
-  }
-
-  // 3. DYNAMIC REQUIREMENTS (Pipeline MCPs)
-  // From MCP registry — check which MCPs can be built (have required env vars)
-  const mcpRegistry = loadMcpRegistry();
-  if (mcpRegistry) {
-    for (const [name, entry] of Object.entries(mcpRegistry)) {
-      const config = buildMcpFromRegistry(name, entry);
-      if (config) {
-        results.push({ name: `MCP: ${name}`, ok: true, detail: entry.description || "Ready" });
-      } else {
-        results.push({ name: `MCP: ${name}`, ok: true, detail: "(Optional) Missing credentials" });
-      }
-    }
-  }
-
-  // 4. Config files
-  const configDir = resolve(import.meta.dirname, "../../config");
-  const mcpFile = join(configDir, "mcps", "registry.yaml");
-
-  // Check for at least one pipeline directory with pipeline.yaml
-  const pipelinesBase = join(configDir, "pipelines");
-  const pipelineDirs = existsSync(pipelinesBase)
-    ? readdirSync(pipelinesBase, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && existsSync(join(pipelinesBase, d.name, "pipeline.yaml")))
-        .map((d) => d.name)
-    : [];
-  if (pipelineDirs.length > 0) {
-    results.push({ name: "Pipeline configuration", ok: true, detail: `${pipelineDirs.length} pipeline(s): ${pipelineDirs.join(", ")}` });
-  } else {
-    results.push({ name: "Pipeline configuration", ok: false, detail: "No pipeline directories found in config/pipelines/" });
-  }
-
-  if (existsSync(mcpFile)) {
-    results.push({ name: "MCP registry", ok: true, detail: mcpFile });
-  } else {
-    results.push({ name: "MCP registry", ok: true, detail: "config/mcps/registry.yaml missing (no MCPs available)" });
   }
 
   const passed = results.filter((r) => !r.ok).length === 0;
