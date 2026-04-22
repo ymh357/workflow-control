@@ -21,6 +21,7 @@ import type {
   StageExecutor,
 } from "./executor.js";
 import type { ScriptModuleResolver } from "./script-module-resolver.js";
+import { openScriptExecutionRecordWriter } from "./script-execution-record-writer.js";
 
 export interface ScriptStageExecutorOptions {
   resolver: ScriptModuleResolver;
@@ -67,11 +68,24 @@ export class ScriptStageExecutor implements StageExecutor {
       portRuntime.recordRead({ attemptId, stageName, portName: p.name, value });
     }
 
-    // 3. Resolve the script module.
+    // 2b. Sidecar: open the script_execution_details writer BEFORE module
+    //     resolution so even a module-not-found failure leaves a row for
+    //     post-mortem tooling. Never throws; returns a no-op on DB error.
     const moduleId = scriptStage.config.moduleId;
+    const writer = openScriptExecutionRecordWriter(portRuntime.getDb(), {
+      attemptId,
+      moduleId,
+      inputs,
+    });
+
+    // 3. Resolve the script module.
     const mod = this.resolver.resolve(moduleId);
     if (!mod) {
       const message = `Script module '${moduleId}' not found for stage '${stageName}'`;
+      writer.close({
+        terminationReason: "module_not_found",
+        errorMessage: message,
+      });
       portRuntime.finishAttempt(attemptId, "error", message);
       return { attemptId, attemptIdx, status: "error", error: message };
     }
@@ -84,11 +98,19 @@ export class ScriptStageExecutor implements StageExecutor {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack ?? null : null;
+      writer.close({
+        terminationReason: "error",
+        errorMessage: message,
+        errorStack: stack,
+      });
       portRuntime.finishAttempt(attemptId, "error", message);
       return { attemptId, attemptIdx, status: "error", error: message };
     }
 
-    // 5. Write declared outputs. Undeclared keys are silently ignored.
+    // 5. Write declared outputs. Undeclared keys are silently ignored at
+    //    the port_values level but the full outputs object is captured in
+    //    the sidecar so tooling can observe dropped keys.
     const declaredOutPorts = new Set(scriptStage.outputs.map((p) => p.name));
     for (const [key, value] of Object.entries(outputs)) {
       if (!declaredOutPorts.has(key)) continue;
@@ -96,6 +118,10 @@ export class ScriptStageExecutor implements StageExecutor {
     }
 
     // 6. Finish success.
+    writer.close({
+      terminationReason: "natural_completion",
+      outputs,
+    });
     portRuntime.finishAttempt(attemptId, "success");
     return { attemptId, attemptIdx, status: "success" };
   }
