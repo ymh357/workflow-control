@@ -112,15 +112,17 @@ describe("runList", () => {
       records: [
         {
           attemptId: "a1", stageName: "analyze", attemptIndex: 0,
-          startedAt: "s1", terminatedAt: "t1", terminationReason: "natural_completion",
-          engine: "claude", model: "sonnet", pipelineVersionHash: null,
+          startedAt: "s1", terminatedAt: "t1", status: "success",
+          terminationReason: "natural_completion",
+          model: "sonnet", pipelineVersionHash: "v1",
           costUsd: 0.01, tokenInput: 10, tokenOutput: 5, durationMs: 100,
           isOpen: false,
         },
         {
           attemptId: "a2", stageName: "implement", attemptIndex: 0,
-          startedAt: "s2", terminatedAt: null, terminationReason: null,
-          engine: "claude", model: "sonnet", pipelineVersionHash: null,
+          startedAt: "s2", terminatedAt: null, status: "running",
+          terminationReason: null,
+          model: "sonnet", pipelineVersionHash: "v1",
           costUsd: null, tokenInput: null, tokenOutput: null, durationMs: null,
           isOpen: true,
         },
@@ -157,11 +159,11 @@ describe("runDiff", () => {
       b: { attemptId: "a2", taskId: "t", stageName: "s", attemptIndex: 1 },
       identical: false,
       differences: {
-        promptBlob: [{ field: "promptBlob.tier1", a: "x", b: "y" }],
-        readsSnapshot: { onlyInA: ["k1"], onlyInB: [], changed: [], unchanged: [] },
-        writesCommitted: { onlyInA: [], onlyInB: [], changed: [], unchanged: [] },
-        decisions: { aCount: 0, bCount: 0, onlyInA: [], onlyInB: [] },
-        toolCalls: { aCount: 0, bCount: 0, countByName: { onlyInA: {}, onlyInB: {}, shared: {} } },
+        prompt: [{ field: "promptContent", a: "x", b: "y" }],
+        toolCalls: {
+          aCount: 1, bCount: 0,
+          countByName: { onlyInA: { Read: 1 }, onlyInB: {}, shared: {} },
+        },
         termination: [],
         cost: { a: null, b: null, deltaUsd: null },
         tokens: { a: { input: null, output: null }, b: { input: null, output: null } },
@@ -173,6 +175,6 @@ describe("runDiff", () => {
     expect(joined).toContain("A: a1");
     expect(joined).toContain("B: a2");
     expect(joined).toContain("prompt changes");
-    expect(joined).toContain("only in A: k1");
+    expect(joined).toContain("only A: Read x1");
   });
 });

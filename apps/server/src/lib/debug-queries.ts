@@ -1,55 +1,70 @@
-// Phase 4 / A4 — Debug query core. Pure functions over the
-// execution_records table, shared by the __debug__ MCP and the
-// `debug` CLI. Callers are responsible for presenting the JSON
-// result (agent reads it directly; CLI prints it).
+// Phase 4 / A4 — Debug query core, kernel-next edition.
 //
-// None of these functions throw on "not found" — they return a
-// shape with empty arrays / null fields and a `found: false` flag
-// so both MCP and CLI can return a uniform JSON envelope.
+// Reads `stage_attempts` LEFT JOIN `agent_execution_details` from
+// kernel-next.db. One row per agent-stage attempt (non-agent stages
+// like gate/script appear in stage_attempts but lack an AED row).
+//
+// Shared by the `__debug__` MCP and the `debug` CLI. Callers present
+// the JSON result (agent consumes it directly; CLI prints it).
+//
+// None of these functions throw on "not found" — they return a shape
+// with empty arrays / null fields and a `found: false` flag so both
+// MCP and CLI can return a uniform JSON envelope.
 
-import { getDb } from "./db.js";
+import { getKernelNextDb } from "./kernel-next-db.js";
 import type {
   AgentStreamEvent,
-  DecisionRecord,
-  ExecutionRecord,
-  PromptBlob,
-  ScratchPadSnapshot,
+  TerminationReason,
   ToolCallRecord,
-} from "./execution-record/types.js";
+} from "../kernel-next/runtime/execution-record-types.js";
 
 // ---------------------------------------------------------------------------
-// Row -> ExecutionRecord reconstruction
+// Row shape + ExecutionRecord reconstruction
 // ---------------------------------------------------------------------------
 
-interface ExecutionRecordRow {
+type StageAttemptStatus = "running" | "success" | "error" | "superseded";
+
+interface JoinedRow {
+  // stage_attempts columns
   attempt_id: string;
   task_id: string;
+  version_hash: string;
   stage_name: string;
-  attempt_index: number;
-  pipeline_version_hash: string | null;
-  workflow_control_version: string | null;
-  started_at: string;
-  terminated_at: string | null;
-  termination_reason: string | null;
-  engine: string;
+  attempt_idx: number;
+  sa_started_at: number;
+  sa_ended_at: number | null;
+  status: StageAttemptStatus;
+  kind: string;
+  // agent_execution_details columns (nullable due to LEFT JOIN)
+  prompt_ref: string | null;
+  prompt_content_hash: string | null;
+  prompt_content: string | null;
   model: string | null;
-  session_id: string | null;
-  prompt_blob: string;
-  reads_snapshot: string;
-  tool_calls: string;
-  agent_stream: string;
-  decisions: string;
-  writes_parsed: string | null;
-  writes_committed: string | null;
-  worktree_diff: string | null;
-  worktree_diff_truncated: number;
-  scratch_pad_snapshot: string | null;
+  sub_agents_json: string | null;
+  tool_calls_json: string | null;
+  agent_stream_json: string | null;
   cost_usd: number | null;
   token_input: number | null;
   token_output: number | null;
+  session_id: string | null;
   duration_ms: number | null;
-  last_heartbeat_at: string;
+  aed_started_at: number | null;
+  aed_ended_at: number | null;
+  termination_reason: TerminationReason | null;
+  last_heartbeat_at: number | null;
 }
+
+const JOIN_SELECT = `
+  SELECT sa.attempt_id, sa.task_id, sa.version_hash, sa.stage_name, sa.attempt_idx,
+         sa.started_at AS sa_started_at, sa.ended_at AS sa_ended_at, sa.status, sa.kind,
+         aed.prompt_ref, aed.prompt_content_hash, aed.prompt_content, aed.model,
+         aed.sub_agents_json, aed.tool_calls_json, aed.agent_stream_json,
+         aed.cost_usd, aed.token_input, aed.token_output, aed.session_id, aed.duration_ms,
+         aed.started_at AS aed_started_at, aed.ended_at AS aed_ended_at,
+         aed.termination_reason, aed.last_heartbeat_at
+    FROM stage_attempts sa
+    LEFT JOIN agent_execution_details aed ON aed.attempt_id = sa.attempt_id
+`;
 
 function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T {
   if (raw === null || raw === undefined || raw === "") return fallback;
@@ -60,52 +75,81 @@ function safeJsonParse<T>(raw: string | null | undefined, fallback: T): T {
   }
 }
 
-function rowToRecord(row: ExecutionRecordRow): ExecutionRecord {
+function toIso(ms: number | null | undefined): string | null {
+  if (ms === null || ms === undefined) return null;
+  return new Date(ms).toISOString();
+}
+
+/**
+ * Reconstructed execution record, kernel-next edition. Compared to the
+ * legacy shape, these fields are intentionally absent because the
+ * kernel-next storage layer does not capture them:
+ *   - promptBlob (complex tier1/fragments/outputSchema structure)
+ *   - readsSnapshot / writesParsed / writesCommitted (derivable from port_values)
+ *   - worktreeDiff / worktreeDiffTruncated (requires checkpoint infra)
+ *   - scratchPadSnapshot (legacy single-session concept)
+ *   - decisions (agent_log MCP retired)
+ *   - workflowControlVersion / engine (kernel-next is Claude-only)
+ *
+ * What remains is what the sidecar row actually stores: the resolved
+ * prompt text, the tool calls, the agent stream, the cost/tokens, and
+ * the lifecycle metadata.
+ */
+export interface ExecutionRecord {
+  attemptId: string;
+  taskId: string;
+  stageName: string;
+  /** 1-based in kernel-next (stage_attempts.attempt_idx). */
+  attemptIndex: number;
+  pipelineVersionHash: string | null;
+  startedAt: string;
+  terminatedAt: string | null;
+  terminationReason: TerminationReason | null;
+  status: StageAttemptStatus;
+  model: string | null;
+  sessionId: string | null;
+  /** Reference name of the prompt (AgentStage.config.promptRef). */
+  promptRef: string | null;
+  /** Hash of the resolved prompt content (FK to prompt_contents). */
+  promptContentHash: string | null;
+  /** Fully-resolved prompt text as the agent saw it. */
+  promptContent: string | null;
+  subAgents: unknown[] | null;
+  toolCalls: ToolCallRecord[];
+  agentStream: AgentStreamEvent[];
+  costUsd: number | null;
+  tokenInput: number | null;
+  tokenOutput: number | null;
+  durationMs: number | null;
+  lastHeartbeatAt: string | null;
+}
+
+function rowToRecord(row: JoinedRow): ExecutionRecord {
   return {
     attemptId: row.attempt_id,
     taskId: row.task_id,
     stageName: row.stage_name,
-    attemptIndex: row.attempt_index,
-    pipelineVersionHash: row.pipeline_version_hash,
-    workflowControlVersion: row.workflow_control_version,
-    startedAt: row.started_at,
-    terminatedAt: row.terminated_at,
-    terminationReason: (row.termination_reason ?? null) as ExecutionRecord["terminationReason"],
-    engine: row.engine as ExecutionRecord["engine"],
+    attemptIndex: row.attempt_idx,
+    pipelineVersionHash: row.version_hash,
+    startedAt: toIso(row.sa_started_at) ?? new Date(0).toISOString(),
+    terminatedAt: toIso(row.sa_ended_at),
+    terminationReason: row.termination_reason,
+    status: row.status,
     model: row.model,
     sessionId: row.session_id,
-    promptBlob: safeJsonParse<PromptBlob>(row.prompt_blob, {
-      tier1: "",
-      systemPromptFull: "",
-      stagePrompt: "",
-      invariants: [],
-      fragments: [],
-      outputSchema: null,
-    }),
-    readsSnapshot: safeJsonParse<Record<string, unknown>>(row.reads_snapshot, {}),
-    toolCalls: safeJsonParse<ToolCallRecord[]>(row.tool_calls, []),
-    agentStream: safeJsonParse<AgentStreamEvent[]>(row.agent_stream, []),
-    decisions: safeJsonParse<DecisionRecord[]>(row.decisions, []),
-    writesParsed: row.writes_parsed
-      ? safeJsonParse<Record<string, unknown>>(row.writes_parsed, {})
+    promptRef: row.prompt_ref,
+    promptContentHash: row.prompt_content_hash,
+    promptContent: row.prompt_content,
+    subAgents: row.sub_agents_json
+      ? safeJsonParse<unknown[]>(row.sub_agents_json, [])
       : null,
-    writesCommitted: row.writes_committed
-      ? safeJsonParse<Record<string, unknown>>(row.writes_committed, {})
-      : null,
-    worktreeDiff: row.worktree_diff,
-    worktreeDiffTruncated: !!row.worktree_diff_truncated,
-    scratchPadSnapshot: row.scratch_pad_snapshot
-      ? safeJsonParse<ScratchPadSnapshot>(row.scratch_pad_snapshot, {
-          openingNote: null,
-          finalNote: null,
-          precompactEvents: [],
-        })
-      : null,
+    toolCalls: safeJsonParse<ToolCallRecord[]>(row.tool_calls_json, []),
+    agentStream: safeJsonParse<AgentStreamEvent[]>(row.agent_stream_json, []),
     costUsd: row.cost_usd,
     tokenInput: row.token_input,
     tokenOutput: row.token_output,
     durationMs: row.duration_ms,
-    lastHeartbeatAt: row.last_heartbeat_at,
+    lastHeartbeatAt: toIso(row.last_heartbeat_at),
   };
 }
 
@@ -117,7 +161,8 @@ export interface StageSummary {
   stageName: string;
   attempts: number;
   lastAttemptIndex: number;
-  lastTerminationReason: string | null;
+  lastStatus: StageAttemptStatus;
+  lastTerminationReason: TerminationReason | null;
   lastTerminatedAt: string | null;
   lastDurationMs: number | null;
   totalCostUsd: number;
@@ -129,9 +174,9 @@ export interface StageSummary {
 export interface FailureHint {
   kind:
     | "stuck_open"
-    | "exceeded_retries"
+    | "error_status"
     | "interrupted"
-    | "no_writes"
+    | "superseded"
     | "error_in_stream"
     | "zero_attempts";
   stageName: string;
@@ -147,7 +192,7 @@ export interface TaskFailureReport {
   firstStartedAt: string | null;
   lastHeartbeatAt: string | null;
   stages: StageSummary[];
-  /** Stage names whose last attempt did NOT terminate naturally. */
+  /** Stage names whose last attempt did NOT complete successfully. */
   failingStages: string[];
   hints: FailureHint[];
 }
@@ -177,14 +222,14 @@ function scanStreamForError(
 }
 
 export function analyzeTaskFailure(taskId: string): TaskFailureReport {
-  const db = getDb();
+  const db = getKernelNextDb();
   const rows = db
     .prepare(
-      `SELECT * FROM execution_records
-         WHERE task_id = ?
-         ORDER BY stage_name, attempt_index`,
+      `${JOIN_SELECT}
+         WHERE sa.task_id = ?
+         ORDER BY sa.stage_name, sa.attempt_idx`,
     )
-    .all(taskId) as unknown as ExecutionRecordRow[];
+    .all(taskId) as unknown as JoinedRow[];
 
   if (rows.length === 0) {
     return {
@@ -200,13 +245,13 @@ export function analyzeTaskFailure(taskId: string): TaskFailureReport {
         {
           kind: "zero_attempts",
           stageName: "",
-          detail: `No execution_records rows found for task ${taskId}.`,
+          detail: `No stage_attempts rows found for task ${taskId}.`,
         },
       ],
     };
   }
 
-  const byStage = new Map<string, ExecutionRecordRow[]>();
+  const byStage = new Map<string, JoinedRow[]>();
   for (const r of rows) {
     const arr = byStage.get(r.stage_name) ?? [];
     arr.push(r);
@@ -217,11 +262,11 @@ export function analyzeTaskFailure(taskId: string): TaskFailureReport {
   const hints: FailureHint[] = [];
   const failingStages: string[] = [];
   let totalCost = 0;
-  let firstStartedAt: string | null = null;
-  let lastHeartbeat: string | null = null;
+  let firstStartedAt: number | null = null;
+  let lastHeartbeat: number | null = null;
 
   for (const [stageName, attempts] of byStage.entries()) {
-    attempts.sort((a, b) => a.attempt_index - b.attempt_index);
+    attempts.sort((a, b) => a.attempt_idx - b.attempt_idx);
     const last = attempts[attempts.length - 1]!;
 
     const stageCost = attempts.reduce(
@@ -241,23 +286,26 @@ export function analyzeTaskFailure(taskId: string): TaskFailureReport {
     const summary: StageSummary = {
       stageName,
       attempts: attempts.length,
-      lastAttemptIndex: last.attempt_index,
+      lastAttemptIndex: last.attempt_idx,
+      lastStatus: last.status,
       lastTerminationReason: last.termination_reason,
-      lastTerminatedAt: last.terminated_at,
+      lastTerminatedAt: toIso(last.sa_ended_at),
       lastDurationMs: last.duration_ms,
       totalCostUsd: stageCost,
       totalTokenInput: tokenIn,
       totalTokenOutput: tokenOut,
-      isStuckOpen: last.terminated_at === null,
+      // stage_attempts.status='running' AND ended_at IS NULL — genuinely open.
+      isStuckOpen: last.status === "running" && last.sa_ended_at === null,
     };
     stages.push(summary);
 
-    const stageFirstStart = attempts[0]!.started_at;
-    if (!firstStartedAt || stageFirstStart < firstStartedAt) {
+    const stageFirstStart = attempts[0]!.sa_started_at;
+    if (firstStartedAt === null || stageFirstStart < firstStartedAt) {
       firstStartedAt = stageFirstStart;
     }
-    if (!lastHeartbeat || last.last_heartbeat_at > lastHeartbeat) {
-      lastHeartbeat = last.last_heartbeat_at;
+    const stageLastHeartbeat = last.last_heartbeat_at ?? last.sa_ended_at ?? last.sa_started_at;
+    if (lastHeartbeat === null || stageLastHeartbeat > lastHeartbeat) {
+      lastHeartbeat = stageLastHeartbeat;
     }
 
     // Hints — ordered by severity.
@@ -267,24 +315,24 @@ export function analyzeTaskFailure(taskId: string): TaskFailureReport {
         kind: "stuck_open",
         stageName,
         attemptId: last.attempt_id,
-        detail: `Last attempt (index ${last.attempt_index}) is still open. ` +
-          `Last heartbeat: ${last.last_heartbeat_at}. ` +
-          `Either the stage is genuinely running or the writer died — see reapOrphanedRecords.`,
+        detail: `Last attempt (idx ${last.attempt_idx}) is still running. ` +
+          `Last heartbeat: ${toIso(last.last_heartbeat_at) ?? "n/a"}. ` +
+          `Either the stage is genuinely running or the writer died.`,
       });
       continue;
     }
 
-    const reason = last.termination_reason ?? "";
-    if (reason === "error_exceeded_retries") {
+    if (last.status === "error") {
       failingStages.push(stageName);
       hints.push({
-        kind: "exceeded_retries",
+        kind: "error_status",
         stageName,
         attemptId: last.attempt_id,
-        detail: `Stage exhausted its retry budget after ${attempts.length} attempt(s).`,
+        detail: `Stage ended with status=error after ${attempts.length} attempt(s).` +
+          (last.termination_reason ? ` termination_reason=${last.termination_reason}.` : ""),
       });
       const streamErr = scanStreamForError(
-        safeJsonParse<AgentStreamEvent[]>(last.agent_stream, []),
+        safeJsonParse<AgentStreamEvent[]>(last.agent_stream_json, []),
       );
       if (streamErr) {
         hints.push({
@@ -296,42 +344,28 @@ export function analyzeTaskFailure(taskId: string): TaskFailureReport {
       }
       continue;
     }
-    if (
-      reason === "interrupted_by_user" ||
-      reason === "interrupted_by_hot_update" ||
-      reason === "superseded_by_retry" ||
-      reason === "superseded_by_hot_update"
-    ) {
+
+    if (last.status === "superseded") {
       failingStages.push(stageName);
       hints.push({
-        kind: "interrupted",
+        kind: "superseded",
         stageName,
         attemptId: last.attempt_id,
-        detail: `Last attempt was interrupted: ${reason}. ` +
-          `Look for a later attempt (may be in a different stage) that followed this one.`,
+        detail: `Last attempt was superseded (retry / hot-update). ` +
+          `Look for a later attempt_idx for the real outcome.`,
       });
       continue;
     }
 
-    // Natural completion but no writes — usually means the agent replied
-    // text without emitting the expected JSON, which a writer-less stage
-    // can't distinguish from success.
-    if (reason === "natural_completion") {
-      const writesCommitted = last.writes_committed
-        ? safeJsonParse<Record<string, unknown>>(last.writes_committed, {})
-        : null;
-      if (
-        writesCommitted === null ||
-        (writesCommitted && Object.keys(writesCommitted).length === 0)
-      ) {
-        hints.push({
-          kind: "no_writes",
-          stageName,
-          attemptId: last.attempt_id,
-          detail: `Stage terminated naturally but committed no writes. ` +
-            `Check prompt_blob.outputSchema and the agent_stream tail for the actual reply.`,
-        });
-      }
+    // termination_reason may still indicate an interrupt that ended up as
+    // 'success' in stage_attempts (rare — include for completeness).
+    if (last.termination_reason === "interrupted") {
+      hints.push({
+        kind: "interrupted",
+        stageName,
+        attemptId: last.attempt_id,
+        detail: `Last attempt was interrupted mid-stream but marked success.`,
+      });
     }
   }
 
@@ -340,8 +374,8 @@ export function analyzeTaskFailure(taskId: string): TaskFailureReport {
     found: true,
     totalAttempts: rows.length,
     totalCostUsd: Number(totalCost.toFixed(6)),
-    firstStartedAt,
-    lastHeartbeatAt: lastHeartbeat,
+    firstStartedAt: toIso(firstStartedAt),
+    lastHeartbeatAt: toIso(lastHeartbeat),
     stages,
     failingStages,
     hints,
@@ -352,10 +386,10 @@ export function analyzeTaskFailure(taskId: string): TaskFailureReport {
 // 4.5 listTaskRecords
 // ---------------------------------------------------------------------------
 //
-// Returns a lightweight index of every attempt for a task — no prompt_blob,
-// no agent_stream, no tool_calls. Use when you need to pick an attemptId to
-// feed into get_stage_execution_record or diff_executions without pulling
-// the full payloads of every row.
+// Returns a lightweight index of every attempt for a task — no prompt
+// content, no agent_stream, no tool_calls. Use when you need to pick an
+// attemptId to feed into get_stage_execution_record or diff_executions
+// without pulling the full payloads.
 
 export interface TaskRecordEntry {
   attemptId: string;
@@ -363,10 +397,10 @@ export interface TaskRecordEntry {
   attemptIndex: number;
   startedAt: string;
   terminatedAt: string | null;
-  terminationReason: string | null;
-  engine: string;
+  status: StageAttemptStatus;
+  terminationReason: TerminationReason | null;
   model: string | null;
-  pipelineVersionHash: string | null;
+  pipelineVersionHash: string;
   costUsd: number | null;
   tokenInput: number | null;
   tokenOutput: number | null;
@@ -382,25 +416,28 @@ export interface ListTaskRecordsResult {
 }
 
 export function listTaskRecords(taskId: string): ListTaskRecordsResult {
-  const rows = getDb()
+  const rows = getKernelNextDb()
     .prepare(
-      `SELECT attempt_id, stage_name, attempt_index, started_at, terminated_at,
-              termination_reason, engine, model, pipeline_version_hash,
-              cost_usd, token_input, token_output, duration_ms
-         FROM execution_records
-        WHERE task_id = ?
-        ORDER BY started_at, stage_name, attempt_index`,
+      `SELECT sa.attempt_id, sa.stage_name, sa.attempt_idx,
+              sa.started_at AS sa_started_at, sa.ended_at AS sa_ended_at,
+              sa.status, sa.version_hash,
+              aed.model, aed.termination_reason,
+              aed.cost_usd, aed.token_input, aed.token_output, aed.duration_ms
+         FROM stage_attempts sa
+         LEFT JOIN agent_execution_details aed ON aed.attempt_id = sa.attempt_id
+        WHERE sa.task_id = ?
+        ORDER BY sa.started_at, sa.stage_name, sa.attempt_idx`,
     )
     .all(taskId) as unknown as Array<{
       attempt_id: string;
       stage_name: string;
-      attempt_index: number;
-      started_at: string;
-      terminated_at: string | null;
-      termination_reason: string | null;
-      engine: string;
+      attempt_idx: number;
+      sa_started_at: number;
+      sa_ended_at: number | null;
+      status: StageAttemptStatus;
+      version_hash: string;
       model: string | null;
-      pipeline_version_hash: string | null;
+      termination_reason: TerminationReason | null;
       cost_usd: number | null;
       token_input: number | null;
       token_output: number | null;
@@ -410,18 +447,18 @@ export function listTaskRecords(taskId: string): ListTaskRecordsResult {
   const records: TaskRecordEntry[] = rows.map((r) => ({
     attemptId: r.attempt_id,
     stageName: r.stage_name,
-    attemptIndex: r.attempt_index,
-    startedAt: r.started_at,
-    terminatedAt: r.terminated_at,
+    attemptIndex: r.attempt_idx,
+    startedAt: toIso(r.sa_started_at) ?? new Date(0).toISOString(),
+    terminatedAt: toIso(r.sa_ended_at),
+    status: r.status,
     terminationReason: r.termination_reason,
-    engine: r.engine,
     model: r.model,
-    pipelineVersionHash: r.pipeline_version_hash,
+    pipelineVersionHash: r.version_hash,
     costUsd: r.cost_usd,
     tokenInput: r.token_input,
     tokenOutput: r.token_output,
     durationMs: r.duration_ms,
-    isOpen: r.terminated_at === null,
+    isOpen: r.status === "running" && r.sa_ended_at === null,
   }));
 
   return {
@@ -437,7 +474,7 @@ export function listTaskRecords(taskId: string): ListTaskRecordsResult {
 // ---------------------------------------------------------------------------
 
 export interface GetStageRecordOptions {
-  /** If omitted, the latest attempt (highest attempt_index) is returned. */
+  /** If omitted, the latest attempt (highest attempt_idx) is returned. */
   attempt?: number;
 }
 
@@ -459,16 +496,16 @@ export function getStageExecutionRecord(
   stageName: string,
   options: GetStageRecordOptions = {},
 ): GetStageRecordResult {
-  const db = getDb();
+  const db = getKernelNextDb();
   const indices = (
     db
       .prepare(
-        `SELECT attempt_index FROM execution_records
+        `SELECT attempt_idx FROM stage_attempts
            WHERE task_id = ? AND stage_name = ?
-           ORDER BY attempt_index`,
+           ORDER BY attempt_idx`,
       )
-      .all(taskId, stageName) as Array<{ attempt_index: number }>
-  ).map((r) => r.attempt_index);
+      .all(taskId, stageName) as Array<{ attempt_idx: number }>
+  ).map((r) => r.attempt_idx);
 
   if (indices.length === 0) {
     return {
@@ -499,11 +536,11 @@ export function getStageExecutionRecord(
 
   const row = db
     .prepare(
-      `SELECT * FROM execution_records
-         WHERE task_id = ? AND stage_name = ? AND attempt_index = ?`,
+      `${JOIN_SELECT}
+         WHERE sa.task_id = ? AND sa.stage_name = ? AND sa.attempt_idx = ?`,
     )
     .get(taskId, stageName, wantedAttempt) as unknown as
-    | ExecutionRecordRow
+    | JoinedRow
     | undefined;
 
   if (!row) {
@@ -538,10 +575,7 @@ export interface ExecutionDiffResult {
   b: { attemptId: string; taskId: string; stageName: string; attemptIndex: number } | null;
   identical: boolean;
   differences: {
-    promptBlob: ScalarDiff[];
-    readsSnapshot: KeyDiff;
-    writesCommitted: KeyDiff;
-    decisions: DecisionDiff;
+    prompt: ScalarDiff[];
     toolCalls: ToolCallDiff;
     termination: ScalarDiff[];
     cost: { a: number | null; b: number | null; deltaUsd: number | null };
@@ -557,21 +591,6 @@ interface ScalarDiff {
   field: string;
   a: string | number | boolean | null;
   b: string | number | boolean | null;
-}
-
-interface KeyDiff {
-  onlyInA: string[];
-  onlyInB: string[];
-  changed: Array<{ key: string; aPreview: string; bPreview: string }>;
-  unchanged: string[];
-}
-
-interface DecisionDiff {
-  aCount: number;
-  bCount: number;
-  /** decisions present in A whose (context,chosen) pair doesn't appear in B. */
-  onlyInA: Array<{ context: string; chosen: string }>;
-  onlyInB: Array<{ context: string; chosen: string }>;
 }
 
 interface ToolCallDiff {
@@ -593,124 +612,6 @@ function previewValue(v: unknown): string {
   } catch {
     return String(v);
   }
-}
-
-function diffKeyedObjects(
-  a: Record<string, unknown>,
-  b: Record<string, unknown>,
-): KeyDiff {
-  const onlyInA: string[] = [];
-  const onlyInB: string[] = [];
-  const changed: Array<{ key: string; aPreview: string; bPreview: string }> = [];
-  const unchanged: string[] = [];
-  const keys = new Set<string>([...Object.keys(a), ...Object.keys(b)]);
-  for (const key of keys) {
-    const inA = Object.prototype.hasOwnProperty.call(a, key);
-    const inB = Object.prototype.hasOwnProperty.call(b, key);
-    if (inA && !inB) {
-      onlyInA.push(key);
-      continue;
-    }
-    if (!inA && inB) {
-      onlyInB.push(key);
-      continue;
-    }
-    const aVal = a[key];
-    const bVal = b[key];
-    const aJson = stableStringify(aVal);
-    const bJson = stableStringify(bVal);
-    if (aJson === bJson) {
-      unchanged.push(key);
-    } else {
-      changed.push({
-        key,
-        aPreview: previewValue(aVal),
-        bPreview: previewValue(bVal),
-      });
-    }
-  }
-  return { onlyInA, onlyInB, changed, unchanged };
-}
-
-function stableStringify(v: unknown): string {
-  if (v === null || typeof v !== "object") return JSON.stringify(v);
-  if (Array.isArray(v)) {
-    return "[" + v.map((x) => stableStringify(x)).join(",") + "]";
-  }
-  const obj = v as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  return (
-    "{" +
-    keys.map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k])).join(",") +
-    "}"
-  );
-}
-
-function diffPromptBlob(a: PromptBlob, b: PromptBlob): ScalarDiff[] {
-  const out: ScalarDiff[] = [];
-  const scalarFields: Array<keyof PromptBlob> = [
-    "tier1",
-    "systemPromptFull",
-    "stagePrompt",
-  ];
-  for (const field of scalarFields) {
-    const aVal = a[field] ?? "";
-    const bVal = b[field] ?? "";
-    if (aVal !== bVal) {
-      out.push({
-        field: `promptBlob.${String(field)}`,
-        a: typeof aVal === "string" && aVal.length > 200 ? aVal.slice(0, 200) + "…" : (aVal as string),
-        b: typeof bVal === "string" && bVal.length > 200 ? bVal.slice(0, 200) + "…" : (bVal as string),
-      });
-    }
-  }
-  const aInv = (a.invariants ?? []).join("|");
-  const bInv = (b.invariants ?? []).join("|");
-  if (aInv !== bInv) {
-    out.push({
-      field: "promptBlob.invariants",
-      a: previewValue(a.invariants),
-      b: previewValue(b.invariants),
-    });
-  }
-  const aFrag = (a.fragments ?? []).map((f) => `${f.id}@${f.contentHash}`).sort().join("|");
-  const bFrag = (b.fragments ?? []).map((f) => `${f.id}@${f.contentHash}`).sort().join("|");
-  if (aFrag !== bFrag) {
-    out.push({
-      field: "promptBlob.fragments",
-      a: previewValue(a.fragments),
-      b: previewValue(b.fragments),
-    });
-  }
-  if (stableStringify(a.outputSchema) !== stableStringify(b.outputSchema)) {
-    out.push({
-      field: "promptBlob.outputSchema",
-      a: previewValue(a.outputSchema),
-      b: previewValue(b.outputSchema),
-    });
-  }
-  return out;
-}
-
-function diffDecisions(
-  a: DecisionRecord[],
-  b: DecisionRecord[],
-): DecisionDiff {
-  const keyOf = (d: DecisionRecord) => `${d.context}::${d.chosen}`;
-  const aKeys = new Set(a.map(keyOf));
-  const bKeys = new Set(b.map(keyOf));
-  const onlyInA = a
-    .filter((d) => !bKeys.has(keyOf(d)))
-    .map((d) => ({ context: d.context, chosen: d.chosen }));
-  const onlyInB = b
-    .filter((d) => !aKeys.has(keyOf(d)))
-    .map((d) => ({ context: d.context, chosen: d.chosen }));
-  return {
-    aCount: a.length,
-    bCount: b.length,
-    onlyInA,
-    onlyInB,
-  };
 }
 
 function diffToolCalls(a: ToolCallRecord[], b: ToolCallRecord[]): ToolCallDiff {
@@ -740,9 +641,9 @@ function diffToolCalls(a: ToolCallRecord[], b: ToolCallRecord[]): ToolCallDiff {
 }
 
 function findRecordByAttemptId(attemptId: string): ExecutionRecord | null {
-  const row = getDb()
-    .prepare("SELECT * FROM execution_records WHERE attempt_id = ?")
-    .get(attemptId) as unknown as ExecutionRecordRow | undefined;
+  const row = getKernelNextDb()
+    .prepare(`${JOIN_SELECT} WHERE sa.attempt_id = ?`)
+    .get(attemptId) as unknown as JoinedRow | undefined;
   return row ? rowToRecord(row) : null;
 }
 
@@ -780,13 +681,25 @@ export function diffExecutions(
     };
   }
 
-  const promptBlob = diffPromptBlob(a.promptBlob, b.promptBlob);
-  const readsSnapshot = diffKeyedObjects(a.readsSnapshot, b.readsSnapshot);
-  const writesCommitted = diffKeyedObjects(
-    a.writesCommitted ?? {},
-    b.writesCommitted ?? {},
-  );
-  const decisions = diffDecisions(a.decisions, b.decisions);
+  const prompt: ScalarDiff[] = [];
+  if ((a.promptRef ?? null) !== (b.promptRef ?? null)) {
+    prompt.push({ field: "promptRef", a: a.promptRef, b: b.promptRef });
+  }
+  if ((a.promptContentHash ?? null) !== (b.promptContentHash ?? null)) {
+    prompt.push({
+      field: "promptContentHash",
+      a: a.promptContentHash,
+      b: b.promptContentHash,
+    });
+  }
+  if ((a.promptContent ?? "") !== (b.promptContent ?? "")) {
+    prompt.push({
+      field: "promptContent",
+      a: previewValue(a.promptContent),
+      b: previewValue(b.promptContent),
+    });
+  }
+
   const toolCalls = diffToolCalls(a.toolCalls, b.toolCalls);
   const termination: ScalarDiff[] = [];
   if (a.terminationReason !== b.terminationReason) {
@@ -796,8 +709,8 @@ export function diffExecutions(
       b: b.terminationReason,
     });
   }
-  if (a.engine !== b.engine) {
-    termination.push({ field: "engine", a: a.engine, b: b.engine });
+  if (a.status !== b.status) {
+    termination.push({ field: "status", a: a.status, b: b.status });
   }
   if (a.model !== b.model) {
     termination.push({ field: "model", a: a.model, b: b.model });
@@ -814,15 +727,7 @@ export function diffExecutions(
     toolCalls.countByName.shared,
   ).some((v) => v.a !== v.b);
   const identical =
-    promptBlob.length === 0 &&
-    readsSnapshot.changed.length === 0 &&
-    readsSnapshot.onlyInA.length === 0 &&
-    readsSnapshot.onlyInB.length === 0 &&
-    writesCommitted.changed.length === 0 &&
-    writesCommitted.onlyInA.length === 0 &&
-    writesCommitted.onlyInB.length === 0 &&
-    decisions.onlyInA.length === 0 &&
-    decisions.onlyInB.length === 0 &&
+    prompt.length === 0 &&
     Object.keys(toolCalls.countByName.onlyInA).length === 0 &&
     Object.keys(toolCalls.countByName.onlyInB).length === 0 &&
     !sharedToolCallsMismatch &&
@@ -845,10 +750,7 @@ export function diffExecutions(
     },
     identical,
     differences: {
-      promptBlob,
-      readsSnapshot,
-      writesCommitted,
-      decisions,
+      prompt,
       toolCalls,
       termination,
       cost: {

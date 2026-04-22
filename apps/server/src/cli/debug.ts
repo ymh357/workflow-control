@@ -69,7 +69,7 @@ function parseCommonFlags(rest: string[]): { positional: string[]; flags: Common
 
 function printAnalyzePretty(r: TaskFailureReport): void {
   if (!r.found) {
-    console.log(`Task ${r.taskId}: no execution_records rows found.`);
+    console.log(`Task ${r.taskId}: no stage_attempts rows found.`);
     return;
   }
   console.log(`Task ${r.taskId}`);
@@ -81,9 +81,10 @@ function printAnalyzePretty(r: TaskFailureReport): void {
   console.log("  Stages:");
   for (const s of r.stages) {
     const flag = r.failingStages.includes(s.stageName) ? " [FAIL]" : "";
+    const last = s.lastTerminationReason ?? s.lastStatus;
     console.log(
       `    - ${s.stageName}${flag} x${s.attempts} ` +
-        `last=${s.lastTerminationReason ?? "open"} ` +
+        `last=${last} ` +
         `cost=${s.totalCostUsd.toFixed(4)} ` +
         `tokens=${s.totalTokenInput}in/${s.totalTokenOutput}out`,
     );
@@ -110,25 +111,23 @@ function printRecordPretty(r: GetStageRecordResult): void {
   console.log(`attempt_id:   ${rec.attemptId}`);
   console.log(`task:         ${rec.taskId}`);
   console.log(`stage:        ${rec.stageName} (attempt ${rec.attemptIndex})`);
-  console.log(`engine/model: ${rec.engine}${rec.model ? `/${rec.model}` : ""}`);
+  console.log(`model:        ${rec.model ?? "-"}`);
+  console.log(`prompt_ref:   ${rec.promptRef ?? "-"}`);
   console.log(`started:      ${rec.startedAt}`);
   console.log(`terminated:   ${rec.terminatedAt ?? "still open"}`);
+  console.log(`status:       ${rec.status}`);
   console.log(`reason:       ${rec.terminationReason ?? "-"}`);
   console.log(`duration_ms:  ${rec.durationMs ?? "-"}`);
   console.log(`cost_usd:     ${rec.costUsd ?? "-"}`);
   console.log(`tokens:       ${rec.tokenInput ?? 0}in / ${rec.tokenOutput ?? 0}out`);
-  console.log(`reads keys:   ${Object.keys(rec.readsSnapshot).join(", ") || "(none)"}`);
-  console.log(
-    `writes keys:  ${rec.writesCommitted ? Object.keys(rec.writesCommitted).join(", ") || "(none)" : "(null)"}`,
-  );
-  console.log(`decisions:    ${rec.decisions.length}`);
+  console.log(`session_id:   ${rec.sessionId ?? "-"}`);
   console.log(`tool_calls:   ${rec.toolCalls.length}`);
   console.log(`stream lines: ${rec.agentStream.length}`);
 }
 
 function printListPretty(r: ListTaskRecordsResult): void {
   if (!r.found) {
-    console.log(`Task ${r.taskId}: no execution_records rows found.`);
+    console.log(`Task ${r.taskId}: no stage_attempts rows found.`);
     return;
   }
   console.log(`Task ${r.taskId} — ${r.total} attempt(s)`);
@@ -136,10 +135,11 @@ function printListPretty(r: ListTaskRecordsResult): void {
     const flag = rec.isOpen ? " [OPEN]" : "";
     const cost = rec.costUsd !== null ? rec.costUsd.toFixed(4) : "-";
     const tokens = `${rec.tokenInput ?? 0}in/${rec.tokenOutput ?? 0}out`;
+    const last = rec.terminationReason ?? rec.status;
     console.log(
       `  ${rec.startedAt}  ${rec.attemptId}  ` +
         `${rec.stageName}@${rec.attemptIndex}${flag}  ` +
-        `${rec.terminationReason ?? "open"}  ` +
+        `${last}  ` +
         `cost=${cost} tokens=${tokens}`,
     );
   }
@@ -159,30 +159,10 @@ function printDiffPretty(r: ExecutionDiffResult): void {
     return;
   }
   const d = r.differences!;
-  if (d.promptBlob.length > 0) {
+  if (d.prompt.length > 0) {
     console.log("");
     console.log("  prompt changes:");
-    for (const p of d.promptBlob) console.log(`    - ${p.field}`);
-  }
-  if (d.readsSnapshot.changed.length || d.readsSnapshot.onlyInA.length || d.readsSnapshot.onlyInB.length) {
-    console.log("");
-    console.log("  reads:");
-    if (d.readsSnapshot.onlyInA.length) console.log(`    only in A: ${d.readsSnapshot.onlyInA.join(", ")}`);
-    if (d.readsSnapshot.onlyInB.length) console.log(`    only in B: ${d.readsSnapshot.onlyInB.join(", ")}`);
-    for (const c of d.readsSnapshot.changed) console.log(`    changed: ${c.key}`);
-  }
-  if (d.writesCommitted.changed.length || d.writesCommitted.onlyInA.length || d.writesCommitted.onlyInB.length) {
-    console.log("");
-    console.log("  writes:");
-    if (d.writesCommitted.onlyInA.length) console.log(`    only in A: ${d.writesCommitted.onlyInA.join(", ")}`);
-    if (d.writesCommitted.onlyInB.length) console.log(`    only in B: ${d.writesCommitted.onlyInB.join(", ")}`);
-    for (const c of d.writesCommitted.changed) console.log(`    changed: ${c.key}`);
-  }
-  if (d.decisions.onlyInA.length || d.decisions.onlyInB.length) {
-    console.log("");
-    console.log(`  decisions: A=${d.decisions.aCount} B=${d.decisions.bCount}`);
-    for (const x of d.decisions.onlyInA) console.log(`    only A: ${x.context} => ${x.chosen}`);
-    for (const x of d.decisions.onlyInB) console.log(`    only B: ${x.context} => ${x.chosen}`);
+    for (const p of d.prompt) console.log(`    - ${p.field}`);
   }
   if (
     Object.keys(d.toolCalls.countByName.onlyInA).length ||
