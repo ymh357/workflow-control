@@ -27,7 +27,7 @@ import type { PipelineIR, GateStage } from "../ir/schema.js";
 import { KernelService } from "../mcp/kernel.js";
 import { taskRegistry } from "./task-registry.js";
 import { evaluateGuard } from "./guard-evaluator.js";
-import { topoDownstream } from "../converter/topo-downstream.js";
+import { topoDownstream } from "./topo-downstream.js";
 import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import type {
   AnyKernelNextSSEEvent,
