@@ -401,7 +401,7 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         handler: async (args: any) => {
           try {
-            return jsonResponse(kernel.rollbackHotUpdate({
+            return jsonResponse(await kernel.rollbackHotUpdate({
               taskId: String(args.taskId),
               toVersion: String(args.toVersion),
               actor: String(args.actor ?? "unknown"),

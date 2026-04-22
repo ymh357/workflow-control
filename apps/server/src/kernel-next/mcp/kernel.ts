@@ -36,6 +36,7 @@ import {
   executeMigration,
   __resetOrchestratorLocksForTest,
 } from "../hot-update/migration-orchestrator.js";
+import { executeRollback } from "../hot-update/rollback.js";
 
 // Stage 5B — per-task migration lock now lives in
 // hot-update/migration-orchestrator.ts. The test hooks below forward to
@@ -560,67 +561,35 @@ export class KernelService {
   }
 
   /**
-   * Stage 5A skeleton — writes an audit row to hot_update_events with
-   * status='rolled_back'. DOES NOT actually roll back stage_attempts
-   * or pipeline state; the real rollback executor lands in Stage 5B.
-   *
-   * Returns VERSION_NOT_IN_HISTORY when toVersion has never appeared as
-   * either from_version or to_version for this taskId.
+   * Stage 5B — real rollback execution. Delegates to
+   * hot-update/rollback.ts which synthesizes an approved proposal from
+   * currentVersion→toVersion and invokes executeMigration. Supports
+   * jump-rollback across multiple historical migrations.
    */
-  rollbackHotUpdate(input: {
+  async rollbackHotUpdate(input: {
     taskId: string;
     toVersion: string;
     actor: string;
-  }): { ok: true; eventId: string; diagnostic: string }
-   | { ok: false; diagnostics: Diagnostic[] } {
-    const history = this.db.prepare(
-      `SELECT from_version, to_version FROM hot_update_events
-       WHERE task_id = ? ORDER BY started_at DESC`,
-    ).all(input.taskId) as Array<{ from_version: string; to_version: string }>;
-    const known = new Set<string>();
-    for (const row of history) {
-      known.add(row.from_version);
-      known.add(row.to_version);
+  }): Promise<
+    | { ok: true; eventId: string; diagnostic: string }
+    | { ok: false; diagnostics: Diagnostic[] }
+  > {
+    const outcome = await executeRollback({
+      db: this.db,
+      taskId: input.taskId,
+      toVersion: input.toVersion,
+      actor: input.actor,
+      interruptWaitMsOverride: this.opts.migrationInterruptWaitMsOverride,
+    });
+    if (!outcome.ok) {
+      return { ok: false, diagnostics: outcome.diagnostics };
     }
-    if (!known.has(input.toVersion)) {
-      return {
-        ok: false,
-        diagnostics: [{
-          code: "VERSION_NOT_IN_HISTORY",
-          message:
-            `task '${input.taskId}' has no migration history including version ` +
-            `'${input.toVersion}' (known=${Array.from(known).join(", ") || "<empty>"})`,
-          context: { taskId: input.taskId, toVersion: input.toVersion },
-        }],
-      };
-    }
-    const mostRecent = history[0];
-    const currentFromVersion = mostRecent?.to_version ?? input.toVersion;
-
-    const eventId = randomUUID();
-    const startedAt = Date.now();
-    this.db.prepare(
-      `INSERT INTO hot_update_events
-       (event_id, task_id, from_version, to_version, actor, proposal_id,
-        rerun_from_stage, status, started_at, finished_at, diagnostic_json)
-       VALUES (?, ?, ?, ?, ?, NULL, NULL, 'rolled_back', ?, ?, ?)`,
-    ).run(
-      eventId,
-      input.taskId,
-      currentFromVersion,
-      input.toVersion,
-      input.actor,
-      startedAt,
-      Date.now(),
-      JSON.stringify({
-        __kind: "rollback-skeleton-v1",
-        note: "Stage 5A skeleton — audit only; real state rollback lands in 5B",
-      }),
-    );
     return {
       ok: true,
-      eventId,
-      diagnostic: "Stage 5A skeleton — audit row written; real rollback lands in 5B",
+      eventId: outcome.eventId,
+      diagnostic:
+        `rollback complete — divergenceStage='${outcome.divergenceStage}', ` +
+        `migrationEventId='${outcome.migrationEventId}'`,
     };
   }
 

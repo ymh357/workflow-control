@@ -969,12 +969,14 @@ describe("KernelService — Stage 5A dryRunProposal", () => {
   });
 });
 
-describe("KernelService — Stage 5A rollbackHotUpdate skeleton", () => {
-  it("task with no migration history → VERSION_NOT_IN_HISTORY", () => {
+describe("KernelService — Stage 5B rollbackHotUpdate delegator", () => {
+  it("task with no migration history → VERSION_NOT_IN_HISTORY", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const r = svc.rollbackHotUpdate({
-      taskId: "nonexistent", toVersion: "hash-foo", actor: "test",
+    const r = await svc.rollbackHotUpdate({
+      taskId: "nonexistent",
+      toVersion: "hash-foo",
+      actor: "test",
     });
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error("expected failure");
@@ -982,26 +984,11 @@ describe("KernelService — Stage 5A rollbackHotUpdate skeleton", () => {
     db.close();
   });
 
-  it("valid history match → writes audit row with status='rolled_back'", () => {
-    const db = makeDb();
-    const svc = new KernelService(db, { skipTypeCheck: true });
-    db.prepare(
-      `INSERT INTO hot_update_events
-       (event_id, task_id, from_version, to_version, actor, proposal_id,
-        rerun_from_stage, status, started_at, finished_at, diagnostic_json)
-       VALUES ('e1', 't1', 'v-old', 'v-new', 'ai', NULL, NULL, 'success', 1, 2, NULL)`,
-    ).run();
-    const r = svc.rollbackHotUpdate({
-      taskId: "t1", toVersion: "v-old", actor: "test",
-    });
-    if (!r.ok) throw new Error("expected ok: " + JSON.stringify(r.diagnostics));
-    expect(r.eventId).toBeTruthy();
-    const row = db.prepare(
-      `SELECT status, diagnostic_json FROM hot_update_events WHERE event_id = ?`,
-    ).get(r.eventId) as { status: string; diagnostic_json: string | null };
-    expect(row.status).toBe("rolled_back");
-    expect(row.diagnostic_json).toContain("rollback-skeleton-v1");
-    db.close();
+  it.skip("valid history match → Stage 5B really executes migration (covered by rollback.test.ts)", async () => {
+    // Retired in Stage 5B: the skeleton path that only wrote an audit
+    // row is replaced by executeRollback which synthesizes a real
+    // proposal and calls executeMigration. See rollback.test.ts for
+    // end-to-end coverage.
   });
 });
 
