@@ -20,7 +20,7 @@ export type CheckpointStatus =
 
 export interface CheckpointTimeouts {
   revParseMs: number;
-  stashCreateMs: number;
+  snapshotMs: number;
   diffMs: number;
 }
 
@@ -61,7 +61,7 @@ export interface GitResult {
 
 export const DEFAULT_CHECKPOINT_TIMEOUTS: CheckpointTimeouts = {
   revParseMs: 5_000,
-  stashCreateMs: 10_000,
+  snapshotMs: 10_000,
   diffMs: 10_000,
 };
 

@@ -135,7 +135,7 @@ between runPipeline startup and attempt start.
 ```
 apps/server/src/kernel-next/runtime/checkpoint/
   types.ts                       CheckpointStatus, CheckpointConfig, CheckpointRow
-  git-commands.ts                gitRevParseHead / gitStashCreate / gitDiff / isGitRepo
+  git-commands.ts                gitRevParseHead / snapshotWorkTree / gitDiff / isGitRepo
   checkpoint.ts                  captureBefore / captureAfter
   checkpoint.test.ts             Unit tests (mock execGit)
   checkpoint.integration.test.ts End-to-end with real tmp git repo
@@ -162,11 +162,12 @@ export interface CheckpointConfig {
   /** Cap on cached diff_text length. Default 5 MiB. Beyond this,
    *  diff_text is stored NULL and status='diff_too_large'. */
   maxDiffBytes?: number;
-  /** Per-call timeouts. Defaults: revParse 5 000, stashCreate 10 000,
-   *  diff 10 000. */
+  /** Per-call timeouts. Defaults: revParse 5 000, snapshot 10 000,
+   *  diff 10 000. `snapshotMs` bounds the four sub-steps of
+   *  snapshotWorkTree collectively. */
   timeouts?: {
     revParseMs?: number;
-    stashCreateMs?: number;
+    snapshotMs?: number;
     diffMs?: number;
   };
 }
@@ -187,7 +188,7 @@ export interface CheckpointRow {
 
 ### 5.2 `git-commands.ts`
 
-Four pure helpers over `spawnWithTimeout`. All return structured
+Low-level helpers over `spawnWithTimeout`. All return structured
 results, never throw. `GitResult` is exported from `types.ts`.
 
 ```ts
@@ -203,25 +204,48 @@ export interface GitResult {
 // in git-commands.ts
 export async function isGitRepo(cwd: string, timeoutMs: number): Promise<boolean>;
 export async function gitRevParseHead(cwd: string, timeoutMs: number): Promise<GitResult>;
-export async function gitStashCreate(cwd: string, timeoutMs: number): Promise<GitResult>;
+export async function snapshotWorkTree(cwd: string, timeoutMs: number): Promise<GitResult>;
 export async function gitDiff(cwd: string, from: string, to: string, timeoutMs: number): Promise<GitResult>;
 ```
 
-- `isGitRepo`: `git rev-parse --is-inside-work-tree`; true iff exit 0.
-- `gitStashCreate`: `git stash create -u` (untracked-inclusive). Returns
-  trimmed stdout as the dangling commit SHA. **If the working tree is
-  clean, stdout is empty** — caller treats this as "fall back to
-  `git rev-parse HEAD`".
+- `isGitRepo`: `git rev-parse --is-inside-work-tree`; true iff exit 0 + stdout=='true'.
+- `snapshotWorkTree`: captures the full working-tree state (including
+  untracked files, but excluding `.gitignore`'d paths) as a **dangling
+  commit SHA** without mutating `.git/index`, any ref, or the working
+  tree. Returns the commit SHA on `stdout`. If the repository has no
+  HEAD yet (freshly `git init`ed, zero commits), returns ok=false.
 
-All helpers build env from `{ ...process.env, PATH: process.env.PATH + ':/opt/homebrew/bin:/usr/local/bin' }` (matches `lib/git.ts`
-convention).
+  Implementation recipe (all under a scratch `GIT_INDEX_FILE`):
+  1. `git read-tree HEAD` into the scratch index (cheap starting point).
+  2. `git add -A` into the scratch index (honours `.gitignore`, adds
+     untracked + staged + working-tree modifications).
+  3. `git write-tree` → tree SHA.
+  4. `git commit-tree <tree-sha> -p HEAD -m "wfc-checkpoint"` → commit
+     SHA written to stdout.
+
+  The scratch index lives in `os.tmpdir()` with a `mkdtemp` prefix
+  (`wfc-cp-idx-*`) and is removed via `rm -rf` after `commit-tree`
+  completes — success path or error path. The runtime's `.git/index`
+  is never touched because `GIT_INDEX_FILE` is overridden for every
+  subcommand. All four subprocesses share the same env + scratch path.
+
+  **Why not `git stash create -u`:** `git stash create` does not
+  honour `-u` on current git versions (the flag is silently accepted
+  as the message argument). Verified on git 2.50.1.
+
+- `gitDiff`: `git diff --no-color <from> <to>`.
+
+All helpers build env from
+`{ ...process.env, PATH: process.env.PATH + ':/opt/homebrew/bin:/usr/local/bin', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' }`.
+`snapshotWorkTree` additionally sets `GIT_INDEX_FILE=<scratch>` on
+every subprocess it spawns.
 
 ### 5.3 `checkpoint.ts`
 
 ```ts
 interface CheckpointDeps {
   gitRevParseHead: typeof import('./git-commands.js').gitRevParseHead;
-  gitStashCreate: typeof import('./git-commands.js').gitStashCreate;
+  snapshotWorkTree: typeof import('./git-commands.js').snapshotWorkTree;
   gitDiff: typeof import('./git-commands.js').gitDiff;
   isGitRepo: typeof import('./git-commands.js').isGitRepo;
   pathExists: (p: string) => Promise<boolean>;
@@ -259,7 +283,7 @@ export async function captureAfter(
 ```
 1. if !pathExists(workdir): INSERT status='disabled', diagnostic='workdir not found'; return
 2. if !isGitRepo(workdir): INSERT status='not_a_repo'; return
-3. stashResult = gitStashCreate(workdir)
+3. stashResult = snapshotWorkTree(workdir)
    if stashResult.ok && stashResult.stdout.trim() != '':
        before_sha = stashResult.stdout.trim()
    else:
@@ -276,7 +300,7 @@ export async function captureAfter(
 ```
 1. row = SELECT * FROM stage_checkpoints WHERE attempt_id = ?
    if !row || row.status != 'capturing' || row.before_sha == null: return
-2. stashResult = gitStashCreate(row.workdir)
+2. stashResult = snapshotWorkTree(row.workdir)
    if stashResult.ok && stashResult.stdout.trim() != '':
        after_sha = stashResult.stdout.trim()
    else:
@@ -363,11 +387,11 @@ import { access } from 'node:fs/promises';
 const cpConfig = resolveCheckpointConfig(opts.checkpointConfig);
 //   resolves defaults: enabled=true, workdir=process.cwd(),
 //   maxDiffBytes=5*1024*1024,
-//   timeouts={revParseMs:5_000, stashCreateMs:10_000, diffMs:10_000}
+//   timeouts={revParseMs:5_000, snapshotMs:10_000, diffMs:10_000}
 
 const cpDeps: CheckpointDeps = {
   gitRevParseHead: gitCommands.gitRevParseHead,
-  gitStashCreate: gitCommands.gitStashCreate,
+  snapshotWorkTree: gitCommands.snapshotWorkTree,
   gitDiff: gitCommands.gitDiff,
   isGitRepo: gitCommands.isGitRepo,
   pathExists: async (p) => access(p).then(() => true).catch(() => false),
@@ -469,8 +493,8 @@ Real `child_process`, real tmp git repo (`fs.mkdtemp` + `git init`).
 
 | # | Decision | Rationale |
 |---|---|---|
-| D1 | `git stash create -u` not `git commit -a` | No ref mutation; dangling commit GC-safe |
-| D2 | Fall back to `rev-parse HEAD` when tree clean | stash create returns empty for clean tree |
+| D1 | Scratch-index `read-tree`+`add -A`+`write-tree`+`commit-tree` (snapshotWorkTree) | `git stash create -u` does not honour `-u`; scratch-index pattern captures untracked without mutating refs/index/worktree |
+| D2 | Fall back to `rev-parse HEAD` when snapshot outputs empty or repo has no HEAD | Older repos / edge cases where commit-tree has no parent |
 | D3 | New table, not `agent_execution_details` column | Applies to script/gate stages too; isolates concerns |
 | D4 | Fire-and-forget hooks, but awaited at run end | Doesn't perturb stage lifecycle timing; still deterministic for tests |
 | D5 | `-u` (include untracked), no `-a` (exclude ignored) | Agents create files; ignored dirs (node_modules, build) would bloat diff |
