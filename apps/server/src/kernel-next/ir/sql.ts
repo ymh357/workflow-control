@@ -302,6 +302,27 @@ CREATE INDEX IF NOT EXISTS idx_sed_module
 CREATE INDEX IF NOT EXISTS idx_sed_open
   ON script_execution_details(started_at)
   WHERE ended_at IS NULL;
+
+-- Phase 5C worktree ownership contract (W1). One row per task that
+-- has ever had a workdir allocated. PK on task_id: a single task
+-- owns at most one workdir over its whole lifetime (migration /
+-- resume reuse the same row, last_used_at bumped). status disting-
+-- uishes active (worktree exists + usable), unavailable (git setup
+-- failed, caller falls back to no-checkpoint mode), pruned (user
+-- removed workdir; branch may or may not still exist).
+CREATE TABLE IF NOT EXISTS task_worktrees (
+  task_id       TEXT PRIMARY KEY,
+  workdir       TEXT NOT NULL,
+  base_branch   TEXT,
+  branch_name   TEXT NOT NULL,
+  status        TEXT NOT NULL
+    CHECK (status IN ('active','unavailable','pruned')),
+  created_at    INTEGER NOT NULL,
+  last_used_at  INTEGER NOT NULL,
+  diagnostic    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tw_status
+  ON task_worktrees(status);
 `;
 
 export function initKernelNextSchema(db: DatabaseSync): void {
@@ -328,6 +349,7 @@ export function initKernelNextSchema(db: DatabaseSync): void {
       // disable temporarily so the drops don't cascade-reject.
       db.exec("PRAGMA foreign_keys = OFF");
       db.exec(`
+        DROP TABLE IF EXISTS task_worktrees;
         DROP TABLE IF EXISTS script_execution_details;
         DROP TABLE IF EXISTS stage_checkpoints;
         DROP TABLE IF EXISTS agent_execution_details;
