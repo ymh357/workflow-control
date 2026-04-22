@@ -199,6 +199,21 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
           maxTurns: z.number().int().positive().optional(),
           maxBudgetUsd: z.number().positive().optional(),
           taskId: z.string().optional(),
+          checkpointConfig: z
+            .object({
+              enabled: z.boolean().optional(),
+              workdir: z.string().optional(),
+              maxDiffBytes: z.number().int().positive().optional(),
+              timeouts: z
+                .object({
+                  revParseMs: z.number().int().positive().optional(),
+                  snapshotMs: z.number().int().positive().optional(),
+                  diffMs: z.number().int().positive().optional(),
+                })
+                .optional(),
+            })
+            .optional()
+            .describe("Per-task checkpoint config; omit to use defaults (enabled=true, workdir=process.cwd())"),
         },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         handler: async (args: any) => {
@@ -217,6 +232,10 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
               maxTurns: typeof args.maxTurns === "number" ? args.maxTurns : undefined,
               maxBudgetUsd: typeof args.maxBudgetUsd === "number" ? args.maxBudgetUsd : undefined,
               taskId: typeof args.taskId === "string" ? args.taskId : undefined,
+              checkpointConfig:
+                args.checkpointConfig && typeof args.checkpointConfig === "object"
+                  ? (args.checkpointConfig as import("../runtime/checkpoint/checkpoint.js").CheckpointConfig)
+                  : undefined,
               tscPath: options.tscPath,
             });
             if (result.ok === true) {
