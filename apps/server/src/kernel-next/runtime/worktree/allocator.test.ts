@@ -59,6 +59,7 @@ describe("allocator + resolver (W3)", () => {
       expect(r.status).toBe("active");
       expect(r.workdir).toBe(join(wtRoot, "t1"));
       expect(r.branchName).toBe("wfc/task/t1");
+      if (r.workdir === null) throw new Error("unreachable: active but null workdir");
       // On-disk dir exists
       const s = await stat(r.workdir);
       expect(s.isDirectory()).toBe(true);

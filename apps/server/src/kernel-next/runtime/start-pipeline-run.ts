@@ -29,6 +29,7 @@ import type { StageHandlerMap } from "./mock-executor.js";
 import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import { logger } from "../../lib/logger.js";
 import type { CheckpointConfig } from "./checkpoint/checkpoint.js";
+import { allocateWorktree } from "./worktree/allocator.js";
 
 export interface StartPipelineRunInput {
   db: DatabaseSync;
@@ -52,7 +53,22 @@ export interface StartPipelineRunInput {
   resumeFrom?: string;
   // Phase 4.5 Step 1 — forwarded to runPipeline. Optional; when omitted,
   // runner applies defaults (enabled: true, workdir: process.cwd(), etc.).
+  // When `worktreeSourceRepo` is set below, this field is overridden by
+  // the allocated worktree (caller-provided checkpointConfig only wins
+  // when worktreeSourceRepo is omitted).
   checkpointConfig?: CheckpointConfig;
+  // Phase 5C — worktree ownership contract. When set, the task gets an
+  // isolated git worktree branched off of `baseBranch` (default HEAD)
+  // under `<worktreeRoot>/<taskId>/`. Checkpoint capture + future B9
+  // git-reset operations all happen inside that directory.
+  //
+  // When omitted: no worktree is allocated; checkpointConfig falls
+  // back to whatever the caller provided (or runner defaults).
+  worktreeSourceRepo?: string;
+  /** Root directory for per-task worktrees. Defaults to `{data_dir}/worktrees`. */
+  worktreeRoot?: string;
+  /** Branch ref to start the worktree from. Defaults to source repo HEAD. */
+  baseBranch?: string;
 }
 
 // Minimal ExecutionPolicy shape — only policy.default is consumed by
@@ -224,6 +240,52 @@ export async function startPipelineRun(
   const taskId = input.taskId
     ?? `${nameForRegistry}-${Date.now()}-${randomUUID().slice(0, 8)}`;
 
+  // --- Worktree allocation (Phase 5C) -------------------------------
+  //
+  // Opt-in: only when caller specified worktreeSourceRepo. allocate is
+  // idempotent per taskId — migration-driven resume calls pass the
+  // same taskId and the allocator returns the existing row without
+  // re-creating the directory.
+  let resolvedCheckpointConfig = input.checkpointConfig;
+  if (input.worktreeSourceRepo) {
+    const worktreeRoot = input.worktreeRoot
+      ?? `${process.env.DATA_DIR || "/tmp/workflow-control-data"}/worktrees`;
+    try {
+      const alloc = await allocateWorktree(db, taskId, {
+        repo: input.worktreeSourceRepo,
+        worktreeRoot,
+        baseBranch: input.baseBranch,
+      });
+      if (alloc.status === "active" && alloc.workdir) {
+        // Merge caller-supplied checkpointConfig (excluding workdir)
+        // with the allocated directory so captureBefore / captureAfter
+        // run against the task's owned workdir.
+        resolvedCheckpointConfig = {
+          ...(input.checkpointConfig ?? {}),
+          workdir: alloc.workdir,
+          enabled: input.checkpointConfig?.enabled ?? true,
+        };
+      } else {
+        // Allocation unavailable — explicitly disable checkpoint to
+        // avoid capturing against process.cwd() (would record server
+        // changes, not agent changes — see checkpoint.ts default doc).
+        resolvedCheckpointConfig = {
+          ...(input.checkpointConfig ?? {}),
+          enabled: false,
+        };
+      }
+    } catch (err) {
+      logger.warn(
+        { taskId, err: (err as Error).message },
+        "[startPipelineRun] worktree allocation threw; running without checkpoint",
+      );
+      resolvedCheckpointConfig = {
+        ...(input.checkpointConfig ?? {}),
+        enabled: false,
+      };
+    }
+  }
+
   // --- Fire runPipeline in background ---
   //
   // runPipeline throws synchronously on setup errors (e.g.
@@ -240,7 +302,7 @@ export async function startPipelineRun(
     seedValues: input.seedValues,
     broadcaster: input.broadcaster,
     resumeFrom: input.resumeFrom,
-    checkpointConfig: input.checkpointConfig,
+    checkpointConfig: resolvedCheckpointConfig,
   }, input.timeoutMs).catch((err: unknown) => {
     logger.error(
       { taskId, versionHash, err },
