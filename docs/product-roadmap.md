@@ -156,7 +156,7 @@
 5. Parsed writes vs 实际 commit writes（区分"agent 说要写什么"和"实际写进了什么"）
 6. Cost / token / duration / model / session_id
 7. Worktree diff（stage 启动前 vs 结束后的 git diff）
-8. Scratch pad 快照 + PreCompact 触发点（原为 single-session 场景关键；single-session 目前未回补，参见 §4 行 105 TODO。multi-session 下字段 #8 的等价物是 per-attempt `compact_boundary` 事件可观测 —— agent_execution_details 新列 `compact_events_json`，Phase 4.5 Step 2 待定）
+8. Scratch pad 快照 + PreCompact 触发点（原为 single-session 场景关键；single-session 目前未回补，参见 §4 行 105 TODO。multi-session 下等价物 **已落地 2026-04-24 Phase 4.5 T1**：`agent_execution_details.compact_events_json` 新列；每次 SDK 的 `compact_boundary` 事件记录 `{ trigger, preTokens, startedAt, endedAt }`。源头是 SDK adapter 已有的 `COMPACT_STARTED` / `COMPACT_ENDED` 事件，real-executor 映射到 writer.appendCompactEvent / completeCompactEvent）
 
 **保留策略**：永久保留，手动清理
 
@@ -192,8 +192,13 @@ A1 nearly complete. Sidecar tables in kernel-next.db:
 new `stage_checkpoints` table FK'd to stage_attempts records
 `before_sha` / `after_sha` / cached `diff_text` using
 scratch-index snapshot (no ref mutation, includes untracked). Fire-and-forget capture
-via PortRuntime AttemptHooks; awaited before run_final. **Remaining:
-field #8 (scratch pad + PreCompact trigger)** — Phase 4.5 Step 2.
+via PortRuntime AttemptHooks; awaited before run_final.
+**A1 field #8 (compact events) landed in Phase 4.5 T1 (2026-04-24)**:
+new `compact_events_json` column on `agent_execution_details` records
+`{trigger, preTokens, startedAt, endedAt}` per SDK compact_boundary;
+writer API `appendCompactEvent` / `completeCompactEvent` wired into
+real-executor via adapter events. Single-session scratch-pad
+capture is absorbed by `single-session 回补` (§4 line 105 TODO).
 Legacy `workflow.db.execution_records` table + `lib/execution-record/`
 module deleted in Stage 6.
 
