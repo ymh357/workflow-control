@@ -24,6 +24,7 @@ import { runPipeline } from "../runtime/runner.js";
 import { RealStageExecutor } from "../runtime/real-executor.js";
 import { DbPromptResolver } from "../runtime/db-prompt-resolver.js";
 import { startPipelineRun } from "../runtime/start-pipeline-run.js";
+import { replayStage } from "../debug/replay-stage.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
 
@@ -112,7 +113,9 @@ type ToolName =
   // Stage 5A
   | "dry_run_proposal" | "update_registry_pipeline" | "rollback_hot_update"
   // Stage 5E
-  | "query_hot_update_stats";
+  | "query_hot_update_stats"
+  // A4 Phase 4.5 Tier2
+  | "replay_stage";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
@@ -126,6 +129,8 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "dry_run_proposal", "update_registry_pipeline", "rollback_hot_update",
   // Stage 5E addition
   "query_hot_update_stats",
+  // A4 Phase 4.5 Tier2
+  "replay_stage",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
@@ -582,6 +587,59 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
               ok: true,
               report: diffRuns(db, String(args.taskA), String(args.taskB)),
             });
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "replay_stage",
+        description:
+          "Re-execute a specific stage attempt with the same inputs as the " +
+          "original (reconstructed from lineage reads). Produces a NEW attempt " +
+          "tagged kind='replay' + replayed_from_attempt_id, leaving the source " +
+          "attempt untouched. Useful for debugging flaky agent stages or " +
+          "reproducing a prior failure under current conditions. Only 'regular' " +
+          "attempts of agent/script stages are replayable; external-seed, gate, " +
+          "fanout, and prior-replay attempts are rejected with " +
+          "SOURCE_STAGE_NOT_REPLAYABLE.",
+        inputSchema: {
+          attemptId: z.string().describe("attempt_id of the source attempt to replay"),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            const sourceAttemptId = String(args.attemptId);
+            // DbPromptResolver is version-bound; look up the source
+            // attempt's version_hash first so the executor resolves
+            // prompts against the right pipeline version. replay-stage's
+            // preflight will re-derive the same hash, but we need it
+            // here to construct the executor.
+            const versionRow = db.prepare(
+              `SELECT version_hash FROM stage_attempts WHERE attempt_id = ?`,
+            ).get(sourceAttemptId) as { version_hash: string } | undefined;
+            if (!versionRow) {
+              return jsonResponse({
+                ok: false,
+                code: "SOURCE_ATTEMPT_NOT_FOUND",
+                message: `no stage_attempts row with attempt_id='${sourceAttemptId}'`,
+              });
+            }
+            const executor = new RealStageExecutor({
+              mcpServerFactory: (_dispatcher, portRuntime) =>
+                createKernelMcp(db, {
+                  surface: "combined",
+                  portRuntime,
+                  tscPath: options.tscPath,
+                }),
+              promptResolver: new DbPromptResolver(db, versionRow.version_hash),
+            });
+            const result = await replayStage({
+              db,
+              sourceAttemptId,
+              executor,
+            });
+            return jsonResponse(result);
           } catch (err) {
             return errorResponse(err instanceof Error ? err.message : String(err));
           }

@@ -241,11 +241,11 @@ module deleted in Stage 6.
 **依赖**：A1 + A2 + A3 全部完成
 
 **工具集合**（待详细设计）：
-- `analyze_task_failure(taskId)`：AI 读执行记录，给出诊断
+- `analyze_task_failure(taskId)`：AI 读执行记录，给出诊断 ✅ Phase 4 (debug-queries)
 - `propose_pipeline_fix(taskId, diagnosis)`：AI 基于诊断给出 pipeline 改动建议
 - `dry_run_stage(pipelineVersion, stageName, storeState)`：不跑整 pipeline 试单 stage
-- `compare_runs(taskId_a, taskId_b)`：两次执行的结构化对比
-- `replay_stage(taskId, stageName, attempt)`：重放某 stage 的具体 attempt
+- `compare_runs(taskId_a, taskId_b)`：两次执行的结构化对比（近似由 `diff_runs` 提供：port-level 对比；execution-record-level 对比待补）
+- `replay_stage(attemptId)`：重放某 stage 的具体 attempt ✅ Phase 4.5 Tier2（新 `debug/replay-stage.ts` 核心 + MCP tool；新 attempt kind='replay' + replayed_from_attempt_id；inputs 从 lineage reads 重建；源 attempt 不被修改；仅支持 regular agent/script 的 attempt）
 
 **设计原则**：这些工具都给 AI 用，让 AI 形成"任务失败 → 分析 → 修改 → 验证"的闭环
 

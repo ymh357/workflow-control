@@ -33,7 +33,7 @@ export type AttemptStatus = "running" | "success" | "error" | "superseded";
 // externalInputs values (§4.7 of the legacy-yaml-converter spec). Callers
 // that care about attempt provenance (diff_runs, future UI) filter on
 // this column instead of inferring from stage shape.
-export type AttemptKind = "regular" | "fanout_element" | "fanout_aggregate" | "external";
+export type AttemptKind = "regular" | "fanout_element" | "fanout_aggregate" | "external" | "replay";
 
 export interface StartAttemptArgs {
   taskId: string;
@@ -51,6 +51,9 @@ export interface StartAttemptArgs {
   // suppressing the start hook cleanly prevents dangling 'capturing'
   // rows without needing a separate finish-hook suppression signal.
   suppressHooks?: boolean;
+  // A4 replay_stage: when this attempt reproduces an earlier attempt,
+  // points back at that attempt's id. NULL for non-replay attempts.
+  replayedFromAttemptId?: string;
 }
 
 export interface StartAttemptResult {
@@ -178,9 +181,19 @@ export class PortRuntime {
 
     this.db.prepare(
       `INSERT INTO stage_attempts
-       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status, kind)
-       VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
-    ).run(attemptId, args.taskId, args.versionHash, args.stageName, attemptIdx, Date.now(), kind);
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+        started_at, status, kind, replayed_from_attempt_id)
+       VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
+    ).run(
+      attemptId,
+      args.taskId,
+      args.versionHash,
+      args.stageName,
+      attemptIdx,
+      Date.now(),
+      kind,
+      args.replayedFromAttemptId ?? null,
+    );
 
     if (this.hooks.onAttemptStarted && !args.suppressHooks) {
       try {

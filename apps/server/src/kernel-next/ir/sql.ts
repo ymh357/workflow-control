@@ -59,7 +59,11 @@ CREATE TABLE IF NOT EXISTS stage_attempts (
   status         TEXT NOT NULL
     CHECK (status IN ('running','success','error','superseded')),
   kind           TEXT NOT NULL DEFAULT 'regular'
-    CHECK (kind IN ('regular','fanout_element','fanout_aggregate','external'))
+    CHECK (kind IN ('regular','fanout_element','fanout_aggregate','external','replay')),
+  -- A4 replay_stage: points to the original attempt this replay
+  -- reproduces. NULL for non-replay attempts. No FK enforcement to
+  -- allow replaying an attempt that has since been pruned.
+  replayed_from_attempt_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sa_task_stage     ON stage_attempts(task_id, stage_name, attempt_idx DESC);
 CREATE INDEX IF NOT EXISTS idx_sa_version_stage  ON stage_attempts(version_hash, stage_name);
