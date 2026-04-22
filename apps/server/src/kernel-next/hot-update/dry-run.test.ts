@@ -70,6 +70,42 @@ describe("dryRunProposal", () => {
     expect(r.diff.stages.modified).toHaveLength(1);
   });
 
+  it("store_schema drift in proposed IR -> rejected with STORE_SCHEMA_TYPE_MISMATCH", () => {
+    // Seed a base IR that already carries a store_schema bound to port
+    // 'a.out' with type='string'; then propose a patch that changes that
+    // port's type to 'number'. Validator must reject before diff/impact.
+    const irWithSchema: PipelineIR = {
+      ...baseIR,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      store_schema: {
+        result: {
+          type: "string",
+          produced_by: { stage: "a", port: "out" },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+    const hash = pipelineVersionHash({ ir: irWithSchema, prompts: { "p-a": "prompt body" } });
+    insertPipelineVersion(db, irWithSchema, { versionHash: hash, tsSource: "// ts" });
+    db.prepare(
+      `INSERT INTO prompt_contents (content_hash, content, created_at) VALUES (?, ?, ?)`,
+    ).run("abc", "prompt body", Date.now());
+    db.prepare(
+      `INSERT INTO pipeline_prompt_refs (version_hash, prompt_ref, content_hash) VALUES (?, ?, ?)`,
+    ).run(hash, "p-a", "abc");
+
+    const patch: IRPatch = {
+      ops: [{
+        op: "update_port_type",
+        stage: "a", port: "out", direction: "out", newType: "number",
+      }],
+    };
+    const r = dryRunProposal(db, { currentVersion: hash, patch });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("expected rejection");
+    expect(r.diagnostics.some((d) => d.code === "STORE_SCHEMA_TYPE_MISMATCH")).toBe(true);
+  });
+
   it("structural change (add stage) -> verdict=unsafe + wouldAutoApprove=false", () => {
     const base = seedBase(db);
     const patch: IRPatch = {

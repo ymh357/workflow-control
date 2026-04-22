@@ -5,9 +5,10 @@
 // Flow:
 //   1. Load base IR from pipeline_versions (CONFLICT if missing).
 //   2. Apply the patch (PATCH_APPLY_ERROR branch for invalid ops).
-//   3. Run structural + DAG validators. Type-level (tsc) validation is
-//      intentionally skipped here — it spawns a subprocess (~3-5s) and
-//      the actual propose path re-runs full validation at commit time.
+//   3. Run structural + DAG + store_schema validators. Type-level (tsc)
+//      validation is intentionally skipped here — it spawns a subprocess
+//      (~3-5s) and the actual propose path re-runs full validation at
+//      commit time.
 //   4. Compute diff, impact, safeRange; derive wouldAutoApprove.
 //   5. Compute proposedVersion as the IR-only versionHash (matches
 //      KernelService.propose — both kernel.ts §388 and this path persist
@@ -19,6 +20,7 @@ import type { Diagnostic, PipelineIR } from "../ir/schema.js";
 import { applyPatch, PatchApplyError } from "../mcp/patch.js";
 import { validateStructural } from "../validator/structural.js";
 import { validateDag } from "../validator/dag.js";
+import { validateStoreSchema } from "../validator/store-schema.js";
 import { versionHash } from "../ir/canonical.js";
 import { computePipelineDiff } from "./diff.js";
 import { computeImpact } from "./impact.js";
@@ -64,12 +66,15 @@ export function dryRunProposal(
     throw err;
   }
 
-  // 3. Validate (structural + DAG only; see file header).
+  // 3. Validate (structural + DAG + store_schema; type-check skipped — see
+  //    file header: dry-run is IR-only, doesn't emit TS).
   const diagnostics: Diagnostic[] = [];
   const structural = validateStructural(proposedIR);
   if (!structural.ok) diagnostics.push(...structural.diagnostics);
   const dag = validateDag(proposedIR);
   if (!dag.ok) diagnostics.push(...dag.diagnostics);
+  const storeSchemaResult = validateStoreSchema(proposedIR);
+  if (!storeSchemaResult.ok) diagnostics.push(...storeSchemaResult.diagnostics);
   if (diagnostics.length > 0) {
     return { ok: false, diagnostics };
   }

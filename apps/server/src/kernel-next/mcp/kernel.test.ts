@@ -54,6 +54,47 @@ describe("KernelService", () => {
     db.close();
   });
 
+  it("validate rejects with STORE_SCHEMA_TYPE_MISMATCH when drift is introduced", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const ir = diamondIR();
+    // Diamond terminal stage 'd' has an output port; declare store_schema
+    // with a mismatched type to trigger drift detection at build time.
+    const terminal = ir.stages.find((s) => s.outputs.length > 0);
+    if (!terminal) throw new Error("diamondIR has no stage with outputs");
+    const firstOutput = terminal.outputs[0]!;
+    const driftedType = firstOutput.type.trim() === "string" ? "number" : "string";
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ir as any).store_schema = {
+      firstOutput: {
+        type: driftedType,
+        produced_by: { stage: terminal.name, port: firstOutput.name },
+      },
+    };
+    const r = svc.validate(ir);
+    expect(r.ok).toBe(false);
+    expect(r.diagnostics.some((d) => d.code === "STORE_SCHEMA_TYPE_MISMATCH")).toBe(true);
+    db.close();
+  });
+
+  it("validate accepts store_schema that matches the stage outputs", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const ir = diamondIR();
+    const terminal = ir.stages.find((s) => s.outputs.length > 0);
+    if (!terminal) throw new Error("diamondIR has no stage with outputs");
+    const firstOutput = terminal.outputs[0]!;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ir as any).store_schema = {
+      firstOutput: {
+        type: firstOutput.type,
+        produced_by: { stage: terminal.name, port: firstOutput.name },
+      },
+    };
+    expect(svc.validate(ir).ok).toBe(true);
+    db.close();
+  });
+
   it("submit persists a valid IR", () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });

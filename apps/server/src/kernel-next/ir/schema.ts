@@ -179,12 +179,30 @@ export const WireIRSchema = z.preprocess(
   }),
 );
 
+// A3 (Phase 4.5 Tier 3): a pipeline-level data dictionary. Each key
+// names a semantic store slot; `produced_by` points at the concrete
+// output port that carries it. `type` is a free-form TS type string —
+// it must textually match the referenced port's `type` (trimmed). Deep
+// structural equivalence is deferred to tsc by the same convention the
+// rest of the IR uses for type strings.
+export const StoreSchemaEntrySchema = z.object({
+  type: z.string().min(1),
+  description: z.string().optional(),
+  produced_by: z.object({
+    stage: identifier,
+    port: identifier,
+  }),
+});
+
+export const StoreSchemaSchema = z.record(z.string().min(1), StoreSchemaEntrySchema);
+
 export const PipelineIRSchema = z.object({
   name: z.string().min(1).max(128),
   stages: z.array(StageIRSchema).min(1),
   wires: z.array(WireIRSchema).default([]),
   entry: identifier.optional(),
   externalInputs: z.array(PortIRSchema).default([]),
+  store_schema: StoreSchemaSchema.optional(),
 });
 
 export type PortIR = z.infer<typeof PortIRSchema>;
@@ -218,6 +236,9 @@ export type WireIR = {
 // PipelineIR type: externalInputs is typed as optional to keep legacy
 // fixtures compiling. At runtime PipelineIRSchema defaults it to [], so
 // consumers observing a parsed IR will always see a concrete array.
+export type StoreSchemaEntry = z.infer<typeof StoreSchemaEntrySchema>;
+export type StoreSchema = z.infer<typeof StoreSchemaSchema>;
+
 export type PipelineIR = Omit<z.infer<typeof PipelineIRSchema>, "externalInputs" | "wires"> & {
   externalInputs?: PortIR[];
   wires: WireIR[];
@@ -309,6 +330,10 @@ export const DiagnosticSchema = z.object({
     "MIGRATION_INTERRUPT_TIMEOUT",
     "MIGRATION_RESUME_FAILED",
     "ROLLBACK_EMPTY_DIFF",
+    // Phase 4.5 Tier 3 — A3 store_schema drift
+    "STORE_SCHEMA_STAGE_MISSING",
+    "STORE_SCHEMA_PORT_MISSING",
+    "STORE_SCHEMA_TYPE_MISMATCH",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

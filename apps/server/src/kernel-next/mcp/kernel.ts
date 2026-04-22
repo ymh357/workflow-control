@@ -11,6 +11,7 @@ import type {
 } from "../ir/schema.js";
 import { validateStructural } from "../validator/structural.js";
 import { validateDag } from "../validator/dag.js";
+import { validateStoreSchema } from "../validator/store-schema.js";
 import { validateTypes } from "../validator/types.js";
 import { emitPipelineModule } from "../codegen/emit-ts.js";
 import {
@@ -233,6 +234,11 @@ export class KernelService {
     const dag = validateDag(pipeline);
     if (!dag.ok) {
       return { ok: false, diagnostics: dag.diagnostics };
+    }
+
+    const storeSchemaResult = validateStoreSchema(pipeline);
+    if (!storeSchemaResult.ok) {
+      return { ok: false, diagnostics: storeSchemaResult.diagnostics };
     }
 
     if (!this.opts.skipTypeCheck) {
