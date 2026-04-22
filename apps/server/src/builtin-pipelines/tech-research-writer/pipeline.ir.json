@@ -1,0 +1,274 @@
+{
+  "externalInputs": [
+    {
+      "name": "benchmarkResults",
+      "type": "unknown"
+    },
+    {
+      "name": "communityIntel",
+      "type": "unknown"
+    },
+    {
+      "name": "domainKnowledge",
+      "type": "unknown"
+    },
+    {
+      "name": "landscapeResults",
+      "type": "unknown"
+    },
+    {
+      "name": "ossHealthFacts",
+      "type": "unknown"
+    },
+    {
+      "name": "outputPlan",
+      "type": "unknown"
+    },
+    {
+      "name": "painPoints",
+      "type": "unknown"
+    },
+    {
+      "name": "pipelineConfig",
+      "type": "unknown"
+    },
+    {
+      "name": "primarySources",
+      "type": "unknown"
+    },
+    {
+      "name": "projectContext",
+      "type": "unknown"
+    },
+    {
+      "name": "solutionPlan",
+      "type": "unknown"
+    },
+    {
+      "name": "sourceCodeFacts",
+      "type": "unknown"
+    },
+    {
+      "name": "verificationFacts",
+      "type": "unknown"
+    }
+  ],
+  "name": "Tech Research Writer",
+  "stages": [
+    {
+      "config": {
+        "promptRef": "system/write-deliverable"
+      },
+      "inputs": [
+        {
+          "name": "benchmarkResults",
+          "type": "unknown"
+        },
+        {
+          "name": "communityIntel",
+          "type": "unknown"
+        },
+        {
+          "name": "domainKnowledge",
+          "type": "unknown"
+        },
+        {
+          "name": "landscapeResults",
+          "type": "unknown"
+        },
+        {
+          "name": "ossHealthFacts",
+          "type": "unknown"
+        },
+        {
+          "name": "outputPlan",
+          "type": "unknown"
+        },
+        {
+          "name": "painPoints",
+          "type": "unknown"
+        },
+        {
+          "name": "pipelineConfig",
+          "type": "unknown"
+        },
+        {
+          "name": "primarySources",
+          "type": "unknown"
+        },
+        {
+          "name": "projectContext",
+          "type": "unknown"
+        },
+        {
+          "name": "solutionPlan",
+          "type": "unknown"
+        },
+        {
+          "name": "sourceCodeFacts",
+          "type": "unknown"
+        },
+        {
+          "name": "verificationFacts",
+          "type": "unknown"
+        }
+      ],
+      "name": "writeDeliverable",
+      "outputs": [
+        {
+          "name": "deliverableId",
+          "type": "string"
+        },
+        {
+          "name": "filePath",
+          "type": "string"
+        },
+        {
+          "name": "sourcesLinked",
+          "type": "number"
+        },
+        {
+          "name": "verificationRefsCount",
+          "type": "number"
+        },
+        {
+          "name": "wordCount",
+          "type": "number"
+        }
+      ],
+      "type": "agent"
+    }
+  ],
+  "wires": [
+    {
+      "from": {
+        "port": "benchmarkResults",
+        "source": "external"
+      },
+      "to": {
+        "port": "benchmarkResults",
+        "stage": "writeDeliverable"
+      }
+    },
+    {
+      "from": {
+        "port": "communityIntel",
+        "source": "external"
+      },
+      "to": {
+        "port": "communityIntel",
+        "stage": "writeDeliverable"
+      }
+    },
+    {
+      "from": {
+        "port": "domainKnowledge",
+        "source": "external"
+      },
+      "to": {
+        "port": "domainKnowledge",
+        "stage": "writeDeliverable"
+      }
+    },
+    {
+      "from": {
+        "port": "landscapeResults",
+        "source": "external"
+      },
+      "to": {
+        "port": "landscapeResults",
+        "stage": "writeDeliverable"
+      }
+    },
+    {
+      "from": {
+        "port": "ossHealthFacts",
+        "source": "external"
+      },
+      "to": {
+        "port": "ossHealthFacts",
+        "stage": "writeDeliverable"
+      }
+    },
+    {
+      "from": {
+        "port": "outputPlan",
+        "source": "external"
+      },
+      "to": {
+        "port": "outputPlan",
+        "stage": "writeDeliverable"
+      }
+    },
+    {
+      "from": {
+        "port": "painPoints",
+        "source": "external"
+      },
+      "to": {
+        "port": "painPoints",
+        "stage": "writeDeliverable"
+      }
+    },
+    {
+      "from": {
+        "port": "pipelineConfig",
+        "source": "external"
+      },
+      "to": {
+        "port": "pipelineConfig",
+        "stage": "writeDeliverable"
+      }
+    },
+    {
+      "from": {
+        "port": "primarySources",
+        "source": "external"
+      },
+      "to": {
+        "port": "primarySources",
+        "stage": "writeDeliverable"
+      }
+    },
+    {
+      "from": {
+        "port": "projectContext",
+        "source": "external"
+      },
+      "to": {
+        "port": "projectContext",
+        "stage": "writeDeliverable"
+      }
+    },
+    {
+      "from": {
+        "port": "solutionPlan",
+        "source": "external"
+      },
+      "to": {
+        "port": "solutionPlan",
+        "stage": "writeDeliverable"
+      }
+    },
+    {
+      "from": {
+        "port": "sourceCodeFacts",
+        "source": "external"
+      },
+      "to": {
+        "port": "sourceCodeFacts",
+        "stage": "writeDeliverable"
+      }
+    },
+    {
+      "from": {
+        "port": "verificationFacts",
+        "source": "external"
+      },
+      "to": {
+        "port": "verificationFacts",
+        "stage": "writeDeliverable"
+      }
+    }
+  ]
+}

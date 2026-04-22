@@ -1,0 +1,968 @@
+{
+  "externalInputs": [
+    {
+      "name": "taskDescription",
+      "type": "string"
+    }
+  ],
+  "name": "Pipeline Generator",
+  "stages": [
+    {
+      "config": {
+        "promptRef": "system/analysis"
+      },
+      "inputs": [
+        {
+          "name": "description",
+          "type": "unknown"
+        }
+      ],
+      "name": "analyzing",
+      "outputs": [
+        {
+          "name": "assumptions",
+          "type": "string[]"
+        },
+        {
+          "name": "dataFlowSummary",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
+        },
+        {
+          "name": "estimatedStageCount",
+          "type": "number"
+        },
+        {
+          "name": "pipelineId",
+          "type": "string"
+        },
+        {
+          "name": "pipelineName",
+          "type": "string"
+        },
+        {
+          "name": "recommendedMcps",
+          "type": "string[]"
+        },
+        {
+          "name": "recommendedSkills",
+          "type": "string[]"
+        },
+        {
+          "name": "stageContracts",
+          "type": "Record<string, unknown>[]"
+        },
+        {
+          "name": "stageDesign",
+          "type": "string"
+        },
+        {
+          "name": "subPipelineContracts",
+          "type": "Record<string, unknown>[]"
+        },
+        {
+          "name": "summary",
+          "type": "string"
+        },
+        {
+          "name": "targetRepoName",
+          "type": "string"
+        },
+        {
+          "name": "useCases",
+          "type": "string[]"
+        },
+        {
+          "name": "usesFanout",
+          "type": "boolean"
+        },
+        {
+          "name": "usesSubPipelines",
+          "type": "boolean"
+        }
+      ],
+      "type": "agent"
+    },
+    {
+      "config": {
+        "question": {
+          "text": "Approve this result?"
+        },
+        "routing": {
+          "routes": {
+            "approve": "genSkeleton",
+            "reject": "analyzing"
+          }
+        }
+      },
+      "inputs": [
+        {
+          "name": "__gate_signal",
+          "type": "unknown"
+        }
+      ],
+      "name": "awaitingConfirm",
+      "outputs": [],
+      "type": "gate"
+    },
+    {
+      "config": {
+        "promptRef": "system/gen-prompts",
+        "subAgents": [
+          {
+            "description": "Generates a single system prompt for one kernel-next agent stage.",
+            "maxTurns": 20,
+            "model": "sonnet",
+            "name": "prompt-writer",
+            "prompt": "You write system prompts for workflow-control kernel-next agent stages. Given a stage specification (name, inputs ports, outputs ports, purpose, budget, whether it invokes run_pipeline), produce a high-quality system prompt in markdown.\n\nRequired structure: role definition (1-2 sentences), Available Inputs section listing each input port with its type and meaning, step-by-step Workflow with action verbs, explicit write_port calls for each output port using literal syntax, and Error Handling section with concrete fallbacks.\n\nCritical rules:\n- 30-80 lines per prompt. Under 30 is too vague, over 80 dilutes attention.\n- Do NOT include a JSON output schema section — writes go through write_port MCP tool calls, which the prompt must show literal examples of.\n- If the stage invokes a sub-pipeline, include explicit run_pipeline instructions with the exact sub-pipeline name and input shape.\n- Use specific roles (\"security auditor scanning OWASP vulnerabilities\") not generic ones (\"AI assistant\").\n- Do not fabricate output ports that are not declared in the stage spec.\n",
+            "tools": [
+              "Read",
+              "Write"
+            ]
+          }
+        ]
+      },
+      "inputs": [
+        {
+          "name": "assumptions",
+          "type": "string[]"
+        },
+        {
+          "name": "dataFlowSummary",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
+        },
+        {
+          "name": "estimatedStageCount",
+          "type": "number"
+        },
+        {
+          "name": "ir",
+          "type": "Record<string, unknown>"
+        },
+        {
+          "name": "pipelineId",
+          "type": "string"
+        },
+        {
+          "name": "pipelineName",
+          "type": "string"
+        },
+        {
+          "name": "recommendedMcps",
+          "type": "string[]"
+        },
+        {
+          "name": "recommendedSkills",
+          "type": "string[]"
+        },
+        {
+          "name": "stageContracts",
+          "type": "Record<string, unknown>[]"
+        },
+        {
+          "name": "stageDesign",
+          "type": "string"
+        },
+        {
+          "name": "subIrs",
+          "type": "Record<string, unknown>[]"
+        },
+        {
+          "name": "subPipelineContracts",
+          "type": "Record<string, unknown>[]"
+        },
+        {
+          "name": "summary",
+          "type": "string"
+        },
+        {
+          "name": "targetRepoName",
+          "type": "string"
+        },
+        {
+          "name": "useCases",
+          "type": "string[]"
+        },
+        {
+          "name": "usesFanout",
+          "type": "boolean"
+        },
+        {
+          "name": "usesSubPipelines",
+          "type": "boolean"
+        }
+      ],
+      "name": "genPrompts",
+      "outputs": [
+        {
+          "name": "prompts",
+          "type": "Record<string, unknown>"
+        },
+        {
+          "name": "subPrompts",
+          "type": "Record<string, unknown>[]"
+        }
+      ],
+      "type": "agent"
+    },
+    {
+      "config": {
+        "promptRef": "system/gen-skeleton"
+      },
+      "inputs": [
+        {
+          "name": "assumptions",
+          "type": "string[]"
+        },
+        {
+          "name": "dataFlowSummary",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
+        },
+        {
+          "name": "estimatedStageCount",
+          "type": "number"
+        },
+        {
+          "name": "pipelineId",
+          "type": "string"
+        },
+        {
+          "name": "pipelineName",
+          "type": "string"
+        },
+        {
+          "name": "recommendedMcps",
+          "type": "string[]"
+        },
+        {
+          "name": "recommendedSkills",
+          "type": "string[]"
+        },
+        {
+          "name": "stageContracts",
+          "type": "Record<string, unknown>[]"
+        },
+        {
+          "name": "stageDesign",
+          "type": "string"
+        },
+        {
+          "name": "subPipelineContracts",
+          "type": "Record<string, unknown>[]"
+        },
+        {
+          "name": "summary",
+          "type": "string"
+        },
+        {
+          "name": "targetRepoName",
+          "type": "string"
+        },
+        {
+          "name": "useCases",
+          "type": "string[]"
+        },
+        {
+          "name": "usesFanout",
+          "type": "boolean"
+        },
+        {
+          "name": "usesSubPipelines",
+          "type": "boolean"
+        }
+      ],
+      "name": "genSkeleton",
+      "outputs": [
+        {
+          "name": "ir",
+          "type": "Record<string, unknown>"
+        },
+        {
+          "name": "subIrs",
+          "type": "Record<string, unknown>[]"
+        }
+      ],
+      "type": "agent"
+    },
+    {
+      "config": {
+        "promptRef": "system/persist"
+      },
+      "inputs": [
+        {
+          "name": "assumptions",
+          "type": "string[]"
+        },
+        {
+          "name": "dataFlowSummary",
+          "type": "string"
+        },
+        {
+          "name": "description",
+          "type": "string"
+        },
+        {
+          "name": "estimatedStageCount",
+          "type": "number"
+        },
+        {
+          "name": "ir",
+          "type": "Record<string, unknown>"
+        },
+        {
+          "name": "pipelineId",
+          "type": "string"
+        },
+        {
+          "name": "pipelineName",
+          "type": "string"
+        },
+        {
+          "name": "prompts",
+          "type": "Record<string, unknown>"
+        },
+        {
+          "name": "recommendedMcps",
+          "type": "string[]"
+        },
+        {
+          "name": "recommendedSkills",
+          "type": "string[]"
+        },
+        {
+          "name": "stageContracts",
+          "type": "Record<string, unknown>[]"
+        },
+        {
+          "name": "stageDesign",
+          "type": "string"
+        },
+        {
+          "name": "subIrs",
+          "type": "Record<string, unknown>[]"
+        },
+        {
+          "name": "subPipelineContracts",
+          "type": "Record<string, unknown>[]"
+        },
+        {
+          "name": "subPrompts",
+          "type": "Record<string, unknown>[]"
+        },
+        {
+          "name": "summary",
+          "type": "string"
+        },
+        {
+          "name": "targetRepoName",
+          "type": "string"
+        },
+        {
+          "name": "useCases",
+          "type": "string[]"
+        },
+        {
+          "name": "usesFanout",
+          "type": "boolean"
+        },
+        {
+          "name": "usesSubPipelines",
+          "type": "boolean"
+        }
+      ],
+      "name": "persisting",
+      "outputs": [
+        {
+          "name": "pipelineId",
+          "type": "string"
+        },
+        {
+          "name": "pipelineName",
+          "type": "string"
+        },
+        {
+          "name": "subVersionHashes",
+          "type": "string[]"
+        },
+        {
+          "name": "versionHash",
+          "type": "string"
+        }
+      ],
+      "type": "agent"
+    }
+  ],
+  "wires": [
+    {
+      "from": {
+        "port": "taskDescription",
+        "source": "external"
+      },
+      "to": {
+        "port": "description",
+        "stage": "analyzing"
+      }
+    },
+    {
+      "from": {
+        "port": "pipelineName",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "__gate_signal",
+        "stage": "awaitingConfirm"
+      }
+    },
+    {
+      "from": {
+        "port": "assumptions",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "assumptions",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "dataFlowSummary",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "dataFlowSummary",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "description",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "description",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "estimatedStageCount",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "estimatedStageCount",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "ir",
+        "stage": "genSkeleton"
+      },
+      "to": {
+        "port": "ir",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "pipelineId",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "pipelineId",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "pipelineName",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "pipelineName",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "recommendedMcps",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "recommendedMcps",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "recommendedSkills",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "recommendedSkills",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "stageContracts",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "stageContracts",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "stageDesign",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "stageDesign",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "subIrs",
+        "stage": "genSkeleton"
+      },
+      "to": {
+        "port": "subIrs",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "subPipelineContracts",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "subPipelineContracts",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "summary",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "summary",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "targetRepoName",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "targetRepoName",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "useCases",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "useCases",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "usesFanout",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "usesFanout",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "usesSubPipelines",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "usesSubPipelines",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "assumptions",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "assumptions",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "dataFlowSummary",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "dataFlowSummary",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "description",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "description",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "estimatedStageCount",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "estimatedStageCount",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "pipelineId",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "pipelineId",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "pipelineName",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "pipelineName",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "recommendedMcps",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "recommendedMcps",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "recommendedSkills",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "recommendedSkills",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "stageContracts",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "stageContracts",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "stageDesign",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "stageDesign",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "subPipelineContracts",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "subPipelineContracts",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "summary",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "summary",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "targetRepoName",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "targetRepoName",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "useCases",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "useCases",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "usesFanout",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "usesFanout",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "usesSubPipelines",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "usesSubPipelines",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "assumptions",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "assumptions",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "dataFlowSummary",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "dataFlowSummary",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "description",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "description",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "estimatedStageCount",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "estimatedStageCount",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "ir",
+        "stage": "genSkeleton"
+      },
+      "to": {
+        "port": "ir",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "pipelineId",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "pipelineId",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "pipelineName",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "pipelineName",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "prompts",
+        "stage": "genPrompts"
+      },
+      "to": {
+        "port": "prompts",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "recommendedMcps",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "recommendedMcps",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "recommendedSkills",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "recommendedSkills",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "stageContracts",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "stageContracts",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "stageDesign",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "stageDesign",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "subIrs",
+        "stage": "genSkeleton"
+      },
+      "to": {
+        "port": "subIrs",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "subPipelineContracts",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "subPipelineContracts",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "subPrompts",
+        "stage": "genPrompts"
+      },
+      "to": {
+        "port": "subPrompts",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "summary",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "summary",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "targetRepoName",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "targetRepoName",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "useCases",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "useCases",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "usesFanout",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "usesFanout",
+        "stage": "persisting"
+      }
+    },
+    {
+      "from": {
+        "port": "usesSubPipelines",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "usesSubPipelines",
+        "stage": "persisting"
+      }
+    }
+  ]
+}

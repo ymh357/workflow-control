@@ -1,0 +1,88 @@
+{
+  "externalInputs": [
+    {
+      "name": "pipelineConfig",
+      "type": "unknown"
+    },
+    {
+      "name": "projectContext",
+      "type": "unknown"
+    }
+  ],
+  "name": "Tech Research Collector",
+  "stages": [
+    {
+      "config": {
+        "promptRef": "system/collect-target-sources"
+      },
+      "inputs": [
+        {
+          "name": "pipelineConfig",
+          "type": "unknown"
+        },
+        {
+          "name": "projectContext",
+          "type": "unknown"
+        }
+      ],
+      "name": "collectTargetSources",
+      "outputs": [
+        {
+          "name": "extractedFacts",
+          "type": "string[]"
+        },
+        {
+          "name": "officialSourceCount",
+          "type": "number"
+        },
+        {
+          "name": "reportPath",
+          "type": "string"
+        },
+        {
+          "name": "sourceCatalog",
+          "type": "string[]"
+        },
+        {
+          "name": "spaWarnings",
+          "type": "string[]"
+        },
+        {
+          "name": "subjectType",
+          "type": "string"
+        },
+        {
+          "name": "summary",
+          "type": "string"
+        },
+        {
+          "name": "targetName",
+          "type": "string"
+        }
+      ],
+      "type": "agent"
+    }
+  ],
+  "wires": [
+    {
+      "from": {
+        "port": "pipelineConfig",
+        "source": "external"
+      },
+      "to": {
+        "port": "pipelineConfig",
+        "stage": "collectTargetSources"
+      }
+    },
+    {
+      "from": {
+        "port": "projectContext",
+        "source": "external"
+      },
+      "to": {
+        "port": "projectContext",
+        "stage": "collectTargetSources"
+      }
+    }
+  ]
+}

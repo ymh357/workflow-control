@@ -1,0 +1,68 @@
+{
+  "name": "smoke-test",
+  "stages": [
+    {
+      "config": {
+        "promptRef": "system/echo-back"
+      },
+      "inputs": [
+        {
+          "name": "note",
+          "type": "string"
+        },
+        {
+          "name": "subject",
+          "type": "string"
+        }
+      ],
+      "name": "echoBack",
+      "outputs": [
+        {
+          "name": "message",
+          "type": "string"
+        }
+      ],
+      "type": "agent"
+    },
+    {
+      "config": {
+        "promptRef": "system/greet"
+      },
+      "inputs": [],
+      "name": "greet",
+      "outputs": [
+        {
+          "name": "note",
+          "type": "string"
+        },
+        {
+          "name": "subject",
+          "type": "string"
+        }
+      ],
+      "type": "agent"
+    }
+  ],
+  "wires": [
+    {
+      "from": {
+        "port": "note",
+        "stage": "greet"
+      },
+      "to": {
+        "port": "note",
+        "stage": "echoBack"
+      }
+    },
+    {
+      "from": {
+        "port": "subject",
+        "stage": "greet"
+      },
+      "to": {
+        "port": "subject",
+        "stage": "echoBack"
+      }
+    }
+  ]
+}
