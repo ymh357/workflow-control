@@ -283,7 +283,7 @@ module deleted in Stage 6.
 
 | # | 决策 |
 |---|---|
-| B9 | **Worktree 切换**：git reset 到改动 stage 的 checkpoint + 旧 diff 写进 StageMemory 作参考 |
+| B9 | **Worktree 切换**：git reset 到改动 stage 的 checkpoint + 旧 diff 写进 StageMemory 作参考 ⚠️ 部分落地 Phase 4.5 Tier2：新 `migration_hints` 表捕捉被 supersede attempt 的 diff，RealStageExecutor consume 后注入新 attempt system prompt 作为"Migration note" advisory。**完整 B9 (git reset --hard before_sha)** 延后 —— 需要先补 task-worktree 独占 ownership 契约（Phase 5C worktree 生命周期）后再做，否则多 task 共享 workdir 时 reset 不安全 |
 | B10 | **Session 中止**：Graceful——给 agent 1 轮写总结再停。预期延迟 10-60s |
 | B11 | **不相关的 running stage**：让它跑完，后续 stage 用新 pipeline 定义 ✅ 5B（`computeWireTransitiveReaders` 只 supersede 有 wire 依赖的 stage；sibling attempt 不受影响） |
 | B12 | **Single-session 热更新**：开新 session。旧对话历史以摘要形式注入新 session 的 tier1 —— 依赖 single-session 回补（§4 行 105 TODO）。Multi-session 架构下不适用（每个 stage 本就是新 session）；等价能力由 port-level summary handoff 提供（agent 被 interrupt 前写 summary 到指定 port，下游 stage 读该 port），待 single-session 决策后细化 |

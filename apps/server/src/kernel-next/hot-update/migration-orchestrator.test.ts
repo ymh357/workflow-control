@@ -391,3 +391,135 @@ describe("executeMigration — concurrent lock", () => {
     db.close();
   });
 });
+
+describe("executeMigration — B9 migration_hint", () => {
+  beforeEach(() => {
+    __resetOrchestratorLocksForTest();
+    taskRegistry.__clearForTest();
+  });
+
+  it("writes migration_hints row with diff + note after supersede", async () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("submit failed");
+
+    const firstAgent = diamondIR().stages.find((s) => s.type === "agent")!;
+    const attemptId = seedAttempt(db, "t-b9", submitted.versionHash, firstAgent.name, "success");
+
+    // Seed a checkpoint row for that attempt — status='captured' with a
+    // canned diff text. This is exactly the shape stage_checkpoints
+    // would hold after a real attempt ran under the Phase 4.5 Step 1
+    // infra.
+    db.prepare(
+      `INSERT INTO stage_checkpoints
+       (attempt_id, workdir, before_sha, after_sha, diff_text, diff_bytes,
+        status, captured_before_at, captured_after_at)
+       VALUES (?, '/tmp', 'aaa', 'bbb',
+               '--- a/file\n+++ b/file\n@@ -1 +1 @@\n-x\n+y\n',
+               36, 'captured', 100, 200)`,
+    ).run(attemptId);
+
+    const newPromptRef =
+      firstAgent.type === "agent"
+        ? firstAgent.config.promptRef + "-v2"
+        : "x";
+    const propose = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: {
+        ops: [{
+          op: "update_stage_config",
+          stage: firstAgent.name,
+          configPatch: { promptRef: newPromptRef },
+        }],
+      },
+      actor: "test",
+      rerunFrom: firstAgent.name,
+      migrateRunningTasks: ["t-b9"],
+      autoApprove: true,
+    });
+    if (!propose.ok) throw new Error("propose failed");
+
+    const startRunner = vi.fn(async () => ({
+      ok: true as const,
+      taskId: "t-b9",
+      versionHash: propose.proposedVersion,
+    }));
+
+    const r = await executeMigration({
+      db,
+      taskId: "t-b9",
+      proposalId: propose.proposalId,
+      startRunnerOverride: startRunner as never,
+    });
+    expect(r.ok).toBe(true);
+
+    const hint = db.prepare(
+      `SELECT task_id, stage_name, from_version, to_version,
+              previous_attempt_id, previous_diff_text, previous_diff_bytes,
+              note, consumed_at
+       FROM migration_hints
+       WHERE task_id = 't-b9' AND stage_name = ?`,
+    ).get(firstAgent.name) as Record<string, unknown> | undefined;
+    expect(hint).toBeDefined();
+    expect(hint!.from_version).toBe(submitted.versionHash);
+    expect(hint!.to_version).toBe(propose.proposedVersion);
+    expect(hint!.previous_attempt_id).toBe(attemptId);
+    expect(hint!.previous_diff_text).toContain("+y");
+    expect(hint!.previous_diff_bytes).toBe(36);
+    expect(hint!.note).toContain(attemptId);
+    expect(hint!.consumed_at).toBeNull();
+    db.close();
+  });
+
+  it("writes hint with null diff when no checkpoint existed", async () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("submit failed");
+    const firstAgent = diamondIR().stages.find((s) => s.type === "agent")!;
+    seedAttempt(db, "t-nc", submitted.versionHash, firstAgent.name, "success");
+    // Deliberately NO checkpoint row.
+
+    const newPromptRef =
+      firstAgent.type === "agent"
+        ? firstAgent.config.promptRef + "-v2"
+        : "x";
+    const propose = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: {
+        ops: [{
+          op: "update_stage_config",
+          stage: firstAgent.name,
+          configPatch: { promptRef: newPromptRef },
+        }],
+      },
+      actor: "test",
+      rerunFrom: firstAgent.name,
+      migrateRunningTasks: ["t-nc"],
+      autoApprove: true,
+    });
+    if (!propose.ok) throw new Error("propose failed");
+
+    const r = await executeMigration({
+      db,
+      taskId: "t-nc",
+      proposalId: propose.proposalId,
+      startRunnerOverride: vi.fn(async () => ({
+        ok: true as const,
+        taskId: "t-nc",
+        versionHash: propose.proposedVersion,
+      })) as never,
+    });
+    expect(r.ok).toBe(true);
+
+    const hint = db.prepare(
+      `SELECT previous_diff_text, note FROM migration_hints
+       WHERE task_id = 't-nc' AND stage_name = ?`,
+    ).get(firstAgent.name) as { previous_diff_text: string | null; note: string } | undefined;
+    expect(hint).toBeDefined();
+    expect(hint!.previous_diff_text).toBeNull();
+    expect(hint!.note).toContain("without checkpoint capture");
+    db.close();
+  });
+});

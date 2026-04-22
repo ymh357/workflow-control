@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { taskRegistry } from "../runtime/task-registry.js";
 import { computeWireTransitiveReaders } from "./wire-reachable.js";
 import { startPipelineRun } from "../runtime/start-pipeline-run.js";
+import { writeMigrationHint } from "./migration-hints.js";
 import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import type { PipelineIR } from "../ir/schema.js";
 import type {
@@ -267,6 +268,29 @@ export async function executeMigration(
       };
     }
 
+    // --- 9b: Migration hint for rerunFrom stage (B9 partial) --------
+    // After supersede lands but before the new runner starts, capture the
+    // latest diff from the superseded rerunFrom attempt and stage it as
+    // a migration_hint. RealStageExecutor consumes it when opening the
+    // replacement attempt and injects the diff into that attempt's
+    // system prompt as advisory context.
+    //
+    // Full B9 (git reset --hard before_sha) requires task-worktree
+    // ownership semantics not yet in place; see Phase 5C.
+    if (rerunFrom) {
+      try {
+        writeB9MigrationHint(db, {
+          taskId, stageName: rerunFrom,
+          fromVersion, toVersion,
+        });
+      } catch (err) {
+        // Hint-write failures must NOT fail the migration. Log shape only.
+        // Downstream agent just loses the diff context, which is advisory.
+        // (Orchestrator has no logger handle; swallow silently — the
+        //  hot_update_events audit row still captures the overall outcome.)
+      }
+    }
+
     // --- 10: Resume -------------------------------------------------
     if (!rerunFrom) {
       // Forward-only proposal with no rerunFrom → no new stages to kick
@@ -407,4 +431,69 @@ function writeAuditFailed(
     // Best-effort audit; if this also fails the DB is fully broken and
     // the caller still returns a diagnostic.
   }
+}
+
+/**
+ * B9 (partial): capture the most recent superseded attempt on
+ * `stageName` (the rerunFrom stage) and stage its worktree diff as a
+ * migration_hint the successor attempt can pick up. No-op when there
+ * is no superseded attempt, no checkpoint, or no captured diff.
+ */
+function writeB9MigrationHint(
+  db: DatabaseSync,
+  args: {
+    taskId: string;
+    stageName: string;
+    fromVersion: string;
+    toVersion: string;
+  },
+): void {
+  const attempt = db.prepare(
+    `SELECT attempt_id FROM stage_attempts
+     WHERE task_id = ? AND stage_name = ? AND status = 'superseded'
+     ORDER BY attempt_idx DESC
+     LIMIT 1`,
+  ).get(args.taskId, args.stageName) as { attempt_id: string } | undefined;
+
+  if (!attempt) {
+    // The rerunFrom stage had no running/success attempts to supersede
+    // (fresh migration, resume_from pointing at a stage not yet run).
+    // Nothing to hint about.
+    return;
+  }
+
+  const checkpoint = db.prepare(
+    `SELECT diff_text, diff_bytes, status AS cp_status FROM stage_checkpoints
+     WHERE attempt_id = ?`,
+  ).get(attempt.attempt_id) as
+    | { diff_text: string | null; diff_bytes: number | null; cp_status: string }
+    | undefined;
+
+  let note: string | null = null;
+  let diffText: string | null = null;
+  let diffBytes: number | null = null;
+
+  if (!checkpoint) {
+    note = "previous attempt ran without checkpoint capture";
+  } else if (checkpoint.diff_text === null && checkpoint.cp_status === "diff_too_large") {
+    note = `previous attempt's diff exceeded cap (${checkpoint.diff_bytes} bytes); not inlined`;
+    diffBytes = checkpoint.diff_bytes;
+  } else if (checkpoint.diff_text === null) {
+    note = `previous attempt checkpoint status=${checkpoint.cp_status}; diff unavailable`;
+  } else {
+    diffText = checkpoint.diff_text;
+    diffBytes = checkpoint.diff_bytes;
+    note = `diff from superseded attempt ${attempt.attempt_id}`;
+  }
+
+  writeMigrationHint(db, {
+    taskId: args.taskId,
+    stageName: args.stageName,
+    fromVersion: args.fromVersion,
+    toVersion: args.toVersion,
+    previousAttemptId: attempt.attempt_id,
+    previousDiffText: diffText,
+    previousDiffBytes: diffBytes,
+    note,
+  });
 }

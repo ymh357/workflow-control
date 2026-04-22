@@ -47,6 +47,7 @@ import {
 } from "./execution-record-writer.js";
 import type { TerminationReason } from "./execution-record-types.js";
 import { promptContentHash } from "../ir/canonical.js";
+import { consumeHint, type MigrationHint } from "../hot-update/migration-hints.js";
 
 export interface RealStageExecutorOptions {
   /**
@@ -215,10 +216,15 @@ export class RealStageExecutor implements StageExecutor {
       },
     );
 
-    // 4. System prompt append describing the stage contract — tool-call only.
+    // 4a. B9 migration hint (if this is the successor attempt of a
+    //     superseded one). Consumed atomically so retries of the same
+    //     stage inside one run don't re-inject the same hint twice.
+    const migrationHint = consumeMigrationHint(portRuntime.getDb(), taskId, stageName);
+
+    // 4b. System prompt append describing the stage contract — tool-call only.
     const systemPromptAppend = buildSystemPromptAppend(stage, userPrompt, inputs, {
       taskId, attemptId,
-    });
+    }, migrationHint);
 
     // 4. Run query() and consume stream. Output path is the MCP
     //    `write_port` tool (one call per declared output port). The final
@@ -679,6 +685,7 @@ export function buildSystemPromptAppend(
   resolvedPrompt: string,
   inputs: Record<string, unknown>,
   ctx: { taskId: string; attemptId: string },
+  migrationHint?: MigrationHint | null,
 ): string {
   const inputPortLines = stage.inputs
     .map((p) => `  - ${p.name}: ${p.type}`)
@@ -716,6 +723,8 @@ export function buildSystemPromptAppend(
       "If you cannot proceed due to missing input data, emit these default values for each port and describe the issue in a string port (e.g., summary or error_message if available)."
     : "";
 
+  const migrationNote = migrationHint ? renderMigrationNote(migrationHint) : "";
+
   return [
     `You are running stage '${stage.name}' in a kernel-next pipeline.`,
     "",
@@ -731,6 +740,7 @@ export function buildSystemPromptAppend(
     "### Task",
     promptSummary,
     emptyInputsWarning,
+    migrationNote,
     "",
     "### Output protocol (MANDATORY — read carefully)",
     "The ONLY way to emit output for this stage is to call the MCP tool",
@@ -810,6 +820,66 @@ function typeOfValueForHuman(v: unknown): string {
   }
   if (typeof v === "object") return "object";
   return typeof v;
+}
+
+/**
+ * B9 advisory block injected into the system prompt when a migration
+ * hint is consumed for this stage attempt. Rendered conservatively:
+ * if there is no diff text we still emit the note so the agent knows
+ * the stage was rebuilt on a new pipeline version.
+ */
+function renderMigrationNote(hint: MigrationHint): string {
+  const lines: string[] = [
+    "",
+    "### Migration note (B9)",
+    `This stage is being re-run after a hot-update migration from pipeline`,
+    `version ${hint.fromVersion} → ${hint.toVersion}. A prior attempt for`,
+    `this stage on the old version was superseded.`,
+  ];
+  if (hint.note) lines.push(`Context: ${hint.note}`);
+
+  if (hint.previousDiffText && hint.previousDiffText.length > 0) {
+    // Cap the inlined diff to keep the system prompt under control. The
+    // stage_checkpoints column itself caps at 5 MiB; here we show a
+    // narrower excerpt since the agent typically only needs the shape.
+    const MAX_INLINE_DIFF_CHARS = 8_000;
+    const diff = hint.previousDiffText.length > MAX_INLINE_DIFF_CHARS
+      ? hint.previousDiffText.slice(0, MAX_INLINE_DIFF_CHARS) + "\n... (diff truncated in prompt; full diff available in stage_checkpoints table)"
+      : hint.previousDiffText;
+    lines.push(
+      "",
+      "Previous attempt's worktree diff (advisory — not automatically applied):",
+      "```diff",
+      diff,
+      "```",
+      "You may choose to re-apply compatible parts, diverge intentionally, or",
+      "ignore this diff if the pipeline change invalidates it.",
+    );
+  } else {
+    lines.push(
+      "No diff available for the superseded attempt (either checkpointing",
+      "was disabled or no changes were captured).",
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Wraps consumeHint with a never-throw guard. If the hint table is
+ * unavailable or the query fails for any reason, the executor
+ * continues without injecting a migration note. B9 is advisory —
+ * its absence never fails a stage.
+ */
+function consumeMigrationHint(
+  db: import("node:sqlite").DatabaseSync,
+  taskId: string,
+  stageName: string,
+): MigrationHint | null {
+  try {
+    return consumeHint(db, taskId, stageName);
+  } catch {
+    return null;
+  }
 }
 
 export function exampleValueFor(tsType: string): string {

@@ -138,6 +138,36 @@ CREATE TABLE IF NOT EXISTS hot_update_events (
 CREATE INDEX IF NOT EXISTS idx_hue_task_started
   ON hot_update_events(task_id, started_at DESC);
 
+-- migration_hints (B9): carries context from a superseded attempt to
+-- its successor attempt after a hot-update migration. Written by the
+-- migration orchestrator right after supersede; read (and marked
+-- consumed) by RealStageExecutor when it opens the replacement attempt.
+--
+-- Primary value: the previous_diff_text column gives the successor
+-- agent a view of what the superseded agent had changed on the
+-- worktree so far, so it can incorporate or diverge intentionally.
+-- Completion of full B9 (git reset to before_sha) requires task-worktree
+-- lifecycle machinery which is out of scope here — see Phase 5C.
+CREATE TABLE IF NOT EXISTS migration_hints (
+  hint_id              TEXT PRIMARY KEY,
+  task_id              TEXT NOT NULL,
+  stage_name           TEXT NOT NULL,
+  from_version         TEXT NOT NULL,
+  to_version           TEXT NOT NULL,
+  previous_attempt_id  TEXT,
+  previous_diff_text   TEXT,
+  previous_diff_bytes  INTEGER,
+  note                 TEXT,
+  created_at           INTEGER NOT NULL,
+  consumed_at          INTEGER
+);
+
+-- Hot path: RealStageExecutor fetches the most recent unconsumed hint
+-- for (task_id, stage_name) when opening an attempt.
+CREATE INDEX IF NOT EXISTS idx_mh_task_stage_unconsumed
+  ON migration_hints(task_id, stage_name)
+  WHERE consumed_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS prompt_contents (
   content_hash TEXT PRIMARY KEY,
   content      TEXT NOT NULL,
