@@ -265,7 +265,7 @@ module deleted in Stage 6.
 - `analyze_task_failure(taskId)`：AI 读执行记录，给出诊断 ✅ Phase 4 (debug-queries)
 - `propose_pipeline_fix(taskId)`：基于诊断给出 pipeline 改动建议 ⚠️ Phase 4.5 Tier3 rule-based 版落地（新 `debug/propose-pipeline-fix.ts` + MCP external tool）。对 analyzeTaskFailure 的每条 hint 产 severity-tagged suggestion（kind ∈ {stuck_open / error_status / error_in_stream / interrupted / superseded / zero_attempts}）。每个 suggestion 包含 description + rationale；`proposedPatch` 字段预留给 AI-driven 补丁生成。target stage 不在当前 IR 中的 suggestion 自动过滤。AI-driven patch 生成延后（需真 API 调用；非 autonomous）。
 - `dry_run_stage(pipelineVersion, stageName, inputs)`：不跑整 pipeline 试单 stage ✅ Phase 4.5 Tier3（新 `debug/dry-run-stage.ts` + MCP tool；合成 task_id=`dry_run-<uuid>`，attempt kind='dry_run'；inputs 按 port name 平铺提供；inert dispatcher，不触发任何 XState machine；preflight: PIPELINE_VERSION_NOT_FOUND / STAGE_NOT_FOUND / STAGE_NOT_DRY_RUNNABLE（gate）/ MISSING_INPUT / EXECUTOR_THREW）
-- `compare_runs(taskId_a, taskId_b)`：两次执行的结构化对比（近似由 `diff_runs` 提供：port-level 对比；execution-record-level 对比待补）
+- `compare_runs(taskId_a, taskId_b)`：两次执行的结构化对比 ✅ Phase 4.5 T3 (2026-04-24)。新 `mcp/compare-runs.ts` + MCP external tool。per-stage 对比 cost / token / duration delta、prompt-content-hash 是否变化、tool-call 计数及 name-set 差异、compact-event 计数、termination_reason。选择每 stage 最后一个 kind∈{regular, fanout_aggregate, replay, dry_run} 的 attempt。script stage 对应 null delta（无 AED）。`diff_runs` 保留作 port-output-level 的快速对比。
 - `replay_stage(attemptId)`：重放某 stage 的具体 attempt ✅ Phase 4.5 Tier2（新 `debug/replay-stage.ts` 核心 + MCP tool；新 attempt kind='replay' + replayed_from_attempt_id；inputs 从 lineage reads 重建；源 attempt 不被修改；仅支持 regular agent/script 的 attempt）
 
 **设计原则**：这些工具都给 AI 用，让 AI 形成"任务失败 → 分析 → 修改 → 验证"的闭环
