@@ -1,0 +1,98 @@
+// Shared types for kernel-next/hot-update/ — Stage 5A.
+// Pure type definitions; no runtime code.
+
+import type {
+  PipelineIR, StageIR, WireIR, PortIR, GateRouting,
+} from "../ir/schema.js";
+
+export interface PortTypeChange {
+  port: string;
+  beforeType: string;
+  afterType: string;
+}
+
+export interface StageDiffChanges {
+  promptRef?:   { before: string; after: string };
+  moduleId?:    { before: string; after: string };
+  question?:    { before: unknown; after: unknown };
+  inputs?:      { added: PortIR[]; removed: PortIR[]; typeChanged: PortTypeChange[] };
+  outputs?:     { added: PortIR[]; removed: PortIR[]; typeChanged: PortTypeChange[] };
+}
+
+export interface StageDiff {
+  stageName: string;
+  type: "agent" | "script" | "gate";
+  changes: StageDiffChanges;
+  category: "promptOnly" | "portsOnly" | "budgetOnly" | "structural";
+}
+
+export interface PipelineDiff {
+  stages: {
+    added:    StageIR[];
+    removed:  { name: string; stage: StageIR }[];
+    modified: StageDiff[];
+  };
+  wires: {
+    added:   WireIR[];
+    removed: WireIR[];
+  };
+  routing: {
+    gateRoutingChanged: {
+      stageName: string;
+      before: GateRouting;
+      after:  GateRouting;
+    }[];
+  };
+  categoryUnion: Array<"promptOnly" | "portsOnly" | "budgetOnly" | "structural">;
+}
+
+export interface TaskImpact {
+  taskId: string;
+  currentStage: string | null;
+  affectedStages: string[];
+  resumable: boolean;
+  blockingReasons: string[];
+}
+
+export interface SchemaDriftIssue {
+  kind:
+    | "port_type_change_with_live_values"
+    | "removed_stage_with_downstream_readers"
+    | "removed_output_with_active_consumers";
+  stageName: string;
+  portName?: string;
+  details: string;
+}
+
+export interface Impact {
+  activeTasks: TaskImpact[];
+  newSubmissionsOk: boolean;
+  schemaDriftIssues: SchemaDriftIssue[];
+}
+
+export interface SafeRangeVerdict {
+  verdict: "safe" | "unsafe";
+  category: "promptOnly" | "portsOnly" | "budgetOnly" | "structural" | "empty";
+  reasons: string[];
+}
+
+export interface DryRunInput {
+  currentVersion: string;
+  patch: import("../ir/schema.js").IRPatch;
+  rerunFrom?: string | null;
+  migrateRunningTasks?: "all" | "none" | string[];
+}
+
+export type DryRunResult =
+  | {
+      ok: true;
+      diff: PipelineDiff;
+      impact: Impact;
+      safeRange: SafeRangeVerdict;
+      wouldAutoApprove: boolean;
+      proposedVersion: string;
+    }
+  | {
+      ok: false;
+      diagnostics: import("../ir/schema.js").Diagnostic[];
+    };
