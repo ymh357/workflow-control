@@ -80,5 +80,35 @@ describe("PortRuntime — AttemptKind provenance", () => {
       rt.finishAttempt(attemptId, "success");
       expect(sawRunning).toBe(true);
     });
+
+    it("suppressHooks=true skips onAttemptStarted for synthetic attempts", () => {
+      const db = new DatabaseSync(":memory:");
+      initKernelNextSchema(db);
+      const dispatcher = { send: () => {} };
+      const startedCalls: string[] = [];
+      const finishingCalls: string[] = [];
+      const rt = new PortRuntime(db, dispatcher, "regular", undefined, {
+        onAttemptStarted: (attemptId) => startedCalls.push(attemptId),
+        onAttemptFinishing: (attemptId) => finishingCalls.push(attemptId),
+      });
+      // Regular attempt: both hooks fire.
+      const regular = rt.startAttempt({
+        taskId: "t1", versionHash: "v1", stageName: "s1",
+      });
+      rt.finishAttempt(regular.attemptId, "success");
+      // Synthetic attempt: onAttemptStarted suppressed.
+      const synthetic = rt.startAttempt({
+        taskId: "t1", versionHash: "v1", stageName: "__external__",
+        kind: "external", suppressHooks: true,
+      });
+      rt.finishAttempt(synthetic.attemptId, "success");
+      expect(startedCalls).toEqual([regular.attemptId]);
+      // onAttemptFinishing still fires — callers that skip finish
+      // via raw SQL simply won't trigger it; here both attempts go
+      // through finishAttempt so both produce finish calls. For the
+      // synthetic one, captureAfter is still a safe no-op because
+      // captureBefore never inserted a row.
+      expect(finishingCalls).toEqual([regular.attemptId, synthetic.attemptId]);
+    });
   });
 });

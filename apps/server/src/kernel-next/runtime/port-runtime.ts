@@ -42,6 +42,15 @@ export interface StartAttemptArgs {
   // Optional per-call override. When unset, the PortRuntime's
   // constructor-supplied `defaultKind` (or 'regular' if none) is used.
   kind?: AttemptKind;
+  // When true, skip firing AttemptHooks.onAttemptStarted for this
+  // attempt. Used by callers for attempts whose end-of-life does not
+  // go through finishAttempt (gates finalised via raw SQL in
+  // KernelService.answerGate) or whose lifespan is synchronous and
+  // observationally uninteresting (external-seed attempt, fanout
+  // aggregate). Since captureAfter treats a missing row as a no-op,
+  // suppressing the start hook cleanly prevents dangling 'capturing'
+  // rows without needing a separate finish-hook suppression signal.
+  suppressHooks?: boolean;
 }
 
 export interface StartAttemptResult {
@@ -173,7 +182,7 @@ export class PortRuntime {
        VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
     ).run(attemptId, args.taskId, args.versionHash, args.stageName, attemptIdx, Date.now(), kind);
 
-    if (this.hooks.onAttemptStarted) {
+    if (this.hooks.onAttemptStarted && !args.suppressHooks) {
       try {
         this.hooks.onAttemptStarted(attemptId, args);
       } catch {

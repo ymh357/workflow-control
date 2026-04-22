@@ -462,6 +462,11 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
       versionHash: opts.versionHash,
       stageName: "__external__",
       kind: "external",
+      // Synthetic seed attempt that opens and closes synchronously.
+      // The attempt records port_values for lineage but does not
+      // represent agent work on the worktree, so no checkpoint row
+      // should be created for it.
+      suppressHooks: true,
     });
     for (const port of externalInputs) {
       portRuntime.writePort({
@@ -1139,6 +1144,12 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
                 taskId: opts.taskId,
                 versionHash: opts.versionHash,
                 stageName,
+                // Gate attempts are finalised by KernelService.answerGate
+                // via a raw SQL UPDATE that bypasses finishAttempt — so
+                // onAttemptFinishing would never fire for this row.
+                // Suppress the start hook too so no dangling 'capturing'
+                // checkpoint row is ever inserted.
+                suppressHooks: true,
               });
               kernel.createGate({
                 taskId: opts.taskId,
@@ -1455,6 +1466,10 @@ async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<FanoutResult
     versionHash,
     stageName: stageDef.name,
     kind: "fanout_aggregate",
+    // Synthetic aggregate attempt opens and closes within this
+    // function — it records lineage but does not represent agent
+    // work on the worktree. Skip checkpoint capture.
+    suppressHooks: true,
   });
   try {
     for (const name of declaredOutputs) {
