@@ -735,20 +735,38 @@ function buildStageRegion(
       },
     };
 
-    // A2.3.3 — forward INTERRUPT to the invoked child. The guard narrows
-    // to "this stage" so a parallel region's INTERRUPT for a sibling
-    // doesn't affect this one (owner decision §6.1). The child actor
-    // receives the raw event (it's a fromCallback in A2.3.3; see
-    // runner.ts) and translates it into an AbortSignal trigger for the
-    // executor → AgentMachine §4.2 path.
-    (executingBody.on as Record<string, unknown>).INTERRUPT = {
-      guard: ({ event }: { event: MachineEvent }) =>
-        event.type === "INTERRUPT" && event.stage === stageName,
-      actions: sendTo(
-        `${stageName}_exec`,
-        { type: "INTERRUPT" as const },
-      ),
-    };
+    // A2.3.3 — forward INTERRUPT to the invoked child. Two accepted shapes:
+    //   1. { type: 'INTERRUPT', stage: <stageName> } — targeted. Used when
+    //      a parallel region wants to stop just one sibling without
+    //      affecting others (owner decision §6.1).
+    //   2. { type: 'INTERRUPT' } — broadcast. Every currently-executing
+    //      stage region picks it up and forwards to its invoke child.
+    //      This is the shape migration-orchestrator sends: it wants to
+    //      halt whatever stage the task happens to be running, without
+    //      first querying which stage that is. Parallel sibling stops
+    //      are acceptable here because the migration rerun sequence
+    //      will re-invoke every wire-reachable region regardless.
+    // The invoke child is a fromCallback (A2.3.3; see runner.ts) and
+    // translates INTERRUPT into an AbortSignal trigger for the executor
+    // → AgentMachine §4.2 path.
+    (executingBody.on as Record<string, unknown>).INTERRUPT = [
+      {
+        guard: ({ event }: { event: MachineEvent }) =>
+          event.type === "INTERRUPT" && event.stage === stageName,
+        actions: sendTo(
+          `${stageName}_exec`,
+          { type: "INTERRUPT" as const },
+        ),
+      },
+      {
+        guard: ({ event }: { event: MachineEvent }) =>
+          event.type === "INTERRUPT" && event.stage === undefined,
+        actions: sendTo(
+          `${stageName}_exec`,
+          { type: "INTERRUPT" as const },
+        ),
+      },
+    ];
   }
 
   return {
