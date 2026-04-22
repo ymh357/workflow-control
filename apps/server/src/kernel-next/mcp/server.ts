@@ -26,6 +26,8 @@ import { DbPromptResolver } from "../runtime/db-prompt-resolver.js";
 import { startPipelineRun } from "../runtime/start-pipeline-run.js";
 import { replayStage } from "../debug/replay-stage.js";
 import { dryRunStage } from "../debug/dry-run-stage.js";
+import { proposePipelineFix } from "../debug/propose-pipeline-fix.js";
+import { analyzeTaskFailure } from "../../lib/debug-queries.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
 
@@ -118,7 +120,7 @@ type ToolName =
   // A4 Phase 4.5 Tier2
   | "replay_stage"
   // A4 Phase 4.5 Tier3
-  | "dry_run_stage";
+  | "dry_run_stage" | "propose_pipeline_fix";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
@@ -135,7 +137,7 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   // A4 Phase 4.5 Tier2
   "replay_stage",
   // A4 Phase 4.5 Tier3
-  "dry_run_stage",
+  "dry_run_stage", "propose_pipeline_fix",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
@@ -692,6 +694,32 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
               inputs,
               executor,
             });
+            return jsonResponse(result);
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "propose_pipeline_fix",
+        description:
+          "Given a failing taskId, analyse its stage_attempts + agent " +
+          "execution detail and produce a list of concrete pipeline-change " +
+          "suggestions. This is a RULE-BASED analyser — it surfaces stuck-open " +
+          "attempts, error_status failures, error markers in agent streams, " +
+          "supersede/interrupt provenance, and zero-attempt anomalies as " +
+          "human-readable suggestions tagged with severity. Some suggestions " +
+          "include a proposedPatch (deterministic IRPatch); most leave patch " +
+          "construction to an AI-driven follow-up step.",
+        inputSchema: {
+          taskId: z.string().describe("task_id whose failure we want suggestions for"),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            const taskId = String(args.taskId);
+            const report = analyzeTaskFailure(taskId);
+            const result = proposePipelineFix({ db, taskId, report });
             return jsonResponse(result);
           } catch (err) {
             return errorResponse(err instanceof Error ? err.message : String(err));
