@@ -34,24 +34,35 @@ session. One engineer, one machine, one server process.
 - **Not** a chat wrapper. The workflow engine is the product; the dashboard
   is the primary UI.
 
-## Frozen areas — do not extend
+## Retired areas (deleted 2026-04-24)
 
-These modules are retained for backward compatibility but receive **no
-new features, no refactors, no bug fixes** unless the user explicitly
-requests one. See `docs/product-roadmap.md` §3 S1.
+The following modules were deleted as part of Stage 4a of the kernel-next migration:
 
-- `apps/server/src/edge/` — Edge Runner (terminal-based execution).
-- `apps/server/src/agent/gemini-executor.ts` — Gemini engine.
-- `apps/server/src/agent/codex-executor.ts` — Codex engine.
+- `apps/server/src/edge/` — Edge Runner
+- `apps/server/src/agent/gemini-executor.ts` — Gemini engine
+- `apps/server/src/agent/codex-executor.ts` — Codex engine
+- `apps/server/src/agent/` (entire directory) — legacy Claude executor stack
+- `apps/server/src/machine/` — legacy XState workflow engine
+- `apps/server/src/actions/` — legacy orchestration seam
+- `apps/server/src/scripts/` — legacy script handlers
+- `apps/server/src/__integration__/`, `__audit__/`, `__regression__/` — legacy test suites
+- Legacy routes under `apps/server/src/routes/` (trigger, stream, tasks, confirm, answer, retry, cancel, config*, registry, action-helpers)
+- Legacy Next.js pages under `apps/web/src/app/` (task/[id], config, registry, help)
 
-If you are asked to touch these, flag the freeze status in your response
-before proceeding.
+**Legacy task data not migrated.** Task JSON files under `{data_dir}/tasks/*.json` produced by the legacy engine are inert after this milestone. Per `docs/kernel-next-terminal-design.md §1.3`, zero historical compatibility.
+
+**kernel-next is the only engine.** All new pipelines go through:
+- MCP tool `run_pipeline` (primary)
+- HTTP `POST /api/kernel/tasks/run` (dashboard entry)
+
+Converter (`kernel-next/converter/`) and the four seeded builtin YAMLs (`builtin-pipelines/{smoke-test,tech-research-collector,tech-research-writer,pipeline-generator}/`) are retained; Stage 4b migrates them to native IR.
 
 ## Primary engine
 
-**Claude is the primary, fully-supported engine.** New pipelines and
-new features target Claude (via the Claude Agent SDK). Do not propose
-adding features that depend on Gemini or Codex.
+**Claude is the only supported engine.** Gemini and Codex executors
+were retired on 2026-04-24 (see §Retired areas). New pipelines and
+new features target Claude (via the Claude Agent SDK) exclusively. Do
+not propose reintroducing Gemini or Codex support.
 
 ## Who writes the YAML
 

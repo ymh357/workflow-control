@@ -1102,8 +1102,8 @@ Not part of terminal design; acknowledged and parked:
 | Fragment system | userland-defined prompt assembly interface | §2.3 |
 | YAML DSL | IR (JSON or typescript literal) | YAML is a user-facing format; IR is canonical |
 | Budget / max_turns on stage | `ExecutionPolicy` layer | §5 |
-| Edge Runner | **removed** | Not in terminal |
-| Gemini / Codex engines | **removed from kernel** | Future `agent` subtypes possible, but not designed |
+| Edge Runner | **removed** | Not in terminal. Deleted 2026-04-24 (Stage 4a). |
+| Gemini / Codex engines | **removed from kernel** | Future `agent` subtypes possible, but not designed. Deleted 2026-04-24. |
 | slack-cli-bridge | **removed** | Not in terminal |
 | `retry.back_to` (QA feedback routing) | hot-update: a failed QA stage's AI proposes a patch that prepends a fix stage, then migrates with `rerunFrom=<the failed stage>` | §10 |
 | Git `compensation` strategy | AgentMachine INTERRUPT + sidecar records prior diff; the replacement attempt reads the prior diff as context | §10.5 step 4 |
