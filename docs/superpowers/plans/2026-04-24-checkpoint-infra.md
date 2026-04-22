@@ -1583,93 +1583,99 @@ EOF
 
 - [ ] **Step 1: Write failing runner integration tests**
 
-Append to `apps/server/src/kernel-next/runtime/runner.test.ts` (inside the top-level describe, before the closing `});`):
+The existing `runner.test.ts` (~1000 LOC) already has `diamondIR()`, `diamondHandlers()`, `makeDb()` helpers plus `insertPipelineVersion` + `versionHash(ir)` for registering the IR. Reuse them — do NOT invent new helpers.
+
+Append at the end of the file (after the last top-level `describe` block's closing `});`):
 
 ```ts
-  describe("checkpointConfig integration", () => {
-    it("no rows written when checkpointConfig.enabled=false", async () => {
-      // Build a trivial one-stage IR with a mock handler that succeeds.
-      const ir = buildSingleStageMockIR();
-      const db = mkTestDb(ir);
+describe("checkpointConfig integration", () => {
+  it("no rows written when checkpointConfig.enabled=false", async () => {
+    const db = makeDb();
+    const ir = diamondIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    await runPipeline({
+      db, ir,
+      taskId: "t-cp-disabled",
+      versionHash: hash,
+      handlers: diamondHandlers(),
+      checkpointConfig: { enabled: false },
+    });
+    const count = (db.prepare(
+      `SELECT COUNT(*) AS c FROM stage_checkpoints`,
+    ).get() as { c: number }).c;
+    expect(count).toBe(0);
+  });
+
+  it("writes status='not_a_repo' for every attempt when workdir is a non-git tmpdir", async () => {
+    const db = makeDb();
+    const ir = diamondIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const tmp = await mkdtemp(join(tmpdir(), "runner-cp-"));
+    try {
       await runPipeline({
         db, ir,
-        taskId: "t-cp-disabled",
-        versionHash: ir.versionHash,
-        handlers: { s1: () => ({ out1: "ok" }) },
-        checkpointConfig: { enabled: false },
+        taskId: "t-cp-not-repo",
+        versionHash: hash,
+        handlers: diamondHandlers(),
+        checkpointConfig: { enabled: true, workdir: tmp },
       });
-      const count = (db.prepare(
-        `SELECT COUNT(*) AS c FROM stage_checkpoints`,
-      ).get() as { c: number }).c;
-      expect(count).toBe(0);
-    });
-
-    it("writes status='not_a_repo' when workdir is a non-git tmpdir", async () => {
-      const ir = buildSingleStageMockIR();
-      const db = mkTestDb(ir);
-      const tmp = await mkdtemp(join(tmpdir(), "runner-cp-"));
-      try {
-        await runPipeline({
-          db, ir,
-          taskId: "t-cp-not-repo",
-          versionHash: ir.versionHash,
-          handlers: { s1: () => ({ out1: "ok" }) },
-          checkpointConfig: { enabled: true, workdir: tmp },
-        });
-      } finally {
-        await rm(tmp, { recursive: true, force: true });
-      }
-      const rows = db.prepare(
-        `SELECT status, workdir FROM stage_checkpoints`,
-      ).all() as Array<{ status: string; workdir: string }>;
-      expect(rows.length).toBe(1);
-      expect(rows[0]?.status).toBe("not_a_repo");
-      expect(rows[0]?.workdir).toBe(tmp);
-    });
-
-    it("each attempt gets its own checkpoint row", async () => {
-      const ir = buildSingleStageMockIR();
-      const db = mkTestDb(ir);
-      const tmp = await mkdtemp(join(tmpdir(), "runner-cp-"));
-      try {
-        // two sequential runs share the same task chain but different
-        // attempts (both run with enabled=true, non-repo).
-        await runPipeline({
-          db, ir,
-          taskId: "t-cp-multi-1",
-          versionHash: ir.versionHash,
-          handlers: { s1: () => ({ out1: "ok" }) },
-          checkpointConfig: { enabled: true, workdir: tmp },
-        });
-        await runPipeline({
-          db, ir,
-          taskId: "t-cp-multi-2",
-          versionHash: ir.versionHash,
-          handlers: { s1: () => ({ out1: "ok" }) },
-          checkpointConfig: { enabled: true, workdir: tmp },
-        });
-      } finally {
-        await rm(tmp, { recursive: true, force: true });
-      }
-      const rows = db.prepare(
-        `SELECT attempt_id FROM stage_checkpoints`,
-      ).all() as Array<{ attempt_id: string }>;
-      expect(rows.length).toBeGreaterThanOrEqual(2);
-      const ids = new Set(rows.map((r) => r.attempt_id));
-      expect(ids.size).toBe(rows.length); // all distinct
-    });
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+    const rows = db.prepare(
+      `SELECT status, workdir FROM stage_checkpoints`,
+    ).all() as Array<{ status: string; workdir: string }>;
+    // diamond IR has 4 stages (A/B/C/D) → 4 attempts → 4 checkpoint rows
+    expect(rows.length).toBe(4);
+    expect(rows.every((r) => r.status === "not_a_repo")).toBe(true);
+    expect(rows.every((r) => r.workdir === tmp)).toBe(true);
   });
+
+  it("every checkpoint row has a distinct attempt_id matching stage_attempts", async () => {
+    const db = makeDb();
+    const ir = diamondIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const tmp = await mkdtemp(join(tmpdir(), "runner-cp-"));
+    try {
+      await runPipeline({
+        db, ir,
+        taskId: "t-cp-fk",
+        versionHash: hash,
+        handlers: diamondHandlers(),
+        checkpointConfig: { enabled: true, workdir: tmp },
+      });
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+    const cpRows = db.prepare(
+      `SELECT attempt_id FROM stage_checkpoints ORDER BY attempt_id`,
+    ).all() as Array<{ attempt_id: string }>;
+    const saRows = db.prepare(
+      `SELECT attempt_id FROM stage_attempts
+       WHERE task_id = 't-cp-fk' AND kind = 'regular'
+       ORDER BY attempt_id`,
+    ).all() as Array<{ attempt_id: string }>;
+    expect(cpRows.length).toBe(saRows.length);
+    expect(cpRows.length).toBe(4);
+    // One-to-one correspondence: every checkpoint row maps to a
+    // stage_attempts row from this run.
+    const cpSet = new Set(cpRows.map((r) => r.attempt_id));
+    const saSet = new Set(saRows.map((r) => r.attempt_id));
+    expect(cpSet).toEqual(saSet);
+  });
+});
 ```
 
-Add imports at the top of `runner.test.ts` if missing:
+Add imports at the top of `runner.test.ts`:
 
 ```ts
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 ```
-
-**Reuse existing test helpers.** If `runner.test.ts` does not already expose `buildSingleStageMockIR` / `mkTestDb`, inspect the existing helper functions at the top of the file and use whatever single-stage IR constructor the file already uses. Do not invent new helpers — substitute with the file's native helpers and adjust the handler name / output port name to match.
 
 - [ ] **Step 2: Run to verify fail**
 
@@ -1765,17 +1771,21 @@ import type { AttemptHooks } from "./port-runtime.js";
   );
 ```
 
-**Await in-flight capture before returning** — find the `return finalOutcome;` (or equivalent last statement of `runPipeline` before it resolves); locate where `runPipeline` is wrapped up. Specifically, find the final `} finally { ... }` block (look for `taskRegistry.unregister(opts.taskId)`). Add **immediately before** `taskRegistry.unregister(opts.taskId)`:
+**Await in-flight capture before tearing down the task** — there is an existing `} finally { ... }` block near line 608 that contains `clearTimeout`, `currentActor.stop()`, the `terminationReason` computation, and finally `taskRegistry.signalTermination` + `taskRegistry.unregister`. Insert the drain **at the top of that `finally` block**, before `clearTimeout(timer);`:
 
 ```ts
+  } finally {
     // Drain pending checkpoint captures before tearing down the task
-    // so rows are committed by the time run_final fires.
+    // so stage_checkpoints rows are committed by the time SSE run_final
+    // and downstream queries observe the task's terminal state.
     if (checkpointInFlight.size > 0) {
       await Promise.allSettled([...checkpointInFlight]);
     }
+    clearTimeout(timer);
+    // ... existing lines continue unchanged ...
 ```
 
-(If there is no existing `finally` that unregisters, place this drain step immediately before the function's final `return` statement.)
+Note: `await` inside `finally` is supported (the function is already `async`). The drain sits at the earliest point in teardown so the terminationReason signal + unregister downstream both see committed rows.
 
 - [ ] **Step 4: Modify `start-pipeline-run.ts`**
 
