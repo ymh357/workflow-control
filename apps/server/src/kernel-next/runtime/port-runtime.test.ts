@@ -37,4 +37,48 @@ describe("PortRuntime — AttemptKind provenance", () => {
     expect(row.status).toBe("running");
     db.close();
   });
+
+  describe("AttemptHooks", () => {
+    it("invokes onAttemptStarted with attemptId after INSERT", () => {
+      const db = new DatabaseSync(":memory:");
+      initKernelNextSchema(db);
+      const seen: string[] = [];
+      const dispatcher = { send: () => {} };
+      const rt = new PortRuntime(db, dispatcher, "regular", undefined, {
+        onAttemptStarted: (attemptId) => seen.push(attemptId),
+      });
+      const { attemptId } = rt.startAttempt({
+        taskId: "t1", versionHash: "v1", stageName: "s1",
+      });
+      expect(seen).toEqual([attemptId]);
+      // Row must already be in the DB when the hook fires so a
+      // checkpoint INSERT with FK passes.
+      const row = db.prepare(
+        `SELECT attempt_id FROM stage_attempts WHERE attempt_id = ?`,
+      ).get(attemptId);
+      expect(row).toBeDefined();
+    });
+
+    it("invokes onAttemptFinishing with attemptId before UPDATE", () => {
+      const db = new DatabaseSync(":memory:");
+      initKernelNextSchema(db);
+      const dispatcher = { send: () => {} };
+      let sawRunning = false;
+      const rt = new PortRuntime(db, dispatcher, "regular", undefined, {
+        onAttemptFinishing: (attemptId) => {
+          const row = db.prepare(
+            `SELECT status FROM stage_attempts WHERE attempt_id = ?`,
+          ).get(attemptId) as { status: string } | undefined;
+          // At hook-fire time, the UPDATE hasn't landed yet, so status
+          // should still be 'running'.
+          if (row?.status === "running") sawRunning = true;
+        },
+      });
+      const { attemptId } = rt.startAttempt({
+        taskId: "t1", versionHash: "v1", stageName: "s1",
+      });
+      rt.finishAttempt(attemptId, "success");
+      expect(sawRunning).toBe(true);
+    });
+  });
 });

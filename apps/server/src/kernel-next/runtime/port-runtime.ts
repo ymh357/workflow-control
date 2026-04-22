@@ -82,6 +82,16 @@ export interface PortWrittenHook {
   (args: { stageName: string; portName: string; value: unknown }): void;
 }
 
+// Fire-and-forget hooks invoked by startAttempt / finishAttempt so the
+// runner can thread checkpoint capture (and any future observational
+// side-effect) around the lifecycle without the PortRuntime having to
+// know about it. Hooks return `void` and MUST handle their own errors
+// — PortRuntime does not await or catch.
+export interface AttemptHooks {
+  onAttemptStarted?: (attemptId: string, args: StartAttemptArgs) => void;
+  onAttemptFinishing?: (attemptId: string) => void;
+}
+
 export class PortRuntime {
   constructor(
     private readonly db: DatabaseSync,
@@ -98,6 +108,13 @@ export class PortRuntime {
     // port_written events; silent runtimes (fanout element) do not
     // pass it, so intermediate element writes are not broadcast.
     private readonly onPortWritten?: PortWrittenHook,
+    // Phase 4.5 — checkpoint lifecycle hooks. onAttemptStarted fires at
+    // the end of startAttempt (after the stage_attempts INSERT has
+    // landed, so FK-bearing writes like checkpoint INSERTs succeed).
+    // onAttemptFinishing fires at the top of finishAttempt (before the
+    // UPDATE, so hook consumers see status='running'). Both are
+    // synchronous void; errors are swallowed.
+    private readonly hooks: AttemptHooks = {},
   ) {}
 
   /**
@@ -156,6 +173,14 @@ export class PortRuntime {
        VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
     ).run(attemptId, args.taskId, args.versionHash, args.stageName, attemptIdx, Date.now(), kind);
 
+    if (this.hooks.onAttemptStarted) {
+      try {
+        this.hooks.onAttemptStarted(attemptId, args);
+      } catch {
+        // Synchronous hook errors must not break startAttempt.
+        // Hook owners handle their own async errors internally.
+      }
+    }
     return { attemptId, attemptIdx };
   }
 
@@ -239,6 +264,15 @@ export class PortRuntime {
     errorMessage?: string,
     options?: { silent?: boolean },
   ): void {
+    if (this.hooks.onAttemptFinishing) {
+      try {
+        this.hooks.onAttemptFinishing(attemptId);
+      } catch {
+        // see startAttempt — swallow synchronous errors so the
+        // lineage UPDATE is never skipped by a broken hook.
+      }
+    }
+
     this.db.prepare(
       `UPDATE stage_attempts SET ended_at = ?, status = ? WHERE attempt_id = ?`,
     ).run(Date.now(), status, attemptId);
