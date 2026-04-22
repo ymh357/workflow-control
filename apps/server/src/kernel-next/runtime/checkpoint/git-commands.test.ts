@@ -57,15 +57,17 @@ describe("git-commands", () => {
     expect(r.stderr.length).toBeGreaterThan(0);
   });
 
-  it("snapshotWorkTree — clean tree produces commit whose tree equals HEAD^{tree}", async () => {
+  it("snapshotWorkTree — clean tree returns empty stdout (ok=true, caller falls back to HEAD)", async () => {
+    // Clean-tree short-circuit: snapshotWorkTree detects that the
+    // scratch tree equals HEAD^{tree} and returns empty stdout instead
+    // of minting a non-deterministic new commit (author timestamp
+    // would change every call, breaking before_sha == after_sha
+    // equality on unchanged working trees). resolveSha in checkpoint.ts
+    // treats this as "use rev-parse HEAD instead".
     await initRepo(dir);
     const r = await snapshotWorkTree(dir, 10_000);
     expect(r.ok).toBe(true);
-    const commitSha = r.stdout.trim();
-    expect(commitSha).toMatch(/^[a-f0-9]{40}$/);
-    const snapTree = (await exec("git", ["rev-parse", `${commitSha}^{tree}`], { cwd: dir })).stdout.trim();
-    const headTree = (await exec("git", ["rev-parse", "HEAD^{tree}"], { cwd: dir })).stdout.trim();
-    expect(snapTree).toBe(headTree);
+    expect(r.stdout.trim()).toBe("");
   });
 
   it("snapshotWorkTree — SHA on dirty tracked file", async () => {

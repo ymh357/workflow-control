@@ -111,6 +111,24 @@ export async function snapshotWorkTree(
       };
     }
 
+    // Clean-tree short-circuit: if the scratch tree equals HEAD^{tree}
+    // the working tree has no tracked modifications AND no new
+    // untracked-non-ignored files. Returning a fresh commit-tree here
+    // would produce a new SHA every call (author/committer timestamps
+    // change), causing non-determinism downstream. Signal "no change"
+    // to the caller by returning ok=true with empty stdout — callers
+    // (resolveSha) already fall back to `rev-parse HEAD` in that case.
+    const headTree = await run(["rev-parse", "HEAD^{tree}"], cwd, remaining());
+    if (headTree.ok && headTree.stdout.trim() === treeSha) {
+      return {
+        ok: true,
+        stdout: "",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+      };
+    }
+
     // commit-tree does not need the scratch index; use default env.
     return run(
       ["commit-tree", treeSha, "-p", "HEAD", "-m", "wfc-checkpoint"],
