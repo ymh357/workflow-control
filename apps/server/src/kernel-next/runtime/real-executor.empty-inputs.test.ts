@@ -1,88 +1,6 @@
 import { describe, it, expect } from "vitest";
-import type { AgentStage, PortIR } from "../ir/schema.js";
-
-/**
- * Test for the enhanced system prompt that handles empty inputs.
- * When collectTargetSources stage is invoked with empty pipelineConfig
- * and projectContext, the agent should be explicitly instructed to emit
- * write_port calls for all 8 output ports with appropriate empty/default values.
- */
-
-// Inline the helper function for testing
-function exampleValueFor(tsType: string): string {
-  const t = tsType.trim();
-  if (t === "number") return "42";
-  if (t === "boolean") return "true";
-  if (t === "string") return "\"example plain text value\"";
-  if (t.endsWith("[]") || /^Array</.test(t)) return "[]";
-  if (t === "object" || (t.startsWith("{") && t.endsWith("}"))) return "{}";
-  return "\"...\"";
-}
-
-function buildSystemPromptAppend(
-  stage: AgentStage,
-  resolvedPrompt: string,
-  inputs: Record<string, unknown>,
-  ctx: { taskId: string; attemptId: string },
-): string {
-  const inputPortLines = stage.inputs
-    .map((p) => `  - ${p.name}: ${p.type}`)
-    .join("\n");
-  const outputPortLines = stage.outputs
-    .map((p) => `  - ${p.name}: ${p.type}`)
-    .join("\n");
-  const promptSummary =
-    resolvedPrompt.length > 400
-      ? resolvedPrompt.slice(0, 400) + " [...]"
-      : resolvedPrompt;
-  const inputDump = Object.keys(inputs).length === 0
-    ? "  (no inputs)"
-    : Object.entries(inputs)
-        .map(([k, v]) => `  - ${k} = ${JSON.stringify(v)}`)
-        .join("\n");
-
-  // Per-port write_port call examples grounded in the actual IDs.
-  const writeCallExamples = stage.outputs
-    .map((p) => {
-      const valueExample = exampleValueFor(p.type);
-      return `  write_port(taskId="${ctx.taskId}", attemptId="${ctx.attemptId}", stage="${stage.name}", port="${p.name}", value=${valueExample})`;
-    })
-    .join("\n");
-
-  // Check if inputs are empty or sparse (all provided inputs are empty objects/arrays)
-  const allInputsEmpty = Object.entries(inputs).every(
-    ([, v]) => v === null || v === undefined || (typeof v === "object" && Object.keys(v as Record<string, unknown>).length === 0),
-  );
-  const emptyInputsWarning = allInputsEmpty && Object.keys(inputs).length > 0
-    ? "\n### IMPORTANT: Empty or sparse inputs detected\nAll provided inputs are empty. You must still emit write_port calls for all output ports. Use appropriate empty/default values:\n" +
-      "  - For string ports: use an empty string \"\" or an error message\n" +
-      "  - For number ports: use 0 or -1\n" +
-      "  - For array ports (string[], etc.): use an empty array []\n" +
-      "If you cannot proceed due to missing input data, emit these default values for each port and describe the issue in a string port (e.g., summary or error_message if available)."
-    : "";
-
-  return [
-    `You are running stage '${stage.name}' in a kernel-next pipeline.`,
-    "",
-    "### Stage contract",
-    "Input ports (already materialized in this message):",
-    inputPortLines || "  (none)",
-    "Output ports you MUST produce:",
-    outputPortLines || "  (none)",
-    "",
-    "### Inputs",
-    inputDump,
-    "",
-    "### Task",
-    promptSummary,
-    emptyInputsWarning,
-    "",
-    "### Output protocol (MANDATORY — read carefully)",
-    "The ONLY way to emit output for this stage is to call the MCP tool",
-    "  `mcp__kernel_next__write_port`",
-    "exactly once per declared output port.",
-  ].join("\n");
-}
+import type { AgentStage } from "../ir/schema.js";
+import { buildSystemPromptAppend } from "./real-executor.js";
 
 describe("real-executor: buildSystemPromptAppend with empty inputs", () => {
   it("includes empty inputs warning for collectTargetSources with empty pipelineConfig and projectContext", () => {
@@ -243,5 +161,95 @@ describe("real-executor: buildSystemPromptAppend with empty inputs", () => {
     // Verify the main instruction point about calling write_port for each port
     expect(result).toContain("write_port");
     expect(result).toContain("mcp__kernel_next__write_port");
+  });
+});
+
+describe("real-executor: buildSystemPromptAppend size-aware input handling", () => {
+  const tinyStage: AgentStage = {
+    name: "s1",
+    type: "agent",
+    inputs: [{ name: "p", type: "string" }],
+    outputs: [{ name: "out", type: "string" }],
+    config: { promptRef: "p" },
+  };
+
+  it("inlines small port value in full", () => {
+    const result = buildSystemPromptAppend(
+      tinyStage,
+      "task",
+      { p: "short" },
+      { taskId: "t", attemptId: "a" },
+    );
+    expect(result).toContain('- p = "short"');
+    expect(result).not.toContain("[large");
+    expect(result).not.toContain("read_port");
+  });
+
+  it("inlines exactly up to the character limit", () => {
+    // JSON.stringify of a 1022-char string produces a 1024-char JSON
+    // string (quotes on both ends). That equals INLINE_PORT_VALUE_CHAR_LIMIT.
+    const str = "x".repeat(1022);
+    const result = buildSystemPromptAppend(
+      tinyStage,
+      "task",
+      { p: str },
+      { taskId: "t", attemptId: "a" },
+    );
+    expect(result).toContain(str);
+    expect(result).not.toContain("[large");
+  });
+
+  it("replaces large port value with size summary + read_port instruction", () => {
+    const str = "x".repeat(5_000);
+    const result = buildSystemPromptAppend(
+      tinyStage,
+      "task",
+      { p: str },
+      { taskId: "task-A", attemptId: "attempt-B" },
+    );
+    // Summary line
+    expect(result).toMatch(/- p \[large; \d+ chars as JSON; type: string\]/);
+    // read_port instruction with exact IDs
+    expect(result).toContain(
+      'Call mcp__kernel_next__read_port with { taskId: "task-A", stage: "s1", port: "p" }',
+    );
+    // Actual large content is NOT inlined
+    expect(result).not.toContain(str);
+  });
+
+  it("large object value reports type as object", () => {
+    const big = { k: "y".repeat(5_000) };
+    const result = buildSystemPromptAppend(
+      tinyStage,
+      "task",
+      { p: big },
+      { taskId: "t", attemptId: "a" },
+    );
+    expect(result).toMatch(/type: object/);
+    expect(result).not.toContain(big.k);
+  });
+
+  it("mixes small + large inputs independently", () => {
+    const multiStage: AgentStage = {
+      name: "s1",
+      type: "agent",
+      inputs: [
+        { name: "small", type: "string" },
+        { name: "big", type: "string" },
+      ],
+      outputs: [{ name: "out", type: "string" }],
+      config: { promptRef: "p" },
+    };
+    const small = "hello";
+    const big = "z".repeat(5_000);
+    const result = buildSystemPromptAppend(
+      multiStage,
+      "task",
+      { small, big },
+      { taskId: "t", attemptId: "a" },
+    );
+    expect(result).toContain('- small = "hello"');
+    expect(result).toMatch(/- big \[large;/);
+    expect(result).not.toContain(big);
   });
 });

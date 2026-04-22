@@ -644,7 +644,37 @@ function detectNestedJson(value: string): string | undefined {
   return undefined;
 }
 
-function buildSystemPromptAppend(
+// Inline small inputs fully into the system prompt so the agent can
+// reason without a tool call; summarise large inputs and direct the
+// agent to fetch the full value via `read_port` on demand. Threshold
+// chosen so typical stringified port values under ~1 KiB inline (≈
+// 250 tokens), values above are at risk of being multiple KB and
+// burning token budget for content the agent may not use.
+const INLINE_PORT_VALUE_CHAR_LIMIT = 1024;
+
+// Stage's user prompt hard-cap. Beyond this we slice + append "[...]"
+// to bound the append. Authors are expected to keep stage prompts
+// terse; this is a belt-and-braces cap, not a design constraint.
+const PROMPT_SUMMARY_CHAR_LIMIT = 400;
+
+/**
+ * Build the system-prompt `append` passed to the Claude Agent SDK
+ * for one stage attempt. Exported for unit tests.
+ *
+ * Size-aware input handling:
+ *   - Small port value (JSON.stringify length ≤ INLINE_PORT_VALUE_CHAR_LIMIT):
+ *     inline the full value into `### Inputs`.
+ *   - Large port value: emit a `<inlined: false>` summary line with
+ *     type + byte size and direct the agent to call
+ *     `mcp__kernel_next__read_port({taskId, stage, port})` to fetch
+ *     the complete value.
+ *
+ * Saves tokens on large inputs the agent may not need, and (equally
+ * important) gives the agent access to the FULL value when it does
+ * need it — the prior 400-char truncation showed agents the first
+ * 400 chars of a 50 KiB research report, which was silently lossy.
+ */
+export function buildSystemPromptAppend(
   stage: AgentStage,
   resolvedPrompt: string,
   inputs: Record<string, unknown>,
@@ -657,13 +687,13 @@ function buildSystemPromptAppend(
     .map((p) => `  - ${p.name}: ${p.type}`)
     .join("\n");
   const promptSummary =
-    resolvedPrompt.length > 400
-      ? resolvedPrompt.slice(0, 400) + " [...]"
+    resolvedPrompt.length > PROMPT_SUMMARY_CHAR_LIMIT
+      ? resolvedPrompt.slice(0, PROMPT_SUMMARY_CHAR_LIMIT) + " [...]"
       : resolvedPrompt;
   const inputDump = Object.keys(inputs).length === 0
     ? "  (no inputs)"
     : Object.entries(inputs)
-        .map(([k, v]) => `  - ${k} = ${safeJson(v, 400)}`)
+        .map(([k, v]) => formatInputLine(k, v, stage.name, ctx))
         .join("\n");
 
   // Per-port write_port call examples grounded in the actual IDs.
@@ -734,7 +764,55 @@ function buildSystemPromptAppend(
   ].join("\n");
 }
 
-function exampleValueFor(tsType: string): string {
+/**
+ * Render one entry of the `### Inputs` block. Inline full JSON for
+ * small values; for large values, emit a summary line + read_port
+ * instruction so the agent can fetch on demand.
+ */
+function formatInputLine(
+  portName: string,
+  value: unknown,
+  stageName: string,
+  ctx: { taskId: string; attemptId: string },
+): string {
+  let serialized: string;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    serialized = String(value);
+  }
+  if (serialized === undefined) serialized = String(value);
+  if (serialized.length <= INLINE_PORT_VALUE_CHAR_LIMIT) {
+    return `  - ${portName} = ${serialized}`;
+  }
+  // Large value: emit summary + explicit fetch instruction.
+  const typeLabel = typeOfValueForHuman(value);
+  return (
+    `  - ${portName} [large; ${serialized.length} chars as JSON; type: ${typeLabel}]\n` +
+    `      Call mcp__kernel_next__read_port with { taskId: "${ctx.taskId}", stage: "${stageName}", port: "${portName}" }\n` +
+    `      to fetch the full value. (Inlining would cost ~${Math.round(serialized.length / 4)} tokens.)`
+  );
+}
+
+/**
+ * Human-friendly type label used in the large-value summary line.
+ * Matches the tsType grammar used on port declarations (string,
+ * number, boolean, string[], object, etc.) as a hint rather than a
+ * strict type assertion.
+ */
+function typeOfValueForHuman(v: unknown): string {
+  if (v === null) return "null";
+  if (Array.isArray(v)) {
+    if (v.length === 0) return "array<unknown>";
+    const first = v[0];
+    const inner = typeof first === "object" ? "object" : typeof first;
+    return `array<${inner}>`;
+  }
+  if (typeof v === "object") return "object";
+  return typeof v;
+}
+
+export function exampleValueFor(tsType: string): string {
   const t = tsType.trim();
   if (t === "number") return "42";
   if (t === "boolean") return "true";
