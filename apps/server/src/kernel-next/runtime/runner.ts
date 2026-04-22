@@ -679,16 +679,53 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
     //   - finalOutcome.verdict='failed': kind=error with stage/message
     //   - else (no outcome reached): kind=error (likely thrown)
     let terminationReason: TerminationReason;
+    // P6-1: task_finals row classification. Mirrors terminationReason but
+    // uses a 5-way enum (natural/timeout/interrupted/error/thrown) that
+    // the DB CHECK constraint accepts and that callers can distinguish.
+    let finalsRow: { state: "completed" | "failed"; reason: "natural" | "timeout" | "interrupted" | "error" | "thrown"; detail: string | null };
     if (timedOut) {
       terminationReason = { kind: "error", detail: `runPipeline timeout after ${timeoutMs}ms` };
+      finalsRow = { state: "failed", reason: "timeout", detail: `runPipeline timeout after ${timeoutMs}ms` };
     } else if (interruptObserved) {
       terminationReason = { kind: "interrupted" };
+      finalsRow = { state: "failed", reason: "interrupted", detail: null };
     } else if (finalOutcome?.verdict === "completed") {
       terminationReason = { kind: "natural" };
+      finalsRow = { state: "completed", reason: "natural", detail: null };
     } else if (finalOutcome?.verdict === "failed") {
       terminationReason = { kind: "error", detail: "run ended with failed verdict" };
+      finalsRow = { state: "failed", reason: "error", detail: "run ended with failed verdict" };
     } else {
       terminationReason = { kind: "error", detail: "runner exited without reaching final outcome" };
+      finalsRow = { state: "failed", reason: "thrown", detail: "runner exited without reaching final outcome" };
+    }
+    // Upsert task_finals BEFORE signalTermination so awaitTermination
+    // waiters (migration orchestrator) and downstream status readers
+    // see the authoritative row as soon as the registry signal fires.
+    try {
+      opts.db.prepare(
+        `INSERT INTO task_finals (task_id, version_hash, final_state, reason, detail, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(task_id) DO UPDATE SET
+           version_hash = excluded.version_hash,
+           final_state  = excluded.final_state,
+           reason       = excluded.reason,
+           detail       = excluded.detail,
+           ended_at     = excluded.ended_at`,
+      ).run(
+        opts.taskId,
+        opts.versionHash,
+        finalsRow.state,
+        finalsRow.reason,
+        finalsRow.detail,
+        Date.now(),
+      );
+    } catch (err) {
+      // task_finals write must never mask the real termination reason.
+      // Log-and-swallow: signalTermination still fires, callers fall back
+      // to the stage_attempts-derived path (pre-P6-1 behavior).
+      // eslint-disable-next-line no-console
+      console.error(`[runner] task_finals upsert failed for task=${opts.taskId}:`, err);
     }
     taskRegistry.signalTermination(opts.taskId, terminationReason);
     taskRegistry.unregister(opts.taskId);

@@ -323,6 +323,33 @@ CREATE TABLE IF NOT EXISTS task_worktrees (
 );
 CREATE INDEX IF NOT EXISTS idx_tw_status
   ON task_worktrees(status);
+
+-- Phase 6 P6-1: authoritative task-level final state.
+--
+-- Prior design derived task status from stage_attempts latest-per-stage.
+-- That path silently mis-reports 'completed' when runPipeline exits
+-- abnormally (timeout / thrown error) before every declared stage has
+-- been visited — the DB only has rows for the stages that actually ran,
+-- and "no running, no error" is indistinguishable from "all done".
+--
+-- task_finals is the single source of truth for "did this task reach a
+-- terminal state, and if so which one". runner.finally writes exactly
+-- one row per task_id on termination. getTaskStatus reads this table
+-- first; the stage_attempts-derived path is the fallback for in-flight
+-- tasks (no row yet) and for legacy rows written before this table
+-- existed.
+CREATE TABLE IF NOT EXISTS task_finals (
+  task_id       TEXT PRIMARY KEY,
+  version_hash  TEXT NOT NULL,
+  final_state   TEXT NOT NULL
+    CHECK (final_state IN ('completed','failed')),
+  reason        TEXT NOT NULL
+    CHECK (reason IN ('natural','timeout','interrupted','error','thrown')),
+  detail        TEXT,
+  ended_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tf_ended
+  ON task_finals(ended_at DESC);
 `;
 
 export function initKernelNextSchema(db: DatabaseSync): void {
@@ -349,6 +376,7 @@ export function initKernelNextSchema(db: DatabaseSync): void {
       // disable temporarily so the drops don't cascade-reject.
       db.exec("PRAGMA foreign_keys = OFF");
       db.exec(`
+        DROP TABLE IF EXISTS task_finals;
         DROP TABLE IF EXISTS task_worktrees;
         DROP TABLE IF EXISTS script_execution_details;
         DROP TABLE IF EXISTS stage_checkpoints;

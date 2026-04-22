@@ -1000,7 +1000,30 @@ export class KernelService {
       };
     }
 
-    // Latest attempt per stage_name decides per-stage verdict.
+    // P6-1: task_finals is the authoritative terminal-state source. A row
+    // here means runner.finally ran — whether via natural completion,
+    // timeout, interrupt, explicit failure, or thrown error. Without
+    // this check, getTaskStatus derived 'completed' from stage_attempts
+    // latest-per-stage and silently misreported timed-out / thrown runs
+    // as successful because the un-reached stages simply had no rows.
+    //
+    // The row is authoritative even if pipeline_versions has more stages
+    // than stage_attempts shows — abnormal exits legitimately leave some
+    // stages un-visited, and we want the final verdict, not a coverage
+    // check.
+    const finalRow = this.db.prepare(
+      `SELECT final_state FROM task_finals WHERE task_id = ?`,
+    ).get(taskId) as { final_state: "completed" | "failed" } | undefined;
+    if (finalRow) {
+      return { ok: true, status: finalRow.final_state, taskId };
+    }
+
+    // Fallback (task still in-flight, or legacy rows predating P6-1):
+    // derive from latest stage_attempts. In-flight detection via
+    // status='running' still works; the only case this fallback can
+    // mis-report is an abnormal exit whose finally block never ran, in
+    // which case the task is genuinely orphaned and will eventually
+    // surface as stuck-running.
     const latestByStage = new Map<string, { attempt_idx: number; status: string }>();
     for (const a of attempts) {
       const cur = latestByStage.get(a.stage_name);
@@ -1015,6 +1038,9 @@ export class KernelService {
     if (statuses.some((s) => s === "running")) {
       return { ok: true, status: "running", taskId };
     }
+    // Pre-P6-1 behavior. New runs always write task_finals, so reaching
+    // here after a kernel-next restart means the row was lost (eg. DB
+    // wiped) — report completed as best-effort.
     return { ok: true, status: "completed", taskId };
   }
 
