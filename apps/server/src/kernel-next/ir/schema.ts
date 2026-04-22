@@ -301,6 +301,10 @@ export const DiagnosticSchema = z.object({
     "PROMPT_REF_MISSING",
     "PROMPT_REF_UNUSED",
     "PROMPT_CONTENT_EMPTY",
+    // Stage 5A — propose-pipeline lifecycle
+    "CONFLICT",
+    "VERSION_NOT_IN_HISTORY",
+    "REGISTRY_PIPELINE_NOT_FOUND",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),
