@@ -7,10 +7,9 @@
 
 ## Milestone results
 
-Landed as 9 task commits plus 4 in-flight plan/refinement commits
-(listed in order). Task commits implement functionality; plan-fix
-commits amend the plan file only; the `b050dd3` follow-up patched a
-clean-tree edge case discovered during Task 5 integration runs.
+Landed as 9 task commits plus 4 plan-refinement commits, 1 clean-tree
+follow-up, and 2 final-review follow-ups (I1 / I2). Task commits
+implement functionality; plan-fix commits amend the plan file only.
 
 | Task | SHA | Subject |
 |---|---|---|
@@ -27,7 +26,9 @@ clean-tree edge case discovered during Task 5 integration runs.
 | clean-tree fix | `b050dd3` | snapshotWorkTree short-circuits on clean tree |
 | plan fix | `293b798` | plan-only: Task 8 uses existing run-pipeline test pattern + camelCase |
 | 8 | `a19a682` | mcp run_pipeline accepts checkpointConfig |
-| 9 | (this commit) | docs + handoff |
+| 9 | `243f9ab` | docs + handoff (initial) |
+| review fix (I2) | `eae057b` | default enabled=false when workdir is not explicit |
+| review fix (I1) | `96064d2` | suppressHooks for synthetic + gate attempts |
 
 ## What changed
 
@@ -36,8 +37,8 @@ clean-tree edge case discovered during Task 5 integration runs.
   `types.ts`, `git-commands.ts`, `checkpoint.ts`, `checkpoint.test.ts`,
   `checkpoint.integration.test.ts`
 - `stage_checkpoints` table in kernel-next.db (Task 1 DDL)
-- `checkpointConfig` input on MCP `run_pipeline` tool (snake_case at
-  the wire; camelCase internally)
+- `checkpointConfig` input on MCP `run_pipeline` tool (camelCase,
+  consistent with the existing tool's other optional fields)
 
 **Modified:**
 - `PortRuntime` constructor gains 5th optional arg (`AttemptHooks`)
@@ -68,6 +69,35 @@ clean-tree edge case discovered during Task 5 integration runs.
   via `Promise.allSettled` before emitting `run_final`, so tests (and
   B9 consumers) see stable DB state.
 
+## Review fixes (post-Task-9)
+
+Milestone-level code review surfaced two integration-scale issues
+that per-task reviews individually missed. Both were fixed before
+closing the milestone:
+
+- **I1 — dangling `capturing` rows for synthetic + gate attempts.**
+  The `__external__` seed attempt and `fanout_aggregate` attempt open
+  and close synchronously; between them, `captureBefore`'s async
+  INSERT landed too late for `captureAfter` to observe, leaving rows
+  stuck at `status='capturing'`. Gate attempts were worse: they are
+  finalised via raw SQL in `KernelService.answerGate`, bypassing
+  `finishAttempt` entirely, so `onAttemptFinishing` never fires for
+  them. **Fix:** `StartAttemptArgs.suppressHooks?: boolean`. The three
+  synthetic callers opt into suppression so no checkpoint row is ever
+  inserted for them — `captureAfter`'s existing "missing row → no-op"
+  guard handles the rest cleanly.
+
+- **I2 — `process.cwd()` fallback is the wrong default.** Silently
+  falling back to the server's cwd captures the server repo's state,
+  not the agent's subject repo. **Fix:** `resolveCheckpointConfig`
+  defaults `enabled: true` only when `workdir` is explicitly provided;
+  otherwise defaults to `false`. Callers that want checkpointing must
+  tell the runner where to capture from.
+
+Both fixes have dedicated regression tests (`port-runtime.test.ts`
+`"suppressHooks=true skips onAttemptStarted..."`, `checkpoint.test.ts`
+`resolveCheckpointConfig` block).
+
 ## Invariants preserved
 
 - Server `tsc --noEmit`: 0 errors.
@@ -84,8 +114,18 @@ clean-tree edge case discovered during Task 5 integration runs.
 - A4 `replay_stage` tool — uses `before_sha` via
   `git worktree add <tmp> <sha>`.
 - `workflow prune-checkpoints` CLI — pending Step 3 prune rebuild.
-- Fanout per-element attempt checkpoints: captured but may produce
-  many rows per fanout stage; future filter/sampling policy optional.
+- Fanout per-element attempts: run through a silent `PortRuntime`
+  constructed without hooks, so they already produce no checkpoint
+  rows (by design — element attempts are orchestration internals,
+  not observable work). If per-element capture is wanted in future,
+  wire hooks into the silent runtime and remove `suppressHooks` on
+  the aggregate.
+- Migration supersede / rollback paths (`migration-orchestrator.ts`)
+  mark running attempts `superseded` via raw SQL and leave any
+  open checkpoint row at `status='capturing'`. That row is a
+  legitimate "interrupted mid-flight" marker and matches spec §3's
+  hard-crash semantics; query tools should treat `capturing` as
+  "incomplete" regardless of cause.
 
 ## Next step
 
