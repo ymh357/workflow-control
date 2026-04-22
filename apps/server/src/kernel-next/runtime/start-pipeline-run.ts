@@ -42,6 +42,13 @@ export interface StartPipelineRunInput {
   maxBudgetUsd?: number;
   tscPath?: string;
   timeoutMs?: number;
+  // Stage 5B — resume an existing taskId mid-pipeline on a new
+  // versionHash. Runner hydrates finalizedStages + portValues from
+  // stage_attempts / port_values rows belonging to taskId (status='success'
+  // only) and skips external input seeding. The stage named by
+  // resumeFrom plus its wire-reachable descendants (currently superseded)
+  // are re-invoked; upstream stages stay finalized.
+  resumeFrom?: string;
 }
 
 // Minimal ExecutionPolicy shape — only policy.default is consumed by
@@ -228,6 +235,7 @@ export async function startPipelineRun(
     executor,
     seedValues: input.seedValues,
     broadcaster: input.broadcaster,
+    resumeFrom: input.resumeFrom,
   }, input.timeoutMs).catch((err: unknown) => {
     logger.error(
       { taskId, versionHash, err },

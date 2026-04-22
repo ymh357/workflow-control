@@ -58,6 +58,15 @@ export interface RunnerOptions {
   // lineage (port_values rows under stage_name='__external__') +
   // SSE (port_written events).
   seedValues?: Record<string, unknown>;
+  // Stage 5B — resume an existing taskId on a (typically NEW) versionHash.
+  // When set, runner skips external input seeding and hydrates
+  // finalizedStages + portValues from existing stage_attempts / port_values
+  // rows so the machine boots as if a retry were pending with every
+  // prior-success stage already finalized. New attempts carry opts.versionHash
+  // (normally the proposed-version post-migration). The stage named by
+  // resumeFrom is expected to re-invoke; stages wire-reachable from it but
+  // currently superseded are re-run by the retry machinery.
+  resumeFrom?: string;
 }
 
 // Design §6.2 — why the inbound wire to a stage failed. NO_ACTIVE_WIRE
@@ -285,6 +294,58 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   let persistentLog: string[] = [];
   let persistentFinalizedStages: MachineContext["finalizedStages"] = [];
   let isRetryRebuild = false; // drives initialContext.portValues override
+
+  // Stage 5B — resume hydration. When opts.resumeFrom is set, rebuild
+  // persistent state from the DB so the first compile starts with
+  // finalizedStages + portValues matching what was already computed on
+  // the previous pipeline version. The retry machinery then re-invokes
+  // resumeFrom and its wire-reachable descendants. Anything wire-upstream
+  // of resumeFrom stays finalized and is not re-run.
+  if (opts.resumeFrom) {
+    const stageNames = new Set(opts.ir.stages.map((s) => s.name));
+    if (!stageNames.has(opts.resumeFrom)) {
+      const reason: TerminationReason = {
+        kind: "error",
+        detail: `RESUME_FROM_NOT_IN_IR: stage '${opts.resumeFrom}' absent from pipeline`,
+      };
+      taskRegistry.signalTermination(opts.taskId, reason);
+      taskRegistry.unregister(opts.taskId);
+      throw new Error(reason.detail);
+    }
+    // 1. finalizedStages: every stage_attempt that is still status='success'
+    //    for this task. Superseded stages (those the orchestrator just
+    //    marked) stay out so the retry loop re-invokes them.
+    const successRows = opts.db.prepare(
+      `SELECT DISTINCT stage_name FROM stage_attempts
+       WHERE task_id = ? AND status = 'success'`,
+    ).all(opts.taskId) as Array<{ stage_name: string }>;
+    persistentFinalizedStages = successRows.map((r) => ({
+      name: r.stage_name,
+      outcome: "done" as const,
+    }));
+    // 2. portValues: every port_value row for a success stage of this
+    //    task. Stored in the machine-context shape `<stage>.<port>`.
+    const portRows = opts.db.prepare(
+      `SELECT pv.stage_name, pv.port_name, pv.value_json
+       FROM port_values pv
+       INNER JOIN stage_attempts sa ON pv.attempt_id = sa.attempt_id
+       WHERE sa.task_id = ? AND sa.status = 'success'
+       ORDER BY pv.written_at ASC`,
+    ).all(opts.taskId) as Array<{
+      stage_name: string; port_name: string; value_json: string;
+    }>;
+    for (const r of portRows) {
+      try {
+        persistentPortValues[`${r.stage_name}.${r.port_name}`] = JSON.parse(r.value_json);
+      } catch {
+        // Corrupt JSON — skip this port value; the new run will fail at
+        // its first consumer with NO_ACTIVE_WIRE or similar, which is
+        // the correct surface for this rare condition.
+      }
+    }
+    // 3. Tell compiler to honour initialContext.
+    isRetryRebuild = true;
+  }
   // Task 6 — gates that were rejected in the current run. On rebuild,
   // the replay loop skips synthesising a GATE_ANSWERED for these so the
   // gate re-enters `executing` and blocks for a fresh external answer.
@@ -324,7 +385,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   // once. The compiler's initial context.portValues carries the same
   // values so the first attempt's stages see them immediately.
   const externalInputs = opts.ir.externalInputs ?? [];
-  if (externalInputs.length > 0) {
+  if (externalInputs.length > 0 && !opts.resumeFrom) {
     const seedValues = opts.seedValues ?? {};
     for (const port of externalInputs) {
       if (!(port.name in seedValues)) {

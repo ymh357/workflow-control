@@ -1732,3 +1732,34 @@ describe("runPipeline retry loop (Task C5)", () => {
     db.close();
   });
 });
+
+describe("runPipeline — Stage 5B resumeFrom", () => {
+  it("rejects resumeFrom that is not a stage in the IR", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const ir: PipelineIR = {
+      name: "t-resume",
+      stages: [{
+        name: "a",
+        type: "agent",
+        config: { promptRef: "p-a" },
+        inputs: [],
+        outputs: [],
+      }],
+      wires: [],
+    };
+    await expect(
+      runPipeline({
+        db,
+        ir,
+        taskId: "tx-resume-invalid",
+        versionHash: "v1",
+        handlers: {},
+        resumeFrom: "nonexistent-stage",
+      }),
+    ).rejects.toThrow(/RESUME_FROM_NOT_IN_IR/);
+    // Ensure taskRegistry is clean after the throw
+    expect(taskRegistry.get("tx-resume-invalid")).toBeUndefined();
+    db.close();
+  });
+});
