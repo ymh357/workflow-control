@@ -28,6 +28,10 @@ import {
 import { applyPatch, PatchApplyError } from "./patch.js";
 import { taskRegistry } from "../runtime/task-registry.js";
 import { compileIRToMachine } from "../compiler/ir-to-machine.js";
+import { dryRunProposal as runDryRun } from "../hot-update/dry-run.js";
+import type {
+  DryRunResult, PipelineDiff, Impact, SafeRangeVerdict,
+} from "../hot-update/types.js";
 
 // Process-local in-progress migration set (design §10.2: "a task can be
 // migrated to at most one new version at a time"). Keyed by taskId; the
@@ -76,7 +80,11 @@ export interface ProposeResponse {
   ok: true;
   proposalId: string;
   proposedVersion: string;
-  autoApplied: false;
+  autoApplied: boolean;
+  // Stage 5A additions: dry-run artefacts surfaced to caller.
+  diff?: PipelineDiff;
+  impact?: Impact;
+  safeRange?: SafeRangeVerdict;
 }
 
 export type ProposeResult = ProposeResponse | {
@@ -334,6 +342,14 @@ export class KernelService {
      * not migrate running tasks by default; callers must opt in.
      */
     migrateRunningTasks?: "all" | "none" | string[];
+    /**
+     * Stage 5A — when true, kernel-next will auto-approve the proposal
+     * IN THE SAME TRANSACTION iff the dry-run's safeRange.verdict is
+     * "safe". When false/undefined, the proposal is always written with
+     * status='pending' (legacy behaviour). Structurally-unsafe patches
+     * ignore autoApprove and remain pending.
+     */
+    autoApprove?: boolean;
   }): ProposeResult {
     // Optimistic lock check.
     const base = getPipelineIR(this.db, args.currentVersion);
@@ -397,22 +413,51 @@ export class KernelService {
       });
     }
 
+    // Stage 5A — re-run the hot-update dry-run to compute diff + impact
+    // + safeRange. Dry-run itself is read-only; we feed its artefacts
+    // into diagnostic_json for audit and use safeRange.verdict to
+    // decide autoApprove eligibility. Failures here shouldn't happen
+    // (validation already passed above) but if they do we surface them.
+    const dry: DryRunResult = runDryRun(this.db, {
+      currentVersion: args.currentVersion,
+      patch: args.patch,
+      rerunFrom: args.rerunFrom ?? null,
+      migrateRunningTasks: args.migrateRunningTasks,
+    });
+    if (!dry.ok) {
+      return { ok: false, diagnostics: dry.diagnostics };
+    }
+
     const proposalId = randomUUID();
     const migrateRunning = args.migrateRunningTasks === undefined
       ? "none"
       : Array.isArray(args.migrateRunningTasks)
         ? JSON.stringify(args.migrateRunningTasks)
         : args.migrateRunningTasks;
+
+    const autoApplied =
+      (args.autoApprove ?? false) && dry.safeRange.verdict === "safe";
+    const proposalStatus = autoApplied ? "approved" : "pending";
+
+    const diagnosticJson = JSON.stringify({
+      __kind: "proposal-success-v1",
+      diff: dry.diff,
+      impact: dry.impact,
+      safeRange: dry.safeRange,
+    });
+
     this.db.prepare(
       `INSERT INTO pipeline_proposals
        (proposal_id, base_version, proposed_version, actor, status,
         diagnostic_json, created_at, rerun_from, migrate_running)
-       VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       proposalId,
       args.currentVersion,
       proposedHash,
       args.actor,
+      proposalStatus,
+      diagnosticJson,
       Date.now(),
       args.rerunFrom ?? null,
       migrateRunning,
@@ -422,7 +467,151 @@ export class KernelService {
       ok: true,
       proposalId,
       proposedVersion: proposedHash,
-      autoApplied: false,
+      autoApplied,
+      diff: dry.diff,
+      impact: dry.impact,
+      safeRange: dry.safeRange,
+    };
+  }
+
+  /**
+   * Stage 5A — read-only dry run of a proposed patch. Returns diff +
+   * impact + safeRange without touching pipeline_proposals or
+   * pipeline_versions. Safe to call concurrently; idempotent.
+   */
+  dryRunProposal(input: {
+    currentVersion: string;
+    patch: IRPatch;
+    rerunFrom?: string | null;
+    migrateRunningTasks?: "all" | "none" | string[];
+  }): DryRunResult {
+    return runDryRun(this.db, input);
+  }
+
+  /**
+   * Stage 5A — replace a registry pipeline's IR file and register the
+   * new version in pipeline_versions. Does NOT touch pipeline_proposals
+   * or trigger migration. Used by B2 update_registry_pipeline MCP.
+   *
+   * Honours REGISTRY_ROOT env var for test isolation; defaults to
+   * apps/server/src/builtin-pipelines relative to process.cwd().
+   */
+  updateRegistryPipeline(input: {
+    pipelineName: string;
+    newIR: PipelineIR;
+    actor: string;
+  }): { ok: true; versionHash: string; path: string }
+   | { ok: false; diagnostics: Diagnostic[] } {
+    const validationResult = this.validate(input.newIR);
+    if (!validationResult.ok) {
+      return { ok: false, diagnostics: validationResult.diagnostics };
+    }
+    const parsedIR = PipelineIRSchema.parse(input.newIR);
+
+    const hash = versionHash(parsedIR);
+
+    if (getPipelineIR(this.db, hash) === null) {
+      const { source } = emitPipelineModule(parsedIR);
+      insertPipelineVersion(this.db, parsedIR, {
+        versionHash: hash,
+        tsSource: source,
+      });
+    }
+
+    // File-write side effect. Resolve registry root lazily to honour
+    // REGISTRY_ROOT override without complicating happy-path callers.
+    // Using require() inside the method keeps ESM-side static analysis
+    // clean (node:fs / node:path are CJS-compatible via the built-in
+    // shim). REGISTRY_PIPELINE_NOT_FOUND fires when the target dir is
+    // absent — callers must create it out-of-band (we don't mkdir for
+    // them to avoid accidentally inventing new registry entries).
+    const nodeFs = require("node:fs") as typeof import("node:fs");
+    const nodePath = require("node:path") as typeof import("node:path");
+    const registryRoot = process.env["REGISTRY_ROOT"]
+      ?? nodePath.resolve(process.cwd(), "apps/server/src/builtin-pipelines");
+    const dirPath = nodePath.join(registryRoot, input.pipelineName);
+    if (!nodeFs.existsSync(dirPath)) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "REGISTRY_PIPELINE_NOT_FOUND",
+          message: `registry pipeline '${input.pipelineName}' directory not found at ${dirPath}`,
+          context: { pipelineName: input.pipelineName, path: dirPath },
+        }],
+      };
+    }
+    const irPath = nodePath.join(dirPath, "pipeline.ir.json");
+    nodeFs.writeFileSync(
+      irPath,
+      JSON.stringify(parsedIR, null, 2) + "\n",
+      "utf8",
+    );
+
+    return { ok: true, versionHash: hash, path: irPath };
+  }
+
+  /**
+   * Stage 5A skeleton — writes an audit row to hot_update_events with
+   * status='rolled_back'. DOES NOT actually roll back stage_attempts
+   * or pipeline state; the real rollback executor lands in Stage 5B.
+   *
+   * Returns VERSION_NOT_IN_HISTORY when toVersion has never appeared as
+   * either from_version or to_version for this taskId.
+   */
+  rollbackHotUpdate(input: {
+    taskId: string;
+    toVersion: string;
+    actor: string;
+  }): { ok: true; eventId: string; diagnostic: string }
+   | { ok: false; diagnostics: Diagnostic[] } {
+    const history = this.db.prepare(
+      `SELECT from_version, to_version FROM hot_update_events
+       WHERE task_id = ? ORDER BY started_at DESC`,
+    ).all(input.taskId) as Array<{ from_version: string; to_version: string }>;
+    const known = new Set<string>();
+    for (const row of history) {
+      known.add(row.from_version);
+      known.add(row.to_version);
+    }
+    if (!known.has(input.toVersion)) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "VERSION_NOT_IN_HISTORY",
+          message:
+            `task '${input.taskId}' has no migration history including version ` +
+            `'${input.toVersion}' (known=${Array.from(known).join(", ") || "<empty>"})`,
+          context: { taskId: input.taskId, toVersion: input.toVersion },
+        }],
+      };
+    }
+    const mostRecent = history[0];
+    const currentFromVersion = mostRecent?.to_version ?? input.toVersion;
+
+    const eventId = randomUUID();
+    const startedAt = Date.now();
+    this.db.prepare(
+      `INSERT INTO hot_update_events
+       (event_id, task_id, from_version, to_version, actor, proposal_id,
+        rerun_from_stage, status, started_at, finished_at, diagnostic_json)
+       VALUES (?, ?, ?, ?, ?, NULL, NULL, 'rolled_back', ?, ?, ?)`,
+    ).run(
+      eventId,
+      input.taskId,
+      currentFromVersion,
+      input.toVersion,
+      input.actor,
+      startedAt,
+      Date.now(),
+      JSON.stringify({
+        __kind: "rollback-skeleton-v1",
+        note: "Stage 5A skeleton — audit only; real state rollback lands in 5B",
+      }),
+    );
+    return {
+      ok: true,
+      eventId,
+      diagnostic: "Stage 5A skeleton — audit row written; real rollback lands in 5B",
     };
   }
 

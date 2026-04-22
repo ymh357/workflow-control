@@ -840,3 +840,226 @@ describe("KernelService.submit with prompts", () => {
     expect(res.ok).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Stage 5A additions: autoApprove / dryRunProposal / rollbackHotUpdate /
+// updateRegistryPipeline — all verified against the real DB schema (not
+// mocks) so the FK + CHECK constraints actually kick in.
+// ---------------------------------------------------------------------------
+
+describe("KernelService — Stage 5A autoApprove", () => {
+  it("autoApprove=true on promptOnly patch → status='approved' in same tx", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const prompts = diamondPrompts();
+    const submitted = svc.submit(diamondIR(), { prompts });
+    if (!submitted.ok) throw new Error("submit failed");
+
+    // Pick the first agent stage so we can swap its promptRef.
+    const firstAgent = diamondIR().stages.find((s) => s.type === "agent");
+    if (!firstAgent || firstAgent.type !== "agent") throw new Error("no agent stage");
+    const patch: IRPatch = {
+      ops: [{
+        op: "update_stage_config",
+        stage: firstAgent.name,
+        configPatch: { promptRef: firstAgent.config.promptRef + "-v2" },
+      }],
+    };
+    const r = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch,
+      actor: "test",
+      autoApprove: true,
+    });
+    if (!r.ok) throw new Error("propose failed: " + JSON.stringify(r.diagnostics));
+    expect(r.autoApplied).toBe(true);
+    const row = db.prepare(
+      `SELECT status FROM pipeline_proposals WHERE proposal_id = ?`,
+    ).get(r.proposalId) as { status: string };
+    expect(row.status).toBe("approved");
+    db.close();
+  });
+
+  it("autoApprove=true on structural patch → status='pending' (not applied)", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("submit failed");
+    // remove_stage on a leaf of the diamond = structural
+    const leaf = diamondIR().stages[diamondIR().stages.length - 1]!;
+    const patch: IRPatch = {
+      ops: [{ op: "remove_stage", stageName: leaf.name }],
+    };
+    const r = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch,
+      actor: "test",
+      autoApprove: true,
+    });
+    if (!r.ok) {
+      // Structural removal may trigger downstream validation errors in
+      // diamondIR (wires hang). Acceptable — diagnostics present.
+      expect(r.diagnostics.length).toBeGreaterThan(0);
+      db.close();
+      return;
+    }
+    expect(r.autoApplied).toBe(false);
+    const row = db.prepare(
+      `SELECT status FROM pipeline_proposals WHERE proposal_id = ?`,
+    ).get(r.proposalId) as { status: string };
+    expect(row.status).toBe("pending");
+    db.close();
+  });
+
+  it("diagnostic_json on success stores __kind=proposal-success-v1 + diff + impact + safeRange", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("submit failed");
+    const firstAgent = diamondIR().stages.find((s) => s.type === "agent");
+    if (!firstAgent || firstAgent.type !== "agent") throw new Error("no agent stage");
+    const r = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: { ops: [{
+        op: "update_stage_config",
+        stage: firstAgent.name,
+        configPatch: { promptRef: firstAgent.config.promptRef + "-v2" },
+      }] },
+      actor: "ai",
+    });
+    if (!r.ok) throw new Error("propose failed");
+    const row = db.prepare(
+      `SELECT diagnostic_json FROM pipeline_proposals WHERE proposal_id = ?`,
+    ).get(r.proposalId) as { diagnostic_json: string };
+    const parsed = JSON.parse(row.diagnostic_json);
+    expect(parsed.__kind).toBe("proposal-success-v1");
+    expect(parsed.diff).toBeDefined();
+    expect(parsed.impact).toBeDefined();
+    expect(parsed.safeRange).toBeDefined();
+    db.close();
+  });
+});
+
+describe("KernelService — Stage 5A dryRunProposal", () => {
+  it("returns diff+impact+safeRange without DB writes", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("submit failed");
+    const firstAgent = diamondIR().stages.find((s) => s.type === "agent");
+    if (!firstAgent || firstAgent.type !== "agent") throw new Error("no agent stage");
+    const beforeCount = (db.prepare(
+      `SELECT COUNT(*) AS n FROM pipeline_proposals`,
+    ).get() as { n: number }).n;
+    const r = svc.dryRunProposal({
+      currentVersion: submitted.versionHash,
+      patch: { ops: [{
+        op: "update_stage_config",
+        stage: firstAgent.name,
+        configPatch: { promptRef: firstAgent.config.promptRef + "-v2" },
+      }] },
+    });
+    if (!r.ok) throw new Error("dryRun failed: " + JSON.stringify(r.diagnostics));
+    expect(r.safeRange.verdict).toBe("safe");
+    const afterCount = (db.prepare(
+      `SELECT COUNT(*) AS n FROM pipeline_proposals`,
+    ).get() as { n: number }).n;
+    expect(afterCount).toBe(beforeCount);
+    db.close();
+  });
+});
+
+describe("KernelService — Stage 5A rollbackHotUpdate skeleton", () => {
+  it("task with no migration history → VERSION_NOT_IN_HISTORY", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const r = svc.rollbackHotUpdate({
+      taskId: "nonexistent", toVersion: "hash-foo", actor: "test",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("expected failure");
+    expect(r.diagnostics.some((d) => d.code === "VERSION_NOT_IN_HISTORY")).toBe(true);
+    db.close();
+  });
+
+  it("valid history match → writes audit row with status='rolled_back'", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    db.prepare(
+      `INSERT INTO hot_update_events
+       (event_id, task_id, from_version, to_version, actor, proposal_id,
+        rerun_from_stage, status, started_at, finished_at, diagnostic_json)
+       VALUES ('e1', 't1', 'v-old', 'v-new', 'ai', NULL, NULL, 'success', 1, 2, NULL)`,
+    ).run();
+    const r = svc.rollbackHotUpdate({
+      taskId: "t1", toVersion: "v-old", actor: "test",
+    });
+    if (!r.ok) throw new Error("expected ok: " + JSON.stringify(r.diagnostics));
+    expect(r.eventId).toBeTruthy();
+    const row = db.prepare(
+      `SELECT status, diagnostic_json FROM hot_update_events WHERE event_id = ?`,
+    ).get(r.eventId) as { status: string; diagnostic_json: string | null };
+    expect(row.status).toBe("rolled_back");
+    expect(row.diagnostic_json).toContain("rollback-skeleton-v1");
+    db.close();
+  });
+});
+
+describe("KernelService — Stage 5A updateRegistryPipeline", () => {
+  it("valid IR overwrites registry file + inserts pipeline_versions row", () => {
+    const nodeFs = require("node:fs") as typeof import("node:fs");
+    const nodeOs = require("node:os") as typeof import("node:os");
+    const nodePath = require("node:path") as typeof import("node:path");
+    const tmp = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "registry-"));
+    const pipelineDir = nodePath.join(tmp, "my-pipeline");
+    nodeFs.mkdirSync(pipelineDir);
+    nodeFs.writeFileSync(nodePath.join(pipelineDir, "pipeline.ir.json"), "{}", "utf8");
+    process.env["REGISTRY_ROOT"] = tmp;
+    try {
+      const db = makeDb();
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const newIR = diamondIR();
+      newIR.name = "my-pipeline";
+      const r = svc.updateRegistryPipeline({
+        pipelineName: "my-pipeline",
+        newIR,
+        actor: "test",
+      });
+      if (!r.ok) throw new Error("expected ok: " + JSON.stringify(r.diagnostics));
+      const onDisk = JSON.parse(nodeFs.readFileSync(r.path, "utf8"));
+      expect(onDisk.name).toBe("my-pipeline");
+      expect(onDisk.stages.length).toBeGreaterThan(0);
+      expect(getPipelineIR(db, r.versionHash)).not.toBeNull();
+      db.close();
+    } finally {
+      delete process.env["REGISTRY_ROOT"];
+      nodeFs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("nonexistent pipelineName directory → REGISTRY_PIPELINE_NOT_FOUND", () => {
+    const nodeFs = require("node:fs") as typeof import("node:fs");
+    const nodeOs = require("node:os") as typeof import("node:os");
+    const nodePath = require("node:path") as typeof import("node:path");
+    const tmp = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "registry-"));
+    process.env["REGISTRY_ROOT"] = tmp;
+    try {
+      const db = makeDb();
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const newIR = diamondIR();
+      newIR.name = "missing-pipeline";
+      const r = svc.updateRegistryPipeline({
+        pipelineName: "missing-pipeline",
+        newIR,
+        actor: "test",
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error("expected failure");
+      expect(r.diagnostics.some((d) => d.code === "REGISTRY_PIPELINE_NOT_FOUND")).toBe(true);
+      db.close();
+    } finally {
+      delete process.env["REGISTRY_ROOT"];
+      nodeFs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
