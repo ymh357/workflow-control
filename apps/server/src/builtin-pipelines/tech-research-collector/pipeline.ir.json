@@ -84,5 +84,71 @@
         "stage": "collectTargetSources"
       }
     }
-  ]
+  ],
+  "store_schema": {
+    "collectTargetSources.extractedFacts": {
+      "type": "string[]",
+      "description": "extractedFacts emitted by collectTargetSources stage.",
+      "produced_by": {
+        "stage": "collectTargetSources",
+        "port": "extractedFacts"
+      }
+    },
+    "collectTargetSources.officialSourceCount": {
+      "type": "number",
+      "description": "officialSourceCount emitted by collectTargetSources stage.",
+      "produced_by": {
+        "stage": "collectTargetSources",
+        "port": "officialSourceCount"
+      }
+    },
+    "collectTargetSources.reportPath": {
+      "type": "string",
+      "description": "reportPath emitted by collectTargetSources stage.",
+      "produced_by": {
+        "stage": "collectTargetSources",
+        "port": "reportPath"
+      }
+    },
+    "collectTargetSources.sourceCatalog": {
+      "type": "string[]",
+      "description": "sourceCatalog emitted by collectTargetSources stage.",
+      "produced_by": {
+        "stage": "collectTargetSources",
+        "port": "sourceCatalog"
+      }
+    },
+    "collectTargetSources.spaWarnings": {
+      "type": "string[]",
+      "description": "spaWarnings emitted by collectTargetSources stage.",
+      "produced_by": {
+        "stage": "collectTargetSources",
+        "port": "spaWarnings"
+      }
+    },
+    "collectTargetSources.subjectType": {
+      "type": "string",
+      "description": "subjectType emitted by collectTargetSources stage.",
+      "produced_by": {
+        "stage": "collectTargetSources",
+        "port": "subjectType"
+      }
+    },
+    "collectTargetSources.summary": {
+      "type": "string",
+      "description": "summary emitted by collectTargetSources stage.",
+      "produced_by": {
+        "stage": "collectTargetSources",
+        "port": "summary"
+      }
+    },
+    "collectTargetSources.targetName": {
+      "type": "string",
+      "description": "targetName emitted by collectTargetSources stage.",
+      "produced_by": {
+        "stage": "collectTargetSources",
+        "port": "targetName"
+      }
+    }
+  }
 }

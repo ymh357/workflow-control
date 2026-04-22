@@ -270,5 +270,47 @@
         "stage": "writeDeliverable"
       }
     }
-  ]
+  ],
+  "store_schema": {
+    "writeDeliverable.deliverableId": {
+      "type": "string",
+      "description": "deliverableId emitted by writeDeliverable stage.",
+      "produced_by": {
+        "stage": "writeDeliverable",
+        "port": "deliverableId"
+      }
+    },
+    "writeDeliverable.filePath": {
+      "type": "string",
+      "description": "filePath emitted by writeDeliverable stage.",
+      "produced_by": {
+        "stage": "writeDeliverable",
+        "port": "filePath"
+      }
+    },
+    "writeDeliverable.sourcesLinked": {
+      "type": "number",
+      "description": "sourcesLinked emitted by writeDeliverable stage.",
+      "produced_by": {
+        "stage": "writeDeliverable",
+        "port": "sourcesLinked"
+      }
+    },
+    "writeDeliverable.verificationRefsCount": {
+      "type": "number",
+      "description": "verificationRefsCount emitted by writeDeliverable stage.",
+      "produced_by": {
+        "stage": "writeDeliverable",
+        "port": "verificationRefsCount"
+      }
+    },
+    "writeDeliverable.wordCount": {
+      "type": "number",
+      "description": "wordCount emitted by writeDeliverable stage.",
+      "produced_by": {
+        "stage": "writeDeliverable",
+        "port": "wordCount"
+      }
+    }
+  }
 }

@@ -964,5 +964,199 @@
         "stage": "persisting"
       }
     }
-  ]
+  ],
+  "store_schema": {
+    "analyzing.assumptions": {
+      "type": "string[]",
+      "description": "assumptions emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "assumptions"
+      }
+    },
+    "analyzing.dataFlowSummary": {
+      "type": "string",
+      "description": "dataFlowSummary emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "dataFlowSummary"
+      }
+    },
+    "analyzing.description": {
+      "type": "string",
+      "description": "description emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "description"
+      }
+    },
+    "analyzing.estimatedStageCount": {
+      "type": "number",
+      "description": "estimatedStageCount emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "estimatedStageCount"
+      }
+    },
+    "analyzing.pipelineId": {
+      "type": "string",
+      "description": "pipelineId emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "pipelineId"
+      }
+    },
+    "analyzing.pipelineName": {
+      "type": "string",
+      "description": "pipelineName emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "pipelineName"
+      }
+    },
+    "analyzing.recommendedMcps": {
+      "type": "string[]",
+      "description": "recommendedMcps emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "recommendedMcps"
+      }
+    },
+    "analyzing.recommendedSkills": {
+      "type": "string[]",
+      "description": "recommendedSkills emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "recommendedSkills"
+      }
+    },
+    "analyzing.stageContracts": {
+      "type": "Record<string, unknown>[]",
+      "description": "stageContracts emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "stageContracts"
+      }
+    },
+    "analyzing.stageDesign": {
+      "type": "string",
+      "description": "stageDesign emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "stageDesign"
+      }
+    },
+    "analyzing.subPipelineContracts": {
+      "type": "Record<string, unknown>[]",
+      "description": "subPipelineContracts emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "subPipelineContracts"
+      }
+    },
+    "analyzing.summary": {
+      "type": "string",
+      "description": "summary emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "summary"
+      }
+    },
+    "analyzing.targetRepoName": {
+      "type": "string",
+      "description": "targetRepoName emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "targetRepoName"
+      }
+    },
+    "analyzing.useCases": {
+      "type": "string[]",
+      "description": "useCases emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "useCases"
+      }
+    },
+    "analyzing.usesFanout": {
+      "type": "boolean",
+      "description": "usesFanout emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "usesFanout"
+      }
+    },
+    "analyzing.usesSubPipelines": {
+      "type": "boolean",
+      "description": "usesSubPipelines emitted by analyzing stage.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "usesSubPipelines"
+      }
+    },
+    "genPrompts.prompts": {
+      "type": "Record<string, unknown>",
+      "description": "prompts emitted by genPrompts stage.",
+      "produced_by": {
+        "stage": "genPrompts",
+        "port": "prompts"
+      }
+    },
+    "genPrompts.subPrompts": {
+      "type": "Record<string, unknown>[]",
+      "description": "subPrompts emitted by genPrompts stage.",
+      "produced_by": {
+        "stage": "genPrompts",
+        "port": "subPrompts"
+      }
+    },
+    "genSkeleton.ir": {
+      "type": "Record<string, unknown>",
+      "description": "ir emitted by genSkeleton stage.",
+      "produced_by": {
+        "stage": "genSkeleton",
+        "port": "ir"
+      }
+    },
+    "genSkeleton.subIrs": {
+      "type": "Record<string, unknown>[]",
+      "description": "subIrs emitted by genSkeleton stage.",
+      "produced_by": {
+        "stage": "genSkeleton",
+        "port": "subIrs"
+      }
+    },
+    "persisting.pipelineId": {
+      "type": "string",
+      "description": "pipelineId emitted by persisting stage.",
+      "produced_by": {
+        "stage": "persisting",
+        "port": "pipelineId"
+      }
+    },
+    "persisting.pipelineName": {
+      "type": "string",
+      "description": "pipelineName emitted by persisting stage.",
+      "produced_by": {
+        "stage": "persisting",
+        "port": "pipelineName"
+      }
+    },
+    "persisting.subVersionHashes": {
+      "type": "string[]",
+      "description": "subVersionHashes emitted by persisting stage.",
+      "produced_by": {
+        "stage": "persisting",
+        "port": "subVersionHashes"
+      }
+    },
+    "persisting.versionHash": {
+      "type": "string",
+      "description": "versionHash emitted by persisting stage.",
+      "produced_by": {
+        "stage": "persisting",
+        "port": "versionHash"
+      }
+    }
+  }
 }

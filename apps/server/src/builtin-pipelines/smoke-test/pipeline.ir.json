@@ -64,5 +64,31 @@
         "stage": "echoBack"
       }
     }
-  ]
+  ],
+  "store_schema": {
+    "greet.note": {
+      "type": "string",
+      "description": "Short note produced by greet stage, consumed by echoBack.",
+      "produced_by": {
+        "stage": "greet",
+        "port": "note"
+      }
+    },
+    "greet.subject": {
+      "type": "string",
+      "description": "Subject line produced by greet stage, consumed by echoBack.",
+      "produced_by": {
+        "stage": "greet",
+        "port": "subject"
+      }
+    },
+    "echoBack.message": {
+      "type": "string",
+      "description": "Final echoed message combining the note + subject.",
+      "produced_by": {
+        "stage": "echoBack",
+        "port": "message"
+      }
+    }
+  }
 }
