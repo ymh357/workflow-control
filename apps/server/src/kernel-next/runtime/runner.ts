@@ -1435,6 +1435,10 @@ async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<FanoutResult
       portValues: elementPortValues,
       handlers,
       portRuntime: silentRuntime,
+      // B17 full — tag the per-element attempt with its 0-based index.
+      // PortRuntime.startAttempt writes it to stage_attempts.fanout_element_idx
+      // so migration re-runs can skip indices that already succeeded.
+      fanoutElementIdx: i,
     });
 
     if (result.status === "error") {

@@ -35,7 +35,7 @@ export class ScriptStageExecutor implements StageExecutor {
   }
 
   async executeStage(args: ExecuteStageArgs): Promise<ExecuteStageResult> {
-    const { ir, stageName, taskId, versionHash, portValues, portRuntime } = args;
+    const { ir, stageName, taskId, versionHash, portValues, portRuntime, fanoutElementIdx } = args;
 
     const stage = ir.stages.find((s) => s.name === stageName);
     if (!stage) throw new Error(`Stage '${stageName}' not in IR`);
@@ -47,9 +47,10 @@ export class ScriptStageExecutor implements StageExecutor {
     }
     const scriptStage: ScriptStage = stage;
 
-    // 1. Start attempt.
+    // 1. Start attempt. Forward fanoutElementIdx (B17 full) so fanout_element
+    //    rows get their idx populated; no-op on non-fanout attempts.
     const { attemptId, attemptIdx } = portRuntime.startAttempt({
-      taskId, versionHash, stageName,
+      taskId, versionHash, stageName, fanoutElementIdx,
     });
 
     // 2. Gather inputs from wire sources; record reads.

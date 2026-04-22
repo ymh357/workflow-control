@@ -29,13 +29,14 @@ export type {
 } from "./executor.js";
 
 export async function executeStage(args: ExecuteStageArgs): Promise<ExecuteStageResult> {
-  const { ir, stageName, taskId, versionHash, portValues, handlers, portRuntime } = args;
+  const { ir, stageName, taskId, versionHash, portValues, handlers, portRuntime, fanoutElementIdx } = args;
   const stage = ir.stages.find((s) => s.name === stageName);
   if (!stage) throw new Error(`Stage '${stageName}' not in IR`);
 
-  // 1. Start attempt.
+  // 1. Start attempt. Forward fanoutElementIdx so fanout_element rows
+  //    get their idx populated (B17 full).
   const { attemptId, attemptIdx } = portRuntime.startAttempt({
-    taskId, versionHash, stageName,
+    taskId, versionHash, stageName, fanoutElementIdx,
   });
 
   // 2. Gather inputs from wire sources. For each input port, find the wire

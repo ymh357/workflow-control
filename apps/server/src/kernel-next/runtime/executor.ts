@@ -58,6 +58,14 @@ export interface ExecuteStageArgs {
    * behaviour.
    */
   signal?: AbortSignal;
+  /**
+   * B17 full — when this call represents one element of a fanout stage,
+   * carries the 0-based element index. Executors forward it to
+   * PortRuntime.startAttempt so stage_attempts.fanout_element_idx gets
+   * populated. Only meaningful on silent runtimes whose defaultKind is
+   * 'fanout_element'; other runtimes silently drop it (see PortRuntime).
+   */
+  fanoutElementIdx?: number;
 }
 
 export interface ExecuteStageResult {

@@ -166,12 +166,13 @@ export class RealStageExecutor implements StageExecutor {
     stage: AgentStage,
     isFinalAttempt: boolean,
   ): Promise<ExecuteStageResult> {
-    const { stageName, taskId, versionHash, portValues, portRuntime } = args;
+    const { stageName, taskId, versionHash, portValues, portRuntime, fanoutElementIdx } = args;
     const failSilently = !isFinalAttempt;
 
-    // 1. Start attempt.
+    // 1. Start attempt. Forward fanoutElementIdx (B17 full) so fanout_element
+    //    rows carry their 0-based index; no-op on non-fanout attempts.
     const { attemptId, attemptIdx } = portRuntime.startAttempt({
-      taskId, versionHash, stageName,
+      taskId, versionHash, stageName, fanoutElementIdx,
     });
 
     // 2. Gather inputs from wire sources + record reads.

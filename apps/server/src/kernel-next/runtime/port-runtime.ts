@@ -60,6 +60,12 @@ export interface StartAttemptArgs {
   // A4 replay_stage: when this attempt reproduces an earlier attempt,
   // points back at that attempt's id. NULL for non-replay attempts.
   replayedFromAttemptId?: string;
+  // B17 full: the 0-based element index inside a fanout stage. Written
+  // to stage_attempts.fanout_element_idx ONLY when the effective kind
+  // resolves to 'fanout_element' (CHECK constraint enforces presence
+  // for that kind). Silently dropped for other kinds to protect the
+  // invariant that idx only tags per-element attempts.
+  fanoutElementIdx?: number;
 }
 
 export interface StartAttemptResult {
@@ -184,12 +190,19 @@ export class PortRuntime {
     const attemptIdx = row.max_idx + 1;
     const attemptId = randomUUID();
     const kind = args.kind ?? this.defaultKind;
+    // B17 full — only fanout_element attempts carry the idx. Silently
+    // drop idx passed alongside other kinds so misuse can't leak into
+    // the column.
+    const fanoutElementIdx = kind === "fanout_element"
+      ? (args.fanoutElementIdx ?? null)
+      : null;
 
     this.db.prepare(
       `INSERT INTO stage_attempts
        (attempt_id, task_id, version_hash, stage_name, attempt_idx,
-        started_at, status, kind, replayed_from_attempt_id)
-       VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
+        started_at, status, kind, replayed_from_attempt_id,
+        fanout_element_idx)
+       VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
     ).run(
       attemptId,
       args.taskId,
@@ -199,6 +212,7 @@ export class PortRuntime {
       Date.now(),
       kind,
       args.replayedFromAttemptId ?? null,
+      fanoutElementIdx,
     );
 
     if (this.hooks.onAttemptStarted && !args.suppressHooks) {
