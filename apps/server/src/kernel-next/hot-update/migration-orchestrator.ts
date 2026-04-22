@@ -183,18 +183,31 @@ export async function executeMigration(
       : new Set<string>();
 
     // Snapshot pre-supersede status of every affected attempt for reverse.
+    //
+    // B17 (fanout hot-update): a fanout stage produces many attempts —
+    //   one per element (kind='fanout_element') plus one aggregate
+    //   (kind='fanout_aggregate'). Already-successful fanout elements
+    //   are retained as lineage — the roadmap calls for "已跑 item 保留".
+    //   Any element that is still running or errored is superseded so
+    //   the re-run path can retry it under the new IR, and the
+    //   aggregate attempt is always superseded (it would otherwise
+    //   carry the outputs array built from the now-partial element
+    //   set). Non-fanout attempts (kind='regular' + any non-fanout
+    //   success/running/error rows) supersede unchanged.
     const snapshot: PreSupersedeSnapshot[] = [];
     if (supersedeSet.size > 0) {
       const stmt = db.prepare(
-        `SELECT attempt_id, stage_name, status FROM stage_attempts
+        `SELECT attempt_id, stage_name, status, kind FROM stage_attempts
          WHERE task_id = ? AND stage_name = ?
-           AND status IN ('success','running','error')`,
+           AND status IN ('success','running','error')
+           AND NOT (kind = 'fanout_element' AND status = 'success')`,
       );
       for (const s of supersedeSet) {
         const rows = stmt.all(taskId, s) as Array<{
           attempt_id: string;
           stage_name: string;
           status: string;
+          kind: string;
         }>;
         for (const r of rows) {
           snapshot.push({
@@ -219,10 +232,14 @@ export async function executeMigration(
     try {
       db.exec("BEGIN");
       if (supersedeSet.size > 0) {
+        // B17 — preserve successful fanout_element attempts (kept as
+        // completed lineage). All other attempt kinds inside the
+        // supersede set are superseded as before.
         const upd = db.prepare(
           `UPDATE stage_attempts SET status = 'superseded'
            WHERE task_id = ? AND stage_name = ?
-             AND status IN ('success','running','error')`,
+             AND status IN ('success','running','error')
+             AND NOT (kind = 'fanout_element' AND status = 'success')`,
         );
         for (const s of supersedeSet) upd.run(taskId, s);
       }
