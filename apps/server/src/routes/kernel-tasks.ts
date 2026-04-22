@@ -78,7 +78,7 @@ kernelTasksRoute.post("/kernel/tasks/:taskId/migrate", async (c) => {
   }
 
   const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
-  const result = svc.migrateTask(taskId, parsed.data.proposalId);
+  const result = await svc.migrateTask(taskId, parsed.data.proposalId);
   if (result.ok) return c.json(result);
   return c.json(result, statusForMigrateDiagnostic(result.diagnostics[0]?.code));
 });

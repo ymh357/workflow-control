@@ -32,32 +32,32 @@ import { dryRunProposal as runDryRun } from "../hot-update/dry-run.js";
 import type {
   DryRunResult, PipelineDiff, Impact, SafeRangeVerdict,
 } from "../hot-update/types.js";
+import {
+  executeMigration,
+  __resetOrchestratorLocksForTest,
+} from "../hot-update/migration-orchestrator.js";
 
-// Process-local in-progress migration set (design §10.2: "a task can be
-// migrated to at most one new version at a time"). Keyed by taskId; the
-// value carries the acquiring proposalId so we can surface a useful
-// diagnostic when a second caller is rejected.
-//
-// Module-level because KernelService is constructed per-request by the
-// MCP / REST handlers — instance-level state wouldn't serialize across
-// concurrent invocations within the same process.
-const migrationInProgress = new Map<string, { proposalId: string; acquiredAt: number }>();
-
-/** Test hook: force-release every held migration lock. Not exported
- *  for production callers — used only by migrate-task.test to reset
- *  state between tests where an assertion interrupted the finally block.
- */
+// Stage 5B — per-task migration lock now lives in
+// hot-update/migration-orchestrator.ts. The test hooks below forward to
+// the orchestrator so existing callers keep compiling.
 export function __resetMigrationLocksForTest(): void {
-  migrationInProgress.clear();
+  __resetOrchestratorLocksForTest();
 }
 
-/** Test hook: manually seed the lock as if another call had already
- *  acquired it. Used to exercise the MIGRATION_IN_PROGRESS path without
- *  contriving a real concurrent caller (migrateTask is synchronous;
- *  there's no natural in-test re-entry).
+/** Stage 5B retired: manual lock seeding is no longer supported — the
+ *  orchestrator acquires + releases its own lock inside executeMigration.
+ *  Tests that used this helper to simulate concurrent contention should
+ *  instead drive concurrent executeMigration calls (see
+ *  migration-orchestrator.test.ts "concurrent lock" case). Kept as a
+ *  throw so silent reliance surfaces immediately.
  */
-export function __acquireMigrationLockForTest(taskId: string, proposalId: string): void {
-  migrationInProgress.set(taskId, { proposalId, acquiredAt: Date.now() });
+export function __acquireMigrationLockForTest(
+  _taskId: string,
+  _proposalId: string,
+): void {
+  throw new Error(
+    "__acquireMigrationLockForTest retired in Stage 5B — drive concurrent executeMigration calls instead",
+  );
 }
 
 export interface ValidateResponse {
@@ -186,6 +186,15 @@ export interface KernelServiceOptions {
   tscPath?: string;
   /** Skip tsc check (tests that only care about structural / DAG). */
   skipTypeCheck?: boolean;
+  /**
+   * Stage 5B — override the INTERRUPT-wait timeout in migrateTask. Used
+   * by live-migration adversarial tests that need a short timeout so
+   * they can still assert both the timeout path and the summary-turn
+   * success path within vitest's default test timeout. Production
+   * callers leave this undefined and the orchestrator's 30_000ms
+   * default applies.
+   */
+  migrationInterruptWaitMsOverride?: number;
 }
 
 export class KernelService {
@@ -1059,274 +1068,54 @@ export class KernelService {
   }
 
   /**
-   * A8 forward migration happy path (§10.5 step 1-5 simplified):
-   *
-   *   1. Load the proposal. Must be status='approved' AND this task must
-   *      be in its migrateRunning list (opt-in, §10.1).
-   *   2. Validate rerunFrom exists on the proposed pipeline version.
-   *   3. Mark every stage_attempt AT OR DOWNSTREAM OF rerunFrom on the
-   *      OLD version as status='superseded'. Lineage (port_values) for
-   *      those attempts stays in place — §1.3 "never regress
-   *      already-executed information" — but those attempts no longer
-   *      count when get_task_status computes the verdict.
-   *   4. Write a hot_update_events row with the outcome. This is the
-   *      §10.8 audit trail.
-   *   5. Return the proposed version hash; the caller is responsible
-   *      for kicking off new stage_attempts on that version (A8 min
-   *      scope does not wire the runner — an A2.3 TaskMachine nest
-   *      would be needed to interrupt an in-flight AgentMachine).
-   *
-   * The happy path tested here: taskId is NOT running — it has ended
-   * cleanly or is idle between stages. Mid-stage graceful INTERRUPT
-   * requires AgentMachine nesting (A2.3) and is explicitly out of
-   * A8-min scope.
+   * Stage 5B — thin delegator to hot-update/migration-orchestrator. The
+   * orchestrator owns the full INTERRUPT + supersede + resume +
+   * reverse-supersede pipeline. migrateTask is now async because the
+   * resume path awaits the new runner startup via startPipelineRun.
    */
-  migrateTask(taskId: string, proposalId: string): MigrateTaskResult {
-    const proposalRow = this.db.prepare(
-      `SELECT proposal_id, base_version, proposed_version, status,
-              rerun_from, migrate_running, actor
-       FROM pipeline_proposals WHERE proposal_id = ?`,
-    ).get(proposalId) as
-      | {
-          proposal_id: string;
-          base_version: string;
-          proposed_version: string | null;
-          status: string;
-          rerun_from: string | null;
-          migrate_running: string | null;
-          actor: string;
-        }
-      | undefined;
-
-    if (!proposalRow) {
-      return {
-        ok: false,
-        diagnostics: [{ code: "PROPOSAL_NOT_FOUND", message: `proposal '${proposalId}' not found` }],
-      };
-    }
-    if (proposalRow.status !== "approved") {
-      return {
-        ok: false,
-        diagnostics: [{
-          code: "PROPOSAL_ALREADY_RESOLVED",
-          message: `proposal '${proposalId}' status is '${proposalRow.status}', not 'approved'`,
-        }],
-      };
-    }
-    if (!proposalRow.proposed_version) {
+  async migrateTask(
+    taskId: string,
+    proposalId: string,
+  ): Promise<MigrateTaskResult> {
+    const outcome = await executeMigration({
+      db: this.db,
+      taskId,
+      proposalId,
+      interruptWaitMsOverride: this.opts.migrationInterruptWaitMsOverride,
+    });
+    if (!outcome.ok) {
+      const code: Diagnostic["code"] =
+        outcome.code === "MIGRATION_INTERRUPT_TIMEOUT"
+          ? "MIGRATION_INTERRUPT_TIMEOUT"
+          : outcome.code === "MIGRATION_RESUME_FAILED"
+            ? "MIGRATION_RESUME_FAILED"
+            : outcome.code === "MIGRATION_IN_PROGRESS"
+              ? "MIGRATION_IN_PROGRESS"
+              : outcome.code === "PROPOSAL_NOT_FOUND"
+                ? "PROPOSAL_NOT_FOUND"
+                : outcome.code === "PROPOSAL_ALREADY_RESOLVED"
+                  ? "PROPOSAL_ALREADY_RESOLVED"
+                  : "PATCH_APPLY_ERROR";
       return {
         ok: false,
         diagnostics: [{
-          code: "PATCH_APPLY_ERROR",
-          message: `proposal '${proposalId}' has no proposed_version`,
+          code,
+          message: outcome.message,
+          context: outcome.context,
         }],
       };
     }
-
-    const mig = parseMigrateRunning(proposalRow.migrate_running);
-    const inList =
-      mig === "all" ||
-      (Array.isArray(mig) && mig.includes(taskId));
-    if (!inList) {
-      return {
-        ok: false,
-        diagnostics: [{
-          code: "PATCH_APPLY_ERROR",
-          message: `task '${taskId}' is not in the proposal's migrateRunningTasks (${mig === "none" ? "none" : JSON.stringify(mig)})`,
-        }],
-      };
-    }
-
-    // Discover the task's current baseline version from its attempts.
-    const attemptRows = this.db.prepare(
-      `SELECT version_hash FROM stage_attempts WHERE task_id = ? GROUP BY version_hash`,
-    ).all(taskId) as Array<{ version_hash: string }>;
-    if (attemptRows.length === 0) {
-      return {
-        ok: false,
-        diagnostics: [{
-          code: "PATCH_APPLY_ERROR",
-          message: `task '${taskId}' has no stage_attempts — nothing to migrate`,
-        }],
-      };
-    }
-
-    const fromVersion = proposalRow.base_version;
-    const toVersion = proposalRow.proposed_version;
-
-    // Determine downstream stages of rerunFrom in the PROPOSED IR.
-    // Strictly forward: rerunFrom itself + everything reachable via
-    // wires. Parallel siblings that happen to come later are NOT
-    // automatically re-run unless they have a wire-dependency on
-    // something from rerunFrom onward. A3/§10.5 fine-grained parallel
-    // migration is deferred.
-    const proposedIR = getPipelineIR(this.db, toVersion);
-    if (!proposedIR) {
-      return {
-        ok: false,
-        diagnostics: [{
-          code: "PATCH_APPLY_ERROR",
-          message: `proposed version '${toVersion}' not found — orphan proposal`,
-        }],
-      };
-    }
-
-    const rerun = proposalRow.rerun_from;
-    const supersedeStages = rerun === null
-      ? new Set<string>()
-      : computeDownstream(proposedIR, rerun);
-
-    // §10.2 serial-per-task lock. Acquired here after every pre-check
-    // has passed so that a rejected proposal / non-opted-in task /
-    // orphan version returns the structural error without ever
-    // contending for the lock (less confusing for retries).
-    const held = migrationInProgress.get(taskId);
-    if (held) {
-      return {
-        ok: false,
-        diagnostics: [{
-          code: "MIGRATION_IN_PROGRESS",
-          message:
-            `task '${taskId}' is already migrating under proposal ` +
-            `'${held.proposalId}' (acquired ${Date.now() - held.acquiredAt}ms ago)`,
-          context: {
-            holdingProposalId: held.proposalId,
-            acquiredAt: held.acquiredAt,
-          },
-        }],
-      };
-    }
-    migrationInProgress.set(taskId, { proposalId, acquiredAt: Date.now() });
-
-    // A2.3.4 — snapshot running stages BEFORE the supersede tx flips
-    // their status. These are the stages that need INTERRUPT after the
-    // DB commits; taking the snapshot here avoids querying a moving
-    // target once the UPDATE has run.
-    const runningBeforeSupersede = (
-      this.db.prepare(
-        `SELECT DISTINCT stage_name FROM stage_attempts
-         WHERE task_id = ? AND status = 'running'`,
-      ).all(taskId) as Array<{ stage_name: string }>
-    ).map((r) => r.stage_name);
-
-    // Mark stage_attempts superseded. Lineage rows stay (§1.3 invariant).
-    const eventId = randomUUID();
-    const startedAt = Date.now();
-    try {
-      try {
-        this.db.exec("BEGIN");
-        if (supersedeStages.size > 0) {
-          const stmt = this.db.prepare(
-            `UPDATE stage_attempts SET status = 'superseded'
-             WHERE task_id = ? AND stage_name = ? AND status IN ('success', 'running', 'error')`,
-          );
-          for (const s of supersedeStages) stmt.run(taskId, s);
-        }
-        this.db.prepare(
-          `INSERT INTO hot_update_events
-           (event_id, task_id, from_version, to_version, actor, proposal_id,
-            rerun_from_stage, status, started_at, finished_at, diagnostic_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'success', ?, ?, NULL)`,
-        ).run(
-          eventId,
-          taskId,
-          fromVersion,
-          toVersion,
-          proposalRow.actor,
-          proposalId,
-          rerun,
-          startedAt,
-          Date.now(),
-        );
-        this.db.exec("COMMIT");
-      } catch (err) {
-        // Rollback the half-applied supersede + audit; then write a
-        // SEPARATE `status='failed'` audit row OUTSIDE the aborted tx
-        // so operators can see the failure. §10.8 requires every
-        // migration attempt to leave an audit trail regardless of
-        // outcome; without this row, a DB error would leave no
-        // observable evidence that someone tried to migrate.
-        try {
-          this.db.exec("ROLLBACK");
-        } catch {
-          // Ignore — the tx may already be rolled back if BEGIN itself failed.
-        }
-        const message = err instanceof Error ? err.message : String(err);
-        try {
-          const failEventId = randomUUID();
-          this.db.prepare(
-            `INSERT INTO hot_update_events
-             (event_id, task_id, from_version, to_version, actor, proposal_id,
-              rerun_from_stage, status, started_at, finished_at, diagnostic_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?)`,
-          ).run(
-            failEventId,
-            taskId,
-            fromVersion,
-            toVersion,
-            proposalRow.actor,
-            proposalId,
-            rerun,
-            startedAt,
-            Date.now(),
-            JSON.stringify({ error: message }),
-          );
-        } catch {
-          // DB is in an unusable state; nothing actionable here beyond
-          // the rethrown diagnostic below.
-        }
-        return {
-          ok: false,
-          diagnostics: [{
-            code: "MIGRATION_FAILED",
-            message: `migrateTask failed for '${taskId}': ${message}`,
-            context: { error: message, proposalId },
-          }],
-        };
-      }
-    } finally {
-      // Always release the lock, whether we committed or rolled back.
-      migrationInProgress.delete(taskId);
-    }
-
-    // A2.3.4 — broadcast INTERRUPT to every stage that was in-flight
-    // (status='running') when migrateTask started. We captured the list
-    // BEFORE the supersede tx flipped their status, so it's the accurate
-    // pre-migration state. Stages not in supersedeStages (e.g. an
-    // unrelated parallel branch) are also included — they should still
-    // receive INTERRUPT because the migration semantically means "stop
-    // the current pipeline version"; if a running stage doesn't need to
-    // re-run on the new version, the runner's §4.2 matrix will let its
-    // summary turn land cleanly and it'll keep its 'success' outcome.
-    //
-    // Why after the tx commits: DB-level state is the source of truth
-    // for lineage. The runner's in-memory machine is a derived view —
-    // we notify it AFTER DB consistency, so a partial failure that
-    // rolls back the tx doesn't leave runners reacting to events for
-    // migrations that never landed.
-    //
-    // Why best-effort (no await, no error propagation): dispatcher.send
-    // is fire-and-forget by design — the XState actor queues events
-    // synchronously. If the taskId isn't registered (task already
-    // unregistered, process restarted mid-flight, etc.), the broadcast
-    // is a no-op and migrateTask still returns ok.
-    const dispatcher = taskRegistry.get(taskId);
-    if (dispatcher) {
-      for (const stageName of runningBeforeSupersede) {
-        dispatcher.send({ type: "INTERRUPT", stage: stageName });
-      }
-    }
-
     return {
       ok: true,
-      eventId,
-      taskId,
-      fromVersion,
-      toVersion,
-      rerunFrom: rerun,
-      supersededStages: [...supersedeStages].sort(),
+      eventId: outcome.eventId,
+      taskId: outcome.taskId,
+      fromVersion: outcome.fromVersion,
+      toVersion: outcome.toVersion,
+      rerunFrom: outcome.resumedFromStage,
+      supersededStages: outcome.supersededStages,
     };
   }
+
 }
 
 /**
