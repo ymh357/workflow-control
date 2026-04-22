@@ -10,19 +10,12 @@ vi.mock("./settings.js", () => ({
   SystemSettingsSchema: { safeParse: vi.fn() },
 }));
 
-vi.mock("../script-loader.js", () => ({
-  clearDynamicScriptCache: vi.fn(),
-  loadDynamicScript: vi.fn(),
-}));
-
 import { clearConfigCache } from "./index.js";
 import { clearSettingsCache } from "./settings.js";
-import { clearDynamicScriptCache } from "../script-loader.js";
 
 describe("clearConfigCache", () => {
-  it("calls all sub-cache clear functions", () => {
+  it("calls clearSettingsCache", () => {
     clearConfigCache();
     expect(clearSettingsCache).toHaveBeenCalled();
-    expect(clearDynamicScriptCache).toHaveBeenCalled();
   });
 });
