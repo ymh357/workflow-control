@@ -111,6 +111,16 @@ export class PortRuntime {
   }
 
   /**
+   * Kernel-next DB handle. Used by executors that write sidecar tables
+   * (e.g. RealStageExecutor + execution-record-writer for
+   * agent_execution_details rows). All sidecar writers share the same
+   * underlying connection so FK constraints into stage_attempts resolve.
+   */
+  getDb(): DatabaseSync {
+    return this.db;
+  }
+
+  /**
    * Read all direction='out' port_values rows written during a specific
    * attempt. Used by executors to verify that agent-side tool calls (e.g.
    * MCP `write_port`) produced the expected outputs for the attempt,

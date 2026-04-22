@@ -19,6 +19,8 @@ import { PortRuntime } from "./port-runtime.js";
 import { initKernelNextSchema, insertPipelineVersion } from "../ir/sql.js";
 import { versionHash } from "../ir/canonical.js";
 import type { PipelineIR } from "../ir/schema.js";
+import { DbPromptResolver } from "./db-prompt-resolver.js";
+import { KernelService } from "../mcp/kernel.js";
 
 function makeDb(): DatabaseSync {
   const db = new DatabaseSync(":memory:");
@@ -435,6 +437,111 @@ describe("RealStageExecutor subAgents pass-through", () => {
 
     expect(capturedOptions).toHaveLength(1);
     expect(capturedOptions[0].agents).toBeUndefined();
+    db.close();
+  });
+});
+
+// Stage 6 — execution-record sidecar integration. Every agent-stage
+// attempt writes exactly one agent_execution_details row populated
+// with prompt context + lifecycle metadata.
+describe("RealStageExecutor sidecar integration", () => {
+  it("writes an agent_execution_details row per attempt with populated prompt content", async () => {
+    const db = makeDb();
+
+    // Seed a pipeline with the DbPromptResolver path (the one used in
+    // production). KernelService.submit persists pipeline_versions +
+    // prompt_contents + pipeline_prompt_refs for the resolver to look
+    // up. skipTypeCheck avoids spawning tsc in the test harness.
+    const ir: PipelineIR = {
+      name: "sidecar-p1",
+      stages: [
+        {
+          name: "S",
+          type: "agent",
+          inputs: [],
+          outputs: [],
+          config: { promptRef: "p1prompt" },
+        },
+      ],
+      wires: [],
+    };
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitRes = svc.submit(ir, { prompts: { p1prompt: "hello world" } });
+    expect(submitRes.ok).toBe(true);
+    if (!submitRes.ok) return;
+
+    // Fake queryFn that emits an init + a success result with cost + usage
+    // + session_id. No tool_use, no declared outputs → schema check
+    // trivially passes because stage.outputs is empty.
+    const queryFn = (() =>
+      (async function* () {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sess-test-xyz",
+        };
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "done thinking" }],
+          },
+          session_id: "sess-test-xyz",
+        };
+        yield {
+          type: "result",
+          subtype: "success",
+          session_id: "sess-test-xyz",
+          total_cost_usd: 0.0123,
+          usage: { input_tokens: 17, output_tokens: 9 },
+          num_turns: 1,
+        };
+      })()) as never;
+
+    const portRuntime = new PortRuntime(db, { send: () => { /* inert */ } });
+    const executor = new RealStageExecutor({
+      mcpServerFactory: () => ({}),
+      model: "claude-haiku-4-5",
+      queryFn,
+      promptResolver: new DbPromptResolver(db, submitRes.versionHash),
+    });
+
+    const result = await executor.executeStage({
+      ir,
+      stageName: "S",
+      taskId: "tk-sidecar",
+      versionHash: submitRes.versionHash,
+      portValues: {},
+      handlers: {},
+      portRuntime,
+    });
+
+    expect(result.status).toBe("success");
+
+    const row = db.prepare(
+      `SELECT * FROM agent_execution_details WHERE attempt_id = ?`,
+    ).get(result.attemptId) as Record<string, unknown> | undefined;
+    expect(row).toBeDefined();
+    expect(row!.prompt_ref).toBe("p1prompt");
+    // DbPromptResolver returns the normalized (trailing LF) content,
+    // and the writer stores it as-is so the row is self-contained.
+    expect(row!.prompt_content).toBe("hello world\n");
+    expect(row!.model).toBe("claude-haiku-4-5");
+    expect(row!.ended_at).not.toBeNull();
+    expect(row!.termination_reason).toBe("natural_completion");
+    expect(row!.session_id).toBe("sess-test-xyz");
+    expect(Number(row!.cost_usd)).toBeCloseTo(0.0123, 4);
+    expect(row!.token_input).toBe(17);
+    expect(row!.token_output).toBe(9);
+
+    const stream = JSON.parse(row!.agent_stream_json as string) as Array<{
+      type: string;
+      text: string;
+    }>;
+    // At minimum the "done thinking" text should land; the adapter may
+    // also emit other items. Just assert presence.
+    expect(stream.some((e) => e.type === "text" && e.text === "done thinking"))
+      .toBe(true);
+
     db.close();
   });
 });

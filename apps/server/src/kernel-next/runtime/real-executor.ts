@@ -41,6 +41,12 @@ import { TrivialPromptResolver } from "./prompt-resolver.js";
 import { createAgentMachine, type AgentMachineOutput } from "./agent-machine.js";
 import { createSdkAdapter, type SdkMessageLike } from "./sdk-adapter.js";
 import { pumpSdkStream } from "./stream-pump.js";
+import {
+  openExecutionRecordWriter,
+  type ExecutionRecordWriter,
+} from "./execution-record-writer.js";
+import type { TerminationReason } from "./execution-record-types.js";
+import { promptContentHash } from "../ir/canonical.js";
 
 export interface RealStageExecutorOptions {
   /**
@@ -193,6 +199,22 @@ export class RealStageExecutor implements StageExecutor {
       stage, taskId, attemptId, inputs,
     });
 
+    // 3b. Sidecar: open execution-record writer BEFORE any try/catch so
+    //     the close paths below can reference it unconditionally. Writer
+    //     is side-effect only — returns a no-op on FK violation or any
+    //     DB error, never throws. See spec §5.2.
+    const writer: ExecutionRecordWriter = openExecutionRecordWriter(
+      portRuntime.getDb(),
+      {
+        attemptId,
+        promptRef: stage.config.promptRef,
+        promptContentHash: promptContentHash(userPrompt),
+        promptContent: userPrompt,
+        model: this.model,
+        subAgents: stage.config.subAgents ?? null,
+      },
+    );
+
     // 4. System prompt append describing the stage contract — tool-call only.
     const systemPromptAppend = buildSystemPromptAppend(stage, userPrompt, inputs, {
       taskId, attemptId,
@@ -270,6 +292,16 @@ export class RealStageExecutor implements StageExecutor {
         }
       }
 
+      // Sidecar capture: observe raw SDK messages for fields the
+      // adapter intentionally collapses (assistant text/thinking
+      // payloads, session_id, cost/usage). These ride alongside the
+      // state machine — AgentMachine is the source of truth for
+      // lifecycle; the writer records what was said.
+      let capturedSessionId: string | null = null;
+      let capturedCostUsd: number | null = null;
+      let capturedTokenInput: number | null = null;
+      let capturedTokenOutput: number | null = null;
+
       let agentOutput: AgentMachineOutput;
       try {
         // Stream pump extracted to stream-pump.ts so A2.3.2 can reuse it
@@ -278,7 +310,82 @@ export class RealStageExecutor implements StageExecutor {
         agentOutput = await pumpSdkStream({
           stream: stream as AsyncIterable<SdkMessageLike>,
           adapter,
-          send: (ev) => agentActor.send(ev),
+          send: (ev) => {
+            // Mirror SDK-adapter events into the sidecar writer. The
+            // adapter emits ASSISTANT_TEXT without the text payload so
+            // we capture those contents in onSdkMessage below — here
+            // we only fan out tool-use correlation events (which DO
+            // carry full id/name/input/output).
+            if (ev.type === "TOOL_USE_REQUESTED") {
+              writer.appendToolCall({
+                id: ev.id,
+                name: ev.name,
+                input: ev.input,
+                result: null,
+                isError: false,
+                tokenIn: null,
+                tokenOut: null,
+                durationMs: null,
+                startedAt: new Date().toISOString(),
+                finishedAt: null,
+              });
+            } else if (ev.type === "TOOL_RESULT_RECEIVED") {
+              writer.completeToolCall(ev.id, {
+                result: ev.output,
+                finishedAt: new Date().toISOString(),
+              });
+            } else if (ev.type === "RESULT_SUCCESS") {
+              if (typeof ev.cost_usd === "number") {
+                capturedCostUsd = ev.cost_usd;
+              }
+            }
+            agentActor.send(ev);
+          },
+          onSdkMessage: (msg) => {
+            // Capture content + metadata that the adapter collapses.
+            if (msg.type === "system" && msg.subtype === "init") {
+              const sid = (msg as { session_id?: unknown }).session_id;
+              if (typeof sid === "string") capturedSessionId = sid;
+            }
+            if (msg.type === "assistant") {
+              const blocks = msg.message?.content ?? [];
+              for (const b of blocks) {
+                const rec = b as { type?: string; text?: unknown; thinking?: unknown };
+                if (rec.type === "text" && typeof rec.text === "string") {
+                  writer.appendAgentStream({
+                    type: "text",
+                    text: rec.text,
+                    timestamp: new Date().toISOString(),
+                  });
+                } else if (rec.type === "thinking") {
+                  const thinkingText = typeof rec.thinking === "string"
+                    ? rec.thinking
+                    : typeof rec.text === "string"
+                      ? rec.text
+                      : "";
+                  writer.appendAgentStream({
+                    type: "thinking",
+                    text: thinkingText,
+                    timestamp: new Date().toISOString(),
+                  });
+                }
+              }
+            }
+            if (msg.type === "result" && msg.subtype === "success") {
+              const usage = (msg as { usage?: { input_tokens?: unknown; output_tokens?: unknown } }).usage;
+              if (usage) {
+                if (typeof usage.input_tokens === "number") {
+                  capturedTokenInput = usage.input_tokens;
+                }
+                if (typeof usage.output_tokens === "number") {
+                  capturedTokenOutput = usage.output_tokens;
+                }
+              }
+              if (typeof msg.total_cost_usd === "number") {
+                capturedCostUsd = msg.total_cost_usd;
+              }
+            }
+          },
           waitForFinal: async () => {
             const finalSnap = await waitFor(
               agentActor,
@@ -303,6 +410,15 @@ export class RealStageExecutor implements StageExecutor {
           : agentOutput.status === "interrupted"
             ? `agent interrupted (from=${agentOutput.interruptedFrom ?? "unknown"})`
             : "agent did not complete successfully";
+        const termReason: TerminationReason =
+          agentOutput.status === "interrupted" ? "interrupted" : "error";
+        writer.close({
+          terminationReason: termReason,
+          costUsd: capturedCostUsd,
+          tokenInput: capturedTokenInput,
+          tokenOutput: capturedTokenOutput,
+          sessionId: capturedSessionId,
+        });
         portRuntime.finishAttempt(attemptId, "error", msg, { silent: failSilently });
         return { attemptId, attemptIdx, status: "error", error: msg };
       }
@@ -321,6 +437,13 @@ export class RealStageExecutor implements StageExecutor {
       for (const p of stage.outputs) {
         if (!writtenMap.has(p.name)) {
           const errMsg = `schema non-compliant: agent did not call write_port for port '${p.name}'`;
+          writer.close({
+            terminationReason: "error",
+            costUsd: capturedCostUsd,
+            tokenInput: capturedTokenInput,
+            tokenOutput: capturedTokenOutput,
+            sessionId: capturedSessionId,
+          });
           portRuntime.finishAttempt(attemptId, "error", errMsg, { silent: failSilently });
           return { attemptId, attemptIdx, status: "error", error: errMsg };
         }
@@ -333,6 +456,13 @@ export class RealStageExecutor implements StageExecutor {
             const nested = detectNestedJson(v);
             if (nested) {
               const errMsg = `schema non-compliant: port '${p.name}' is declared as string but write_port value appears to contain nested JSON (${nested})`;
+              writer.close({
+                terminationReason: "error",
+                costUsd: capturedCostUsd,
+                tokenInput: capturedTokenInput,
+                tokenOutput: capturedTokenOutput,
+                sessionId: capturedSessionId,
+              });
               portRuntime.finishAttempt(attemptId, "error", errMsg, { silent: failSilently });
               return { attemptId, attemptIdx, status: "error", error: errMsg };
             }
@@ -340,9 +470,19 @@ export class RealStageExecutor implements StageExecutor {
         }
       }
 
+      writer.close({
+        terminationReason: "natural_completion",
+        costUsd: capturedCostUsd,
+        tokenInput: capturedTokenInput,
+        tokenOutput: capturedTokenOutput,
+        sessionId: capturedSessionId,
+      });
       portRuntime.finishAttempt(attemptId, "success");
       return { attemptId, attemptIdx, status: "success" };
     } catch (err) {
+      // Writer.close is idempotent — safe to call even if a success/error
+      // branch above already closed it before throwing.
+      writer.close({ terminationReason: "error" });
       const msg = err instanceof Error ? err.message : String(err);
       portRuntime.finishAttempt(attemptId, "error", msg, { silent: failSilently });
       return { attemptId, attemptIdx, status: "error", error: msg };
@@ -534,6 +674,18 @@ function buildSystemPromptAppend(
     })
     .join("\n");
 
+  // Check if inputs are empty or sparse (all provided inputs are empty objects/arrays)
+  const allInputsEmpty = Object.entries(inputs).every(
+    ([, v]) => v === null || v === undefined || (typeof v === "object" && Object.keys(v as Record<string, unknown>).length === 0),
+  );
+  const emptyInputsWarning = allInputsEmpty && Object.keys(inputs).length > 0
+    ? "\n### IMPORTANT: Empty or sparse inputs detected\nAll provided inputs are empty. You must still emit write_port calls for all output ports. Use appropriate empty/default values:\n" +
+      "  - For string ports: use an empty string \"\" or an error message\n" +
+      "  - For number ports: use 0 or -1\n" +
+      "  - For array ports (string[], etc.): use an empty array []\n" +
+      "If you cannot proceed due to missing input data, emit these default values for each port and describe the issue in a string port (e.g., summary or error_message if available)."
+    : "";
+
   return [
     `You are running stage '${stage.name}' in a kernel-next pipeline.`,
     "",
@@ -548,6 +700,7 @@ function buildSystemPromptAppend(
     "",
     "### Task",
     promptSummary,
+    emptyInputsWarning,
     "",
     "### Output protocol (MANDATORY — read carefully)",
     "The ONLY way to emit output for this stage is to call the MCP tool",

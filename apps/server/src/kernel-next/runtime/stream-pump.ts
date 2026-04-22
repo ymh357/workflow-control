@@ -30,6 +30,17 @@ export interface PumpOptions {
   /** Sends an AgentEvent into the AgentMachine actor. */
   send: (event: AgentEvent) => void;
   /**
+   * Optional observer invoked for every raw SDK message BEFORE adapter
+   * translation. Lets side-effect consumers (e.g. the execution-record
+   * sidecar writer) capture content that the adapter intentionally
+   * collapses for the state machine — assistant text/thinking payloads,
+   * session_id on system/init, token usage on result/success. Throws
+   * from this callback propagate and will abort the stream, same as
+   * adapter errors (treated as a defect in the observer, not an SDK
+   * failure).
+   */
+  onSdkMessage?: (msg: SdkMessageLike) => void;
+  /**
    * Called once the SDK stream has ended, to wait for the actor to reach
    * its final state. Returns the AgentMachineOutput from `actor.getSnapshot().output`.
    * Timeout and retry are the caller's responsibility (typically via
@@ -59,7 +70,7 @@ export interface PumpOptions {
  * to stop the actor regardless of outcome.
  */
 export async function pumpSdkStream(opts: PumpOptions): Promise<AgentMachineOutput> {
-  const { stream, adapter, send, waitForFinal } = opts;
+  const { stream, adapter, send, waitForFinal, onSdkMessage } = opts;
 
   // A7.3 Bug 2: isolate iterator-level errors (the SDK's child
   // process exiting non-zero at stream end, which fires AFTER
@@ -85,6 +96,10 @@ export async function pumpSdkStream(opts: PumpOptions): Promise<AgentMachineOutp
       streamEnded = true;
       break;
     }
+    // Observer fires BEFORE translation so sidecar consumers see raw
+    // SDK shape (text/thinking payloads, session_id, usage). Throws
+    // propagate like adapter errors — observer defects are fatal.
+    if (onSdkMessage) onSdkMessage(step.value);
     // Adapter or send throws propagate. These indicate a defect in
     // our translation / actor-send layer, not the SDK exit code.
     const events = adapter.translate(step.value);
