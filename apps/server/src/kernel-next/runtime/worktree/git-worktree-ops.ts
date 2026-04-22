@@ -154,3 +154,20 @@ export async function removeWorktree(
   argv.push(args.targetDir);
   return run(argv, args.repo, timeoutMs);
 }
+
+/**
+ * `git reset --hard <sha>` inside an owned workdir. Used by B9 full
+ * to rewind a task's worktree to the state captured before the
+ * superseded rerunFrom stage ran.
+ *
+ * The command runs with cwd=workdir (not the source repo), because
+ * `git worktree add` leaves the worktree a fully independent checkout
+ * — reset here affects ONLY that worktree's HEAD + files.
+ */
+export async function gitResetHard(
+  workdir: string,
+  sha: string,
+  timeoutMs: number,
+): Promise<GitOpResult> {
+  return run(["reset", "--hard", sha], workdir, timeoutMs);
+}

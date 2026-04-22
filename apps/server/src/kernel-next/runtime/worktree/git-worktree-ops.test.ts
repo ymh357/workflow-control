@@ -13,6 +13,7 @@ import {
   addWorktree,
   listWorktrees,
   removeWorktree,
+  gitResetHard,
 } from "./git-worktree-ops.js";
 
 const exec = promisify(execFile);
@@ -136,6 +137,49 @@ describe("git-worktree-ops (W2)", () => {
       { repo, targetDir: join(wtRoot, "ghost"), force: true },
       5_000,
     );
+    expect(r.ok).toBe(false);
+  });
+
+  it("gitResetHard — rewinds HEAD + wipes tracked modifications inside the worktree", async () => {
+    await initRepo(repo);
+    const target = join(wtRoot, "reset-task");
+    const r1 = await addWorktree(
+      { repo, targetDir: target, branchName: "wfc/task/reset" },
+      5_000,
+    );
+    expect(r1.ok).toBe(true);
+
+    // Capture initial SHA inside the worktree.
+    const before = await exec("git", ["rev-parse", "HEAD"], { cwd: target });
+    const beforeSha = before.stdout.trim();
+
+    // Simulate the agent making changes + a new commit on the worktree branch.
+    await writeFile(join(target, "README.md"), "mutated by agent\n");
+    await exec("git", ["add", "."], { cwd: target });
+    await exec("git", ["commit", "-qm", "agent work"], { cwd: target });
+
+    const mid = await exec("git", ["rev-parse", "HEAD"], { cwd: target });
+    expect(mid.stdout.trim()).not.toBe(beforeSha);
+
+    // Reset back to the captured SHA.
+    const r2 = await gitResetHard(target, beforeSha, 5_000);
+    expect(r2.ok).toBe(true);
+    const after = await exec("git", ["rev-parse", "HEAD"], { cwd: target });
+    expect(after.stdout.trim()).toBe(beforeSha);
+    // README contents restored
+    const { readFile } = await import("node:fs/promises");
+    const content = await readFile(join(target, "README.md"), "utf-8");
+    expect(content).toBe("initial\n");
+  });
+
+  it("gitResetHard — unknown SHA returns ok=false (caller logs + skips reset)", async () => {
+    await initRepo(repo);
+    const target = join(wtRoot, "reset-bad");
+    await addWorktree(
+      { repo, targetDir: target, branchName: "wfc/task/reset-bad" },
+      5_000,
+    );
+    const r = await gitResetHard(target, "deadbeefdeadbeef", 5_000);
     expect(r.ok).toBe(false);
   });
 });

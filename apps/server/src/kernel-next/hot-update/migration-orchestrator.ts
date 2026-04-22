@@ -9,6 +9,9 @@ import { taskRegistry } from "../runtime/task-registry.js";
 import { computeWireTransitiveReaders } from "./wire-reachable.js";
 import { startPipelineRun } from "../runtime/start-pipeline-run.js";
 import { writeMigrationHint } from "./migration-hints.js";
+import { gitResetHard } from "../runtime/worktree/git-worktree-ops.js";
+import { resolveWorktree } from "../runtime/worktree/allocator.js";
+import { logger } from "../../lib/logger.js";
 import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import type { PipelineIR } from "../ir/schema.js";
 import type {
@@ -291,9 +294,6 @@ export async function executeMigration(
     // a migration_hint. RealStageExecutor consumes it when opening the
     // replacement attempt and injects the diff into that attempt's
     // system prompt as advisory context.
-    //
-    // Full B9 (git reset --hard before_sha) requires task-worktree
-    // ownership semantics not yet in place; see Phase 5C.
     if (rerunFrom) {
       try {
         writeB9MigrationHint(db, {
@@ -305,6 +305,28 @@ export async function executeMigration(
         // Downstream agent just loses the diff context, which is advisory.
         // (Orchestrator has no logger handle; swallow silently — the
         //  hot_update_events audit row still captures the overall outcome.)
+      }
+    }
+
+    // --- 9c: Worktree reset to before_sha (B9 full, Phase 5C+) --------
+    // When the task has an active task_worktrees row AND the supersede
+    // rerunFrom stage has a stage_checkpoint with before_sha populated,
+    // rewind the owned workdir to that SHA so the resume starts from a
+    // clean slate matching the pre-stage state. Complementary to 9b:
+    // hint tells the agent what happened (advisory); reset actually
+    // restores file state (authoritative).
+    //
+    // Graceful skip when: no ownership row, status != 'active',
+    // no checkpoint, before_sha NULL, or git reset fails. Migration
+    // never aborts on reset failure — advisory hint alone is still
+    // useful, and the alternative (abort) loses the opportunity for
+    // the agent to act on stale worktree state.
+    if (rerunFrom) {
+      try {
+        await tryResetWorktreeToBeforeSha(db, taskId, rerunFrom);
+      } catch {
+        // Any throw is swallowed here; tryResetWorktreeToBeforeSha
+        // already logs and returns on known failure modes.
       }
     }
 
@@ -513,4 +535,53 @@ function writeB9MigrationHint(
     previousDiffBytes: diffBytes,
     note,
   });
+}
+
+const B9_RESET_TIMEOUT_MS = 10_000;
+
+/**
+ * B9 full — reset the task's owned workdir to the before_sha captured
+ * by the most recently superseded rerunFrom attempt's stage_checkpoint.
+ *
+ * Graceful skip (never throws, never aborts migration) when any of:
+ *   - task has no task_worktrees row (worktree ownership not opted in)
+ *   - task_worktrees.status != 'active' (allocation unavailable / pruned)
+ *   - rerunFrom's latest superseded attempt has no stage_checkpoints row
+ *   - checkpoint.before_sha is NULL (captureBefore failed / disabled)
+ *   - git reset itself fails (e.g. unknown SHA after GC)
+ *
+ * Design rationale: file state (reset) + advisory context (hint) are
+ * two independent signals. Either one can fail without invalidating
+ * the other; migration succeeds as long as the supersede TX landed.
+ */
+async function tryResetWorktreeToBeforeSha(
+  db: DatabaseSync,
+  taskId: string,
+  rerunFromStage: string,
+): Promise<void> {
+  const ownership = resolveWorktree(db, taskId);
+  if (!ownership || ownership.status !== "active") return;
+
+  const attempt = db.prepare(
+    `SELECT attempt_id FROM stage_attempts
+     WHERE task_id = ? AND stage_name = ? AND status = 'superseded'
+     ORDER BY attempt_idx DESC LIMIT 1`,
+  ).get(taskId, rerunFromStage) as { attempt_id: string } | undefined;
+  if (!attempt) return;
+
+  const cp = db.prepare(
+    `SELECT before_sha FROM stage_checkpoints WHERE attempt_id = ?`,
+  ).get(attempt.attempt_id) as { before_sha: string | null } | undefined;
+  if (!cp || !cp.before_sha) return;
+
+  const r = await gitResetHard(
+    ownership.workdir, cp.before_sha, B9_RESET_TIMEOUT_MS,
+  );
+  if (!r.ok) {
+    logger.warn(
+      { taskId, stage: rerunFromStage, workdir: ownership.workdir,
+        beforeSha: cp.before_sha, stderr: r.stderr },
+      "[migration-orchestrator] B9 reset --hard failed; continuing without reset",
+    );
+  }
 }
