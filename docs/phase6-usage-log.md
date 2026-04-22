@@ -18,12 +18,15 @@
 | 3 | 2026-04-23 | 研究 zod（TypeScript validation 库）| Tech Research Collector | `Tech Research Collector-1776879895803-4a4424cd` | completed ✅ | 170s agent，$0.294 | P6-5, P6-6 | 真实有用的报告：19 sources 尝试 / 12 成功 / Zod 42.5k stars；taskId 含空格（URL 不友好）；HTTP `name` 要传 IR 显示名而非目录名 |
 | 4 | 2026-04-23 | 让 AI 写个 github-onboarding pipeline | Pipeline Generator | `Pipeline Generator-1776880477238-0b86754c` | completed ✅ | 275s agent total，$0.355，gate 等待 118s | P6-7, P6-8 | 5 stages 全跑完 + gate + approve；但 persisting 提交的 IR 是空壳（I/O 全丢） |
 | 5 | 2026-04-23 | 跑 AI 生成的 github-onboarding pipeline | (AI-generated) | `GitHub Repository Onboarding Generator-1776880884097-ab079f23` | not_found → **completed 空跑** | 瞬完成 | P6-9 | 空壳 IR 立刻 onDone，无任何 stage 执行；pre-fix status=not_found，post-fix completed |
+| 6 | 2026-04-23 | P6-8 修复后再跑 pipeline-generator #1 | Pipeline Generator | `Pipeline Generator-1776882328721-1dcf0df9` | **stuck after awaitingConfirm** | 60s 后 API 说 completed 但只跑 3 stage | P6-10 | gate approve 后 downstream genSkeleton 从未激活；task_finals 未写 |
+| 7 | 2026-04-23 | P6-8 修复后再跑 pipeline-generator #2 | Pipeline Generator | `Pipeline Generator-1776882481413-463158c6` | 同上 | 75s | P6-10 | 同一症状复现；tsx watch 可能是环境元凶 |
 
 ## 成熟度快照
 
-- **M3 分子/分母**: 3 / 5（run #2,3,4 completed；run #1 bug；run #5 语义上失败但 API 说 completed）
+- **M3 分子/分母**: 3 / 7（run #2,3,4 真 completed；run #1,5,6,7 API 说 completed 但实际未全跑）
+- **真实成功率（API completed 中真正完整跑完的）**: 3/7 ≈ 43%，远低于 M3 目标 >90%
 - **M4 热更新总数 / reject + rollback 次数**: 0 / 0
-- **覆盖的 builtin**: 3 / 4 （✅ `smoke-test`, ✅ `Tech Research Collector`, ✅ `Pipeline Generator`, `Tech Research Writer` pending）
+- **覆盖的 builtin**: 3 / 4 （✅ `smoke-test`, ✅ `Tech Research Collector`, ✅ `Pipeline Generator`（但不稳定）, `Tech Research Writer` pending）
 - **AI-generated pipeline 实际可用率**: 0 / 1（产出了 pipeline_version 但 IR 是空壳）
 
 ## Bug 清单
@@ -40,6 +43,14 @@
 **关联 bug**：同次运行暴露 P6-2（默认 timeout 太短）；两者叠加才让这个 bug 显现出来。
 **修复**：待设计（需要一张 task_finals 表或等价的权威终态信号）
 **回归测试**：smoke-test.linear-two-stage.test.ts（已证明 mock runPipeline 下两 stage 都能跑，所以 bug 只在"runPipeline 异常退出后 status 端点"路径）
+
+### P6-10 — gate approve 后 downstream stage 不激活（生产环境复现）
+
+**现象**：run #6, #7 在 pipeline-generator 下 gate approve 后 `genSkeleton` 从未 executed。`task_finals` 也没写——runner.finally 未达成，进程应还活着但卡住。
+**根因假说**（未确认）：`pnpm dev` = `tsx watch` 检测到代码变化触发 reload → node process 重启 → 内存 `taskRegistry` 清空 → 原 runner 的 dispatcher 句柄丢失 → HTTP /gates/:id/answer 路由在新 process 里 `taskRegistry.get()` 返回 undefined → `dispatcher?.send(GATE_ANSWERED)` 静默丢弃 → machine 永远卡在 gate executing。
+**代码层验证**：`gate-resume-downstream.test.ts` 在 mock runPipeline + 同进程 auto-approve 下 gate 路径正常完成。排除了编译层和 runner 层 bug。
+**确认路径**：用 `pnpm start` (non-watch) 重跑 pipeline-generator，看是否稳定完成。如果稳定 → 确认是 tsx watch reload 的环境 bug，**真实部署不用 tsx watch 所以非阻塞**。
+**如果是跨进程 reload 也要修**：runner 跨 process 不可恢复（无 checkpoint 指向"曾经等过某 gateId"）——这本是 B 系列的 resumption 问题，需要把 pending gate + dispatcher hook 从内存搬到 DB，restart 时 rehydrate runner。这是本来的 Phase 5C/5D 范围但没做。**或**：接受"tsx watch 环境下 reload 会让任务悬挂"但在生产 non-watch 下不 reload 所以 OK。
 
 ### P6-7 — Gate question 空洞无信息
 
