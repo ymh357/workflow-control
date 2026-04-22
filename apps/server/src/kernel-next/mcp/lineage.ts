@@ -43,11 +43,14 @@ export function queryLineage(
   db: DatabaseSync,
   args: { stage: string; port: string; taskId?: string } & QueryLineageOptions,
 ): LineageReport {
-  // Secondary ORDER BY sa.attempt_idx DESC: within the same millisecond
-  // written_at tie-breaks to the highest attempt_idx. This matters for
-  // fanout, whose per-element attempts and aggregate attempt all land in
-  // a single ms in tests; the aggregate (highest idx) is the "current
-  // value" that downstream stages consumed.
+  // B17 post-audit: sort fanout_element rows LAST so the fanout_aggregate
+  // (T[] value) wins over a preserved fanout_element (scalar T value) row
+  // after a hot-update migration. Fallback: if no non-element row exists,
+  // surface the element row so mid-run-failure states still have lineage.
+  //
+  // Secondary ORDER BY sa.attempt_idx DESC tie-breaks same-ms writes to
+  // the highest attempt_idx (matters when per-element and aggregate
+  // attempts share a millisecond in test fixtures).
   const latestRow = args.taskId
     ? db.prepare(
         `SELECT pv.value_json, pv.attempt_id, pv.written_at, sa.task_id, sa.attempt_idx
@@ -55,14 +58,16 @@ export function queryLineage(
          JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
          WHERE pv.stage_name = ? AND pv.port_name = ? AND pv.direction = 'out'
            AND sa.task_id = ?
-         ORDER BY pv.written_at DESC, sa.attempt_idx DESC LIMIT 1`,
+         ORDER BY (CASE WHEN sa.kind = 'fanout_element' THEN 1 ELSE 0 END) ASC,
+                  pv.written_at DESC, sa.attempt_idx DESC LIMIT 1`,
       ).get(args.stage, args.port, args.taskId)
     : db.prepare(
         `SELECT pv.value_json, pv.attempt_id, pv.written_at, sa.task_id, sa.attempt_idx
          FROM port_values pv
          JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
          WHERE pv.stage_name = ? AND pv.port_name = ? AND pv.direction = 'out'
-         ORDER BY pv.written_at DESC, sa.attempt_idx DESC LIMIT 1`,
+         ORDER BY (CASE WHEN sa.kind = 'fanout_element' THEN 1 ELSE 0 END) ASC,
+                  pv.written_at DESC, sa.attempt_idx DESC LIMIT 1`,
       ).get(args.stage, args.port);
 
   let latestWrite: LineageReport["latestWrite"] = null;
@@ -165,16 +170,23 @@ export function diffRuns(db: DatabaseSync, taskA: string, taskB: string): DiffRe
   };
 
   // For each (task, stage) get the latest successful attempt's outputs map.
+  //
+  // B17 post-audit: ORDER BY sorts fanout_element rows LAST so aggregate /
+  // regular attempts win over preserved fanout_element rows that survive
+  // a hot-update migration. Only falls back to fanout_element when no
+  // other kind exists for the stage (mid-run failure case).
   const latestOutputsByStage = (taskId: string): Map<string, { attemptIdx: number; outputs: Map<string, string> }> => {
     const rows = db.prepare(
-      `SELECT sa.stage_name, sa.attempt_idx, pv.port_name, pv.value_json
+      `SELECT sa.stage_name, sa.attempt_idx, sa.kind, pv.port_name, pv.value_json
        FROM stage_attempts sa
        LEFT JOIN port_values pv
          ON pv.attempt_id = sa.attempt_id AND pv.direction = 'out'
        WHERE sa.task_id = ? AND sa.status = 'success'
-       ORDER BY sa.stage_name, sa.attempt_idx DESC`,
+       ORDER BY sa.stage_name,
+                (CASE WHEN sa.kind = 'fanout_element' THEN 1 ELSE 0 END) ASC,
+                sa.attempt_idx DESC`,
     ).all(taskId) as Array<{
-      stage_name: string; attempt_idx: number;
+      stage_name: string; attempt_idx: number; kind: string;
       port_name: string | null; value_json: string | null;
     }>;
 

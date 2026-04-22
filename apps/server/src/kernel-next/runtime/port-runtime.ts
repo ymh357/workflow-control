@@ -339,6 +339,20 @@ export class PortRuntime {
  * Returns the latest port_value row (direction='out') for a (stage, port),
  * scoped to the latest successful attempt. Used by tests and by read_port
  * (M4) as the "current value" resolver.
+ *
+ * B17 post-audit: fanout stages produce BOTH per-element (kind=fanout_element,
+ * scalar value) and aggregate (kind=fanout_aggregate, T[] value) rows in
+ * port_values. After a hot-update migration preserves successful
+ * fanout_element attempts, an old T-value row can coexist with a new T[]
+ * aggregate row for the same (stage, port). The aggregate is the semantic
+ * current value — it represents the stage's final output that downstream
+ * stages consume. We sort fanout_element rows LAST via a CASE expression
+ * so the aggregate always wins when present, but still fall back to
+ * fanout_element if no aggregate exists (mid-run failure, fanout never
+ * completed aggregation).
+ *
+ * Secondary ORDER BY sa.attempt_idx DESC tie-breaks same-ms writes to
+ * the highest attempt_idx.
  */
 export function readLatestPort(
   db: DatabaseSync,
@@ -346,22 +360,20 @@ export function readLatestPort(
   portName: string,
   taskId?: string,
 ): { value: unknown; attemptId: string; attemptIdx: number; writtenAt: number } | null {
-  // Secondary ORDER BY sa.attempt_idx DESC tie-breaks same-ms writes to
-  // the highest attempt_idx. Critical for fanout: per-element +
-  // aggregate attempts may share a millisecond; the aggregate (highest
-  // idx) is the current value that downstream stages consumed.
   const sql = taskId
     ? `SELECT pv.value_json, pv.attempt_id, pv.written_at, sa.attempt_idx
        FROM port_values pv
        JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
        WHERE pv.stage_name = ? AND pv.port_name = ? AND pv.direction = 'out'
          AND sa.task_id = ?
-       ORDER BY pv.written_at DESC, sa.attempt_idx DESC LIMIT 1`
+       ORDER BY (CASE WHEN sa.kind = 'fanout_element' THEN 1 ELSE 0 END) ASC,
+                pv.written_at DESC, sa.attempt_idx DESC LIMIT 1`
     : `SELECT pv.value_json, pv.attempt_id, pv.written_at, sa.attempt_idx
        FROM port_values pv
        JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
        WHERE pv.stage_name = ? AND pv.port_name = ? AND pv.direction = 'out'
-       ORDER BY pv.written_at DESC, sa.attempt_idx DESC LIMIT 1`;
+       ORDER BY (CASE WHEN sa.kind = 'fanout_element' THEN 1 ELSE 0 END) ASC,
+                pv.written_at DESC, sa.attempt_idx DESC LIMIT 1`;
   const row = taskId
     ? (db.prepare(sql).get(stageName, portName, taskId) as { value_json: string; attempt_id: string; written_at: number; attempt_idx: number } | undefined)
     : (db.prepare(sql).get(stageName, portName) as { value_json: string; attempt_id: string; written_at: number; attempt_idx: number } | undefined);
