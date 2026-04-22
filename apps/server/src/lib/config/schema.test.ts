@@ -775,7 +775,7 @@ describe("SystemSettingsSchema", () => {
   it("accepts full settings", () => {
     const result = SystemSettingsSchema.safeParse({
       paths: { repos_base: "/repos", claude_executable: "claude" },
-      agent: { default_engine: "claude", max_budget_usd: 10 },
+      agent: { claude_model: "claude-sonnet-4-6", max_budget_usd: 10 },
       sandbox: { enabled: false },
     });
     expect(result.success).toBe(true);
@@ -788,9 +788,9 @@ describe("SystemSettingsSchema", () => {
     expect(result.success).toBe(true);
   });
 
-  it("rejects invalid engine in agent", () => {
+  it("rejects non-numeric max_budget_usd in agent", () => {
     const result = SystemSettingsSchema.safeParse({
-      agent: { default_engine: "openai" },
+      agent: { max_budget_usd: "not-a-number" },
     });
     expect(result.success).toBe(false);
   });

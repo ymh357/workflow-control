@@ -74,15 +74,10 @@ export function loadSystemSettings(): SystemSettings {
       worktrees_base: process.env.WORKTREES_BASE_PATH || join(process.env.HOME ?? "/tmp", "wfc-worktrees"),
       data_dir: process.env.DATA_DIR || "/tmp/workflow-control-data",
       claude_executable: process.env.CLAUDE_PATH || "claude",
-      gemini_executable: process.env.GEMINI_PATH || "gemini",
-      codex_executable: process.env.CODEX_PATH || "codex",
     },
     agent: {
       default_model: process.env.DEFAULT_MODEL || "claude-sonnet-4-6",
       claude_model: process.env.CLAUDE_MODEL || "claude-sonnet-4-6",
-      gemini_model: process.env.GEMINI_MODEL || "auto",
-      codex_model: process.env.CODEX_MODEL || "",
-      default_engine: (process.env.DEFAULT_ENGINE as "claude" | "gemini" | "codex") || "claude",
       max_budget_usd: (() => {
         const budgetEnv = process.env.MAX_BUDGET_USD;
         const parsed = budgetEnv !== undefined ? Number(budgetEnv) : 10.0;

@@ -312,15 +312,10 @@ export interface SystemSettings extends Record<string, any> {
     worktrees_base?: string;
     data_dir?: string;
     claude_executable?: string;
-    gemini_executable?: string;
-    codex_executable?: string;
   };
   agent?: {
     default_model?: string; // Legacy
     claude_model?: string;
-    gemini_model?: string;
-    codex_model?: string;
-    default_engine?: "claude" | "gemini" | "codex";
     max_budget_usd?: number;
   };
   sandbox?: SandboxConfig;

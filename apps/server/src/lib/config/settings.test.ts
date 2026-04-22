@@ -147,7 +147,8 @@ describe("loadSystemSettings", () => {
     expect(settings.paths).toBeDefined();
     expect(settings.paths!.claude_executable).toBeDefined();
     expect(settings.agent).toBeDefined();
-    expect(settings.agent!.default_engine).toBe("claude");
+    expect(settings.agent!.claude_model).toBeDefined();
+    expect(typeof settings.agent!.max_budget_usd).toBe("number");
   });
 
   it("merges YAML config over defaults", () => {

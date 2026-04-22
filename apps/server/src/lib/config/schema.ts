@@ -371,17 +371,12 @@ export const SystemSettingsSchema = z
         worktrees_base: z.string().optional(),
         data_dir: z.string().optional(),
         claude_executable: z.string().optional(),
-        gemini_executable: z.string().optional(),
-        codex_executable: z.string().optional(),
       })
       .optional(),
     agent: z
       .object({
         default_model: z.string().optional(),
         claude_model: z.string().optional(),
-        gemini_model: z.string().optional(),
-        codex_model: z.string().optional(),
-        default_engine: z.enum(["claude", "gemini", "codex"]).optional(),
         max_budget_usd: z.number().optional(),
       })
       .optional(),
