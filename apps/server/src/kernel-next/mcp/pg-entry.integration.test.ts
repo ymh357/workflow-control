@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { initKernelNextSchema } from "../ir/sql.js";
 import { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import { handleStartPipelineGenerator, handleWaitPipelineResult } from "./pg-entry.js";
-import { loadLegacyPipelineIR } from "../runtime/load-legacy-pipeline.js";
+import { loadBuiltinPipelineIR } from "../runtime/load-builtin-pipeline.js";
 import type { PipelineIR } from "../ir/schema.js";
 import type { StageExecutor } from "../runtime/executor.js";
 
@@ -15,12 +15,12 @@ function freshDb() {
 }
 
 function realIR(): PipelineIR {
-  return loadLegacyPipelineIR("pipeline-generator").ir;
+  return loadBuiltinPipelineIR("pipeline-generator").ir;
 }
 
 // Load real prompts once so loader mocks can supply a valid prompts map
 // to KernelService.submit (invoked inside handleStartPipelineGenerator).
-const realPrompts = loadLegacyPipelineIR("pipeline-generator").prompts;
+const realPrompts = loadBuiltinPipelineIR("pipeline-generator").prompts;
 
 // seedAttempt inserts a stage_attempts row (required by port_values FK).
 function seedAttempt(
@@ -82,7 +82,7 @@ describe("pg-entry integration — concurrent start + wait", () => {
     const loader = () => ({
       ir,
       promptRoot: "/tmp/prompts",
-      yamlFilePath: "/tmp/pipeline.yaml",
+      pipelineDir: "/tmp/pipeline-generator",
       warnings: [] as Array<{ code: string; message?: string }>,
       prompts: realPrompts,
     });

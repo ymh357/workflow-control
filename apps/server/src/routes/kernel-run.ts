@@ -12,9 +12,9 @@
 // failure. Clients observe execution via the SSE stream at
 // /api/kernel-next/tasks/:taskId/stream.
 //
-// Legacy-YAML builtins (smoke-test, tech-research-collector,
+// Builtin pipelines (smoke-test, tech-research-collector,
 // tech-research-writer, pipeline-generator) are seeded into
-// pipeline_versions at module load via seedLegacyPipelineByName so
+// pipeline_versions at module load via seedBuiltinPipelineByName so
 // startPipelineRun can resolve them by name. Mock pipelines (diamond
 // family) are seeded on-demand by startPipelineRun via
 // MOCK_HANDLER_REGISTRY.
@@ -27,7 +27,7 @@ import { dirname, join } from "node:path";
 import { KernelService } from "../kernel-next/mcp/kernel.js";
 import { getKernelNextDb } from "../lib/kernel-next-db.js";
 import { kernelNextBroadcaster } from "../kernel-next/sse/singleton.js";
-import { loadLegacyPipelineIR } from "../kernel-next/runtime/load-legacy-pipeline.js";
+import { loadBuiltinPipelineIR } from "../kernel-next/runtime/load-builtin-pipeline.js";
 import { startPipelineRun } from "../kernel-next/runtime/start-pipeline-run.js";
 import { logger } from "../lib/logger.js";
 
@@ -100,32 +100,32 @@ kernelRunRoute.post("/kernel/tasks/run", async (c) => {
   return c.json({ ok: true, taskId: res.taskId, versionHash: res.versionHash }, 202);
 });
 
-// Seed legacy-YAML builtins into pipeline_versions at module load so they
+// Seed builtin pipelines into pipeline_versions at module load so they
 // can be resolved by name via startPipelineRun. No longer stored in a
 // runtime registry — SQLite is the only lookup path for real pipelines.
 // Mock pipelines (diamond family) are seeded on-demand by
 // startPipelineRun via MOCK_HANDLER_REGISTRY.
-function seedLegacyPipelineByName(pipelineDir: string): void {
+function seedBuiltinPipelineByName(pipelineDir: string): void {
   try {
-    const loaded = loadLegacyPipelineIR(pipelineDir);
+    const loaded = loadBuiltinPipelineIR(pipelineDir);
     const db = getKernelNextDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
     const res = svc.submit(loaded.ir, { prompts: loaded.prompts });
     if (!res.ok) {
       throw new Error(
-        `seedLegacyPipelineByName('${pipelineDir}'): submit failed: ${res.diagnostics.map((d) => `${d.code}: ${d.message ?? ""}`).join("; ")}`,
+        `seedBuiltinPipelineByName('${pipelineDir}'): submit failed: ${res.diagnostics.map((d) => `${d.code}: ${d.message ?? ""}`).join("; ")}`,
       );
     }
   } catch (err) {
     logger.error(
       { pipelineDir, err: (err as Error).message },
-      "[kernel-run] seedLegacyPipelineByName failed",
+      "[kernel-run] seedBuiltinPipelineByName failed",
     );
     throw err;
   }
 }
 
-seedLegacyPipelineByName("smoke-test");
-seedLegacyPipelineByName("tech-research-collector");
-seedLegacyPipelineByName("tech-research-writer");
-seedLegacyPipelineByName("pipeline-generator");
+seedBuiltinPipelineByName("smoke-test");
+seedBuiltinPipelineByName("tech-research-collector");
+seedBuiltinPipelineByName("tech-research-writer");
+seedBuiltinPipelineByName("pipeline-generator");

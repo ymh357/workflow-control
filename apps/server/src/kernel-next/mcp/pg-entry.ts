@@ -5,7 +5,7 @@ import type { PipelineIR } from "../ir/schema.js";
 import type { StageExecutor } from "../runtime/executor.js";
 import type { KernelNextSSEEvent, RunFinalData, StageErrorData, StageExecutingData } from "../sse/types.js";
 import { KernelService } from "./kernel.js";
-import { LegacyPipelineLoadError } from "../runtime/load-legacy-pipeline.js";
+import { BuiltinPipelineLoadError } from "../runtime/load-builtin-pipeline.js";
 import { readLatestPort } from "../runtime/port-runtime.js";
 import { startPipelineRun } from "../runtime/start-pipeline-run.js";
 import { logger } from "../../lib/logger.js";
@@ -27,7 +27,7 @@ export interface PgEntryDeps {
   loader: (pipelineDir: string) => {
     ir: PipelineIR;
     promptRoot: string;
-    yamlFilePath: string;
+    pipelineDir: string;
     warnings: Array<{ code: string; message?: string }>;
     prompts: Record<string, string>;
   };
@@ -83,7 +83,7 @@ export async function handleStartPipelineGenerator(
   try {
     loaded = deps.loader("pipeline-generator");
   } catch (err) {
-    if (err instanceof LegacyPipelineLoadError) {
+    if (err instanceof BuiltinPipelineLoadError) {
       return { ok: false, error: "CONVERT_FAILED", diagnostics: err.diagnostics };
     }
     return {

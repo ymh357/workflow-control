@@ -7,7 +7,7 @@ import { getKernelNextDb } from "../lib/kernel-next-db.js";
 import { initKernelNextSchema } from "../kernel-next/ir/sql.js";
 import { kernelNextBroadcaster } from "../kernel-next/sse/singleton.js";
 import type { KernelNextSSEEvent } from "../kernel-next/sse/types.js";
-import { loadLegacyPipelineIR } from "../kernel-next/runtime/load-legacy-pipeline.js";
+import { loadBuiltinPipelineIR } from "../kernel-next/runtime/load-builtin-pipeline.js";
 import { KernelService } from "../kernel-next/mcp/kernel.js";
 import { diamondIR } from "../kernel-next/generator-mock/mini-generator.js";
 
@@ -27,7 +27,7 @@ describe("POST /api/kernel/tasks/run", () => {
     // singleton, so per-test seeding is required here.
     const svc = new KernelService(db, { skipTypeCheck: true });
     for (const dir of ["smoke-test", "tech-research-collector", "tech-research-writer", "pipeline-generator"]) {
-      const loaded = loadLegacyPipelineIR(dir);
+      const loaded = loadBuiltinPipelineIR(dir);
       const r = svc.submit(loaded.ir, { prompts: loaded.prompts });
       if (!r.ok) throw new Error(`test seed '${dir}': ${r.diagnostics.map((d) => d.code).join(",")}`);
     }
@@ -307,8 +307,8 @@ describe("POST /api/kernel/tasks/run", () => {
 
 });
 
-describe("seedLegacyPipelineByName populates pipeline_prompt_refs on module load", () => {
-  it("at least one row exists for every registered legacy pipeline", () => {
+describe("seedBuiltinPipelineByName populates pipeline_prompt_refs on module load", () => {
+  it("at least one row exists for every registered builtin pipeline", () => {
     const db = getKernelNextDb();
     // Registry-key -> builtin-pipelines/<dir> name (both happen to match
     // for all current legacy entries). pipeline_versions.pipeline_name
@@ -317,7 +317,7 @@ describe("seedLegacyPipelineByName populates pipeline_prompt_refs on module load
     // loader rather than hard-coding display names.
     const dirs = ["smoke-test", "tech-research-collector", "tech-research-writer", "pipeline-generator"];
     for (const dir of dirs) {
-      const fresh = loadLegacyPipelineIR(dir);
+      const fresh = loadBuiltinPipelineIR(dir);
       const pipelineName = fresh.ir.name;
       const row = db
         .prepare(

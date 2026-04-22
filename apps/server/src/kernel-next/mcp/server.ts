@@ -18,7 +18,7 @@ import type { PipelineIR } from "../ir/schema.js";
 import { PortRuntime, type EventDispatcher } from "../runtime/port-runtime.js";
 import { taskRegistry } from "../runtime/task-registry.js";
 import { handleStartPipelineGenerator, handleWaitPipelineResult } from "./pg-entry.js";
-import { loadLegacyPipelineIR } from "../runtime/load-legacy-pipeline.js";
+import { loadBuiltinPipelineIR } from "../runtime/load-builtin-pipeline.js";
 import { kernelNextBroadcaster } from "../sse/singleton.js";
 import { runPipeline } from "../runtime/runner.js";
 import { RealStageExecutor } from "../runtime/real-executor.js";
@@ -121,10 +121,10 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
-let cachedPipelineGeneratorIR: ReturnType<typeof loadLegacyPipelineIR> | undefined;
+let cachedPipelineGeneratorIR: ReturnType<typeof loadBuiltinPipelineIR> | undefined;
 function getPipelineGeneratorIR() {
   if (!cachedPipelineGeneratorIR) {
-    cachedPipelineGeneratorIR = loadLegacyPipelineIR("pipeline-generator");
+    cachedPipelineGeneratorIR = loadBuiltinPipelineIR("pipeline-generator");
   }
   return cachedPipelineGeneratorIR;
 }
@@ -716,7 +716,7 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
             {
               db,
               broadcaster: kernelNextBroadcaster,
-              loader: loadLegacyPipelineIR,
+              loader: loadBuiltinPipelineIR,
               runner: async (a) => {
                 return runPipeline({
                   db: a.db,

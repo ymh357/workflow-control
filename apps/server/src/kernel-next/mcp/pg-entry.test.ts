@@ -4,7 +4,7 @@ import { initKernelNextSchema } from "../ir/sql.js";
 import * as sqlMod from "../ir/sql.js";
 import { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import { handleStartPipelineGenerator, handleWaitPipelineResult } from "./pg-entry.js";
-import { LegacyPipelineLoadError, loadLegacyPipelineIR } from "../runtime/load-legacy-pipeline.js";
+import { BuiltinPipelineLoadError, loadBuiltinPipelineIR } from "../runtime/load-builtin-pipeline.js";
 import type { PipelineIR } from "../ir/schema.js";
 import type { StageExecutor } from "../runtime/executor.js";
 import { randomUUID } from "node:crypto";
@@ -12,7 +12,7 @@ import { randomUUID } from "node:crypto";
 // Load real pipeline-generator prompts once for reuse across loader mocks.
 // Using the real prompts map avoids PROMPT_REF_MISSING diagnostics from
 // KernelService.submit (invoked inside handleStartPipelineGenerator).
-const realPrompts = loadLegacyPipelineIR("pipeline-generator").prompts;
+const realPrompts = loadBuiltinPipelineIR("pipeline-generator").prompts;
 
 function freshDb() {
   const db = new DatabaseSync(":memory:");
@@ -25,7 +25,7 @@ function freshDb() {
 // and insertPipelineVersion; a minimal cast stub would fail the strict
 // schema checks in those paths.
 function realIR(): PipelineIR {
-  return loadLegacyPipelineIR("pipeline-generator").ir;
+  return loadBuiltinPipelineIR("pipeline-generator").ir;
 }
 
 describe("handleStartPipelineGenerator — input validation", () => {
@@ -75,7 +75,7 @@ describe("handleStartPipelineGenerator — happy path", () => {
     const db = freshDb();
     const broadcaster = new KernelNextBroadcaster();
     const ir = realIR();
-    const loader = vi.fn(() => ({ ir, promptRoot: "/tmp/prompts", yamlFilePath: "/tmp/pipeline.yaml", warnings: [], prompts: realPrompts }));
+    const loader = vi.fn(() => ({ ir, promptRoot: "/tmp/prompts", pipelineDir: "/tmp/pipeline-generator", warnings: [], prompts: realPrompts }));
     const runner = vi.fn(async () => undefined);
     const executorFactory = vi.fn(() => ({ executeStage: vi.fn() }) as unknown as StageExecutor);
 
@@ -108,7 +108,7 @@ describe("handleStartPipelineGenerator — happy path", () => {
       {
         db: freshDb(),
         broadcaster: new KernelNextBroadcaster(),
-        loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [], prompts: realPrompts })),
+        loader: vi.fn(() => ({ ir, promptRoot: "/p", pipelineDir: "/p", warnings: [], prompts: realPrompts })),
         runner: vi.fn(async () => undefined),
         executorFactory: vi.fn(() => ({ executeStage: vi.fn() }) as any),
         model: "m",
@@ -119,9 +119,9 @@ describe("handleStartPipelineGenerator — happy path", () => {
 });
 
 describe("handleStartPipelineGenerator — bootstrap errors", () => {
-  it("returns CONVERT_FAILED when loader throws LegacyPipelineLoadError", async () => {
+  it("returns CONVERT_FAILED when loader throws BuiltinPipelineLoadError", async () => {
     const loader = vi.fn(() => {
-      throw new LegacyPipelineLoadError("boom", [{ code: "YAML_READ_FAILED" }]);
+      throw new BuiltinPipelineLoadError("boom", [{ code: "YAML_READ_FAILED" }]);
     });
     const res = await handleStartPipelineGenerator(
       { description: "x" },
@@ -152,7 +152,7 @@ describe("handleStartPipelineGenerator — bootstrap errors", () => {
       {
         db: freshDb(),
         broadcaster: new KernelNextBroadcaster(),
-        loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [], prompts: realPrompts })),
+        loader: vi.fn(() => ({ ir, promptRoot: "/p", pipelineDir: "/p", warnings: [], prompts: realPrompts })),
         runner,
         executorFactory: vi.fn(() => ({ executeStage: vi.fn() }) as any),
         model: "m",
@@ -170,7 +170,7 @@ describe("handleStartPipelineGenerator — bootstrap errors", () => {
       {
         db: freshDb(),
         broadcaster: new KernelNextBroadcaster(),
-        loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [], prompts: realPrompts })),
+        loader: vi.fn(() => ({ ir, promptRoot: "/p", pipelineDir: "/p", warnings: [], prompts: realPrompts })),
         runner: vi.fn(async () => undefined),
         model: "m",
       },
@@ -195,7 +195,7 @@ describe("handleStartPipelineGenerator — bootstrap errors", () => {
         {
           db: freshDb(),
           broadcaster: new KernelNextBroadcaster(),
-          loader: vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [], prompts: realPrompts })),
+          loader: vi.fn(() => ({ ir, promptRoot: "/p", pipelineDir: "/p", warnings: [], prompts: realPrompts })),
           runner: vi.fn(async () => undefined),
           executorFactory: vi.fn(() => ({ executeStage: vi.fn() }) as any),
           model: "m",
@@ -457,7 +457,7 @@ describe("handleStartPipelineGenerator — version idempotency", () => {
     const db = freshDb();
     const broadcaster = new KernelNextBroadcaster();
     const ir = realIR();
-    const loader = vi.fn(() => ({ ir, promptRoot: "/p", yamlFilePath: "/y", warnings: [], prompts: realPrompts }));
+    const loader = vi.fn(() => ({ ir, promptRoot: "/p", pipelineDir: "/p", warnings: [], prompts: realPrompts }));
     const runner = vi.fn(async () => undefined);
     const executorFactory = vi.fn(() => ({ executeStage: vi.fn() }) as any);
 
