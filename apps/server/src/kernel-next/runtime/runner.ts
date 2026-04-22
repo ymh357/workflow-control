@@ -25,7 +25,7 @@ import { MockStageExecutor, type StageHandlerMap } from "./mock-executor.js";
 import type { StageExecutor } from "./executor.js";
 import type { PipelineIR, GateStage } from "../ir/schema.js";
 import { KernelService } from "../mcp/kernel.js";
-import { taskRegistry } from "./task-registry.js";
+import { taskRegistry, type TerminationReason } from "./task-registry.js";
 import { evaluateGuard } from "./guard-evaluator.js";
 import { topoDownstream } from "./topo-downstream.js";
 import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
@@ -203,8 +203,13 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
   let rejectHandler:
     | ((event: Extract<MachineEvent, { type: "GATE_REJECTED" }>) => void)
     | null = null;
+  // Stage 5B — track whether an INTERRUPT was delivered so the runner can
+  // signal a more specific termination reason to external awaiters
+  // (migration orchestrator distinguishes interrupted from natural exit).
+  let interruptObserved = false;
   const dispatcher: EventDispatcher = {
     send: (event: MachineEvent) => {
+      if (event.type === "INTERRUPT") interruptObserved = true;
       if (event.type === "GATE_REJECTED") {
         // Intercept BEFORE reaching the XState actor — the machine has no
         // handler for this event type. The attempt's handler owns pruning
@@ -324,6 +329,10 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
     for (const port of externalInputs) {
       if (!(port.name in seedValues)) {
         clearTimeout(timer);
+        taskRegistry.signalTermination(opts.taskId, {
+          kind: "error",
+          detail: `SEED_VALUES_MISSING_KEY: ${port.name}`,
+        });
         taskRegistry.unregister(opts.taskId);
         throw new Error(
           `SEED_VALUES_MISSING_KEY: external input '${port.name}' has no seed value`,
@@ -540,6 +549,27 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = 10_000): Prom
     if (currentActor) {
       try { currentActor.stop(); } catch { /* ignore */ }
     }
+    // Stage 5B — signal termination reason before unregister so
+    // awaitTermination waiters (migration orchestrator) can distinguish
+    // natural completion / interrupt / error paths. Order by priority:
+    //   - timedOut: kind=error (runner exceeded timeoutMs)
+    //   - interruptObserved: kind=interrupted (external INTERRUPT delivered)
+    //   - finalOutcome.verdict='completed': kind=natural
+    //   - finalOutcome.verdict='failed': kind=error with stage/message
+    //   - else (no outcome reached): kind=error (likely thrown)
+    let terminationReason: TerminationReason;
+    if (timedOut) {
+      terminationReason = { kind: "error", detail: `runPipeline timeout after ${timeoutMs}ms` };
+    } else if (interruptObserved) {
+      terminationReason = { kind: "interrupted" };
+    } else if (finalOutcome?.verdict === "completed") {
+      terminationReason = { kind: "natural" };
+    } else if (finalOutcome?.verdict === "failed") {
+      terminationReason = { kind: "error", detail: "run ended with failed verdict" };
+    } else {
+      terminationReason = { kind: "error", detail: "runner exited without reaching final outcome" };
+    }
+    taskRegistry.signalTermination(opts.taskId, terminationReason);
     taskRegistry.unregister(opts.taskId);
   }
 
