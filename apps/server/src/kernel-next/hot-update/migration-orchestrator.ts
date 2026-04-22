@@ -94,7 +94,9 @@ export async function executeMigration(
     return {
       ok: false,
       code: "PATCH_APPLY_ERROR",
-      message: `task '${taskId}' is not in proposal.migrateRunningTasks`,
+      message:
+        `task '${taskId}' is not in the proposal's migrateRunningTasks ` +
+        `(${mig === "none" ? "none" : JSON.stringify(mig)})`,
       context: { migrateRunning: mig },
     };
   }
