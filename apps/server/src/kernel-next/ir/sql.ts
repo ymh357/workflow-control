@@ -274,17 +274,21 @@ CREATE TABLE IF NOT EXISTS script_execution_details (
   error_message      TEXT,
   error_stack        TEXT,
 
-  duration_ms        INTEGER NOT NULL,
+  duration_ms        INTEGER,
   started_at         INTEGER NOT NULL,
-  ended_at           INTEGER NOT NULL,
+  ended_at           INTEGER,
 
-  termination_reason TEXT NOT NULL
-                     CHECK (termination_reason IN
-                       ('natural_completion','error','module_not_found','superseded'))
+  termination_reason TEXT
+                     CHECK (termination_reason IS NULL
+                            OR termination_reason IN
+                              ('natural_completion','error','module_not_found','superseded'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_sed_module
   ON script_execution_details(module_id);
+CREATE INDEX IF NOT EXISTS idx_sed_open
+  ON script_execution_details(started_at)
+  WHERE ended_at IS NULL;
 `;
 
 export function initKernelNextSchema(db: DatabaseSync): void {

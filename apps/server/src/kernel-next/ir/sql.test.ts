@@ -297,10 +297,21 @@ describe("script_execution_details table", () => {
     initKernelNextSchema(db);
     expect(() => db.prepare(
       `INSERT INTO script_execution_details
-       (attempt_id, module_id, inputs_json, outputs_json,
-        duration_ms, started_at, ended_at, termination_reason)
-       VALUES ('no-such-attempt', 'mod', '{}', '{}', 0, 0, 0, 'natural_completion')`,
+       (attempt_id, module_id, inputs_json, outputs_json, started_at)
+       VALUES ('no-such-attempt', 'mod', '{}', '{}', 0)`,
     ).run()).toThrow(/FOREIGN KEY/i);
+  });
+
+  it("accepts open row with ended_at/termination_reason NULL", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    db.prepare(`INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source) VALUES ('v', 't', 0, NULL, '{}', '')`).run();
+    db.prepare(`INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES ('a1', 'tk', 'v', 's', 1, 0, 'running')`).run();
+    expect(() => db.prepare(
+      `INSERT INTO script_execution_details
+       (attempt_id, module_id, inputs_json, outputs_json, started_at)
+       VALUES ('a1', 'mod', '{}', '{}', 0)`,
+    ).run()).not.toThrow();
   });
 
   it("rejects bad termination_reason via CHECK", () => {
@@ -333,10 +344,12 @@ describe("script_execution_details table", () => {
     }
   });
 
-  it("has idx_sed_module index on module_id", () => {
+  it("has idx_sed_module + idx_sed_open indexes", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const rows = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='script_execution_details'").all() as Array<{ name: string }>;
-    expect(rows.map((r) => r.name)).toContain("idx_sed_module");
+    const names = rows.map((r) => r.name);
+    expect(names).toContain("idx_sed_module");
+    expect(names).toContain("idx_sed_open");
   });
 });
