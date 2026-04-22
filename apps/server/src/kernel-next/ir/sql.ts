@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS stage_attempts (
   status         TEXT NOT NULL
     CHECK (status IN ('running','success','error','superseded')),
   kind           TEXT NOT NULL DEFAULT 'regular'
-    CHECK (kind IN ('regular','fanout_element','fanout_aggregate','external','replay')),
+    CHECK (kind IN ('regular','fanout_element','fanout_aggregate','external','replay','dry_run')),
   -- A4 replay_stage: points to the original attempt this replay
   -- reproduces. NULL for non-replay attempts. No FK enforcement to
   -- allow replaying an attempt that has since been pruned.

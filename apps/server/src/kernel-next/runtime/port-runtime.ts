@@ -33,7 +33,13 @@ export type AttemptStatus = "running" | "success" | "error" | "superseded";
 // externalInputs values (§4.7 of the legacy-yaml-converter spec). Callers
 // that care about attempt provenance (diff_runs, future UI) filter on
 // this column instead of inferring from stage shape.
-export type AttemptKind = "regular" | "fanout_element" | "fanout_aggregate" | "external" | "replay";
+export type AttemptKind =
+  | "regular"
+  | "fanout_element"
+  | "fanout_aggregate"
+  | "external"
+  | "replay"
+  | "dry_run";
 
 export interface StartAttemptArgs {
   taskId: string;

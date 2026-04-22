@@ -25,6 +25,7 @@ import { RealStageExecutor } from "../runtime/real-executor.js";
 import { DbPromptResolver } from "../runtime/db-prompt-resolver.js";
 import { startPipelineRun } from "../runtime/start-pipeline-run.js";
 import { replayStage } from "../debug/replay-stage.js";
+import { dryRunStage } from "../debug/dry-run-stage.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
 
@@ -115,7 +116,9 @@ type ToolName =
   // Stage 5E
   | "query_hot_update_stats"
   // A4 Phase 4.5 Tier2
-  | "replay_stage";
+  | "replay_stage"
+  // A4 Phase 4.5 Tier3
+  | "dry_run_stage";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
@@ -131,6 +134,8 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "query_hot_update_stats",
   // A4 Phase 4.5 Tier2
   "replay_stage",
+  // A4 Phase 4.5 Tier3
+  "dry_run_stage",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
@@ -637,6 +642,54 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
             const result = await replayStage({
               db,
               sourceAttemptId,
+              executor,
+            });
+            return jsonResponse(result);
+          } catch (err) {
+            return errorResponse(err instanceof Error ? err.message : String(err));
+          }
+        },
+      },
+      {
+        name: "dry_run_stage",
+        description:
+          "Run a SINGLE stage against caller-supplied inputs, without " +
+          "requiring a task or prior attempt. Produces a fresh attempt " +
+          "tagged kind='dry_run' under a synthetic task_id prefixed " +
+          "'dry_run-'. No events propagate to any running XState machine " +
+          "(inert dispatcher). Only 'agent' and 'script' stages are " +
+          "supported; gates are rejected with STAGE_NOT_DRY_RUNNABLE. " +
+          "All inputs declared by the target stage must be supplied in " +
+          "the 'inputs' object; missing inputs are rejected up-front " +
+          "with MISSING_INPUT.",
+        inputSchema: {
+          pipelineVersion: z.string().describe("version_hash of the pipeline that declares the target stage"),
+          stageName: z.string().describe("name of the stage within that pipeline"),
+          inputs: z.record(z.string(), z.unknown()).describe("flat input map keyed by port name"),
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        handler: async (args: any) => {
+          try {
+            const pipelineVersion = String(args.pipelineVersion);
+            const stageName = String(args.stageName);
+            const inputs =
+              args.inputs && typeof args.inputs === "object"
+                ? (args.inputs as Record<string, unknown>)
+                : {};
+            const executor = new RealStageExecutor({
+              mcpServerFactory: (_dispatcher, portRuntime) =>
+                createKernelMcp(db, {
+                  surface: "combined",
+                  portRuntime,
+                  tscPath: options.tscPath,
+                }),
+              promptResolver: new DbPromptResolver(db, pipelineVersion),
+            });
+            const result = await dryRunStage({
+              db,
+              pipelineVersion,
+              stageName,
+              inputs,
               executor,
             });
             return jsonResponse(result);
