@@ -16,12 +16,15 @@
 | 1 | 2026-04-23 | 空 seed 首跑 smoke-test | smoke-test | smoke-test-1776877365350-d4192d2a | API 返回 completed（**实际 timeout**） | 33s agent / 10s timeout | P6-1, P6-2 | 只跑了 greet；echoBack 从未启动；getTaskStatus 谎报 completed |
 | 2 | 2026-04-23 | 修完 P6-1 P6-2 后 smoke-test 干净重跑 | smoke-test | smoke-test-1776879763943-0d93c5ef | completed ✅ | 26s，2 stage 真跑完 | P6-4 | task_finals=completed/natural；cost $0.073；但 prompt 期望 "task text" 而 IR 无 externalInputs，agent 走 fallback 路径输出"unknown"——设计层契约不一致 |
 | 3 | 2026-04-23 | 研究 zod（TypeScript validation 库）| Tech Research Collector | `Tech Research Collector-1776879895803-4a4424cd` | completed ✅ | 170s agent，$0.294 | P6-5, P6-6 | 真实有用的报告：19 sources 尝试 / 12 成功 / Zod 42.5k stars；taskId 含空格（URL 不友好）；HTTP `name` 要传 IR 显示名而非目录名 |
+| 4 | 2026-04-23 | 让 AI 写个 github-onboarding pipeline | Pipeline Generator | `Pipeline Generator-1776880477238-0b86754c` | completed ✅ | 275s agent total，$0.355，gate 等待 118s | P6-7, P6-8 | 5 stages 全跑完 + gate + approve；但 persisting 提交的 IR 是空壳（I/O 全丢） |
+| 5 | 2026-04-23 | 跑 AI 生成的 github-onboarding pipeline | (AI-generated) | `GitHub Repository Onboarding Generator-1776880884097-ab079f23` | not_found → **completed 空跑** | 瞬完成 | P6-9 | 空壳 IR 立刻 onDone，无任何 stage 执行；pre-fix status=not_found，post-fix completed |
 
 ## 成熟度快照
 
-- **M3 分子/分母**: 2 / 3（第 1 跑 bug；第 2-3 跑 completed）
+- **M3 分子/分母**: 3 / 5（run #2,3,4 completed；run #1 bug；run #5 语义上失败但 API 说 completed）
 - **M4 热更新总数 / reject + rollback 次数**: 0 / 0
-- **覆盖的 builtin**: 2 / 4 （✅ `smoke-test`, ✅ `Tech Research Collector`, `Tech Research Writer` pending, `Pipeline Generator` pending）
+- **覆盖的 builtin**: 3 / 4 （✅ `smoke-test`, ✅ `Tech Research Collector`, ✅ `Pipeline Generator`, `Tech Research Writer` pending）
+- **AI-generated pipeline 实际可用率**: 0 / 1（产出了 pipeline_version 但 IR 是空壳）
 
 ## Bug 清单
 
@@ -37,6 +40,21 @@
 **关联 bug**：同次运行暴露 P6-2（默认 timeout 太短）；两者叠加才让这个 bug 显现出来。
 **修复**：待设计（需要一张 task_finals 表或等价的权威终态信号）
 **回归测试**：smoke-test.linear-two-stage.test.ts（已证明 mock runPipeline 下两 stage 都能跑，所以 bug 只在"runPipeline 异常退出后 status 端点"路径）
+
+### P6-7 — Gate question 空洞无信息
+
+**现象**：pipeline-generator 的 `awaitingConfirm` gate 问 "Approve this result?"；user 看不到 analyzing 输出，无法判断。
+**根因**：gate.config.question.text 是静态字符串，没拼接 analyzing 的关键输出（summary / stageDesign / pipelineName）。`kernel-next-terminal-design.md` 里 gate question 是 raw string，不支持 lazy template。
+**影响**：真实用户场景下 gate 等于随便点 approve。M2 可用性指标关键阻塞。
+**修复方向**：gate.config.question 支持 template references（如 `{{ analyzing.summary }}`），在 gate 入 queue 时 resolve。与 B5 Confirm UI 的设计是同一问题。记作待决策项输入。
+
+### P6-8 — pipeline-generator 的 persist stage 向 submit_pipeline 传空壳 IR
+
+**现象**：analyzing / genSkeleton 都正确产出带 I/O 的 IR；persisting 的 input `ir` port 也正确收到完整 IR；但 persisting agent 调 `submit_pipeline` 时却把 IR 的每个 stage 的 `inputs=[]` `outputs=[]` 并丢掉 `externalInputs`。连续 5 次尝试都是空壳，最后一次连 `wires` 也删干净。
+**根因**：LLM 在 persist prompt"verbatim"约束下仍自作主张"simplify" IR。kernel 层 PipelineIRSchema.parse 对这个空壳合法接受。
+**影响**：AI 生成的 pipeline 名义成功实际不可用（P6-9 的 stuck "not_found" 就是这个 bug 的症状）。M4 热更新成功率的"基础成功率"指标直接归零——连生成都错，热更就更别谈。
+**修复方向**：(a) 在 submit_pipeline 层面加 **语义拒绝**："stage 声明 wire 但无 I/O port 匹配" → reject。(b) 强化 persist prompt，禁止 any mutation，加 post-submit 校验"stage 数 × 平均端口数 > 0 else abort"。先做 (a)——代码层硬约束比 prompt 文案可靠。
+**关联 bug**：P6-9（空壳 IR 让 getTaskStatus 报 not_found）。
 
 ### P6-3 — pipeline 在 server cwd 下写 `.workflow/` 污染工作区（已消除误解）
 
