@@ -22,6 +22,18 @@ const tool_result = (id: string): SdkMessageLike => ({
   type: "user",
   message: { content: [{ type: "tool_result", id, content: "ok" }] },
 });
+// The Anthropic Messages API spec (and what the SDK actually emits)
+// uses `tool_use_id`, not `id`. Older fixtures/tests used `id`; this
+// form is the real-world shape the adapter must handle to populate
+// tool_calls_json's result/finishedAt fields.
+const tool_result_spec_compliant = (toolUseId: string): SdkMessageLike => ({
+  type: "user",
+  message: { content: [{ type: "tool_result", tool_use_id: toolUseId, content: "ok" }] },
+});
+const tool_result_camel = (toolUseId: string): SdkMessageLike => ({
+  type: "user",
+  message: { content: [{ type: "tool_result", toolUseId, content: "ok" }] },
+});
 const compact_start = (trigger: "auto" | "manual", pre: number): SdkMessageLike => ({
   type: "system",
   subtype: "compact_boundary",
@@ -71,6 +83,26 @@ describe("sdk-adapter — individual message mapping", () => {
     const evs = a.translate(tool_result("t1"));
     expect(evs).toHaveLength(1);
     expect(evs[0]?.type).toBe("TOOL_RESULT_RECEIVED");
+  });
+
+  // Bug fix (post run #19/#20): real SDK emits tool_use_id (Anthropic
+  // Messages API spec), not `id`. The adapter was only looking at `id`,
+  // so every real-world tool_result was silently dropped and
+  // tool_calls_json.result stayed null. Support spec-compliant key.
+  it("user tool_result with tool_use_id (spec form) → TOOL_RESULT_RECEIVED with correct id", () => {
+    const a = createSdkAdapter();
+    const evs = a.translate(tool_result_spec_compliant("toolu_01Q7NHhUa"));
+    expect(evs).toHaveLength(1);
+    expect(evs[0]).toMatchObject({ type: "TOOL_RESULT_RECEIVED", id: "toolu_01Q7NHhUa" });
+  });
+
+  // Defensive: some SDK paths expose camelCase toolUseId on the JS
+  // object. Accept both so we're robust against SDK internal renames.
+  it("user tool_result with toolUseId (camel form) → TOOL_RESULT_RECEIVED with correct id", () => {
+    const a = createSdkAdapter();
+    const evs = a.translate(tool_result_camel("toolu_01Q7NHhUa"));
+    expect(evs).toHaveLength(1);
+    expect(evs[0]).toMatchObject({ type: "TOOL_RESULT_RECEIVED", id: "toolu_01Q7NHhUa" });
   });
 
   it("rate_limit_event → RATE_LIMIT_SIGNAL with utilization", () => {

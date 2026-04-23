@@ -26,6 +26,12 @@ export type SdkMessageLike = {
     content?: Array<{
       type: string;
       id?: string;
+      // SDK's real field for tool_result blocks (snake_case on the
+      // wire per Anthropic Messages API spec). Some SDK paths expose
+      // camelCase toolUseId instead — both kept optional so test
+      // fixtures can construct either shape.
+      tool_use_id?: string;
+      toolUseId?: string;
       name?: string;
       input?: unknown;
       content?: unknown;
@@ -121,12 +127,28 @@ export function createSdkAdapter(): SdkAdapter {
       if (msg.type === "user") {
         const blocks = msg.message?.content ?? [];
         for (const b of blocks) {
-          if (b.type === "tool_result" && typeof b.id === "string") {
-            events.push({
-              type: "TOOL_RESULT_RECEIVED",
-              id: b.id,
-              output: b.content,
-            });
+          if (b.type === "tool_result") {
+            // Real SDK uses tool_use_id (Anthropic Messages API spec).
+            // Some SDK paths expose camelCase toolUseId. Older test
+            // fixtures used `id`. Accept all three so we're robust to
+            // both the spec and any internal SDK drift. The exact cause
+            // of run #20's empty tool_calls_json.result was the adapter
+            // only reading `id` — which the real SDK never emits.
+            const id =
+              typeof b.tool_use_id === "string"
+                ? b.tool_use_id
+                : typeof b.toolUseId === "string"
+                  ? b.toolUseId
+                  : typeof b.id === "string"
+                    ? b.id
+                    : undefined;
+            if (id !== undefined) {
+              events.push({
+                type: "TOOL_RESULT_RECEIVED",
+                id,
+                output: b.content,
+              });
+            }
           }
         }
         return events;
