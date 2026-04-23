@@ -1,0 +1,49 @@
+# docker-compose.yml — workflow-control one-command local deployment.
+#
+# Ports:
+#   - :3001  Hono API (server)
+#   - :3000  Next.js dashboard (web)
+#
+# Volumes:
+#   - ./data              -> /data              (SQLite + SSE history; persistent)
+#   - $HOME/projects      -> /repos (ro)        (git repos scanned by script stages)
+#   - $HOME/worktrees     -> /worktrees         (per-task git worktrees)
+#
+# The browser hits the server directly on localhost:3001, so NEXT_PUBLIC_API_URL
+# must be the host URL — not the in-network `http://server:3001`.
+
+services:
+  server:
+    build:
+      context: .
+      target: server
+    image: workflow-control-server:local
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: production
+      DATA_DIR: /data
+      REPOS_BASE_PATH: /repos
+      WORKTREES_BASE_PATH: /worktrees
+      CLAUDE_PATH: /usr/local/bin/claude
+      PORT: "3001"
+    volumes:
+      - ./data:/data
+      - ${HOME}/projects:/repos:ro
+      - ${HOME}/worktrees:/worktrees
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      target: web
+    image: workflow-control-web:local
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      NEXT_PUBLIC_API_URL: http://localhost:3001
+    depends_on:
+      - server
+    restart: unless-stopped

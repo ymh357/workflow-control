@@ -159,6 +159,40 @@ Two files control the system, both gitignored:
 
 Optional tokens for script integrations (Notion, Figma, GitHub PR scripts) live in `.env.local` as well — see `.env.local.example`.
 
+## Docker
+
+One-command, production-shape local deployment via `docker compose`:
+
+```bash
+cp apps/server/.env.local.example apps/server/.env.local  # adjust paths if needed
+docker compose up -d --build
+```
+
+Ports:
+
+- Server API: `http://localhost:3001`
+- Dashboard:  `http://localhost:3000`
+
+Volumes (see `docker-compose.yml` for exact mounts):
+
+- `./data` → `/data` — persistent SQLite store + SSE history (`DATA_DIR`).
+- `$HOME/projects` → `/repos` (read-only) — git repos script stages read from.
+- `$HOME/worktrees` → `/worktrees` — per-task worktrees script stages create.
+
+The `claude` CLI is **not** bundled in the image. Script stages that invoke it will fail unless you either mount a host `claude` binary into the container at `/usr/local/bin/claude` or extend the server image to install it. The Dockerfile gives you a runnable server + dashboard; agent-driven pipelines that shell out to `claude` require that extra wiring.
+
+Rebuild after code changes:
+
+```bash
+docker compose build && docker compose up -d
+```
+
+Tear down:
+
+```bash
+docker compose down
+```
+
 ## What this project is not
 
 - Not a multi-tenant SaaS. No auth. No cross-user RBAC.
