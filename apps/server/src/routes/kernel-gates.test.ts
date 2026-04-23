@@ -223,6 +223,72 @@ describe("REST /api/kernel/gates", () => {
     const body = await res.json() as { diagnostics: Array<{ code: string }> };
     expect(body.diagnostics[0]!.code).toBe("INVALID_REQUEST_BODY");
   });
+
+  it("GET /:id/context returns 200 with gate payload + upstreams", async () => {
+    const app = buildApp();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+
+    // Seed upstream A (success attempt writing x=7).
+    const sub = svc.submit(gateIR(), { prompts: { p: "dummy" } });
+    if (!sub.ok) throw new Error("seed submit failed");
+    const aAttempt = "a-" + Math.random().toString(36).slice(2, 10);
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+        started_at, ended_at, status, kind)
+       VALUES (?, 't-ctx', ?, 'A', 1, 100, 200, 'success', 'regular')`,
+    ).run(aAttempt, sub.versionHash);
+    db.prepare(
+      `INSERT INTO port_values
+       (value_id, attempt_id, stage_name, port_name, direction,
+        value_json, written_at)
+       VALUES ('v-ctx-x', ?, 'A', 'x', 'out', '7', 150)`,
+    ).run(aAttempt);
+
+    // Open a gate on G.
+    const gAttempt = "g-" + Math.random().toString(36).slice(2, 10);
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+        started_at, status)
+       VALUES (?, 't-ctx', ?, 'G', 1, 300, 'running')`,
+    ).run(gAttempt, sub.versionHash);
+    const { gateId } = svc.createGate({
+      taskId: "t-ctx", stageName: "G", attemptId: gAttempt,
+      question: { text: "continue?", options: ["yes", "no"] },
+    });
+
+    const res = await app.fetch(
+      new Request(`http://test/api/kernel/gates/${gateId}/context`),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      ok: boolean;
+      gateId: string;
+      answerOptions: string[];
+      upstreams: Array<{ stage: string; outputs: Array<{ port: string; value: unknown }> }>;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.gateId).toBe(gateId);
+    expect(body.answerOptions.sort()).toEqual(["no", "yes"]);
+    expect(body.upstreams).toHaveLength(1);
+    expect(body.upstreams[0]!.stage).toBe("A");
+    expect(body.upstreams[0]!.outputs[0]!.value).toBe(7);
+  });
+
+  it("GET /:id/context returns 404 with GATE_NOT_FOUND for unknown gate", async () => {
+    const app = buildApp();
+    const res = await app.fetch(
+      new Request(`http://test/api/kernel/gates/nonexistent/context`),
+    );
+    expect(res.status).toBe(404);
+    const body = await res.json() as {
+      ok: boolean;
+      diagnostics: Array<{ code: string }>;
+    };
+    expect(body.ok).toBe(false);
+    expect(body.diagnostics[0]!.code).toBe("GATE_NOT_FOUND");
+  });
 });
 
 // Seeds a pipeline with gate G whose routes include a rollback:

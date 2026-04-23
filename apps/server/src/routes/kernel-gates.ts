@@ -62,6 +62,16 @@ kernelGatesRoute.get("/kernel/gates", (c) => {
   return c.json({ ok: true, gates });
 });
 
+kernelGatesRoute.get("/kernel/gates/:id/context", (c) => {
+  const id = c.req.param("id");
+  const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
+  const r = svc.getGateContext(id);
+  if (r.ok) return c.json({ ok: true, ...r.context });
+  const code = r.diagnostics[0]?.code;
+  const status = code === "GATE_NOT_FOUND" ? 404 : 500;
+  return c.json(r, status);
+});
+
 kernelGatesRoute.post("/kernel/gates/:id/answer", async (c) => {
   const id = c.req.param("id");
 
