@@ -112,6 +112,52 @@ export interface RealStageExecutorOptions {
   workspaceDir?: string;
 }
 
+// ---- M-R5 session-resume helpers ---------------------------------------
+// Exported as pure functions so the resume math is covered without a
+// queryFn harness. Consumed by real-executor's resume path and
+// independently tested in real-executor.resume.test.ts.
+
+/**
+ * Remaining maxTurns budget when resuming an agent session. Subtracts
+ * historical turns from the configured ceiling and floors at 1 — the
+ * SDK may inject its own system turns on resume (init, context restore)
+ * that weren't counted in the prior run, so clamping at 1 is safer than
+ * letting the subtraction go negative.
+ */
+export function clampMaxTurns(configured: number, priorTurns: number): number {
+  const remaining = configured - priorTurns;
+  return remaining < 1 ? 1 : remaining;
+}
+
+/**
+ * Sum every `num_turns` field on `result` messages in a serialized
+ * agent_stream_json blob. Returns 0 for null / undefined / malformed
+ * input. This mirrors the SDK's own turn counter (which only emits
+ * num_turns on result messages, not on every assistant/tool entry).
+ */
+export function parseNumTurnsFromStream(raw: string | null | undefined): number {
+  if (!raw) return 0;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return 0;
+  }
+  if (!Array.isArray(parsed)) return 0;
+  let total = 0;
+  for (const entry of parsed) {
+    if (
+      entry !== null &&
+      typeof entry === "object" &&
+      (entry as { type?: unknown }).type === "result" &&
+      typeof (entry as { num_turns?: unknown }).num_turns === "number"
+    ) {
+      total += (entry as { num_turns: number }).num_turns;
+    }
+  }
+  return total;
+}
+
 const DEFAULT_MODEL = "claude-haiku-4-5";
 const DEFAULT_MAX_TURNS = 10;
 const DEFAULT_MAX_BUDGET_USD = 0.2;
