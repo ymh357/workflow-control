@@ -1,0 +1,74 @@
+{
+  "name": "PR Description Generator",
+  "externalInputs": [
+    { "name": "branchName", "type": "string" },
+    { "name": "baseBranch", "type": "string" },
+    { "name": "repoPath", "type": "string" }
+  ],
+  "stages": [
+    {
+      "name": "fetchDiff",
+      "type": "agent",
+      "inputs": [
+        { "name": "branchName", "type": "string" },
+        { "name": "baseBranch", "type": "string" },
+        { "name": "repoPath", "type": "string" }
+      ],
+      "outputs": [
+        { "name": "diffText", "type": "string" },
+        { "name": "commitMessages", "type": "string[]" },
+        { "name": "filesChanged", "type": "string[]" }
+      ],
+      "config": { "promptRef": "system/fetch-diff" }
+    },
+    {
+      "name": "writePr",
+      "type": "agent",
+      "inputs": [
+        { "name": "diffText", "type": "string" },
+        { "name": "commitMessages", "type": "string[]" },
+        { "name": "filesChanged", "type": "string[]" }
+      ],
+      "outputs": [
+        { "name": "title", "type": "string" },
+        { "name": "body", "type": "string" }
+      ],
+      "config": { "promptRef": "system/write-pr" }
+    }
+  ],
+  "wires": [
+    { "from": { "source": "external", "port": "branchName" }, "to": { "stage": "fetchDiff", "port": "branchName" } },
+    { "from": { "source": "external", "port": "baseBranch" }, "to": { "stage": "fetchDiff", "port": "baseBranch" } },
+    { "from": { "source": "external", "port": "repoPath" }, "to": { "stage": "fetchDiff", "port": "repoPath" } },
+    { "from": { "stage": "fetchDiff", "port": "diffText" }, "to": { "stage": "writePr", "port": "diffText" } },
+    { "from": { "stage": "fetchDiff", "port": "commitMessages" }, "to": { "stage": "writePr", "port": "commitMessages" } },
+    { "from": { "stage": "fetchDiff", "port": "filesChanged" }, "to": { "stage": "writePr", "port": "filesChanged" } }
+  ],
+  "store_schema": {
+    "fetchDiff.diffText": {
+      "type": "string",
+      "description": "Unified diff of branchName vs baseBranch, truncated at ~64 KB to fit agent context.",
+      "produced_by": { "stage": "fetchDiff", "port": "diffText" }
+    },
+    "fetchDiff.commitMessages": {
+      "type": "string[]",
+      "description": "Commit subjects + bodies on branchName not in baseBranch, oldest first.",
+      "produced_by": { "stage": "fetchDiff", "port": "commitMessages" }
+    },
+    "fetchDiff.filesChanged": {
+      "type": "string[]",
+      "description": "Relative paths of files added/modified/deleted by the branch.",
+      "produced_by": { "stage": "fetchDiff", "port": "filesChanged" }
+    },
+    "writePr.title": {
+      "type": "string",
+      "description": "Conventional-commit-style PR title (<=70 chars).",
+      "produced_by": { "stage": "writePr", "port": "title" }
+    },
+    "writePr.body": {
+      "type": "string",
+      "description": "Markdown PR body with Summary + Test Plan.",
+      "produced_by": { "stage": "writePr", "port": "body" }
+    }
+  }
+}

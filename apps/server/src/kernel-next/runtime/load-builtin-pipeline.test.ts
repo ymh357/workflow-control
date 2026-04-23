@@ -44,4 +44,13 @@ describe("loadBuiltinPipelineIR", () => {
     expect(r.ir.stages.length).toBeGreaterThan(0);
     expect(Object.keys(r.prompts).length).toBeGreaterThan(0);
   });
+
+  it("loads pr-description-generator (Phase 6 dogfood pipeline)", () => {
+    const r = loadBuiltinPipelineIR("pr-description-generator");
+    expect(r.ir.name).toBe("PR Description Generator");
+    expect(r.ir.stages.map((s) => s.name)).toEqual(["fetchDiff", "writePr"]);
+    expect(r.ir.externalInputs?.map((e) => e.name).sort())
+      .toEqual(["baseBranch", "branchName", "repoPath"]);
+    expect(Object.keys(r.prompts).sort()).toEqual(["system/fetch-diff", "system/write-pr"]);
+  });
 });

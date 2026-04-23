@@ -129,3 +129,4 @@ seedBuiltinPipelineByName("smoke-test");
 seedBuiltinPipelineByName("tech-research-collector");
 seedBuiltinPipelineByName("tech-research-writer");
 seedBuiltinPipelineByName("pipeline-generator");
+seedBuiltinPipelineByName("pr-description-generator");
