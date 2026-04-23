@@ -1529,4 +1529,70 @@ describe("KernelService.getGateContext — B5", () => {
       db.close();
     }
   });
+
+  // Audit 2026-04-23 (7A): getGateContext reads upstream port outputs
+  // via pv.written_at ordering, which B17 preserved fanout_element rows
+  // can break if a fixture (or clock anomaly) orders them after the
+  // aggregate. Defensive CASE ordering over sa.kind keeps fanout_aggregate
+  // winning deterministically — mirrors the lineage / readLatestPort
+  // fixes from commit f552b79.
+  it("upstream fanout stage: returns the aggregate T[] value, not a preserved fanout_element scalar", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      initKernelNextSchema(db);
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const submit = svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
+      if (!submit.ok) throw new Error("submit failed");
+
+      // Seed one preserved fanout_element success row with a scalar
+      // value, then an aggregate success row with the real array
+      // value. written_at is deliberately set so the element looks
+      // newer (clock-skew / fixture hazard) to prove the kind-based
+      // tie-break works regardless of timestamp order.
+      const elemAttempt = "el-" + Math.random().toString(36).slice(2, 10);
+      db.prepare(
+        `INSERT INTO stage_attempts
+         (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+          started_at, ended_at, status, kind, fanout_element_idx)
+         VALUES (?, 'tf', ?, 'A', 1, ?, ?, 'success', 'fanout_element', 0)`,
+      ).run(elemAttempt, submit.versionHash, 100, 200);
+      db.prepare(
+        `INSERT INTO port_values
+         (value_id, attempt_id, stage_name, port_name, direction,
+          value_json, written_at)
+         VALUES ('v-el-x', ?, 'A', 'x', 'out', '7', 400)`,
+      ).run(elemAttempt);
+
+      const aggAttempt = "ag-" + Math.random().toString(36).slice(2, 10);
+      db.prepare(
+        `INSERT INTO stage_attempts
+         (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+          started_at, ended_at, status, kind)
+         VALUES (?, 'tf', ?, 'A', 2, ?, ?, 'success', 'fanout_aggregate')`,
+      ).run(aggAttempt, submit.versionHash, 250, 300);
+      db.prepare(
+        `INSERT INTO port_values
+         (value_id, attempt_id, stage_name, port_name, direction,
+          value_json, written_at)
+         VALUES ('v-ag-x', ?, 'A', 'x', 'out', '[7,8,9]', 350)`,
+      ).run(aggAttempt);
+
+      // Open a gate attempt so getGateContext has a row to read.
+      const gateAttempt = openGateAttempt(db, "tf", submit.versionHash);
+      const { gateId } = svc.createGate({
+        taskId: "tf", stageName: "G", attemptId: gateAttempt,
+        question: { text: "Continue?", options: ["approve", "reject"] },
+      });
+
+      const r = svc.getGateContext(gateId);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      const xOut = r.context.upstreams[0]!.outputs.find((o) => o.port === "x");
+      expect(xOut).toBeDefined();
+      // Aggregate wins: array value, not scalar 7.
+      expect(xOut!.value).toEqual([7, 8, 9]);
+    } finally {
+      db.close();
+    }
+  });
 });

@@ -1023,6 +1023,17 @@ export class KernelService {
     // writes (if any) never clobber the success row of the same
     // attempt — we additionally require sa.status='success' on the
     // outer join.
+    // Audit 2026-04-23 (7A): B17 preserves fanout_element rows across
+    // migrations, so (stage, port) can hold a scalar T from a
+    // preserved element + a T[] from the aggregate. MAX(written_at)
+    // alone picks whichever was stamped later, which can be the
+    // element under clock-skew / fixture seeding. Defensive CASE
+    // ordering on sa.kind forces fanout_aggregate (or regular) rows
+    // to win over preserved fanout_element rows — same pattern as
+    // lineage.ts / readLatestPort (commit f552b79). Selecting by
+    // attempt_id (vs written_at) also dodges the shared-timestamp
+    // false-positive: two rows with the same written_at can no longer
+    // both match.
     const outputsStmt = this.db.prepare(
       `SELECT pv.port_name,
               pv.value_json,
@@ -1033,8 +1044,8 @@ export class KernelService {
          AND sa.stage_name = ?
          AND sa.status = 'success'
          AND pv.direction = 'out'
-         AND pv.written_at = (
-           SELECT MAX(pv2.written_at)
+         AND pv.attempt_id = (
+           SELECT pv2.attempt_id
            FROM port_values pv2
            JOIN stage_attempts sa2 ON sa2.attempt_id = pv2.attempt_id
            WHERE sa2.task_id = sa.task_id
@@ -1042,6 +1053,9 @@ export class KernelService {
              AND pv2.port_name = pv.port_name
              AND pv2.direction = 'out'
              AND sa2.status = 'success'
+           ORDER BY (CASE WHEN sa2.kind = 'fanout_element' THEN 1 ELSE 0 END) ASC,
+                    pv2.written_at DESC, sa2.attempt_idx DESC
+           LIMIT 1
          )
        ORDER BY pv.port_name ASC`,
     );
