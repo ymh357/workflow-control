@@ -20,6 +20,7 @@
 | 5 | 2026-04-23 | 跑 AI 生成的 github-onboarding pipeline | (AI-generated) | `GitHub Repository Onboarding Generator-1776880884097-ab079f23` | not_found → **completed 空跑** | 瞬完成 | P6-9 | 空壳 IR 立刻 onDone，无任何 stage 执行；pre-fix status=not_found，post-fix completed |
 | 6 | 2026-04-23 | P6-8 修复后再跑 pipeline-generator #1 | Pipeline Generator | `Pipeline Generator-1776882328721-1dcf0df9` | **stuck after awaitingConfirm** | 60s 后 API 说 completed 但只跑 3 stage | P6-10 | gate approve 后 downstream genSkeleton 从未激活；task_finals 未写 |
 | 7 | 2026-04-23 | P6-8 修复后再跑 pipeline-generator #2 | Pipeline Generator | `Pipeline Generator-1776882481413-463158c6` | 同上 | 75s | P6-10 | 同一症状复现；tsx watch 可能是环境元凶 |
+| 8 | 2026-04-23 | **B5 Confirm UI 端到端验证**（API 路径，无浏览器手测）| Pipeline Generator | `Pipeline Generator-1776908172804-66cc82d1` | **gate context API 正确返回全 16 port**；approve 流转到 genSkeleton | analyzing 22s → gate → approve 即时转发 | — | P6-7 resolved：`GET /api/kernel/gates/:id/context` 返回 `upstreams[0].stage=analyzing` 和 16 个 outputs（summary/stageDesign/dataFlowSummary 等），answerOptions=["approve","reject"]；404 unknown gate 验过。UI 层由 GateCard + page.tsx 两个 useEffect 接入 |
 
 ## 成熟度快照
 
@@ -76,12 +77,11 @@
 **确认路径**：用 `pnpm start` (non-watch) 重跑 pipeline-generator，看是否稳定完成。如果稳定 → 确认是 tsx watch reload 的环境 bug，**真实部署不用 tsx watch 所以非阻塞**。
 **如果是跨进程 reload 也要修**：runner 跨 process 不可恢复（无 checkpoint 指向"曾经等过某 gateId"）——这本是 B 系列的 resumption 问题，需要把 pending gate + dispatcher hook 从内存搬到 DB，restart 时 rehydrate runner。这是本来的 Phase 5C/5D 范围但没做。**或**：接受"tsx watch 环境下 reload 会让任务悬挂"但在生产 non-watch 下不 reload 所以 OK。
 
-### P6-7 — Gate question 空洞无信息
+### P6-7 — Gate question 空洞无信息 ✅ 已修 (via B5)
 
 **现象**：pipeline-generator 的 `awaitingConfirm` gate 问 "Approve this result?"；user 看不到 analyzing 输出，无法判断。
-**根因**：gate.config.question.text 是静态字符串，没拼接 analyzing 的关键输出（summary / stageDesign / pipelineName）。`kernel-next-terminal-design.md` 里 gate question 是 raw string，不支持 lazy template。
-**影响**：真实用户场景下 gate 等于随便点 approve。M2 可用性指标关键阻塞。
-**修复方向**：gate.config.question 支持 template references（如 `{{ analyzing.summary }}`），在 gate 入 queue 时 resolve。与 B5 Confirm UI 的设计是同一问题。记作待决策项输入。
+**根因**：gate.config.question.text 是静态字符串，没拼接 analyzing 的关键输出（summary / stageDesign / pipelineName）。
+**修复 (B5)**：2026-04-23 新增 `GET /api/kernel/gates/:id/context`：按 IR wires 追溯 gate 的 upstream stages，返回它们的全部 latest success output ports。dashboard GateCard 组件展示。run #8 验证：pipeline-generator gate 现在暴露 analyzing 的全部 16 个 outputs（summary / stageDesign / dataFlowSummary / pipelineName / stageContracts 等）给用户作决策依据。commit 链 2106a6d..664ddaa。
 
 ### P6-8 — pipeline-generator 的 persist stage 向 submit_pipeline 传空壳 IR
 
