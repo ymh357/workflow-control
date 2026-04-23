@@ -51,8 +51,6 @@ import {
   type StageErrorContext,
 } from "./runner-wire-resolver.js";
 
-export type { GuardFailure, StageErrorContext };
-
 export interface RunnerOptions {
   db: DatabaseSync;
   ir: PipelineIR;
