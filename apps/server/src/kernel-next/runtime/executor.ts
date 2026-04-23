@@ -66,6 +66,22 @@ export interface ExecuteStageArgs {
    * 'fanout_element'; other runtimes silently drop it (see PortRuntime).
    */
   fanoutElementIdx?: number;
+  /**
+   * M-R5 — when resuming this stage from a prior crash, the SDK
+   * session_id to continue. The real executor passes it as
+   * `options.resume` so historical turns are not re-billed. On any
+   * SDK failure (session file missing / corrupt) the executor falls
+   * back silently to a fresh session. Executors that don't run the
+   * Claude Agent SDK ignore this field.
+   */
+  resumeSessionId?: string;
+  /**
+   * M-R5 — historical num_turns already consumed by the prior run of
+   * this stage. Used to clamp `maxTurns` so the resumed session does
+   * not double the turn budget. Zero when there is no prior turn count
+   * to inherit.
+   */
+  priorNumTurns?: number;
 }
 
 export interface ExecuteStageResult {

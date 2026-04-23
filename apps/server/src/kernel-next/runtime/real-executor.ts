@@ -294,7 +294,13 @@ export class RealStageExecutor implements StageExecutor {
       // write_port calls fire PORT_WRITTEN.
       const mcpServer = this.mcpServerFactory(portRuntime.getDispatcher(), portRuntime);
       const subAgents = stage.config.subAgents;
-      const options: SdkOptions = {
+      // M-R5: clamp maxTurns for resumed sessions so historical turns
+      // do not double the budget. Computed from priorNumTurns supplied
+      // by the runner; zero on a fresh run leaves the ceiling alone.
+      const effectiveMaxTurns = args.resumeSessionId
+        ? clampMaxTurns(this.maxTurns, args.priorNumTurns ?? 0)
+        : this.maxTurns;
+      const baseOptions: SdkOptions = {
         systemPrompt: {
           type: "preset",
           preset: "claude_code",
@@ -304,7 +310,7 @@ export class RealStageExecutor implements StageExecutor {
           __kernel_next__: mcpServer as NonNullable<SdkOptions["mcpServers"]>[string],
         },
         model: this.model,
-        maxTurns: this.maxTurns,
+        maxTurns: effectiveMaxTurns,
         maxBudgetUsd: this.maxBudgetUsd,
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
@@ -320,6 +326,14 @@ export class RealStageExecutor implements StageExecutor {
         // stays in force, preserving legacy test expectations.
         ...(this.workspaceDir !== undefined ? { cwd: this.workspaceDir } : {}),
       };
+      // M-R5: plumb the resume session id via options.resume when the
+      // caller has one. queryFn failure (missing / corrupt session file)
+      // surfaces as a thrown error inside the stream iteration below;
+      // we catch it and restart with a fresh session instead of failing
+      // the stage. Production SDK supports options.resume natively.
+      const options: SdkOptions = args.resumeSessionId
+        ? { ...baseOptions, resume: args.resumeSessionId }
+        : baseOptions;
 
       const stream = this.queryFn({ prompt: userPrompt, options });
 

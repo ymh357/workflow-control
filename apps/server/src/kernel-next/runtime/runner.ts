@@ -25,6 +25,7 @@ import { PortRuntime, type EventDispatcher } from "./port-runtime.js";
 import type { AttemptHooks } from "./port-runtime.js";
 import { MockStageExecutor, type StageHandlerMap } from "./mock-executor.js";
 import type { StageExecutor } from "./executor.js";
+import { parseNumTurnsFromStream } from "./real-executor.js";
 import type { PipelineIR, GateStage } from "../ir/schema.js";
 import { KernelService } from "../mcp/kernel.js";
 import { taskRegistry, type TerminationReason } from "./task-registry.js";
@@ -76,6 +77,15 @@ export interface RunnerOptions {
   // resumeFrom is expected to re-invoke; stages wire-reachable from it but
   // currently superseded are re-run by the retry machinery.
   resumeFrom?: string;
+  /**
+   * M-R5 — when resumeFrom names an agent stage that has a stored
+   * session_id from a prior attempt, the caller passes it here and
+   * the runner forwards it to the executor as
+   * ExecuteStageArgs.resumeSessionId. The executor then issues
+   * `options.resume` to the Claude Agent SDK so historical turns are
+   * not re-billed. When omitted, stage runs fresh.
+   */
+  resumeSessionId?: string;
   // Phase 4.5 Step 1 — per-task checkpoint config. When omitted,
   // defaults resolve to { enabled: true, workdir: process.cwd(),
   // maxDiffBytes: 5 MiB, timeouts: {5s, 10s, 10s} }. Set
@@ -920,6 +930,9 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       let executorDone = false;
       void (async () => {
         try {
+          const resumeForThisStage = resumeFieldsForStage(
+            opts, input.stageName, input.taskId,
+          );
           const result = await executor.executeStage({
             ir: opts.ir,
             stageName: input.stageName,
@@ -929,6 +942,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
             handlers: opts.handlers,
             portRuntime,
             signal: ac.signal,
+            ...resumeForThisStage,
           });
           if (result.status === "error") {
             stageErrors.push({ stage: input.stageName, message: result.error ?? "unspecified" });
@@ -1380,6 +1394,32 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       }
     });
   }
+}
+
+// M-R5: build the per-invocation resume fields the real executor
+// consumes. Only fires for the one stage named by opts.resumeFrom;
+// downstream stages run fresh so their attempts get their own
+// session_id even on a resumed pipeline.
+function resumeFieldsForStage(
+  opts: RunnerOptions,
+  stageName: string,
+  taskId: string,
+): { resumeSessionId?: string; priorNumTurns?: number } {
+  if (!opts.resumeSessionId || !opts.resumeFrom) return {};
+  if (stageName !== opts.resumeFrom) return {};
+  const row = opts.db.prepare(
+    `SELECT aed.agent_stream_json FROM agent_execution_details aed
+       JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
+      WHERE sa.task_id = ? AND sa.stage_name = ? AND aed.session_id = ?
+      ORDER BY aed.started_at DESC
+      LIMIT 1`,
+  ).get(taskId, stageName, opts.resumeSessionId) as
+    | { agent_stream_json: string | null }
+    | undefined;
+  return {
+    resumeSessionId: opts.resumeSessionId,
+    priorNumTurns: parseNumTurnsFromStream(row?.agent_stream_json ?? null),
+  };
 }
 
 // Local mirror of the compiler-side buildInitialPortValues. Having a
