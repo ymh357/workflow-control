@@ -107,6 +107,13 @@ interface SeedPortEntry {
 // clean.
 const EXTERNAL_STAGE = "__external__";
 
+// P7.4 follow-up: upper bound on a live-output buffer per stage. Long
+// runs (large code edits, multi-minute reasoning) can emit hundreds of
+// KB of text. Once exceeded we truncate from the head and prepend an
+// elision marker — the user still sees the latest output, DOM + React
+// state stay bounded.
+const LIVE_OUTPUT_CHAR_CAP = 50_000;
+
 // Compact visual classifier for a stage_error cause. Runner currently
 // emits two reasons: no_active_wire (topology — every inbound wire
 // resolved false or a producer never ran) and executor_failed (the
@@ -338,7 +345,18 @@ export default function KernelNextTaskPage() {
         if (d.stage === EXTERNAL_STAGE) break;
         setLiveOutputs((prev) => {
           const next = new Map(prev);
-          next.set(d.stage, (next.get(d.stage) ?? "") + d.textDelta);
+          const existing = next.get(d.stage) ?? "";
+          const joined = existing + d.textDelta;
+          // P7.4 follow-up: tail-biased buffer cap. Long-running stages
+          // can emit megabytes of text; keep only the most recent
+          // LIVE_OUTPUT_CHAR_CAP chars so the DOM <pre> node and the
+          // React state both stay bounded. When we drop the head, prefix
+          // the visible tail with an elision marker so the user knows
+          // earlier content existed.
+          const capped = joined.length > LIVE_OUTPUT_CHAR_CAP
+            ? `… [earlier output truncated] …\n${joined.slice(-LIVE_OUTPUT_CHAR_CAP)}`
+            : joined;
+          next.set(d.stage, capped);
           return next;
         });
         break;
