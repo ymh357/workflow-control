@@ -43,6 +43,7 @@ export default function ProposalsPage() {
 
   const refetch = useCallback(async (signal?: AbortSignal) => {
     try {
+      setError(null);
       const res = await fetch(`${API_BASE}/api/kernel/proposals`, { signal });
       const body = await res.json() as { ok: boolean; proposals: ProposalRow[] };
       setRows(body.ok ? body.proposals : []);
@@ -88,6 +89,7 @@ export default function ProposalsPage() {
       });
       return;
     }
+    setError(null);
     setPreviewLoading((prev) => ({ ...prev, [id]: true }));
     try {
       const res = await fetch(
@@ -119,19 +121,24 @@ export default function ProposalsPage() {
   }, [previews]);
 
   const mutateStatus = useCallback(async (id: string, endpoint: "approve" | "reject") => {
-    const res = await fetch(`${API_BASE}/api/kernel/proposals/${encodeURIComponent(id)}/${endpoint}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: endpoint === "reject" ? JSON.stringify({}) : "",
-    });
-    const body = await res.json() as { ok: boolean; diagnostics?: Array<{ message: string }> };
-    if (!res.ok || !body.ok) {
-      setError(body.diagnostics?.[0]?.message ?? `HTTP ${res.status}`);
-      return;
+    setError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/kernel/proposals/${encodeURIComponent(id)}/${endpoint}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: endpoint === "reject" ? JSON.stringify({}) : "",
+      });
+      const body = await res.json() as { ok: boolean; diagnostics?: Array<{ message: string }> };
+      if (!res.ok || !body.ok) {
+        setError(body.diagnostics?.[0]?.message ?? `HTTP ${res.status}`);
+        return;
+      }
+      setRows((prev) => (prev ?? []).map((r) =>
+        r.proposalId === id ? { ...r, status: endpoint === "approve" ? "approved" : "rejected" } : r,
+      ));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
     }
-    setRows((prev) => (prev ?? []).map((r) =>
-      r.proposalId === id ? { ...r, status: endpoint === "approve" ? "approved" : "rejected" } : r,
-    ));
   }, []);
 
   if (error && !rows) return <p className="p-6 font-mono text-red-600">Error: {error}</p>;
