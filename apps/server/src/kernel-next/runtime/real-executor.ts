@@ -436,7 +436,15 @@ export class RealStageExecutor implements StageExecutor {
             // Capture content + metadata that the adapter collapses.
             if (msg.type === "system" && msg.subtype === "init") {
               const sid = (msg as { session_id?: unknown }).session_id;
-              if (typeof sid === "string") capturedSessionId = sid;
+              if (typeof sid === "string") {
+                capturedSessionId = sid;
+                // M-R5: persist session_id to DB immediately, not at
+                // writer.close(). Mid-stage crash (SIGKILL between now
+                // and close) otherwise loses the id — defeating SDK
+                // session resume because orphan reconciler can't look
+                // up what sid to pass to options.resume.
+                writer.updateSessionId(sid);
+              }
             }
             if (msg.type === "assistant") {
               const blocks = msg.message?.content ?? [];

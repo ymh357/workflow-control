@@ -128,7 +128,11 @@ class ActiveWriter implements ExecutionRecordWriter {
     if (this.closed) return;
     this.sessionId = sessionId;
     this.dirtyMeta = true;
-    this.scheduleFlush();
+    // M-R5: flush synchronously so a subsequent SIGKILL/crash cannot
+    // lose the id. sessionId is the only piece of state that unlocks
+    // SDK session resume; we pay one extra SQLite write per stage
+    // attempt (once, at init) to make crash recovery actually work.
+    this.flushNow();
   }
 
   heartbeat(): void {

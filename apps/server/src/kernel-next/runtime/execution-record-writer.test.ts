@@ -229,6 +229,32 @@ describe("execution-record-writer", () => {
     expect(events[0].endedAt).toBeNull();
   });
 
+  it("updateSessionId flushes immediately so session_id survives crash", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    seedAttempt(db, "a-sid");
+    const w = openExecutionRecordWriter(db, {
+      attemptId: "a-sid", promptRef: "r", promptContentHash: "hash-1",
+      promptContent: "p", model: "m",
+    });
+    // Before: sessionId is null
+    const before = db.prepare(
+      "SELECT session_id FROM agent_execution_details WHERE attempt_id = ?",
+    ).get("a-sid") as { session_id: string | null };
+    expect(before.session_id).toBeNull();
+
+    // Call updateSessionId — MUST flush synchronously; we do NOT call
+    // __flushForTests between the update and the read. A crash (SIGKILL)
+    // between updateSessionId and writer.close would otherwise lose the id.
+    w.updateSessionId("sess-12345");
+
+    const after = db.prepare(
+      "SELECT session_id FROM agent_execution_details WHERE attempt_id = ?",
+    ).get("a-sid") as { session_id: string | null };
+    expect(after.session_id).toBe("sess-12345");
+    w.close({ terminationReason: "natural_completion" });
+  });
+
   it("heartbeat updates last_heartbeat_at without closing", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
