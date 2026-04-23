@@ -29,7 +29,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
 import { createActor, waitFor } from "xstate";
-import type { PortIR, AgentStage } from "../ir/schema.js";
+import type { PortIR, AgentStage, PipelineIR } from "../ir/schema.js";
 import type {
   ExecuteStageArgs,
   ExecuteStageResult,
@@ -166,7 +166,7 @@ export class RealStageExecutor implements StageExecutor {
     stage: AgentStage,
     isFinalAttempt: boolean,
   ): Promise<ExecuteStageResult> {
-    const { stageName, taskId, versionHash, portValues, portRuntime, fanoutElementIdx } = args;
+    const { ir, stageName, taskId, versionHash, portValues, portRuntime, fanoutElementIdx } = args;
     const failSilently = !isFinalAttempt;
 
     // 1. Start attempt. Forward fanoutElementIdx (B17 full) so fanout_element
@@ -225,7 +225,7 @@ export class RealStageExecutor implements StageExecutor {
     // 4b. System prompt append describing the stage contract — tool-call only.
     const systemPromptAppend = buildSystemPromptAppend(stage, userPrompt, inputs, {
       taskId, attemptId,
-    }, migrationHint);
+    }, migrationHint, ir);
 
     // 4. Run query() and consume stream. Output path is the MCP
     //    `write_port` tool (one call per declared output port). The final
@@ -695,6 +695,12 @@ export function buildSystemPromptAppend(
   inputs: Record<string, unknown>,
   ctx: { taskId: string; attemptId: string },
   migrationHint?: MigrationHint | null,
+  // P6-12: optional ir so read_port instructions point at the correct
+  // upstream stage that produced this input, not at the stage
+  // consuming it. When omitted (legacy callers / isolated tests), we
+  // fall back to stage.name — which is wrong for any cross-stage wire
+  // but preserves pre-fix behavior for existing tests.
+  ir?: PipelineIR,
 ): string {
   const inputPortLines = stage.inputs
     .map((p) => `  - ${p.name}: ${p.type}`)
@@ -706,10 +712,24 @@ export function buildSystemPromptAppend(
     resolvedPrompt.length > PROMPT_SUMMARY_CHAR_LIMIT
       ? resolvedPrompt.slice(0, PROMPT_SUMMARY_CHAR_LIMIT) + " [...]"
       : resolvedPrompt;
+  // Build a port-name -> source-stage map from ir.wires so
+  // formatInputLine can name the right upstream without reimplementing
+  // the lookup. External-source wires contribute no stage entry — for
+  // those the fallback to stage.name is still wrong but less common
+  // (externals are seeded once and typically small).
+  const inputSourceStage = new Map<string, string>();
+  if (ir) {
+    for (const w of ir.wires) {
+      if (w.to.stage !== stage.name) continue;
+      if (w.from.source !== "stage") continue;
+      inputSourceStage.set(w.to.port, w.from.stage);
+    }
+  }
   const inputDump = Object.keys(inputs).length === 0
     ? "  (no inputs)"
     : Object.entries(inputs)
-        .map(([k, v]) => formatInputLine(k, v, stage.name, ctx))
+        .map(([k, v]) =>
+          formatInputLine(k, v, inputSourceStage.get(k) ?? stage.name, ctx))
         .join("\n");
 
   // Per-port write_port call examples grounded in the actual IDs.

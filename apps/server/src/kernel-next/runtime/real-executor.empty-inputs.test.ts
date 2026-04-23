@@ -199,7 +199,7 @@ describe("real-executor: buildSystemPromptAppend size-aware input handling", () 
     expect(result).not.toContain("[large");
   });
 
-  it("replaces large port value with size summary + read_port instruction", () => {
+  it("replaces large port value with size summary + read_port instruction (no ir -> legacy stage.name fallback)", () => {
     const str = "x".repeat(5_000);
     const result = buildSystemPromptAppend(
       tinyStage,
@@ -209,12 +209,51 @@ describe("real-executor: buildSystemPromptAppend size-aware input handling", () 
     );
     // Summary line
     expect(result).toMatch(/- p \[large; \d+ chars as JSON; type: string\]/);
-    // read_port instruction with exact IDs
+    // Legacy path: when caller doesn't supply ir, we fall back to this
+    // stage's name. Tests that rely on this MUST pass ir to get the
+    // correct upstream source stage.
     expect(result).toContain(
       'Call mcp__kernel_next__read_port with { taskId: "task-A", stage: "s1", port: "p" }',
     );
     // Actual large content is NOT inlined
     expect(result).not.toContain(str);
+  });
+
+  it("P6-12: with ir supplied, read_port instruction points at the upstream source stage, not this stage", () => {
+    const upstreamStage: AgentStage = {
+      name: "upstream",
+      type: "agent",
+      inputs: [],
+      outputs: [{ name: "diffText", type: "string" }],
+      config: { promptRef: "p" },
+    };
+    const downstreamStage: AgentStage = {
+      name: "downstream",
+      type: "agent",
+      inputs: [{ name: "diffText", type: "string" }],
+      outputs: [{ name: "title", type: "string" }],
+      config: { promptRef: "p" },
+    };
+    const ir = {
+      name: "pair",
+      stages: [upstreamStage, downstreamStage],
+      wires: [
+        { from: { source: "stage" as const, stage: "upstream", port: "diffText" },
+          to: { stage: "downstream", port: "diffText" } },
+      ],
+    };
+    const str = "x".repeat(5_000);
+    const result = buildSystemPromptAppend(
+      downstreamStage,
+      "task",
+      { diffText: str },
+      { taskId: "t", attemptId: "a" },
+      null, // migrationHint
+      ir,
+    );
+    // Instruction must use `stage: "upstream"`, NOT `stage: "downstream"`.
+    expect(result).toContain('stage: "upstream"');
+    expect(result).not.toMatch(/stage: "downstream"[^"]*port: "diffText"/);
   });
 
   it("large object value reports type as object", () => {
