@@ -119,6 +119,28 @@ startPeriodicCleanup();
   installBuiltinPipelines();
 }
 
+// --- Resume orphan tasks ---
+// Scans for tasks without a task_finals row (runner crashed, graceful
+// shutdown, etc.). Each orphan is either resumed via startPipelineRun
+// or finalized (terminal-but-lost-finals) or failed (unresolvable).
+// Runs AFTER builtin seeding so the latest pipeline versions are in DB.
+{
+  const { bootResumability } = await import("./kernel-next/runtime/orphan-reconciler.js");
+  const { startPipelineRun } = await import("./kernel-next/runtime/start-pipeline-run.js");
+  const { kernelNextBroadcaster } = await import("./kernel-next/sse/singleton.js");
+  const res = await bootResumability({
+    db: getKernelNextDb(),
+    startPipelineRun: (inp) => startPipelineRun({
+      db: getKernelNextDb(),
+      broadcaster: kernelNextBroadcaster,
+      taskId: inp.taskId,
+      versionHash: inp.versionHash,
+      resumeFrom: inp.resumeFrom,
+    }),
+  });
+  logger.info(res, "resumability: boot scan complete");
+}
+
 // --- Middleware & Routes ---
 
 const app = new Hono();
