@@ -15,10 +15,23 @@ export interface AuditEntry {
   from_version?: string | null;
   to_version?: string | null;
   timestamp: number;
+  // Server also returns `finished_at` — when non-null the entry rendered
+  // a duration badge alongside the timestamp. Null means the migration /
+  // rollback never settled (interrupted, crashed).
+  finished_at?: number | null;
   proposal_id?: string | null;
   proposal_status?: string | null;
   rerun_from_stage?: string | null;
   diagnostic?: unknown;
+}
+
+function formatAuditDuration(startedAt: number, finishedAt: number): string {
+  const ms = finishedAt - startedAt;
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.floor((ms % 60_000) / 1000);
+  return `${m}m${s}s`;
 }
 
 interface AuditTimelineProps {
@@ -60,6 +73,11 @@ export function AuditTimeline({ entries }: AuditTimelineProps) {
                 <span className="text-xs text-gray-500">
                   {new Date(e.timestamp).toLocaleTimeString()}
                 </span>
+                {typeof e.finished_at === "number" && (
+                  <span className="text-xs text-gray-500" title="Migration duration">
+                    &middot; {formatAuditDuration(e.timestamp, e.finished_at)}
+                  </span>
+                )}
                 <span className="text-xs text-gray-700">
                   actor: <code>{e.actor}</code>
                 </span>
