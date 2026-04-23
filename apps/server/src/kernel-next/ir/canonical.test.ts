@@ -90,6 +90,32 @@ describe("canonical IR", () => {
     expect(versionHash(base)).not.toBe(versionHash(withFanout));
   });
 
+  it("explicit fanout.concurrency value affects versionHash", () => {
+    const s1: PipelineIR["stages"][number] = {
+      name: "A",
+      type: "agent",
+      inputs: [{ name: "x", type: "number" }],
+      outputs: [{ name: "y", type: "string" }],
+      config: { promptRef: "p" },
+      fanout: { input: "x" },
+    };
+    const withFanout: PipelineIR = {
+      ...base,
+      stages: [s1, base.stages[1]!],
+    };
+    const withConcurrency: PipelineIR = {
+      ...base,
+      stages: [
+        {
+          ...s1,
+          fanout: { input: "x", concurrency: 5 },
+        },
+        base.stages[1]!,
+      ],
+    };
+    expect(versionHash(withFanout)).not.toBe(versionHash(withConcurrency));
+  });
+
   it("absent guard is not serialized (hash stable after undefined-stripping)", () => {
     const j1 = canonicalJSON(base);
     // baseline wire has no guard; canonical JSON should not contain "guard"
