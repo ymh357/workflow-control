@@ -1,7 +1,7 @@
 # Phase 6 Session 4 — Handoff
 
 > **Date**: 2026-04-23
-> **Session head**: commit `e3b9229`
+> **Session head**: commit `a56c148`
 > **Previous handoff**: `docs/superpowers/plans/2026-04-23-phase-6-session-3-handoff.md`（上个 session 头 `4caa76f` / 尾 `e39ff7b`）
 
 ---
@@ -82,11 +82,15 @@ Fix：adapter 接受三种形式（`tool_use_id` → `toolUseId` → 回退 `id`
 
 smoke-test 跑完 → greet/echoBack 的 tool_calls_json 验证：`result = [{"type":"text","text":"{\"ok\":true}"}]`，`finishedAt` 时间戳 populated。Observability 端到端修复。
 
+### 2.8 Writer dogfood + debt O（run #22 + commit `a56c148`）
+
+Writer 用合理 synthetic inputs 跑通：199 字 deliverable, 5 out ports 全写, tier labels compliance 100%, cost $0.1036, 9246 tokens out。**副发现**：每个 `write_port` 被调两次——第一次用 prompt 暗示的 `mcp__kernel_next__` 名（SDK 不存在 → `<tool_use_error>`），第二次用真实 `mcp____kernel_next____` 名（成功）。SDK wrap server name `__kernel_next__` 用 `mcp__..__` 定界符 → 4 下划线每侧。Fix 分布在 5 个源文件 + 1 个 builtin prompt（persist.md），修 13 处 tool-name 拼写。persist.md 改动会使 PG builtin versionHash 变化（下次启动 auto-seed 新 hash）。
+
 ## 3. 当前状态
 
 ```
 Branch: main
-Head:   e3b9229（docs 未 commit，待本 session 收尾 commit）
+Head:   a56c148（docs 未 commit，待本 session 收尾 commit）
 Status: 2 docs modified
 
 Server tests: 1493 pass / 4 skipped / tsc 0
@@ -94,9 +98,9 @@ Web tests:    17 pass / tsc 0
 ```
 
 **M 指标快照**（`docs/phase6-usage-log.md`）：
-- **M1**: 8 数据点（含 run #21 tool_result 验证）
-- **M2**: 0 朋友在用；**Resumability + AI-pipeline DB 注册 + observability 均完整**
-- **M3**: 14/21 = 67%；**post-audit 10/10 = 100%**
+- **M1**: 9 数据点（含 run #22 Writer）
+- **M2**: 0 朋友在用；**Resumability + AI-pipeline DB 注册 + observability + 4/4 builtin coverage 均完整**
+- **M3**: 15/22 = 68%；**post-audit 11/11 = 100%**
 - **M4**: 5 / 0 / 0
 
 ## 4. 架构债清零
@@ -111,6 +115,7 @@ Web tests:    17 pass / tsc 0
 - 债 M（MCP start_pipeline_generator handler 未透传 tscPath）: ✅ `83daf77`
 - 债 L/M 契约加固（validator 自 resolve tscPath 兜底）: ✅ `c06d21d`
 - 债 N（sdk-adapter 读 `id` 而非 `tool_use_id`，tool_calls_json.result 永 null）: ✅ `e3b9229`
+- 债 O（prompts 用 `mcp__kernel_next__` 而非 `mcp____kernel_next____` 真实 SDK 名）: ✅ `a56c148`
 
 ## 5. 完整未完成清单
 
@@ -160,16 +165,19 @@ lsof -nP -iTCP:3001 | head -3
 
 ## 7. 下一步候选
 
-按"合理正确优先" + 实际价值。**本 session 已完成原候选 #2（tool_calls_json）和 #3（tscPath 契约）**。剩余：
+**本 session 已完成**原候选 1-3 + debt O：
+- #2 tool_calls_json（debt N） → `e3b9229`
+- #3 tscPath 契约加固 → `c06d21d`
+- #1 Writer dogfood → run #22 成功 + 副发现 debt O fix `a56c148`
 
-1. **Tech Research Writer builtin dogfood**——补 builtin coverage。但 Writer 是 13-externalInputs single-agent pipeline，期望 `.workflow/outline-*.md` + 多个 `research-*.md` 文件，独立 dogfood 需要先造合理 inputs 或编排 Collector→Writer 链。工作量中，价值中
-2. **FAILED sentinel 清理**：run #19 persisting agent 首次 submit 失败后写 FAILED sentinel 到 ports。现在根因修完（tscPath + tool_use_id），该 defensive code 永不触发。若未来真失败，prompt 层规则仍会写 FAILED——考虑是否改 prompt 让 agent 直接 throw 让 retry 机制 handle
-3. **deployment 便利化**（M2 外部阻塞）—— onboarding 最后一公里。非 autonomous
-4. **朋友邀请**——真实 M2 测试。非 autonomous
+剩余：
 
-**autonomous 空间越来越小**。架构债 A-N 全清。剩的都是 coverage/onboarding，不再是 architectural bug。
+1. **FAILED sentinel 清理**：run #19 persisting agent 首次 submit 失败后写 FAILED sentinel 到 ports。现在根因修完（tscPath + tool_use_id + MCP tool name），该 defensive code 永不触发。若未来真失败，prompt 层规则仍会写 FAILED——考虑是否改 prompt 让 agent 直接 throw 让 retry 机制 handle
+2. **deployment 便利化**（M2 外部阻塞）—— onboarding 最后一公里。非 autonomous
+3. **朋友邀请**——真实 M2 测试。非 autonomous
+4. **run #22 验证 debt O fix**：下次 PG run 应该观察到 write_port 不再 double-call（节省 ~5 tool calls/run）
 
-自决：若用户继续要求 autonomous 推进，推 **#1 Writer dogfood**——造最小合理 inputs（1-2 个 dummy outline + project/verification facts）跑 Writer 看能否 produce deliverable，即使失败也能暴露新 bug。
+**autonomous 空间见底**。架构债 A-O 全清。**4 个 builtin coverage 全部 dogfood**。剩的都是 onboarding/外部动作，不再是 architectural bug。
 
 ## 8. 参考文档
 
