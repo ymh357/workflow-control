@@ -305,6 +305,20 @@ describe("REST /api/kernel/proposals", () => {
     expect(body.diagnostics[0]!.code).toBe("PATCH_APPLY_ERROR");
   });
 
+  it("GET /api/kernel/proposals enriches rows with pipelineName", async () => {
+    seedProposal(db, "ai:test-enrich");
+
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/proposals"));
+    const body = await res.json() as {
+      ok: boolean;
+      proposals: Array<{ proposalId: string; pipelineName: string }>;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.proposals).toHaveLength(1);
+    expect(body.proposals[0]!.pipelineName).toBe(diamondIR().name);
+  });
+
   it("POST /api/kernel/proposals returns 400 NO_OP_PROPOSAL for empty patch + empty prompts", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
     const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });

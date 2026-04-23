@@ -114,6 +114,10 @@ export interface ProposalRow {
   // opted into migration; null/"none" otherwise.
   rerunFrom: string | null;
   migrateRunning: "all" | "none" | string[];
+  // Propose-UI (2026-04-23) — UI needs pipeline identity per-row so
+  // the proposals page can group/display without round-tripping to
+  // /api/kernel/pipelines. Server-side JOIN from base_version.
+  pipelineName: string;
 }
 
 export type ApprovalResult =
@@ -1346,16 +1350,21 @@ export class KernelService {
   listProposals(filter: { status?: ProposalStatus } = {}): ProposalRow[] {
     const rows = filter.status
       ? this.db.prepare(
-          `SELECT proposal_id, base_version, proposed_version, actor, status,
-                  diagnostic_json, created_at, rerun_from, migrate_running
-           FROM pipeline_proposals WHERE status = ?
-           ORDER BY created_at DESC, rowid DESC`,
+          `SELECT pp.proposal_id, pp.base_version, pp.proposed_version, pp.actor,
+                  pp.status, pp.diagnostic_json, pp.created_at, pp.rerun_from,
+                  pp.migrate_running, pv.pipeline_name
+           FROM pipeline_proposals pp
+           JOIN pipeline_versions pv ON pv.version_hash = pp.base_version
+           WHERE pp.status = ?
+           ORDER BY pp.created_at DESC, pp.rowid DESC`,
         ).all(filter.status)
       : this.db.prepare(
-          `SELECT proposal_id, base_version, proposed_version, actor, status,
-                  diagnostic_json, created_at, rerun_from, migrate_running
-           FROM pipeline_proposals
-           ORDER BY created_at DESC, rowid DESC`,
+          `SELECT pp.proposal_id, pp.base_version, pp.proposed_version, pp.actor,
+                  pp.status, pp.diagnostic_json, pp.created_at, pp.rerun_from,
+                  pp.migrate_running, pv.pipeline_name
+           FROM pipeline_proposals pp
+           JOIN pipeline_versions pv ON pv.version_hash = pp.base_version
+           ORDER BY pp.created_at DESC, pp.rowid DESC`,
         ).all();
     return (rows as Array<{
       proposal_id: string;
@@ -1367,6 +1376,7 @@ export class KernelService {
       created_at: number;
       rerun_from: string | null;
       migrate_running: string | null;
+      pipeline_name: string;
     }>).map((r) => ({
       proposalId: r.proposal_id,
       baseVersion: r.base_version,
@@ -1377,6 +1387,7 @@ export class KernelService {
       createdAt: r.created_at,
       rerunFrom: r.rerun_from,
       migrateRunning: parseMigrateRunning(r.migrate_running),
+      pipelineName: r.pipeline_name,
     }));
   }
 
