@@ -21,14 +21,17 @@
 | 6 | 2026-04-23 | P6-8 修复后再跑 pipeline-generator #1 | Pipeline Generator | `Pipeline Generator-1776882328721-1dcf0df9` | **stuck after awaitingConfirm** | 60s 后 API 说 completed 但只跑 3 stage | P6-10 | gate approve 后 downstream genSkeleton 从未激活；task_finals 未写 |
 | 7 | 2026-04-23 | P6-8 修复后再跑 pipeline-generator #2 | Pipeline Generator | `Pipeline Generator-1776882481413-463158c6` | 同上 | 75s | P6-10 | 同一症状复现；tsx watch 可能是环境元凶 |
 | 8 | 2026-04-23 | **B5 Confirm UI 端到端验证**（API 路径，无浏览器手测）| Pipeline Generator | `Pipeline Generator-1776908172804-66cc82d1` | **gate context API 正确返回全 16 port**；approve 流转到 genSkeleton | analyzing 22s → gate → approve 即时转发 | — | P6-7 resolved：`GET /api/kernel/gates/:id/context` 返回 `upstreams[0].stage=analyzing` 和 16 个 outputs（summary/stageDesign/dataFlowSummary 等），answerOptions=["approve","reject"]；404 unknown gate 验过。UI 层由 GateCard + page.tsx 两个 useEffect 接入 |
+| 9 | 2026-04-23 | Phase 6 Path 3: dogfood pr-description-generator | pr-description-generator | `PR Description Generator-1776909721698-d441911f` | completed ✅ | 229s, $0.23 | — | 非 watch 模式跑通。title 准确、summary 3 bullets OK、notable changes 有 2 个小编造（`gates()` 应为 `getGateContext()`；load-builtin-pipeline 只改 test）。**比手写快 ~5x**。M1 首个真实数据点 |
+| 10 | 2026-04-23 | **P6-10 诊断：非 watch 下重跑 Pipeline Generator**（假说验证） | Pipeline Generator | `Pipeline Generator-1776909980634-8dcfaf27` | 仍 stuck after awaitingConfirm | 48s API 说 completed（fallback 派生） | P6-10 根因确认 | **watch 不是元凶**。真 bug：XState v5 下 gate 自身 region 的 GATE_ANSWERED transition fire 后消耗 event，root-level on.GATE_ANSWERED 不再运行 → gateAuthorizedTargets 永不更新 → downstream picked target 的 allInboundDelivered 返回 false → hang |
+| 11 | 2026-04-23 | **P6-10 修后再跑 Pipeline Generator** | Pipeline Generator | `Pipeline Generator-1776911258984-66db2597` | completed ✅ 5 stages 全跑 | 241s, $0.612 | — | analyzing 40s → gate → approve → genSkeleton 25s → genPrompts 103s → persisting 82s。生成 pipeline `markdown-table-of-contents-generator` 的 IR schema 完整（3 stages / 3 wires / externalInputs 正确）。P6-10 真修了。M3 分数大幅跳升 |
 
 ## 成熟度快照
 
-- **M3 分子/分母**: 3 / 7（run #2,3,4 真 completed；run #1,5,6,7 API 说 completed 但实际未全跑）
-- **真实成功率（API completed 中真正完整跑完的）**: 3/7 ≈ 43%，远低于 M3 目标 >90%
+- **M3 分子/分母**: 5 / 11（run #2,3,4,9,11 真 completed；run #1,5,6,7,10 API completed 但未全跑；#8 是 B5 API 验证）
+- **真实成功率**: 5/11 = **45%**。P6-10 修前老 runs 的 stuck 可追溯到该 bug；修后新跑（#11）完整成功
 - **M4 热更新总数 / reject + rollback 次数**: 0 / 0
-- **覆盖的 builtin**: 3 / 4 （✅ `smoke-test`, ✅ `Tech Research Collector`, ✅ `Pipeline Generator`（但不稳定）, `Tech Research Writer` pending）
-- **AI-generated pipeline 实际可用率**: 0 / 1（产出了 pipeline_version 但 IR 是空壳）
+- **覆盖的 builtin + generated**: 4 ✅ （`smoke-test`, `Tech Research Collector`, `Pipeline Generator`, `pr-description-generator`） + 1 AI-generated IR 完整（`markdown-table-of-contents-generator`，未运行）; 1 pending: `Tech Research Writer`
+- **AI-generated pipeline schema 可用率**: 1 / 2（run #4 空壳；run #11 IR 结构完整过 validator）
 
 ## 结论：B5 / B12 决策（基于实际使用数据）
 
@@ -69,13 +72,12 @@
 **修复**：待设计（需要一张 task_finals 表或等价的权威终态信号）
 **回归测试**：smoke-test.linear-two-stage.test.ts（已证明 mock runPipeline 下两 stage 都能跑，所以 bug 只在"runPipeline 异常退出后 status 端点"路径）
 
-### P6-10 — gate approve 后 downstream stage 不激活（生产环境复现）
+### P6-10 — gate approve 后 downstream stage 不激活 ✅ 已修 (2026-04-23)
 
-**现象**：run #6, #7 在 pipeline-generator 下 gate approve 后 `genSkeleton` 从未 executed。`task_finals` 也没写——runner.finally 未达成，进程应还活着但卡住。
-**根因假说**（未确认）：`pnpm dev` = `tsx watch` 检测到代码变化触发 reload → node process 重启 → 内存 `taskRegistry` 清空 → 原 runner 的 dispatcher 句柄丢失 → HTTP /gates/:id/answer 路由在新 process 里 `taskRegistry.get()` 返回 undefined → `dispatcher?.send(GATE_ANSWERED)` 静默丢弃 → machine 永远卡在 gate executing。
-**代码层验证**：`gate-resume-downstream.test.ts` 在 mock runPipeline + 同进程 auto-approve 下 gate 路径正常完成。排除了编译层和 runner 层 bug。
-**确认路径**：用 `pnpm start` (non-watch) 重跑 pipeline-generator，看是否稳定完成。如果稳定 → 确认是 tsx watch reload 的环境 bug，**真实部署不用 tsx watch 所以非阻塞**。
-**如果是跨进程 reload 也要修**：runner 跨 process 不可恢复（无 checkpoint 指向"曾经等过某 gateId"）——这本是 B 系列的 resumption 问题，需要把 pending gate + dispatcher hook 从内存搬到 DB，restart 时 rehydrate runner。这是本来的 Phase 5C/5D 范围但没做。**或**：接受"tsx watch 环境下 reload 会让任务悬挂"但在生产 non-watch 下不 reload 所以 OK。
+**现象**：run #6, #7, #10 在 pipeline-generator 下 gate approve 后 `genSkeleton` 从未 executed。
+**真根因**（非 tsx watch 环境——已排除）：XState v5 下，gate 自身 region 的 `executingBody.on.GATE_ANSWERED` transition（guard=gateAnsweredIsMe）fire 后**消耗 event**。Root-level `on.GATE_ANSWERED` 的 assign 不再运行（最小 XState probe 确认）→ `gateAuthorizedTargets` 永不更新。上游 stage 仍在异步写 output ports 时 gate 已被 approve 的**典型 race**：downstream picked target 的 `allInboundDelivered` 短路于 `!context.gateAuthorizedTargets.includes(stage)` 为 false，即使之后所有 inbound wires 都 settle 也激活不了，machine hang。
+**修复**：gate region 的 GATE_ANSWERED transition action **合并** root-level 的 `gateAuthorizedTargets/gateSkippedTargets` assign。因为 gateAnsweredIsMe 保证是自己的 answer，安全。commit 7d34d81。
+**回归**：`gate-race-downstream.test.ts` 用自定义 StageExecutor 模拟分阶段 writePort + 外部 approve 信号；pre-fix timeout 15s，post-fix 52ms。生产验证 run #11: Pipeline Generator 5 stages 全跑 241s / $0.612，生成可用 IR。
 
 ### P6-7 — Gate question 空洞无信息 ✅ 已修 (via B5)
 
