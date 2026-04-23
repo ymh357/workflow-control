@@ -188,6 +188,37 @@ export type TaskStatusReport =
   | { ok: true; status: "running" | "completed" | "failed"; taskId: string }
   | { ok: true; status: "gated"; taskId: string; pending: PendingGate[] };
 
+/**
+ * B5: full decision payload for a single gate. Returned by
+ * KernelService.getGateContext and consumed by the dashboard's
+ * GateCard. `upstreams[i].outputs` holds every latest successful
+ * output port of a stage that feeds this gate via a wire with
+ * `from.source === 'stage'`. External-sourced wires contribute no
+ * upstream entry (they render in the page's existing Seed block).
+ */
+export interface GateContext {
+  gateId: string;
+  taskId: string;
+  stageName: string;
+  question: { text: string; options?: string[] };
+  createdAt: number;
+  answeredAt: number | null;
+  answer: string | null;
+  answerOptions: string[];
+  upstreams: Array<{
+    stage: string;
+    outputs: Array<{
+      port: string;
+      value: unknown;
+      writtenAt: number;
+    }>;
+  }>;
+}
+
+export type GateContextResult =
+  | { ok: true; context: GateContext }
+  | { ok: false; diagnostics: Diagnostic[] };
+
 export interface KernelServiceOptions {
   /** Override tsc binary path for tests. */
   tscPath?: string;
