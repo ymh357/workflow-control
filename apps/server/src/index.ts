@@ -22,6 +22,8 @@ import { mkdirSync } from "node:fs";
 import { writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { acquireServerLock, releaseServerLock } from "./kernel-next/runtime/server-lock.js";
+import { reconcileRunningAttempts } from "./kernel-next/runtime/graceful-shutdown.js";
+import { getKernelNextDb } from "./lib/kernel-next-db.js";
 
 // --- Global error handlers: prevent server crash from async/XState errors ---
 process.on("uncaughtException", (err) => {
@@ -79,6 +81,32 @@ if (!lockResult.ok) {
 }
 const lockHandle = lockResult.release;
 process.on("exit", () => { releaseServerLock(lockHandle); });
+
+// --- Graceful shutdown handler (SIGTERM/SIGINT) ---
+// Transitions every running stage_attempt belonging to an unfinalized
+// task to 'superseded' + 'interrupted' so the next boot's orphan
+// reconciler can pick them up cleanly. Does NOT write task_finals —
+// the task is not terminal, just mid-flight between server lifetimes.
+let shuttingDown = false;
+async function gracefulExit(signal: NodeJS.Signals): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logger.info({ signal }, "graceful shutdown: reconciling in-flight attempts");
+  try {
+    const db = getKernelNextDb();
+    const taskIds = (db.prepare(
+      `SELECT DISTINCT task_id FROM stage_attempts
+        WHERE status='running' AND task_id NOT IN (SELECT task_id FROM task_finals)`,
+    ).all() as Array<{ task_id: string }>).map((r) => r.task_id);
+    const n = reconcileRunningAttempts(db, taskIds);
+    logger.info({ signal, reconciled: n }, "graceful shutdown: complete");
+  } catch (err) {
+    logger.error({ err }, "graceful shutdown: reconcile failed");
+  }
+  process.exit(0);
+}
+process.on("SIGTERM", () => { void gracefulExit("SIGTERM"); });
+process.on("SIGINT", () => { void gracefulExit("SIGINT"); });
 
 // --- Initialize SQLite database and clean up old data ---
 getDb();
