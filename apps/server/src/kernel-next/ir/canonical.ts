@@ -99,7 +99,7 @@ function canonicalizeAgentConfig(cfg: AgentStage["config"]): CanonicalValue {
           envKeys: [...m.envKeys].sort(codepointCompare),
           name: m.name,
         };
-        if (m.env) {
+        if (m.env && Object.keys(m.env).length > 0) {
           const sortedEnv: Record<string, string> = {};
           for (const k of Object.keys(m.env).sort(codepointCompare)) {
             sortedEnv[k] = m.env[k]!;

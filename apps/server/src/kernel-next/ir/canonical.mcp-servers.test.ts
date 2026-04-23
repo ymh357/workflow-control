@@ -144,4 +144,85 @@ describe("canonical: mcpServers participate in canonical form", () => {
     // DIFFERENT — args positional, order matters
     expect(canonicalJSON(irA)).not.toBe(canonicalJSON(irB));
   });
+
+  it("env:{} and env:undefined produce identical canonical JSON (empty == absent)", () => {
+    const irA: PipelineIR = {
+      name: "p",
+      stages: [{
+        name: "s",
+        type: "agent",
+        inputs: [],
+        outputs: [{ name: "o", type: "string" }],
+        config: {
+          promptRef: "p",
+          mcpServers: [{ name: "x", command: "c", args: [], envKeys: [] }],
+        },
+      }],
+      wires: [],
+      externalInputs: [],
+    };
+    const irB: PipelineIR = {
+      ...irA,
+      stages: [{
+        ...irA.stages[0]!,
+        type: "agent",
+        config: {
+          promptRef: "p",
+          mcpServers: [{ name: "x", command: "c", args: [], env: {}, envKeys: [] }],
+        },
+      }],
+    };
+    expect(canonicalJSON(irA)).toBe(canonicalJSON(irB));
+  });
+
+  it("different env key order produces identical canonical JSON (env keys sorted)", () => {
+    const make = (env: Record<string, string>): PipelineIR => ({
+      name: "p",
+      stages: [{
+        name: "s",
+        type: "agent",
+        inputs: [],
+        outputs: [{ name: "o", type: "string" }],
+        config: {
+          promptRef: "p",
+          mcpServers: [{ name: "x", command: "c", args: [], env, envKeys: Object.keys(env) }],
+        },
+      }],
+      wires: [],
+      externalInputs: [],
+    });
+    const irA = make({ B: "2", A: "1" });
+    const irB = make({ A: "1", B: "2" });
+    expect(canonicalJSON(irA)).toBe(canonicalJSON(irB));
+  });
+
+  it("env content affects canonical JSON (present vs absent differ)", () => {
+    const base: PipelineIR = {
+      name: "p",
+      stages: [{
+        name: "s",
+        type: "agent",
+        inputs: [],
+        outputs: [{ name: "o", type: "string" }],
+        config: {
+          promptRef: "p",
+          mcpServers: [{ name: "x", command: "c", args: [], envKeys: ["K"] }],
+        },
+      }],
+      wires: [],
+      externalInputs: [],
+    };
+    const withEnv: PipelineIR = {
+      ...base,
+      stages: [{
+        ...base.stages[0]!,
+        type: "agent",
+        config: {
+          promptRef: "p",
+          mcpServers: [{ name: "x", command: "c", args: [], env: { K: "v" }, envKeys: ["K"] }],
+        },
+      }],
+    };
+    expect(canonicalJSON(base)).not.toBe(canonicalJSON(withEnv));
+  });
 });
