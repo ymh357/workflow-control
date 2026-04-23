@@ -45,7 +45,7 @@
         },
         {
           "name": "recommendedMcps",
-          "type": "string[]"
+          "type": "object[]"
         },
         {
           "name": "recommendedSkills",
@@ -156,7 +156,7 @@
         },
         {
           "name": "recommendedMcps",
-          "type": "string[]"
+          "type": "object[]"
         },
         {
           "name": "recommendedSkills",
@@ -243,7 +243,7 @@
         },
         {
           "name": "recommendedMcps",
-          "type": "string[]"
+          "type": "object[]"
         },
         {
           "name": "recommendedSkills",
@@ -334,7 +334,7 @@
         },
         {
           "name": "recommendedMcps",
-          "type": "string[]"
+          "type": "object[]"
         },
         {
           "name": "recommendedSkills",
@@ -1015,8 +1015,8 @@
       }
     },
     "analyzing.recommendedMcps": {
-      "type": "string[]",
-      "description": "recommendedMcps emitted by analyzing stage.",
+      "type": "object[]",
+      "description": "Structured MCP server declarations emitted by analyzing stage (name/command/args/env/envKeys).",
       "produced_by": {
         "stage": "analyzing",
         "port": "recommendedMcps"

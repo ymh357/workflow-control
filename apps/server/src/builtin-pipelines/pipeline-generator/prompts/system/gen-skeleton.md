@@ -195,7 +195,7 @@ If any check fails, fix or emit diagnostics in your own thinking and try again b
 
 ## Wiring `recommendedMcps` into agent stages
 
-After producing each agent stage, determine which MCPs from `analysis.recommendedMcps` it needs (read the stage's `Purpose` / `Inputs` / `Outputs` alongside the analysis' `needsMcps` or equivalent signal). Attach that subset to the stage's `config.mcpServers`:
+After producing each agent stage, determine which MCPs from the `recommendedMcps` input port it needs (read the stage's `Purpose` / `Inputs` / `Outputs` against the capability each MCP provides). Attach that subset to the stage's `config.mcpServers`:
 
 ```json
 {
@@ -220,7 +220,7 @@ After producing each agent stage, determine which MCPs from `analysis.recommende
 
 Rules:
 - Omit `mcpServers` entirely when a stage needs no external MCPs (do not emit an empty array).
-- Re-use the exact object shape from `analysis.recommendedMcps[i]`; do not mutate server definitions per stage. If two stages use the same server (same `name`), both attach the SAME JSON subtree.
+- Re-use the exact object shape from `recommendedMcps[i]`; do not mutate server definitions per stage. If two stages use the same server (same `name`), both attach the SAME JSON subtree.
 - The user supplies each server's `envKeys` at `run_pipeline` time via the `envValues` argument.
 - Do NOT emit `mcpServers` entries with `name` matching `__*__` (reserved).
 
