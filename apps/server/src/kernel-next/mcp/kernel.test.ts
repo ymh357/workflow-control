@@ -1096,3 +1096,130 @@ describe("KernelService — Stage 5A updateRegistryPipeline", () => {
     }
   });
 });
+
+describe("KernelService.getGateContext — B5", () => {
+  // Helper: pipeline with one 3-output upstream agent `A`, one gate
+  // `G` fed by A.x, and a rollback route so `_default` filtering and
+  // answerOptions both get exercised.
+  function gateCtxIR() {
+    return {
+      name: "ctx-test",
+      stages: [
+        {
+          name: "A", type: "agent" as const,
+          inputs: [],
+          outputs: [
+            { name: "x", type: "number" as const },
+            { name: "summary", type: "string" as const },
+            { name: "items", type: "string[]" as const },
+          ],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "G", type: "gate" as const,
+          inputs: [{ name: "__gate_signal", type: "unknown" as const }],
+          outputs: [],
+          config: {
+            question: { text: "Continue?", options: ["approve", "reject"] },
+            routing: {
+              routes: { approve: "done", reject: "A", _default: "done" },
+            },
+          },
+        },
+        {
+          name: "done", type: "agent" as const,
+          inputs: [{ name: "ack", type: "unknown" as const }],
+          outputs: [],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage" as const, stage: "A", port: "x" },
+          to: { stage: "G", port: "__gate_signal" } },
+      ],
+    };
+  }
+
+  function seedUpstreamOutputs(
+    db: DatabaseSync,
+    taskId: string,
+    versionHash: string,
+  ): void {
+    const attemptId = "a-" + Math.random().toString(36).slice(2, 10);
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+        started_at, ended_at, status, kind)
+       VALUES (?, ?, ?, 'A', 1, ?, ?, 'success', 'regular')`,
+    ).run(attemptId, taskId, versionHash, now - 100, now - 50);
+    const rows: Array<[string, unknown]> = [
+      ["x", 42],
+      ["summary", "hello world"],
+      ["items", ["a", "b", "c"]],
+    ];
+    for (const [port, value] of rows) {
+      db.prepare(
+        `INSERT INTO port_values
+         (value_id, attempt_id, stage_name, port_name, direction,
+          value_json, written_at)
+         VALUES (?, ?, 'A', ?, 'out', ?, ?)`,
+      ).run(
+        "v-" + Math.random().toString(36).slice(2, 10),
+        attemptId, port, JSON.stringify(value), now - 50,
+      );
+    }
+  }
+
+  function openGateAttempt(
+    db: DatabaseSync,
+    taskId: string,
+    versionHash: string,
+  ): string {
+    const attemptId = "ga-" + Math.random().toString(36).slice(2, 10);
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+        started_at, status, kind)
+       VALUES (?, ?, ?, 'G', 1, ?, 'running', 'regular')`,
+    ).run(attemptId, taskId, versionHash, Date.now());
+    return attemptId;
+  }
+
+  it("returns question + answerOptions (minus _default) + upstream outputs", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      initKernelNextSchema(db);
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const submit = svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
+      if (!submit.ok) throw new Error("submit failed: " + JSON.stringify(submit.diagnostics));
+
+      seedUpstreamOutputs(db, "t1", submit.versionHash);
+      const gateAttempt = openGateAttempt(db, "t1", submit.versionHash);
+      const { gateId } = svc.createGate({
+        taskId: "t1", stageName: "G", attemptId: gateAttempt,
+        question: { text: "Continue?", options: ["approve", "reject"] },
+      });
+
+      const r = svc.getGateContext(gateId);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      const ctx = r.context;
+      expect(ctx.gateId).toBe(gateId);
+      expect(ctx.taskId).toBe("t1");
+      expect(ctx.stageName).toBe("G");
+      expect(ctx.question).toEqual({ text: "Continue?", options: ["approve", "reject"] });
+      expect(ctx.answer).toBeNull();
+      expect(ctx.answeredAt).toBeNull();
+      expect(ctx.answerOptions.sort()).toEqual(["approve", "reject"]);
+      expect(ctx.upstreams).toHaveLength(1);
+      expect(ctx.upstreams[0]!.stage).toBe("A");
+      expect(ctx.upstreams[0]!.outputs.map((o) => o.port)).toEqual(["items", "summary", "x"]);
+      expect(ctx.upstreams[0]!.outputs.find((o) => o.port === "x")!.value).toBe(42);
+      expect(ctx.upstreams[0]!.outputs.find((o) => o.port === "summary")!.value).toBe("hello world");
+      expect(ctx.upstreams[0]!.outputs.find((o) => o.port === "items")!.value).toEqual(["a", "b", "c"]);
+    } finally {
+      db.close();
+    }
+  });
+});
