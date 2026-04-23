@@ -20,6 +20,7 @@ import { useParams } from "next/navigation";
 import { GateCard, type GateContextResponse } from "../../../components/gate-card";
 import { DiagnosticsPanel, type Diagnostic } from "../../../components/diagnostics-panel";
 import { AuditTimeline, type AuditEntry } from "../../../components/audit-timeline";
+import { DiffViewer } from "../../../components/diff-viewer";
 
 // Payload shape for the `diagnostics_emitted` SSE event. Kept local
 // (rather than imported from server) so the web app does not reach
@@ -155,6 +156,11 @@ export default function KernelNextTaskPage() {
   const [cost, setCost] = useState<TaskCostUpdatePayload | null>(null);
   const [attempts, setAttempts] = useState<AttemptRow[]>([]);
   const [expandedStage, setExpandedStage] = useState<string | null>(null);
+  // P6.4 / D27 — per-attempt worktree diffs. Keyed by attempt_id.
+  // absent key = not yet requested; null value = loading; object = loaded.
+  const [attemptDiffs, setAttemptDiffs] = useState<
+    Record<string, { diff: string; beforeSha: string | null; afterSha: string | null } | null>
+  >({});
   // P6.3 / D26 — hot-update audit trail. Fetched on mount and when the
   // task reaches a terminal state (task_state / run_final). There is no
   // dedicated hot_update SSE event today, so mid-run migrations only
@@ -192,6 +198,40 @@ export default function KernelNextTaskPage() {
       /* ignore — next event or manual reload retries */
     }
   }, [taskId]);
+
+  // P6.4 / D27 — lazy-load a single attempt's worktree diff. Sets null
+  // (loading) synchronously, then resolves to the diff object or removes
+  // the key on failure so a retry can be triggered.
+  const loadDiff = useCallback(async (attemptId: string): Promise<void> => {
+    setAttemptDiffs((prev) => ({ ...prev, [attemptId]: null }));
+    try {
+      const r = await fetch(
+        `${API_BASE}/api/kernel/attempts/${encodeURIComponent(attemptId)}/diff`,
+      );
+      if (r.ok) {
+        const body = await r.json() as {
+          ok: boolean;
+          diff: string;
+          before_sha: string | null;
+          after_sha: string | null;
+        };
+        if (body.ok) {
+          setAttemptDiffs((prev) => ({
+            ...prev,
+            [attemptId]: { diff: body.diff, beforeSha: body.before_sha, afterSha: body.after_sha },
+          }));
+          return;
+        }
+      }
+    } catch {
+      /* network error — remove key so button re-appears for retry */
+    }
+    setAttemptDiffs((prev) => {
+      const next = { ...prev };
+      delete next[attemptId];
+      return next;
+    });
+  }, []);
 
   const upsertStage = useCallback((row: StageRow) => {
     setStages((prev) => {
@@ -669,32 +709,75 @@ export default function KernelNextTaskPage() {
                                 <th className="px-2 py-1">started_at</th>
                                 <th className="px-2 py-1">ended_at</th>
                                 <th className="px-2 py-1">duration</th>
+                                <th className="px-2 py-1">diff</th>
                               </tr>
                             </thead>
                             <tbody>
                               {stageAttempts.map((a) => (
-                                <tr key={a.attempt_id}>
-                                  <td className="px-2 py-1 text-gray-600">{a.attempt_idx}</td>
-                                  <td className="px-2 py-1 font-mono text-gray-700">{a.attempt_id}</td>
-                                  <td
-                                    className={`px-2 py-1 ${
-                                      a.status === "error" ? "text-red-600" :
-                                      a.status === "success" ? "text-green-600" :
-                                      a.status === "running" ? "text-blue-600" : "text-gray-500"
-                                    }`}
-                                  >
-                                    {a.status}
-                                  </td>
-                                  <td className="px-2 py-1 text-gray-600">
-                                    {new Date(a.started_at).toLocaleTimeString()}
-                                  </td>
-                                  <td className="px-2 py-1 text-gray-600">
-                                    {a.ended_at !== null ? new Date(a.ended_at).toLocaleTimeString() : "—"}
-                                  </td>
-                                  <td className="px-2 py-1 text-gray-700">
-                                    {formatDuration(a.duration_ms)}
-                                  </td>
-                                </tr>
+                                <React.Fragment key={a.attempt_id}>
+                                  <tr>
+                                    <td className="px-2 py-1 text-gray-600">{a.attempt_idx}</td>
+                                    <td className="px-2 py-1 font-mono text-gray-700">{a.attempt_id}</td>
+                                    <td
+                                      className={`px-2 py-1 ${
+                                        a.status === "error" ? "text-red-600" :
+                                        a.status === "success" ? "text-green-600" :
+                                        a.status === "running" ? "text-blue-600" : "text-gray-500"
+                                      }`}
+                                    >
+                                      {a.status}
+                                    </td>
+                                    <td className="px-2 py-1 text-gray-600">
+                                      {new Date(a.started_at).toLocaleTimeString()}
+                                    </td>
+                                    <td className="px-2 py-1 text-gray-600">
+                                      {a.ended_at !== null ? new Date(a.ended_at).toLocaleTimeString() : "—"}
+                                    </td>
+                                    <td className="px-2 py-1 text-gray-700">
+                                      {formatDuration(a.duration_ms)}
+                                    </td>
+                                    <td className="px-2 py-1">
+                                      {a.attempt_id in attemptDiffs ? (
+                                        attemptDiffs[a.attempt_id] === null ? (
+                                          <span className="text-gray-400">Loading…</span>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            onClick={() =>
+                                              setAttemptDiffs((prev) => {
+                                                const next = { ...prev };
+                                                delete next[a.attempt_id];
+                                                return next;
+                                              })
+                                            }
+                                            className="text-blue-600 hover:underline"
+                                          >
+                                            hide
+                                          </button>
+                                        )
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          onClick={() => void loadDiff(a.attempt_id)}
+                                          className="text-blue-600 hover:underline"
+                                        >
+                                          View diff
+                                        </button>
+                                      )}
+                                    </td>
+                                  </tr>
+                                  {a.attempt_id in attemptDiffs && attemptDiffs[a.attempt_id] !== null && (
+                                    <tr>
+                                      <td colSpan={7} className="px-2 py-2">
+                                        <DiffViewer
+                                          diff={attemptDiffs[a.attempt_id]!.diff}
+                                          beforeSha={attemptDiffs[a.attempt_id]!.beforeSha}
+                                          afterSha={attemptDiffs[a.attempt_id]!.afterSha}
+                                        />
+                                      </td>
+                                    </tr>
+                                  )}
+                                </React.Fragment>
                               ))}
                             </tbody>
                           </table>

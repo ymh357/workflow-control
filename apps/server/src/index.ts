@@ -13,6 +13,7 @@ import { kernelGatesRoute } from "./routes/kernel-gates.js";
 import { kernelTasksRoute } from "./routes/kernel-tasks.js";
 import { kernelAttemptsRoute } from "./routes/kernel-attempts.js";
 import { kernelAuditRoute } from "./routes/kernel-audit.js";
+import { kernelDiffRoute } from "./routes/kernel-diff.js";
 import { kernelNextStreamRoute } from "./routes/kernel-next-stream.js";
 import { kernelRunRoute } from "./routes/kernel-run.js";
 import { runPreflight, printPreflightResults } from "./lib/preflight.js";
@@ -210,6 +211,7 @@ app.route("/api", kernelGatesRoute);
 app.route("/api", kernelTasksRoute);
 app.route("/api", kernelAttemptsRoute);
 app.route("/api", kernelAuditRoute);
+app.route("/api", kernelDiffRoute);
 app.route("/api", kernelNextStreamRoute);
 app.route("/api", kernelRunRoute);
 
