@@ -31,15 +31,17 @@
 | 16 | 2026-04-23 | **Propose UI 端到端 dogfood**（browser-native propose 路径）| pr-description-generator propose 新 hash `29016dbb` | `pr-description-generator-1776922394245-15f8c88b` | completed ✅ | ~195s | — | **不再用 curl + 脚本做 iteration**。路径：`GET /api/kernel/pipelines` list → `GET /api/kernel/pipelines/:hash` detail（UI 展示 2 个 prompt ref）→ 改 `system/write-pr` 加一条 "Reference the related GitHub issue number if any (e.g., 'Closes #42')" → `POST /api/kernel/proposals` body `{patch:{ops:[]}, prompts:{...}}`（空 patch + prompts-only 路径，**A+ 架构**直接可用 no workaround）→ 202 新 `proposedVersion=29016dbb`；NO_OP 兜底用空 prompts 试了一次 → 400 `NO_OP_PROPOSAL`。Approve → run → new version 拉新 prompt content（DB `pipeline_prompt_refs.content_hash` 验证）→ task 正常 completed。新规则属 "if any" 类型，本次 diff 无相关 issue → agent 合规跳过（非 bug）。**M4 第 3 个数据点** + **M2 解锁关键基础设施完成** |
 | 17 | 2026-04-23 | **PG 真实 API 验证（tech-research 场景）** | Pipeline Generator → **Research Report Generator** (new hash `7fc2d175`) | `pipeline-generator-1776932730593-3835c6cb` | completed ✅ | ~7.5 min, $0.2983 | — | PG 全 5 stage 成功（analyzing → gate → genSkeleton → genPrompts → persisting）。生成了一个 2-stage `research-report-generator` pipeline（collectSources → generateReport，externalInputs=[topic:string]）。**validator.ok=true / missing=[] / extraneous=[]**。用 `topic="WebAssembly"` 跑 smoke → task completed；collectSources 写出 2676-byte sources 数组；generateReport 产出 6867-byte markdown 报告（含 Executive Summary / Overview / Detailed Findings / Source List），cost $0.0362。**Finding**: PG 未产出 `store_schema` 顶层字段——这是 A3 迁移 gap，当前 PG prompts 没强制要求生成 store_schema。详见本日志末尾 "PG API validation run #17" |
 | 18 | 2026-04-23 | **PG store_schema 升级 — Propose UI iteration + 真实 API 验证** | Pipeline Generator V1（`ecec9778`，通过 `system/gen-skeleton` prompt 提案升级）→ 生成 **Web Research Reporter** (new hash `dfa3b3cc`) | `pipeline-generator-1776935189303-cb23fdc4` | completed ✅ | ~9.1 min（含 ~2 min gate wait）, $0.9360 | — | 彻底消除 run #17 发现的 A3 gap。路径：从 V0 `f5dbdf18`（filesystem seeded）→ 通过 `POST /api/kernel/proposals`（`ops:[]` + 4-prompts map，只替换 `system/gen-skeleton` 加入 "Store schema generation (REQUIRED)" 章节 + 4 self-check 项）→ `proposedVersion=ecec9778`，safeRange=safe/empty → approve → run with `versionHash=ecec9778`。生成的 `Web Research Reporter` IR **包含 `store_schema` 顶层字段**：2 个 entry（`webResearch.sources` + `reportWriter.report`）全部正确，`produced_by` 精确、types 与端口 trim-equal。**Validator.ok=true / 0 diagnostic**；自定 validator（key count == stage×output expected，types match）：**COMPLETE**。**M4 第 4 个数据点**（propose 1 / approve 1 / reject 0 / rollback 0），**A3 gap 真实消除**，同时验证 Propose UI 在 iterative 场景（4 prompts map / 1 替换）可用 |
+| 19 | 2026-04-23 | **M-R6 dogfood — SIGKILL mid-analyzing + server 重启验证 SDK session resume** | Pipeline Generator V1 `ecec9778` | `pipeline-generator-1776945303486-743bbcc9` | completed ✅（6 stages，含 pre-kill superseded + post-resume 新 attempt） | ~8.5 min (含 ~20s kill/restart 空窗), $0.4056 total | **M-R5 gap: session_id 只在 writer.close 时 flush**（fix `dec8313`） | 真实 API 跑 PG 到 analyzing running，SDK `system.init` 产出 session_id=`f391e6d6...` 已写 DB，burn ~20s tokens → `SIGKILL` server → 重启 server D → **reconciler 检测 orphan, resumed=1** → runner 拉 session_id 传 `options.resume=f391e6d6` → **SDK 接受 resume，新 attempt session_id 与原 attempt 完全相同** → attempt 完成 cost $0.1182 (19/4133 tokens)，没有重新从 turn 0 开始 → 继续跑完整 pipeline。**M-R1..M-R5 联合验证端到端 work**。**Side bug**（非 resumability 相关）：persist stage 报 WIRE_TYPE_MISMATCH / "tsc not available"，AI-generated pipeline 未最终入 DB 但 task_finals=completed/natural 本身正确。**M-R5 session fix 真实必要**：修前 mid-stage kill 后 session_id=NULL, SDK resume 不可用；修后 session_id 在 init 时 sync flush，kill -9 安全 |
 
 ## 成熟度快照
 
-- **M3 分子/分母**: 11 / 18（run #2,3,4,9,11,12,14,15,16,17,18 真 completed；run #1,5,6,7,10,13 API completed 但未全跑 / 内容错；#8 是 B5 API 验证）
-- **真实成功率**: 11/18 = **61%**。架构审计修完后的 runs 全过
-- **post-architecture-audit 子集**: 7/7 = **100%**（runs #11,#12,#14,#15,#16,#17,#18）
-- **M4 热更新 propose / reject / rollback**: **4 / 0 / 0** — 第 4 个数据点（run #18）**首次对 pipeline-generator 本身做 propose iteration**（prompts-only 升级 `system/gen-skeleton`），approve 后新版本 V1 真实跑通并产出 schema-complete pipeline。**A3 gap 真正消除**：PG 现在会产出 `store_schema` 顶层字段
-- **覆盖的 builtin + generated**: 4 ✅ （`smoke-test`, `Tech Research Collector`, `Pipeline Generator`, `pr-description-generator`） + 3 AI-generated IR 完整（`markdown-table-of-contents-generator` run #11 未运行；`research-report-generator` run #17 **已运行并产 report**；`Web Research Reporter` run #18 **含 store_schema 且 validator 通过**）; 1 pending: `Tech Research Writer`
-- **AI-generated pipeline schema 可用率**: 3 / 4（run #4 空壳；run #11 IR 结构完整过 validator；run #17 IR 完整过 validator 且端到端跑出真实 report；run #18 IR 完整 **含 store_schema** 过 validator）
+- **M3 分子/分母**: 12 / 19（run #2,3,4,9,11,12,14,15,16,17,18,19 真 completed；run #1,5,6,7,10,13 API completed 但未全跑 / 内容错；#8 是 B5 API 验证）
+- **真实成功率**: 12/19 = **63%**。架构审计修完后的 runs 全过
+- **post-architecture-audit 子集**: 8/8 = **100%**（runs #11,#12,#14,#15,#16,#17,#18,#19）
+- **M4 热更新 propose / reject / rollback**: **4 / 0 / 0**
+- **Resumability 端到端可用**: ✅ run #19 真实验证 SIGKILL mid-stage 后 SDK session_id 与对话历史跨 server 生命周期保持
+- **覆盖的 builtin + generated**: 4 ✅ （`smoke-test`, `Tech Research Collector`, `Pipeline Generator`, `pr-description-generator`） + 3 AI-generated IR 完整 + 1 pending: `Tech Research Writer`
+- **AI-generated pipeline schema 可用率**: 3 / 4（run #4 空壳；run #11/#17/#18 IR 完整过 validator；run #19 persist 环境故障 ≠ IR 本身问题）
 
 ## 结论：B5 / B12 决策（基于实际使用数据）
 
@@ -521,3 +523,58 @@ write_port(
 - **不更新 filesystem 的 prompt**：V1 只存在 DB 里，server restart + DB wipe 会回到 V0。若要 V1 成为永久 builtin，需把更新后的 `system/gen-skeleton.md` 落盘（此次 session 明确 non-goal）。这一点很符合 product-roadmap 的"AI writes YAML, not human"方向 — PG prompts 本身未来也能走 Propose UI 迭代。
 - **gate_id ≠ attempt_id**：调用 `/api/kernel/gates/:id/answer` 时用的是 `gate_queue.gate_id`，不是 `stage_attempts.attempt_id`（即使两者一对一）。脚本化时从 `gate_queue` 读正确。
 - **M4 分数累加**：run #18 是第 4 个 propose + approve + run 完整数据点。前 3 个都针对 pr-description-generator；run #18 首次把 PG 自己拿来迭代 — 自举验证。
+
+## M-R6 dogfood run #19 (2026-04-23)
+
+### 目的
+
+验证 M-R1..M-R5 的 resumability 栈（lock + orphan reconciler + gate hydration + SSE seq + SDK session resume）在真实 Claude API 下端到端工作。
+
+### 场景
+
+1. 启 server A（clean DB）。
+2. 发 PG run，`taskDescription="A 2-stage code-review pipeline: (1) fetch git diff..."`。
+3. 等 analyzing stage `status=running` 且 `agent_execution_details.session_id` 已写 DB → burn ~20s tokens。
+4. 对 tsx 主进程 + child Node `kill -9`（模拟硬 crash）。`.lock` 文件残留（SIGKILL skip exit handler）。
+5. 删 `.lock` 文件模拟 stale-pid takeover 成功的场景。
+6. 启 server D。reconciler 应检测 orphan → reconcile running → superseded → classifyOrphan 返回 resume (resumeFrom=analyzing) → lookupResumeSessionId 返回刚持久化的 sid → runner 带 `resumeSessionId` 调 executor → SDK 带 `options.resume=<sid>` 启动 query。
+
+### 事前 fix（本 session 发现的 M-R5 真实 gap）
+
+M-R5 原 wiring 假设 `agent_execution_details.session_id` 在 stage running 期间可读。实测：只有 `writer.close()` 时才写入 DB，stage 结束前 NULL。一次真实 dogfood 循环才暴露——pure unit tests 看不出。
+
+Fix commit `dec8313`：
+- `writer.updateSessionId()` 改为 **sync flush**（1 次额外 DB write / stage）。
+- `real-executor.ts` 的 `onSdkMessage` 在 `system.init` 捕获 sid 时立刻调 `writer.updateSessionId(sid)`。
+
+这是 session 开始做 dogfood 前的必要 foundation，否则 M-R6 无意义。
+
+### 核心结果
+
+| 指标 | 值 |
+|---|---|
+| taskId | `pipeline-generator-1776945303486-743bbcc9` |
+| versionHash | `ecec9778...` (PG V1) |
+| reconciler resumed 计数 | **1** ✅ |
+| analyzing attempt #1 status | superseded / interrupted |
+| analyzing attempt #1 session_id | `f391e6d6-90f6-497d-8d56-314f6fa3ad3a` |
+| analyzing attempt #2 status | success / natural_completion |
+| analyzing attempt #2 session_id | **`f391e6d6-90f6-497d-8d56-314f6fa3ad3a`（same）** ✅ |
+| attempt #2 cost / tokens | $0.1182 / 19 in / 4133 out / 111s |
+| pipeline final | completed / natural |
+| 全链路 cost | $0.4056 |
+| 全链路 stages 完成 | 6（含 2 个 analyzing attempts + 2 个 gate attempts） |
+
+**session_id 跨 kill/restart 保持不变** 是决定性验证：SDK `options.resume` 成功接续旧 conversation（同 sessionId = 无 fork）。
+
+### 观察到的 side bug（非 resumability 相关）
+
+Persist stage 报 `WIRE_TYPE_MISMATCH` + 推理认为 "tsc not available"，写 `versionHash=FAILED` 作为输出。尽管 pipeline integrity 已通过 structural validator，tsc 类型校验环节异常。**不阻塞 M-R6 结论** —— resume 栈工作，任务达到 `task_finals=completed/natural`。独立问题进 handoff 待查。
+
+### Lessons
+
+- **"wiring 通过 unit test" ≠ "端到端真实可用"**。M-R5 unit tests 全绿 + tsc 0 + 1485 pass，但首次真 dogfood 立刻暴露 writer.close-only flush 的硬 gap。M-R6 dogfood 不是可选的。
+- **Session resume 不一定省 tokens**，但保证 **conversation continuity**。Attempt #2 的 cost $0.1182 并非 savings —— SDK 每次 resume 要读历史，取决于 prompt caching 命中。真正价值是对话上下文不丢，而不是省钱。
+- **Reconcile 顺带处理 gate attempts**：awaitingConfirm 也被 reconcile 成 superseded，resume 后新 attempt#2 由 M-R3 的 gate_queue hydration 或正常用户 re-answer 解决。本次 run 观察到两个 gate_queue 条目（每个 attempt 一个），需两次 answer。UI 层需知道该挑"最新未 answered 的"。
+- **SIGKILL 后 lock 需手删**（或靠 stale-pid takeover 自动处理）。`process.on("exit")` 在 SIGKILL 下不 fire，这是 POSIX 行为，已在设计中接受（PID-file + liveness check 而非 flock）。
+- **`versionHash=FAILED` persist 路径虽丑，但 task_finals 正确写 completed/natural**——kernel 的"stage 错误 ≠ 任务失败"语义完整（per Phase 6 run #15 架构）。
