@@ -136,6 +136,7 @@ startPeriodicCleanup();
       taskId: inp.taskId,
       versionHash: inp.versionHash,
       resumeFrom: inp.resumeFrom,
+      resumeSessionId: inp.resumeSessionId,
     }),
   });
   logger.info(res, "resumability: boot scan complete");

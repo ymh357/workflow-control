@@ -54,6 +54,12 @@ export interface StartPipelineRunInput {
   // resumeFrom plus its wire-reachable descendants (currently superseded)
   // are re-invoked; upstream stages stay finalized.
   resumeFrom?: string;
+  // M-R5 — optional Claude Agent SDK session_id to resume on the
+  // resumeFrom stage. Forwarded to runPipeline, which forwards to
+  // RealStageExecutor as ExecuteStageArgs.resumeSessionId so the SDK
+  // query runs with options.resume. Only effective when resumeFrom is
+  // also set; ignored otherwise.
+  resumeSessionId?: string;
   // Phase 4.5 Step 1 — forwarded to runPipeline. Optional; when omitted,
   // runner applies defaults (enabled: true, workdir: process.cwd(), etc.).
   // When `worktreeSourceRepo` is set below, this field is overridden by
@@ -378,6 +384,7 @@ export async function startPipelineRun(
     seedValues: input.seedValues,
     broadcaster: input.broadcaster,
     resumeFrom: input.resumeFrom,
+    resumeSessionId: input.resumeSessionId,
     checkpointConfig: resolvedCheckpointConfig,
   }, input.timeoutMs).catch((err: unknown) => {
     logger.error(
