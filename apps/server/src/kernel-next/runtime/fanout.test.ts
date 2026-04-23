@@ -219,7 +219,7 @@ describe("A3.3: fanout — error paths", () => {
     }
   });
 
-  it("mid-element failure fails the whole stage; remaining elements not run", async () => {
+  it("mid-element failure fails the whole stage; no NEW elements are taken after error (concurrency: 1 guarantees strict serial)", async () => {
     const db = makeDb();
     try {
       const ir: PipelineIR = {
@@ -235,7 +235,12 @@ describe("A3.3: fanout — error paths", () => {
           {
             name: "F",
             type: "agent",
-            fanout: { input: "item" },
+            // P5.1 — concurrency: 1 pins this test to strictly serial
+            // execution so the "third element never runs" assertion is
+            // deterministic. With the default cap of 3 and 3 elements,
+            // all three workers would start before any error is
+            // observed (worker-pool semantics).
+            fanout: { input: "item", concurrency: 1 },
             inputs: [{ name: "item", type: "number" }],
             outputs: [{ name: "doubled", type: "number" }],
             config: { promptRef: "p" },

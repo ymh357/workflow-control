@@ -26,10 +26,17 @@
 // path, not inside it. Composite is the execution layer; this is the
 // orchestration layer.
 //
-// Scope (A3.3): sequential execution, no concurrency pool, first
-// element error fails the stage. Preserves existing lineage (each
-// attempt writes its own port_values rows normally; attempt kind is
-// set via the silent runtime's defaultKind — see Debt #7).
+// Scope (A3.3): sequential execution, first element error fails the
+// stage. Preserves existing lineage (each attempt writes its own
+// port_values rows normally; attempt kind is set via the silent
+// runtime's defaultKind — see Debt #7).
+//
+// P5.1 — concurrency cap. FanoutSpec.concurrency (default 3, max 20)
+// bounds simultaneous per-element executions via a worker-pool pattern.
+// Protects against Anthropic rate limits when a fanout source is large.
+// First-error semantics preserved: on error, no NEW elements are taken,
+// already-in-flight elements are awaited, and the first error observed
+// fails the stage.
 
 import type { DatabaseSync } from "node:sqlite";
 import { PortRuntime, type EventDispatcher } from "./port-runtime.js";
@@ -103,8 +110,11 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
   const silentRuntime = new PortRuntime(db, silentDispatcher, "fanout_element");
 
   const declaredOutputs = stageDef.outputs.map((p) => p.name);
+  // P5.1 — pre-sized to source length so workers can assign by index
+  // (out-of-order completion under parallelism still preserves input
+  // order in the aggregate).
   const aggregated: Record<string, unknown[]> = {};
-  for (const name of declaredOutputs) aggregated[name] = [];
+  for (const name of declaredOutputs) aggregated[name] = new Array(sourceValue.length);
 
   // B17 full — discover fanout_element attempts that already succeeded
   // for this (task, stage) on a prior pipeline version. These survived
@@ -137,7 +147,19 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
     preservedByIdx.set(r.fanout_element_idx, map);
   }
 
-  for (let i = 0; i < sourceValue.length; i++) {
+  // P5.1 — concurrency cap. Default 3 when unspecified. min() against
+  // source length avoids spawning idle workers for small arrays.
+  const configuredCap = fanout.concurrency ?? 3;
+  const cap = Math.max(1, Math.min(configuredCap, sourceValue.length));
+
+  // Shared cursor + abort state drive the worker pool. `firstError` is
+  // the first error message observed; once set, workers stop taking
+  // new elements (in-flight elements still complete — we always await
+  // the pool before returning).
+  let nextIdx = 0;
+  let firstError: string | null = null;
+
+  const runElement = async (i: number): Promise<void> => {
     // B17 full — if an earlier successful fanout_element attempt
     // already covered this index, reuse its outputs instead of
     // re-running the executor. Keeps lineage intact (the preserved
@@ -146,9 +168,9 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
     const preserved = preservedByIdx.get(i);
     if (preserved) {
       for (const name of declaredOutputs) {
-        aggregated[name]!.push(preserved[name]);
+        aggregated[name]![i] = preserved[name];
       }
-      continue;
+      return;
     }
 
     // Override the fanout source in the executor's portValues view so
@@ -170,19 +192,40 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
     });
 
     if (result.status === "error") {
-      return {
-        status: "error",
-        error: `fanout element ${i}/${sourceValue.length} failed: ${result.error ?? "unspecified"}`,
-      };
+      // Record the first error; later errors are discarded (they can
+      // occur concurrently when cap > 1). The pool will drain naturally
+      // — remaining workers see firstError !== null and stop taking
+      // new indices.
+      if (firstError === null) {
+        firstError = `fanout element ${i}/${sourceValue.length} failed: ${result.error ?? "unspecified"}`;
+      }
+      return;
     }
 
-    // Collect this attempt's output port values from the DB.
+    // Collect this attempt's output port values from the DB. Write by
+    // index (not push) so the aggregated array preserves input order
+    // even when elements finish out-of-order under parallelism.
     const rows = silentRuntime.readWritesForAttempt(result.attemptId);
     const byPort = new Map<string, unknown>();
     for (const r of rows) byPort.set(r.port, r.value);
     for (const name of declaredOutputs) {
-      aggregated[name]!.push(byPort.get(name));
+      aggregated[name]![i] = byPort.get(name);
     }
+  };
+
+  const worker = async (): Promise<void> => {
+    while (true) {
+      if (firstError !== null) return;
+      const i = nextIdx++;
+      if (i >= sourceValue.length) return;
+      await runElement(i);
+    }
+  };
+
+  await Promise.all(Array.from({ length: cap }, () => worker()));
+
+  if (firstError !== null) {
+    return { status: "error", error: firstError };
   }
 
   // Open an "aggregate attempt" on the live PortRuntime and write each

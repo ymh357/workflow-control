@@ -48,6 +48,11 @@ export const PortIRSchema = z.object({
 
 export const FanoutSpecSchema = z.object({
   input: identifier,                       // input port name to iterate
+  // P5.1 — per-stage parallelism cap. Protects against Anthropic rate
+  // limits + unbounded cost when an array has many elements. Runner
+  // defaults to 3 when unspecified; 20 is an arbitrary hard ceiling
+  // (mirrors RetrySpec's pattern of "typo guard, not policy").
+  concurrency: z.number().int().positive().max(20).optional(),
 });
 
 export const GateQuestionSchema = z.object({

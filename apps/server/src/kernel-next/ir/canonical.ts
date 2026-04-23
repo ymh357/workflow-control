@@ -116,6 +116,11 @@ function canonicalizeStage(s: StageIR): CanonicalValue {
   // `fanout` is only present on agent/script variants (see schema.ts); the
   // discriminated-union narrowing surfaces it as an extra optional key that
   // participates in the canonical form when set.
+  //
+  // P5.1: `fanout.concurrency` is optional. sortKeys filters undefined
+  // values, so a fanout lacking `concurrency` hashes identically to a
+  // pre-P5.1 fanout (backward-compatible). An explicit concurrency value
+  // does alter the hash — changing concurrency is a meaningful hot-update.
   const fanout = "fanout" in s ? s.fanout : undefined;
   let config: unknown;
   if (s.type === "gate") {
