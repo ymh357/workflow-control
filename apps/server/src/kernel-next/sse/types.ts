@@ -22,7 +22,8 @@ export type KernelNextSSEEventType =
   | "run_final"          // top-level machine reached `completed` or `failed`; carries aggregated diagnostics
   | "diagnostics_emitted" // multi-diagnostic aggregation (runtime stage errors, submit/migrate validation failures)
   | "rate_limit_backoff" // Anthropic API rate-limit signal crossed the pause threshold; dashboard shows "throttled by API"
-  | "task_cost_update";  // P6.1 / D23 — cumulative cost + token totals for the task, emitted at stage boundaries
+  | "task_cost_update"   // P6.1 / D23 — cumulative cost + token totals for the task, emitted at stage boundaries
+  | "agent_message_delta"; // P7.4 / D29 — throttled assistant text deltas streamed out of the SDK per executing stage
 
 export type TaskTopLevelState =
   | "idle" | "running" | "completed" | "failed";
@@ -187,6 +188,25 @@ export interface TaskCostUpdateData {
   cacheReadTokens: number;
 }
 
+// P7.4 / D29 — live agent text-delta feed.
+//
+// Published by RealStageExecutor while an agent stage is streaming SDK
+// assistant messages. Deltas are coalesced at ≤10 Hz per attempt via
+// DeltaThrottler so bursty tokenised output does not flood the SSE
+// channel. The dashboard accumulates per-stage text into a "live
+// output" panel that clears on stage_done / stage_error. Observability-
+// only: the sidecar execution-record writer remains the source of
+// truth for persisted assistant text.
+export interface AgentMessageDeltaData {
+  attemptId: string;
+  stage: string;
+  textDelta: string;
+  // Reserved for future expansion (e.g. sub-agent attribution). Today
+  // only "assistant" is emitted; "other" is a typesafe placeholder so
+  // dashboards can treat unknown roles without narrowing collapses.
+  role: "assistant" | "other";
+}
+
 // Narrowed event variants. Broadcaster handles KernelNextSSEEvent
 // generically; typed helpers at the publish site stay inside runner
 // and port-runtime.
@@ -234,6 +254,10 @@ export interface KernelNextTaskCostUpdateEvent extends KernelNextSSEEvent {
   type: "task_cost_update";
   data: TaskCostUpdateData;
 }
+export interface KernelNextAgentMessageDeltaEvent extends KernelNextSSEEvent {
+  type: "agent_message_delta";
+  data: AgentMessageDeltaData;
+}
 
 export type AnyKernelNextSSEEvent =
   | KernelNextTaskStateEvent
@@ -246,4 +270,5 @@ export type AnyKernelNextSSEEvent =
   | KernelNextRunFinalEvent
   | KernelNextDiagnosticsEmittedEvent
   | KernelNextRateLimitBackoffEvent
-  | KernelNextTaskCostUpdateEvent;
+  | KernelNextTaskCostUpdateEvent
+  | KernelNextAgentMessageDeltaEvent;

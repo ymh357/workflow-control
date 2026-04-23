@@ -65,6 +65,7 @@ import {
   rateLimitBackoffMs,
 } from "./rate-limit-backoff.js";
 import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
+import { DeltaThrottler } from "./agent-message-delta.js";
 
 export interface RealStageExecutorOptions {
   /**
@@ -422,6 +423,13 @@ export class RealStageExecutor implements StageExecutor {
       let capturedTokenInput: number | null = null;
       let capturedTokenOutput: number | null = null;
 
+      // P7.4 / D29 — throttled live text-delta publisher. Only
+      // instantiated when a broadcaster is wired; the pump path
+      // tolerates its absence.
+      const deltaThrottler = this.broadcaster
+        ? new DeltaThrottler(this.broadcaster, taskId, attemptId, stageName)
+        : null;
+
       let agentOutput: AgentMachineOutput;
       try {
         // Stream pump extracted to stream-pump.ts so A2.3.2 can reuse it
@@ -527,6 +535,14 @@ export class RealStageExecutor implements StageExecutor {
                     text: rec.text,
                     timestamp: new Date().toISOString(),
                   });
+                  // P7.4 / D29 — push text block into the throttled SSE
+                  // publisher. The SDK delivers assistant messages as
+                  // whole blocks (not sub-token deltas), so a single
+                  // push per block is the finest granularity available.
+                  // Thinking payloads are intentionally excluded — the
+                  // dashboard's live panel surfaces user-visible output
+                  // only, and thinking often dominates the byte volume.
+                  if (deltaThrottler) deltaThrottler.push(rec.text);
                 } else if (rec.type === "thinking") {
                   const thinkingText = typeof rec.thinking === "string"
                     ? rec.thinking
@@ -571,6 +587,11 @@ export class RealStageExecutor implements StageExecutor {
         // timeout. Otherwise XState keeps a subscription alive and a later
         // test iteration's actor may race with this one.
         agentActor.stop();
+        // P7.4 / D29 — flush any pending text so the dashboard sees the
+        // tail end of the stream even when the stage ends between
+        // flush-interval ticks. dispose() is a no-op when the buffer is
+        // empty.
+        if (deltaThrottler) deltaThrottler.dispose();
       }
 
       if (agentOutput.status !== "done") {

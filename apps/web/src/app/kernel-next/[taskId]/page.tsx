@@ -159,6 +159,13 @@ export default function KernelNextTaskPage() {
   const [cost, setCost] = useState<TaskCostUpdatePayload | null>(null);
   const [attempts, setAttempts] = useState<AttemptRow[]>([]);
   const [expandedStage, setExpandedStage] = useState<string | null>(null);
+  // P7.4 / D29 — live accumulated text-delta output keyed by stage name.
+  // Entries accumulate as agent_message_delta events arrive and are
+  // cleared on stage_done / stage_error so a stage re-entering
+  // `executing` (retry) starts with a fresh buffer. Server-side
+  // throttling caps publish rate at 10 Hz per attempt; client just
+  // appends.
+  const [liveOutputs, setLiveOutputs] = useState<Map<string, string>>(new Map());
   // P6.4 / D27 — per-attempt worktree diffs. Keyed by attempt_id.
   // absent key = not yet requested; null value = loading; object = loaded.
   const [attemptDiffs, setAttemptDiffs] = useState<
@@ -272,6 +279,15 @@ export default function KernelNextTaskPage() {
         // the __external__ sentinel, but drop them if it ever does.
         if (d.stage === EXTERNAL_STAGE) break;
         upsertStage({ stage: d.stage, state: "executing", attemptId: d.attemptId });
+        // P7.4 / D29 — clear any stale live-output text when a stage
+        // re-enters executing (retry). This prevents the previous
+        // attempt's transcript from bleeding into the new one.
+        setLiveOutputs((prev) => {
+          if (!prev.has(d.stage)) return prev;
+          const next = new Map(prev);
+          next.delete(d.stage);
+          return next;
+        });
         void refreshAttempts();
         break;
       }
@@ -279,6 +295,12 @@ export default function KernelNextTaskPage() {
         const d = event.data as { stage: string; attemptId?: string };
         if (d.stage === EXTERNAL_STAGE) break;
         upsertStage({ stage: d.stage, state: "done", attemptId: d.attemptId });
+        setLiveOutputs((prev) => {
+          if (!prev.has(d.stage)) return prev;
+          const next = new Map(prev);
+          next.delete(d.stage);
+          return next;
+        });
         void refreshAttempts();
         break;
       }
@@ -297,7 +319,28 @@ export default function KernelNextTaskPage() {
           errorMessage: d.message,
           errorReason: d.reason,
         });
+        setLiveOutputs((prev) => {
+          if (!prev.has(d.stage)) return prev;
+          const next = new Map(prev);
+          next.delete(d.stage);
+          return next;
+        });
         void refreshAttempts();
+        break;
+      }
+      case "agent_message_delta": {
+        const d = event.data as {
+          attemptId: string;
+          stage: string;
+          textDelta: string;
+          role: "assistant" | "other";
+        };
+        if (d.stage === EXTERNAL_STAGE) break;
+        setLiveOutputs((prev) => {
+          const next = new Map(prev);
+          next.set(d.stage, (next.get(d.stage) ?? "") + d.textDelta);
+          return next;
+        });
         break;
       }
       case "port_written": {
@@ -676,6 +719,26 @@ export default function KernelNextTaskPage() {
         <section className="mb-6">
           <h2 className="mb-2 font-semibold">Pipeline DAG</h2>
           <PipelineGraph ir={ir} stageStates={stageStates} />
+        </section>
+      )}
+
+      {liveOutputs.size > 0 && (
+        <section className="mb-6">
+          <h2 className="mb-2 font-semibold">Live output</h2>
+          {Array.from(liveOutputs.entries()).map(([stage, text]) => (
+            <details
+              key={stage}
+              open
+              className="mb-2 rounded border border-blue-200 bg-blue-50 p-2"
+            >
+              <summary className="cursor-pointer text-xs font-semibold text-blue-900">
+                {stage}
+              </summary>
+              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-xs text-gray-800">
+                {text}
+              </pre>
+            </details>
+          ))}
         </section>
       )}
 
