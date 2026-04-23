@@ -15,12 +15,14 @@
 // runner → broadcaster → HTTP route → dashboard works; polished UX
 // is a later concern.
 
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { GateCard, type GateContextResponse } from "../../../components/gate-card";
 import { DiagnosticsPanel, type Diagnostic } from "../../../components/diagnostics-panel";
 import { AuditTimeline, type AuditEntry } from "../../../components/audit-timeline";
 import { DiffViewer } from "../../../components/diff-viewer";
+import { PipelineGraph } from "../../../components/pipeline-graph";
+import type { PipelineIRLike, StageState } from "../../../lib/ir-to-flow";
 
 // Payload shape for the `diagnostics_emitted` SSE event. Kept local
 // (rather than imported from server) so the web app does not reach
@@ -166,6 +168,10 @@ export default function KernelNextTaskPage() {
   // dedicated hot_update SSE event today, so mid-run migrations only
   // surface in the timeline after the task finishes (or a manual reload).
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
+  // P7.1 / D21 — PipelineIR for the DAG graph. Fetched once on mount
+  // from /api/kernel/tasks/:taskId/ir. The live DAG overlays stage
+  // states derived from the `stages` map on top of this static layout.
+  const [ir, setIr] = useState<PipelineIRLike | null>(null);
 
   // P6.2 / D24 — fetch per-task stage_attempts history. Called on mount
   // and whenever a stage lifecycle event fires so the Duration column
@@ -350,6 +356,38 @@ export default function KernelNextTaskPage() {
   // Fetch audit once on mount so historical migrate/rollback events are
   // visible even when the task has already finished.
   useEffect(() => { void refreshAudit(); }, [refreshAudit]);
+
+  // P7.1 / D21 — fetch the task's PipelineIR once on mount. Silent on
+  // failure (404 for legacy tasks with no stage_attempts, 5xx for
+  // transient) — the graph simply stays hidden.
+  useEffect(() => {
+    if (!taskId) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const r = await fetch(
+          `${API_BASE}/api/kernel/tasks/${encodeURIComponent(taskId)}/ir`,
+          { signal: controller.signal },
+        );
+        if (!r.ok) return;
+        const body = await r.json() as { ok: boolean; ir?: PipelineIRLike };
+        if (body.ok && body.ir) setIr(body.ir);
+      } catch {
+        /* ignore — graph stays hidden */
+      }
+    })();
+    return () => controller.abort();
+  }, [taskId]);
+
+  // P7.1 / D21 — project per-stage row state into a map the PipelineGraph
+  // understands. Absent stages fall back to "idle" in the renderer.
+  const stageStates = useMemo<Record<string, StageState>>(() => {
+    const out: Record<string, StageState> = {};
+    for (const row of stages.values()) {
+      out[row.stage] = row.state;
+    }
+    return out;
+  }, [stages]);
 
   useEffect(() => {
     if (!taskId) return;
@@ -632,6 +670,13 @@ export default function KernelNextTaskPage() {
       <DiagnosticsPanel diagnostics={diagnostics} />
 
       <AuditTimeline entries={auditEntries} />
+
+      {ir && (
+        <section className="mb-6">
+          <h2 className="mb-2 font-semibold">Pipeline DAG</h2>
+          <PipelineGraph ir={ir} stageStates={stageStates} />
+        </section>
+      )}
 
       <section className="mb-6">
         <h2 className="mb-2 font-semibold">Stages</h2>

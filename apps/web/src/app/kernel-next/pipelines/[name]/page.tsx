@@ -8,6 +8,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { PromptsEditor } from "../../../../components/prompts-editor";
+import { PipelineGraph } from "../../../../components/pipeline-graph";
+import type { PipelineIRLike } from "../../../../lib/ir-to-flow";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 const ACTOR_LS_KEY = "kernelActor";
@@ -16,6 +18,7 @@ interface PipelineDetail {
   name: string;
   latestVersion: string;
   prompts: Record<string, string>;
+  ir: PipelineIRLike;
 }
 
 export default function PipelineEditorPage() {
@@ -60,9 +63,15 @@ export default function PipelineEditorPage() {
         const detailBody = await detailRes.json() as {
           ok: boolean;
           prompts: Record<string, string>;
+          ir: PipelineIRLike;
         };
         if (!detailBody.ok) { setError("detail not ok"); return; }
-        setDetail({ name: pipelineName, latestVersion: match.latestVersion, prompts: detailBody.prompts });
+        setDetail({
+          name: pipelineName,
+          latestVersion: match.latestVersion,
+          prompts: detailBody.prompts,
+          ir: detailBody.ir,
+        });
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         setError(err instanceof Error ? err.message : String(err));
@@ -110,6 +119,12 @@ export default function PipelineEditorPage() {
       <p className="mb-4 text-xs text-gray-600">
         base version: <code>{detail.latestVersion}</code>
       </p>
+      {detail.ir && (
+        <section className="mb-6">
+          <h2 className="mb-2 font-semibold">Pipeline structure</h2>
+          <PipelineGraph ir={detail.ir} />
+        </section>
+      )}
       <PromptsEditor
         originalPrompts={detail.prompts}
         actor={actor}
