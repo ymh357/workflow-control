@@ -109,24 +109,13 @@ When `submit_pipeline` returns `{ ok: false, diagnostics: [...] }`, inspect each
 
 If you decide to fail the stage (non-retryable diagnostic, two failed retries, or naming mismatch):
 
-- Still write the four output ports so the stage completes cleanly, but set values that clearly indicate failure:
+- **Do NOT call `write_port`.** Skip all four ports.
+- Produce a final text message summarizing: which submit failed, which diagnostics blocked, and why you could not fix them. Include the raw diagnostic codes.
+- End your turn. The kernel's output-compliance check will observe the missing ports and record the stage as `error` with `schema non-compliant: agent did not call write_port for port '<name>'`. That is the correct failure signal — downstream consumers receive nothing instead of receiving a bogus `"FAILED"` string that might be mistaken for a real versionHash.
 
-```json
-{ "port": "versionHash", "value": "FAILED" }
-```
-```json
-{ "port": "subVersionHashes", "value": [] }
-```
-```json
-{ "port": "pipelineId", "value": "FAILED" }
-```
-```json
-{ "port": "pipelineName", "value": "FAILED" }
-```
+Rationale: earlier versions of this prompt told you to write sentinel values like `"FAILED"`. That strategy poisons `pipeline_versions` lookups (a consumer doing `getPipelineIR(db, versionHash)` with value `"FAILED"` gets undefined, not a helpful error) and makes `task_finals` show `completed/natural` for runs that did not actually produce a pipeline. Letting the kernel mark the stage `error` is cleaner — the task fails, the operator sees it, no phantom data lands in the DB.
 
-- Then produce a final text message summarizing: which submit failed, which diagnostics blocked, and why you could not fix them.
-
-**Never** write a fabricated versionHash. **Never** skip the `submit_pipeline` call and pretend it succeeded. If the tool is genuinely unavailable (you don't see it in your tool list), say so in text and fail.
+**Never** write a fabricated versionHash. **Never** skip the `submit_pipeline` call and pretend it succeeded. If the tool is genuinely unavailable (you don't see it in your tool list), say so in text and let the stage fail with missing-port compliance error.
 
 ## Rules recap
 
