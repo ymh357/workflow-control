@@ -39,6 +39,12 @@ Requirements:
 - Include literal write_port example for each output port
 - If the stage invokes run_pipeline, include exact MCP call template with the sub-pipeline's literal name
 - Include Error Handling section
+- **MCP tool names**: kernel-next's MCP server is registered under the server name `__kernel_next__` (note the leading/trailing underscores). When the SDK exposes it to the agent, the composed tool name becomes `mcp____<tool>____` form — specifically with FOUR underscores on each side. Prompts must use the exact form below, not the shorter `mcp__kernel_next__<tool>` variant that Claude's training data might produce. Using the wrong form returns `<tool_use_error>Error: No such tool available` at runtime and wastes a round trip:
+  - `mcp____kernel_next____read_port` — read a port value from upstream
+  - `mcp____kernel_next____write_port` — write a declared output port
+  - `mcp____kernel_next____run_pipeline` — invoke a sub-pipeline by name
+  - `mcp____kernel_next____get_task_status` — poll a task until terminal
+  - `mcp____kernel_next____submit_pipeline` — submit a new IR (only persist stage)
 ```
 
 Collect the returned prompt body.
@@ -50,10 +56,10 @@ For any AgentStage in the main IR where `stageContracts[<name>].purpose` indicat
 Ensure the prompt-writer instruction explicitly includes:
 
 ```
-run_pipeline(name="<exact subPipelineContract.name>", task=<task description constructed from inputs>, policy=?)
-// Poll: get_task_status(taskId) until completed or failed
-// Read: read_port for each port in subPipelineContract.returnContract
-// Write: write_port your own stage's outputs mapped from the sub-pipeline's results
+mcp____kernel_next____run_pipeline(name="<exact subPipelineContract.name>", task=<task description constructed from inputs>, policy=?)
+// Poll: mcp____kernel_next____get_task_status(taskId) until completed or failed
+// Read: mcp____kernel_next____read_port for each port in subPipelineContract.returnContract
+// Write: mcp____kernel_next____write_port your own stage's outputs mapped from the sub-pipeline's results
 ```
 
 The literal sub-pipeline name is propagated from `design.subPipelineContracts[i].name` → must match `subIrs[i].name`.
