@@ -1,63 +1,29 @@
 # Workflow Control
 
-A **local, single-user** workflow engine for running AI coding agents on
-larger software tasks. Orchestrates multi-step work through YAML-defined
-pipelines, Claude Agent SDK execution, automation scripts, human checkpoints,
-conditional routing, sub-pipeline calls, and foreach iteration — with
-real-time observability, cost tracking, and failure recovery.
+A **local, single-user** workflow engine for running AI coding agents — primarily Claude — on tasks too large for a single CLI session. One engineer, one machine, one server process.
 
-> **Positioning.** Workflow Control runs entirely on your own machine; there
-> is no shared server, no multi-tenant model, no team scheduling layer. It is
-> designed for one engineer (possibly a small team of engineers, each on
-> their own machine) to drive Claude through tasks too large for a single
-> chat session. Pipelines and knowledge fragments can still be **shared**
-> across machines via the Registry — but execution always runs locally.
->
-> **You don't write YAML by hand.** Pipelines are authored and iterated on
-> by AI agents themselves (see the `pipeline-generator` builtin). The YAML
-> is a durable artifact of AI output, not a manual configuration burden.
->
-> See `docs/product-roadmap.md` for the detailed roadmap and scope.
+Pipelines are **YAML-free and AI-authored**: you describe a workflow in natural language, the built-in `pipeline-generator` drives Claude through design → review → registration, and the result is a reproducible, interruptible, observable pipeline stored in a local SQLite database.
+
+> **Positioning.** Workflow Control runs entirely on your own machine. No shared server. No multi-tenant model. No team scheduling. Pipelines can be shared across machines via the Registry, but execution always happens locally. See `docs/product-roadmap.md` for the scope and roadmap.
 
 ## Why
 
-Using AI coding agents directly (Claude Code CLI) works for small tasks. For
-larger efforts — analysis, implementation, review, PR creation — a single
-unstructured session lacks cost control, failure recovery, and reproducibility.
+Using Claude Code directly works great for small tasks. For larger efforts — multi-stage analysis, planning, implementation, review — a single chat session lacks:
 
-Workflow Control wraps these agents in a structured pipeline:
+- **Cost control** — per-stage budgets, automatic budget caps.
+- **Failure recovery** — stage attempts persist; interrupted tasks resume from the last success, including mid-stage crash recovery via the SDK session-resume path.
+- **Reproducibility** — every pipeline version is content-hashed; every stage attempt and port value is persisted.
+- **Observability** — real-time SSE stream + dashboard with filtering, stage timeline, cost breakdown.
+- **Hot-update** — iterate a live pipeline's prompts or structure via propose/approve/migrate; rollback if the change regresses.
 
-- **Pipeline stages** enforce execution order. Each stage has a defined goal, inputs, outputs, and budget.
-- **Per-stage cost caps** and **human confirmation gates** prevent runaway spending.
-- **Persistent snapshots** enable retry from any failure point without losing prior work.
-- **Real-time SSE dashboard** streams every agent message with filtering, stage timeline, and cost breakdown.
-- **YAML pipelines + versioned prompts** — authored by AI, shareable via the Registry, reproducible across runs.
-- **Layered prompt system** — global constraints, project rules, knowledge fragments — guarantees consistent agent behavior.
-
-## Architecture
-
-```
-apps/
-  server/           Hono API (:3001) + XState v5 workflow engine + Agent SDK
-    config/
-      pipelines/    Pipeline YAML definitions + per-stage prompts
-      mcps/         MCP server registry
-      prompts/      Reusable knowledge fragments
-  web/              Next.js 16 dashboard (:3000) — task management, monitoring, config editing
-packages/
-  shared/           TypeScript type contracts (Task, SSEMessage, API interfaces)
-```
-
-**Server**: Hono REST API. XState v5 state machine dynamically generated from pipeline YAML. Claude Agent SDK and Gemini CLI as execution backends. SQLite for SSE message history, JSON files for task snapshots.
-
-**Dashboard**: Next.js + React 19 + Tailwind v4. SSE-driven real-time message stream with virtual scrolling. Monaco editor for pipeline config. Mermaid for pipeline visualization.
+Workflow Control delivers all five on top of a single-user SQLite store and a Hono + Next.js stack.
 
 ## Prerequisites
 
 - **Node.js >= 20** (required for `node:sqlite`)
 - **pnpm** — `npm install -g pnpm`
-- **gh CLI** — [cli.github.com](https://cli.github.com) (authenticated via `gh auth login`)
-- **Claude Code CLI** — required; Gemini/Codex CLIs are optional (engines frozen)
+- **Claude Code CLI** — the only supported agent engine. Install from [claude.com/claude-code](https://claude.com/claude-code) and run `claude login` before using Workflow Control.
+- **gh CLI** (optional) — needed only if your pipelines use GitHub PR creation scripts.
 
 ## Quick Start
 
@@ -67,170 +33,142 @@ git clone https://github.com/ymh357/workflow-control.git
 cd workflow-control
 pnpm install
 
-# 2. Configure
-cp apps/server/config/system-settings.yaml.example apps/server/config/system-settings.yaml
+# 2. Configure per-developer env (paths, optional tokens)
 cp apps/server/.env.local.example apps/server/.env.local
-# Edit .env.local — at minimum set REPOS_BASE_PATH to your projects directory
+# Edit apps/server/.env.local:
+#   REPOS_BASE_PATH        = absolute path where your git repos live
+#   WORKTREES_BASE_PATH    = absolute path where per-task worktrees will be created
 
-# 3. Install registry packages (pipelines, skills, hooks, fragments)
-pnpm --filter server registry:build      # Build local registry index
-pnpm --filter server registry:bootstrap  # Install default config packages from remote registry
-
-# 4. Run interactive setup (validates config, checks CLI tools on PATH)
-pnpm setup
-
-# 5. Start
-pnpm dev          # Server (:3001) + Dashboard (:3000)
+# 3. Start server + dashboard
+pnpm dev
+# Server:    http://localhost:3001
+# Dashboard: http://localhost:3000
 ```
 
-Open `http://localhost:3000`. The **Config** page has a health panel to verify all services are reachable.
+Open http://localhost:3000 — you'll land on the kernel-next dashboard. The system ships with four built-in pipelines:
 
-> **Minimal setup**: Only `claude` on PATH is required to run pipelines. Notion, Figma, and GitHub integrations are all optional — leave them blank in the config and the system works without them. Gemini / Codex CLIs are optional and their engines are frozen (see roadmap §3 S1).
+| Pipeline | Purpose |
+|---|---|
+| `smoke-test` | Minimal 2-stage sanity run (<30s, <$0.01) |
+| `Tech Research Collector` | Crawl primary/domain sources, emit structured research facts |
+| `Tech Research Writer` | Turn research facts into a Markdown deliverable with verification tiers |
+| `Pipeline Generator` | **The primary authoring tool.** Natural-language → validated AI pipeline stored in the DB |
 
-> `system-settings.yaml` supports `${ENV_VAR}` interpolation. Keep secrets in `.env.local`, not in the YAML file.
+## First Run
 
-## Key Concepts
-
-### Pipelines
-
-A pipeline is a YAML file defining a sequence of stages:
-
-| Stage Type | Engine | Purpose |
-|---|---|---|
-| `agent` | `llm` | AI agent execution (Claude or Gemini) with system prompt, MCP access, sub-agents |
-| `script` | `script` | Deterministic automation (git branch, worktree, PR creation, build gate) |
-| `human_confirm` | `human_gate` | Pause for human review with approve/reject/feedback routing |
-
-Stages declare explicit data flow via `reads` (inputs from store) and `writes` (outputs to store). No implicit state access.
-
-Pipelines support **mixed engines** — each stage independently specifies `claude`, `gemini`, or `codex`. Claude is the primary, fully supported engine; Gemini and Codex are **frozen** (see `docs/product-roadmap.md` §3 S1) — existing pipelines continue to work, but no new features or bug fixes land. New pipelines should default to `claude`.
-
-The Config page provides an **AI Generate** button: describe your workflow in natural language and the built-in `pipeline-generator` pipeline drives Claude to produce a complete, validated YAML. This is the primary authoring path — you describe intent, the AI writes the pipeline. No additional API keys needed.
-
-### Task Lifecycle
-
-```
-idle → drafting → [stage 1] → [stage 2] → ... → [stage N] → completed
-                      ↓                              ↓
-                   blocked (error) ←─────────────────┘
-                      ↓ retry
-                   [resume stage]
-
-                   cancelled (user) → resume → [last stage]
-```
-
-Tasks snapshot their full pipeline config at creation. Global config changes never affect running tasks.
-
-### Prompt System
-
-Agent prompts are assembled from 6 layers (broadest → narrowest scope):
-
-1. **Global constraints** — behavioral rules across all stages
-2. **Project rules** — CLAUDE.md / GEMINI.md / CODEX.md repository conventions
-3. **Stage system prompt** — stage-specific instructions
-4. **Knowledge fragments** — reusable domain knowledge, matched by keywords and stage
-5. **Output schema** — auto-generated JSON format instructions
-6. **Step prompts** — conditional instructions from enabled capabilities
-
-### Data Flow
-
-```
-Stage A writes: [analysis]     →  store.analysis
-Stage B reads: {plan: analysis.plan}  →  Tier 1 context (injected) + Tier 2 files (on-demand)
-Stage C (script) reads: {title: analysis.title}  →  inputs parameter
-```
-
-### Registry / Store
-
-The project includes a config package manager for sharing and installing reusable workflow components. Packages live in `registry/` and cover five types: **pipeline**, **skill**, **hook**, **fragment**, and **script**.
-
-- `pnpm --filter server registry:build` — generates manifests and builds the registry index from `registry/`
-- `pnpm --filter server registry:bootstrap` — installs the default package set (run once after fresh clone)
-
-The dashboard **Store** page (`/registry`) provides a web UI for browsing, installing, publishing, and managing packages. Local config packages appear with a "local" badge and can be published to the remote registry directly from the Store page.
-
-### Claude Code MCP Integration
-
-The project includes a built-in MCP server that allows Claude Code to interact with the workflow engine directly — trigger tasks, confirm gates, check status, and more.
-
-The project-level `.claude/settings.json` auto-configures the MCP connection. After starting the server (`pnpm dev`), Claude Code will automatically discover the `workflow-control` MCP server when opened in this directory.
-
-If you need to configure it manually, add the following to your Claude Code settings:
-
-```json
-{
-  "mcpServers": {
-    "workflow-control": {
-      "type": "url",
-      "url": "http://localhost:3001/mcp"
-    }
-  }
-}
-```
-
-### Edge Runner (frozen / unsupported)
-
-> **Status:** Edge Runner is frozen. Code is retained but no longer receives
-> new features or bug fixes. See `docs/product-roadmap.md` §3 (S1) for
-> rationale. Use the dashboard (`pnpm dev`) for all new workflows.
-
-For legacy terminal-based execution without the dashboard, the edge runner
-executes a pipeline directly in your shell:
+Verify everything works end-to-end with the smoke-test (<30s, negligible cost):
 
 ```bash
-pnpm edge -- --trigger "Your task description" --pipeline pipeline-generator
+curl -X POST http://localhost:3001/api/kernel/tasks/run \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"smoke-test","seedValues":{"task_text":"hello world"}}'
+# => { "ok": true, "taskId": "smoke-test-...", "versionHash": "..." }
 ```
 
-## Scripts
+Open the returned `taskId` in the dashboard (http://localhost:3000/kernel-next/&lt;taskId&gt;) to watch the agent stream live.
 
-| Command | Description |
-|---------|-------------|
-| `pnpm setup` | Interactive first-time setup (MCP, env, preflight) |
-| `pnpm dev` | Start server + dashboard in parallel |
-| `pnpm dev:server` | Start server only |
-| `pnpm dev:web` | Start dashboard only |
-| `pnpm build` | Build all packages |
-| `pnpm --filter server preflight` | Run environment preflight checks |
-| `pnpm --filter server registry:build` | Build registry package index |
-| `pnpm --filter server registry:bootstrap` | Install default config packages |
-| `pnpm edge -- --trigger "..." --pipeline <name>` | Run a pipeline via edge runner (frozen — see above) |
+### Authoring a new pipeline (AI-driven)
 
-## Documentation
+```bash
+curl -X POST http://localhost:3001/api/kernel/tasks/run \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "Pipeline Generator",
+    "seedValues": { "taskDescription": "A pipeline that takes a GitHub PR number, fetches the diff, and produces a Markdown security review." }
+  }'
+```
 
-The dashboard includes a comprehensive **Help** section (`/help`) covering:
+The pipeline-generator goes through: `analyzing → gate → genSkeleton → genPrompts → persisting`. At the gate, approve via the dashboard's **Proposals** page or:
 
-- Overview & comparison with direct CLI usage
-- Task creation, lifecycle, monitoring, and human interaction
-- Pipeline configuration, stage types, data flow, routing
-- Prompt hierarchy, knowledge fragments, context tiers
-- Architecture internals (state machine, agent execution pipeline, persistence, SSE)
-- Engine integration (Claude SDK, Gemini CLI), script library, MCP setup
+```bash
+# List pending gates for this task
+curl "http://localhost:3001/api/kernel/gates?taskId=<taskId>&answered=false" | jq
+# Approve
+curl -X POST http://localhost:3001/api/kernel/gates/<gateId>/answer \
+  -H 'Content-Type: application/json' -d '{"answer":"approve"}'
+```
 
-See [`apps/server/README.md`](apps/server/README.md) for API endpoint reference and server architecture.
+When the task finishes, the newly generated pipeline is registered in `pipeline_versions` — you can run it by name just like the builtins.
+
+## Architecture
+
+```
+apps/
+  server/             # Hono API (:3001) + kernel-next runtime + Claude Agent SDK
+    src/
+      index.ts             # server entry, resumability boot scan, routes
+      kernel-next/
+        ir/                # pipeline IR schema + SQLite schema
+        runtime/           # runner, real-executor, SSE, resumability
+        mcp/               # in-process MCP server, submit/validate/propose
+        hot-update/        # propose/approve/migrate/rollback engine
+        validator/         # structural / DAG / store-schema / types (tsc)
+      routes/              # Hono HTTP routes
+      builtin-pipelines/   # smoke-test + 3 research + pipeline-generator (IR JSON)
+  web/                # Next.js 16 dashboard (:3000), React 19 + Tailwind 4
+    src/app/kernel-next/   # task view, pipelines list, proposals UI
+packages/
+  shared/             # TypeScript types shared between server and web
+```
+
+### Key concepts
+
+- **Pipeline IR**: a JSON document describing stages, wires, external inputs, and an optional `store_schema`. AI-authored via `pipeline-generator`; stored verbatim in SQLite under a content-hash `versionHash`.
+- **Stage**: an `agent` (Claude, MCP tools + system prompt), a `script` (deterministic automation), or a `gate` (human approval).
+- **Port**: typed value produced or consumed by a stage. Writes go through the MCP `write_port` tool; reads go through `read_port`. Type compatibility is validated at submit-time by running `tsc` over a generated pipeline.ts.
+- **Run**: a task bound to a specific `versionHash`. Each stage attempt is persisted; if the server crashes mid-run, `bootResumability` picks it back up on restart (including SDK session resume on the in-flight agent stage).
+- **Hot update**: propose a patch against an existing `versionHash`, dry-run its impact, approve/reject, and optionally migrate running tasks to the new version (with `rerunFrom` controlling which stages get superseded). Rollback via `POST /api/kernel/tasks/:taskId/rollback`.
+
+### Selected HTTP endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/kernel/tasks/run` | Start a new task (by pipeline `name` or `versionHash`) |
+| `GET`  | `/api/kernel-next/tasks/:taskId/stream` | SSE stream of stage/agent/port events |
+| `GET`  | `/api/kernel/tasks/:taskId/status` | Task snapshot (current stage, gate state, attempts) |
+| `POST` | `/api/kernel/tasks/:taskId/migrate` | Apply an approved proposal to this running task |
+| `POST` | `/api/kernel/tasks/:taskId/rollback` | Rollback to an earlier version from this task's migration history |
+| `POST` | `/api/kernel/gates/:gateId/answer` | Answer a pending human-confirm gate |
+| `GET`  | `/api/kernel/pipelines` | List registered pipelines |
+| `GET`  | `/api/kernel/pipelines/:versionHash` | IR + prompts for a specific version |
+| `POST` | `/api/kernel/proposals` | Create a propose (IR patch and/or prompt replacement) |
+| `POST` | `/api/kernel/proposals/:id/approve` | Approve a pending proposal |
+| `POST` | `/api/kernel/proposals/:id/reject` | Reject a pending proposal |
+
+The in-process MCP server exposes the same surface to agents via `mcp____kernel_next____<tool>` for agents running inside a pipeline's agent stage.
+
+## Development
+
+```bash
+pnpm --filter server test       # server tests (~1500 cases, 40s)
+pnpm --filter server build      # tsc check
+pnpm --filter web test          # web tests
+pnpm --filter web test:e2e      # playwright E2E (requires server running)
+```
+
+Data lives in `/tmp/workflow-control-data/` by default (`kernel-next.db` + SSE history). Override via `DATA_DIR` env. On macOS `/tmp` is volatile across reboots — set `DATA_DIR` to a persistent path for real use.
 
 ## Configuration
 
-Two config files control the system (both gitignored):
+Two files control the system, both gitignored:
 
-- **`.env.local`** — local paths and secrets (per-developer)
-- **`system-settings.yaml`** — system behavior, integrations, agent defaults
+- **`apps/server/.env.local`** — per-developer paths and optional API tokens. Required keys:
+  - `REPOS_BASE_PATH` — where your git repos live (used by script stages that operate on repos)
+  - `WORKTREES_BASE_PATH` — where per-task worktrees are created
+- **CLI paths** — `CLAUDE_PATH` is auto-detected from PATH; override if needed.
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `REPOS_BASE_PATH` | Yes | Base directory where your git repos live |
-| `CLAUDE_PATH` / `GEMINI_PATH` / `CODEX_PATH` | No | Override CLI executable paths (auto-detected if on PATH) |
-| `GITHUB_ORG` | No | GitHub org for PR creation |
-| `FIGMA_ACCESS_TOKEN` | No | Figma API access (for design pipelines) |
+Optional tokens for script integrations (Notion, Figma, GitHub PR scripts) live in `.env.local` as well — see `.env.local.example`.
 
-`system-settings.yaml` supports `${ENV_VAR}` interpolation — keep secrets in `.env.local`, reference them in YAML via `${VAR_NAME}`.
+## What this project is not
+
+- Not a multi-tenant SaaS. No auth. No cross-user RBAC.
+- Not a team workflow / approval platform. Gates serve the individual user.
+- Not a general-purpose orchestrator (Temporal, Airflow, Prefect) — scope is AI-agent workflows only.
+- Not a chat wrapper — the engine is the product; the dashboard is just the primary UI.
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feat/my-feature`)
-3. Commit your changes (`git commit -m 'feat: add my feature'`)
-4. Push to the branch (`git push origin feat/my-feature`)
-5. Open a Pull Request
+Single-maintainer project; open an issue before sending a PR for non-trivial changes. Conventional commits (`fix:`, `feat:`, `docs:`, `refactor:`) are enforced in reviews.
 
 ## License
 
