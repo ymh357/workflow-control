@@ -14,8 +14,7 @@ export interface ToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, z.ZodType>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  handler: (args: any) => Promise<CallToolResult>;
+  handler: (args: Record<string, unknown>) => Promise<CallToolResult>;
 }
 
 /**
