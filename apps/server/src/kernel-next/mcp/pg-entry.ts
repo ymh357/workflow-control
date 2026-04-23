@@ -56,6 +56,11 @@ export interface PgEntryDeps {
     model: string;
     maxTurns?: number;
     maxBudgetUsd?: number;
+    // Monorepo tsc binary; forwarded into the factory-built MCP server
+    // so submit_pipeline's validateTypes avoids the broken tmp-dir `npx
+    // tsc` fallback. Without this, structurally valid IRs produced by
+    // pipeline-generator are misdiagnosed as WIRE_TYPE_MISMATCH.
+    tscPath?: string;
   }) => StageExecutor;
   model: string;
   maxTurns?: number;
@@ -138,6 +143,7 @@ export async function handleStartPipelineGenerator(
       model: deps.model,
       maxTurns: deps.maxTurns,
       maxBudgetUsd: deps.maxBudgetUsd,
+      tscPath: deps.tscPath,
     });
     try {
       const p = deps.runner({

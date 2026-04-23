@@ -101,6 +101,26 @@ describe("handleStartPipelineGenerator — happy path", () => {
     expect(runnerArgs.broadcaster).toBe(broadcaster);
   });
 
+  it("forwards deps.tscPath to executorFactory so the per-stage MCP can run validateTypes", async () => {
+    const ir = realIR();
+    const executorFactory = vi.fn(() => ({ executeStage: vi.fn() }) as unknown as StageExecutor);
+    await handleStartPipelineGenerator(
+      { description: "x" },
+      {
+        db: freshDb(),
+        broadcaster: new KernelNextBroadcaster(),
+        loader: vi.fn(() => ({ ir, promptRoot: "/p", pipelineDir: "/p", warnings: [], prompts: realPrompts })),
+        runner: vi.fn(async () => undefined),
+        executorFactory,
+        model: "m",
+        tscPath: "/path/to/monorepo/tsc",
+      },
+    );
+    expect(executorFactory).toHaveBeenCalledOnce();
+    const args = (executorFactory.mock.calls as unknown as [Record<string, unknown>][])[0]![0];
+    expect(args.tscPath).toBe("/path/to/monorepo/tsc");
+  });
+
   it("uses provided taskId when passed", async () => {
     const ir = realIR();
     const res = await handleStartPipelineGenerator(

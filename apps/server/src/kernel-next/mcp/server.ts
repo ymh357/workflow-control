@@ -1071,10 +1071,10 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
                   broadcaster: a.broadcaster,
                 });
               },
-              executorFactory: ({ versionHash, db: execDb, model, maxTurns, maxBudgetUsd }) =>
+              executorFactory: ({ versionHash, db: execDb, model, maxTurns, maxBudgetUsd, tscPath }) =>
                 new RealStageExecutor({
                   mcpServerFactory: (_dispatcher, pr) =>
-                    createKernelMcp(db, { surface: "internal", portRuntime: pr }),
+                    createKernelMcp(db, { surface: "internal", portRuntime: pr, tscPath }),
                   promptResolver: new DbPromptResolver(execDb, versionHash),
                   model,
                   maxTurns: maxTurns ?? 80,
@@ -1083,6 +1083,7 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
               model: options.pipelineGeneratorModel ?? "claude-sonnet-4-6",
               maxTurns: options.pipelineGeneratorMaxTurns ?? 80,
               maxBudgetUsd: options.pipelineGeneratorMaxBudgetUsd ?? 8,
+              tscPath: options.tscPath,
             },
           );
           return res.ok ? jsonResponse(res) : errorResponse(res.error, res as Record<string, unknown>);
