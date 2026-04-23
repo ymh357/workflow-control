@@ -50,6 +50,7 @@ import {
   type GuardFailure,
   type StageErrorContext,
 } from "./runner-wire-resolver.js";
+import { deleteTaskEnvValues } from "./task-env-values.js";
 
 export interface RunnerOptions {
   db: DatabaseSync;
@@ -748,6 +749,8 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
         finalsRow.detail,
         Date.now(),
       );
+      // P3.6: plaintext env tokens must not outlive the task lifetime.
+      deleteTaskEnvValues(opts.db, opts.taskId);
     } catch (err) {
       // task_finals write must never mask the real termination reason.
       // Log-and-swallow: signalTermination still fires, callers fall back

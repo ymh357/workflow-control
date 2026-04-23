@@ -14,6 +14,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { PipelineIR } from "../ir/schema.js";
 import { getPipelineIR } from "../ir/sql.js";
 import { reconcileRunningAttempts } from "./graceful-shutdown.js";
+import { deleteTaskEnvValues } from "./task-env-values.js";
 
 export function scanOrphanTaskIds(db: DatabaseSync): string[] {
   const rows = db.prepare(
@@ -122,6 +123,8 @@ export async function bootResumability(
         `INSERT OR IGNORE INTO task_finals (task_id, version_hash, final_state, reason, detail, ended_at)
          VALUES (?, ?, 'completed', 'natural', 'recovered_no_finals_row', ?)`,
       ).run(taskId, cls.versionHash, now);
+      // P3.6: plaintext env tokens must not outlive the task lifetime.
+      deleteTaskEnvValues(db, taskId);
       terminalRecovered += 1;
       continue;
     }
@@ -135,6 +138,8 @@ export async function bootResumability(
         `INSERT OR IGNORE INTO task_finals (task_id, version_hash, final_state, reason, detail, ended_at)
          VALUES (?, ?, 'failed', 'error', ?, ?)`,
       ).run(taskId, vhRow?.version_hash ?? "-", `unresolvable:${cls.reason}`, now);
+      // P3.6: plaintext env tokens must not outlive the task lifetime.
+      deleteTaskEnvValues(db, taskId);
       unresolvable += 1;
       continue;
     }
