@@ -767,8 +767,9 @@ export default function KernelNextTaskPage() {
                                       <Link
                                         href={`/kernel-next/attempts/${encodeURIComponent(a.attempt_id)}`}
                                         className="text-blue-600 hover:underline"
+                                        title={a.attempt_id}
                                       >
-                                        {a.attempt_id}
+                                        {a.attempt_id.slice(0, 8)}
                                       </Link>
                                     </td>
                                     <td

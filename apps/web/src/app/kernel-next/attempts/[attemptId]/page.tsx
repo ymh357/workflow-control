@@ -146,7 +146,7 @@ export default function AttemptDetailsPage(): React.JSX.Element {
       </div>
 
       {/* Tab bar */}
-      <div className="mb-3 flex flex-wrap gap-1 border-b border-gray-300">
+      <div role="tablist" className="mb-3 flex flex-wrap gap-1 border-b border-gray-300">
         {(
           [
             ["tool-calls", `Tool Calls (${details.toolCalls.length})`],
@@ -159,6 +159,8 @@ export default function AttemptDetailsPage(): React.JSX.Element {
           <button
             key={key}
             type="button"
+            role="tab"
+            aria-selected={tab === key}
             onClick={() => setTab(key)}
             className={`rounded-t border-b-2 px-3 py-1 text-xs ${
               tab === key
