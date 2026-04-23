@@ -93,7 +93,9 @@ type ToolName =
   // A4 Phase 4.5 Tier2
   | "replay_stage"
   // A4 Phase 4.5 Tier3
-  | "dry_run_stage" | "propose_pipeline_fix";
+  | "dry_run_stage" | "propose_pipeline_fix"
+  // Phase 4 P4.1 (D8)
+  | "retry_task";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
@@ -111,6 +113,8 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "replay_stage",
   // A4 Phase 4.5 Tier3
   "dry_run_stage", "propose_pipeline_fix",
+  // Phase 4 P4.1 (D8)
+  "retry_task",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 

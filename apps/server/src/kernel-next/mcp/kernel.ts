@@ -139,6 +139,20 @@ export type MigrateTaskResult =
     }
   | { ok: false; diagnostics: Diagnostic[] };
 
+// Phase 4 P4.1 (D8) — retry result. Mirrors MigrateTaskResult but the
+// operation is same-version re-execution (no IR change), so fromVersion
+// and toVersion are always equal. Surfaced as fromVersion only.
+export type RetryTaskResult =
+  | {
+      ok: true;
+      eventId: string;
+      taskId: string;
+      fromVersion: string;
+      rerunFrom: string;
+      supersededStages: string[];
+    }
+  | { ok: false; diagnostics: Diagnostic[] };
+
 // Gate lifecycle (§3.3 / §8.1). createGate is called by the runner when
 // a gate-type stage enters its executing substate; answerGate is called
 // via MCP answer_gate or REST when an answer arrives.
@@ -1450,6 +1464,147 @@ export class KernelService {
       fromVersion: outcome.fromVersion,
       toVersion: outcome.toVersion,
       rerunFrom: outcome.resumedFromStage,
+      supersededStages: outcome.supersededStages,
+    };
+  }
+
+  /**
+   * Phase 4 P4.1 (D8) — retry a task from a specific stage (or the first
+   * errored stage if fromStage omitted). Reuses hot-update's rerunFrom
+   * semantics by synthesising an approved proposal whose base_version
+   * equals its proposed_version — executeMigration then runs its
+   * supersede + startPipelineRun flow against the task's CURRENT IR.
+   *
+   * Diagnostic codes:
+   *   - TASK_NOT_FOUND    — no stage_attempts rows for taskId
+   *   - NO_FAILED_STAGE   — fromStage omitted and no attempt in 'error'
+   *   - UNKNOWN_STAGE     — fromStage does not exist in the task's IR
+   *   - MIGRATION_*       — forwarded from executeMigration on failure
+   */
+  async retryTaskFromStage(input: {
+    taskId: string;
+    fromStage?: string;
+    actor?: string;
+  }): Promise<RetryTaskResult> {
+    const { taskId } = input;
+    const actor = input.actor ?? "mcp-retry";
+
+    // 1. Resolve the task's current version via its most-recent attempt.
+    const currentRow = this.db.prepare(
+      `SELECT version_hash FROM stage_attempts
+       WHERE task_id = ? ORDER BY started_at DESC LIMIT 1`,
+    ).get(taskId) as { version_hash: string } | undefined;
+    if (!currentRow) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "TASK_NOT_FOUND",
+          message: `task '${taskId}' has no stage_attempts — nothing to retry`,
+          context: { taskId },
+        }],
+      };
+    }
+    const currentVersion = currentRow.version_hash;
+
+    // 2. Resolve fromStage. Explicit -> validate against IR. Omitted ->
+    //    earliest 'error' stage by started_at, first attempt in history.
+    const ir = getPipelineIR(this.db, currentVersion);
+    if (!ir) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "PATCH_APPLY_ERROR",
+          message: `IR for task '${taskId}' version '${currentVersion}' not found`,
+          context: { taskId, currentVersion },
+        }],
+      };
+    }
+
+    let fromStage: string;
+    if (input.fromStage !== undefined) {
+      if (!ir.stages.some((s) => s.name === input.fromStage)) {
+        return {
+          ok: false,
+          diagnostics: [{
+            code: "UNKNOWN_STAGE",
+            message: `stage '${input.fromStage}' is not in the task's pipeline`,
+            context: { taskId, fromStage: input.fromStage },
+          }],
+        };
+      }
+      fromStage = input.fromStage;
+    } else {
+      const failed = this.db.prepare(
+        `SELECT stage_name FROM stage_attempts
+         WHERE task_id = ? AND status = 'error'
+         ORDER BY started_at ASC LIMIT 1`,
+      ).get(taskId) as { stage_name: string } | undefined;
+      if (!failed) {
+        return {
+          ok: false,
+          diagnostics: [{
+            code: "NO_FAILED_STAGE",
+            message: `task '${taskId}' has no stage_attempts in 'error' status`,
+            context: { taskId },
+          }],
+        };
+      }
+      fromStage = failed.stage_name;
+    }
+
+    // 3. Synthesise an approved same-version proposal + invoke migration.
+    const syntheticProposalId = randomUUID();
+    const diagnosticJson = JSON.stringify({
+      __kind: "retry-v1",
+      originTaskId: taskId,
+      fromStage,
+    });
+    this.db.prepare(
+      `INSERT INTO pipeline_proposals
+       (proposal_id, base_version, proposed_version, actor, status,
+        diagnostic_json, created_at, rerun_from, migrate_running)
+       VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?)`,
+    ).run(
+      syntheticProposalId,
+      currentVersion,
+      currentVersion, // same-version retry
+      actor,
+      diagnosticJson,
+      Date.now(),
+      fromStage,
+      JSON.stringify([taskId]),
+    );
+
+    const outcome = await executeMigration({
+      db: this.db,
+      taskId,
+      proposalId: syntheticProposalId,
+      interruptWaitMsOverride: this.opts.migrationInterruptWaitMsOverride,
+    });
+    if (!outcome.ok) {
+      const code: Diagnostic["code"] =
+        outcome.code === "MIGRATION_INTERRUPT_TIMEOUT"
+          ? "MIGRATION_INTERRUPT_TIMEOUT"
+          : outcome.code === "MIGRATION_RESUME_FAILED"
+            ? "MIGRATION_RESUME_FAILED"
+            : outcome.code === "MIGRATION_IN_PROGRESS"
+              ? "MIGRATION_IN_PROGRESS"
+              : "PATCH_APPLY_ERROR";
+      return {
+        ok: false,
+        diagnostics: [{
+          code,
+          message: outcome.message,
+          context: outcome.context,
+        }],
+      };
+    }
+    return {
+      ok: true,
+      eventId: outcome.eventId,
+      taskId: outcome.taskId,
+      fromVersion: outcome.fromVersion,
+      rerunFrom: fromStage,
       supersededStages: outcome.supersededStages,
     };
   }

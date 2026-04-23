@@ -77,7 +77,7 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("combined surface exposes 25 tools with expected names", () => {
+  it("combined surface exposes 26 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
@@ -100,6 +100,7 @@ describe("kernel-next MCP server", () => {
       "read_port",
       "reject_proposal",
       "replay_stage",
+      "retry_task",
       "rollback_hot_update",
       "run_pipeline",
       "start_pipeline_generator",
@@ -406,6 +407,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
       "read_port",
       "reject_proposal",
       "replay_stage",
+      "retry_task",
       "rollback_hot_update",
       "run_pipeline",
       "start_pipeline_generator",
@@ -448,7 +450,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     // Phase 4.5 Tier2: +1 tool (replay_stage)
     // Phase 4.5 Tier3: +2 tools (dry_run_stage, propose_pipeline_fix)
     // Phase 4.5 T3: +1 tool (compare_runs)
-    expect(tools.size).toBe(25);
+    // Phase 4 P4.1 (D8): +1 tool (retry_task)
+    expect(tools.size).toBe(26);
     expect(tools.has("write_port")).toBe(true);
     expect(tools.has("submit_pipeline")).toBe(true);
     expect(tools.has("migrate_task")).toBe(true);
@@ -471,8 +474,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
     const tools = getTools(mcp);
-    // 'external' = EXTERNAL_TOOLS only (24 tools after Phase 4.5 T3; excludes write_port).
-    expect(tools.size).toBe(24);
+    // 'external' = EXTERNAL_TOOLS only (25 tools after P4.1 D8; excludes write_port).
+    expect(tools.size).toBe(25);
     expect(tools.has("write_port")).toBe(false);
     expect(tools.has("submit_pipeline")).toBe(true);
     db.close();

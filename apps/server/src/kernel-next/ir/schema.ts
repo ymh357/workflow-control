@@ -365,6 +365,10 @@ export const DiagnosticSchema = z.object({
     // proposedHash === currentVersion (empty patch + no/identical
     // prompts, or non-empty but idempotent patch).
     "NO_OP_PROPOSAL",
+    // Phase 4 P4.1 (D8) — retry_task MCP tool diagnostics.
+    "TASK_NOT_FOUND",
+    "NO_FAILED_STAGE",
+    "UNKNOWN_STAGE",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

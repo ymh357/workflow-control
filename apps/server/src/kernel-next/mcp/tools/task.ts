@@ -126,5 +126,48 @@ export function buildTaskTools(deps: ToolsDeps): ToolDef[] {
         }
       },
     },
+    {
+      name: "retry_task",
+      description:
+        "Retry a task from a specific stage (or the first errored stage " +
+        "if fromStage omitted). Internally reuses the hot-update rerunFrom " +
+        "mechanism — a same-version synthetic proposal is created and the " +
+        "migration orchestrator supersedes the target stage + its " +
+        "wire-downstream, then kicks off startPipelineRun with resumeFrom. " +
+        "Does NOT submit a new pipeline version; runs against the task's " +
+        "current version.",
+      inputSchema: {
+        taskId: z.string().min(1).describe("The task to retry."),
+        fromStage: z.string().min(1).optional().describe(
+          "Stage name to rewind to. Omit to retry from the earliest " +
+          "stage whose latest attempt is in 'error' status.",
+        ),
+        actor: z.string().min(1).optional().describe(
+          "Audit actor label persisted on the synthetic proposal and " +
+          "hot_update_events row. Defaults to 'mcp-retry'.",
+        ),
+      },
+      handler: async (args: Record<string, unknown>) => {
+        try {
+          const taskId = typeof args.taskId === "string" ? args.taskId : undefined;
+          if (!taskId) {
+            return errorResponse("taskId is required", { code: "INVALID_INPUT" });
+          }
+          const fromStage =
+            typeof args.fromStage === "string" && args.fromStage.length > 0
+              ? args.fromStage
+              : undefined;
+          const actor =
+            typeof args.actor === "string" && args.actor.length > 0
+              ? args.actor
+              : undefined;
+          return jsonResponse(
+            await kernel.retryTaskFromStage({ taskId, fromStage, actor }),
+          );
+        } catch (err) {
+          return errorResponse(err instanceof Error ? err.message : String(err));
+        }
+      },
+    },
   ];
 }
