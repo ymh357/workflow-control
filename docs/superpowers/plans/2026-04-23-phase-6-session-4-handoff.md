@@ -1,7 +1,7 @@
 # Phase 6 Session 4 — Handoff
 
 > **Date**: 2026-04-23
-> **Session head**: commit `4890c33`
+> **Session head**: commit `5b64de2`
 > **Previous handoff**: `docs/superpowers/plans/2026-04-23-phase-6-session-3-handoff.md`（上个 session 头 `4caa76f` / 尾 `e39ff7b`）
 
 ---
@@ -106,12 +106,28 @@ Run #24（rollback 完整路径）：
 
 **发现设计语义**：rollback 用 **IR diff** 判断是否有差异，prompt-only 改动会返回 `ROLLBACK_EMPTY_DIFF`。要触发真实 rollback 需要 IR-level patch（如 `update_stage_config`）。
 
+### 2.12 README 重写（commit `5b64de2`）
+
+之前 README 描述的是 kernel-next 之前的架构——legacy XState、YAML pipelines under `config/pipelines/`, Edge Runner、Gemini/Codex、registry bootstrap、不存在的 `/mcp` HTTP endpoint。朋友照旧 Quick Start 会在 `cp config/system-settings.example.yaml` 处卡住。
+
+重写聚焦现状：
+- Prerequisites: Node>=20, pnpm, Claude Code CLI
+- Quick Start 3 步：clone → `cp .env.local.example` → `pnpm dev`
+- First Run：copy-paste 可行的 smoke-test curl
+- Authoring：pipeline-generator 自然语言 → DB-registered pipeline，含 gate 答复
+- Architecture：kernel-next/ + routes/ + builtin-pipelines/ 实际目录树
+- 4 个 builtin 全覆盖表
+- 11 个真实 HTTP endpoint（含本 session 新加的 rollback route）
+- 删除 MCP `/mcp` HTTP endpoint 虚假引用
+
+同步重写 `apps/server/README.md` 为 compact hacking 参考，defer onboarding 到 top-level。
+
 ## 3. 当前状态
 
 ```
 Branch: main
-Head:   4890c33（docs 未 commit，待本 session 收尾 commit）
-Status: 2 docs modified
+Head:   5b64de2
+Status: clean（除 .claude/scheduled_tasks.lock untracked）
 
 Server tests: 1499 pass / 4 skipped / tsc 0
 Web tests:    17 pass / tsc 0
@@ -139,6 +155,7 @@ Web tests:    17 pass / tsc 0
 - 债 P（FAILED sentinel 残留 prompt branch）: ✅ `0251c20`
 - 债 Q（tool_use_error 不被识别为 isError=true）: ✅ `f4283e1`
 - 债 R（rollback 只有 MCP surface，HTTP 缺失）: ✅ `4890c33`
+- 债 S（README 描述 pre-kernel-next 架构, onboarding 会卡）: ✅ `5b64de2`
 
 ## 5. 完整未完成清单
 
@@ -188,22 +205,24 @@ lsof -nP -iTCP:3001 | head -3
 
 ## 7. 下一步候选
 
-**本 session 已完成**所有原候选 + 4 条新债：
+**本 session 已完成**所有原候选 + 5 条新债：
 - #2 tool_calls_json（debt N） → `e3b9229`
 - #3 tscPath 契约加固 → `c06d21d`
 - #1 Writer dogfood → run #22 + debt O fix `a56c148`
 - FAILED sentinel（debt P）→ `0251c20`
 - tool_use_error isError（debt Q）→ `f4283e1`
-- M4 reject/rollback + rollback HTTP route（debt R）→ run #23, #24 + `4890c33`
+- M4 reject/rollback + rollback HTTP route（debt R）→ runs #23/#24 + `4890c33`
+- README rewrite（debt S）→ `5b64de2`
 
-剩余：
+**autonomous 空间见底**。架构债 A-S 全清，4/4 builtin 全 dogfood，M4 三条路径都真实触发，README onboarding 修复。
 
-1. **README + 起动脚本**（M2 onboarding 最后一公里）—— autonomous 可做的最后一项
-2. **deployment 便利化**（README 之外的 OS 安装/依赖管理）—— 半 autonomous
-3. **朋友邀请**—— 非 autonomous
-4. **run #22 验证 debt O fix**：下次 PG run 应该观察到 write_port 不再 double-call（节省 ~5 tool calls/run）—— 下次 PG dogfood 自然覆盖
+剩余全部**非 autonomous**：
 
-**autonomous 空间接近见底**。架构债 A-R 全清。4 个 builtin coverage 全部 dogfood，M4 所有 3 条路径（propose/reject/rollback）真实触发。剩 #1 README 是最后一项 autonomous 工作。
+1. **朋友邀请**——真实 M2 测试的触发条件。你来做
+2. **deployment 便利化**——比如 brew tap / docker image / installer script；取决于要到多简单。半 autonomous（我能写 Dockerfile，但实际 deploy 需要用户指示目标平台）
+3. **run #22 debt O fix 的自然验证**：下一次 PG dogfood 会自然观察到 write_port 不再 double-call（~5 tool calls/run 的节省），无需专门跑
+
+handoff §5.3 的 FAILED sentinel 条目现在**真的死了**——commit `0251c20` 让 prompt 不再写 sentinel，kernel 自然 mark error。
 
 ## 8. 参考文档
 
