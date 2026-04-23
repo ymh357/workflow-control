@@ -32,9 +32,20 @@ type StageIR = AgentStage | ScriptStage | GateStage;
 
 interface StageCommon { name: string; inputs: PortIR[]; outputs: PortIR[]; }
 
+interface McpServerEntry {
+  name: string;                          // matches ^[a-zA-Z_][a-zA-Z0-9_-]*$; __*__ RESERVED
+  command: string;
+  args: string[];
+  env?: Record<string, string>;          // ${VAR_NAME} placeholders for runtime-supplied values
+  envKeys: string[];                     // env var names the user must supply via envValues
+}
+
 interface AgentStage extends StageCommon {
   type: "agent";
-  config: { promptRef: string };         // convention: same as stage.name
+  config: {
+    promptRef: string;                   // convention: same as stage.name
+    mcpServers?: McpServerEntry[];       // omit when stage needs no external MCPs
+  };
   fanout?: { input: string };
 }
 
@@ -181,6 +192,37 @@ If any check fails, fix or emit diagnostics in your own thinking and try again b
 
 - If stageContracts has internal inconsistencies the converter cannot reconcile (e.g. reads an upstream port that no other stage writes): emit the best-effort IR and note the inconsistency in your `write_port` call of `warnings` — but **still emit `ir`** so downstream can continue. Persisting agent will see submit_pipeline's diagnostics and may fix.
 - If `design.subPipelineContracts` is missing or empty, `subIrs: []`.
+
+## Wiring `recommendedMcps` into agent stages
+
+After producing each agent stage, determine which MCPs from `analysis.recommendedMcps` it needs (read the stage's `Purpose` / `Inputs` / `Outputs` alongside the analysis' `needsMcps` or equivalent signal). Attach that subset to the stage's `config.mcpServers`:
+
+```json
+{
+  "name": "fetchIssues",
+  "type": "agent",
+  "inputs": [{ "name": "repo", "type": "string" }],
+  "outputs": [{ "name": "issues", "type": "object[]" }],
+  "config": {
+    "promptRef": "fetch-issues",
+    "mcpServers": [
+      {
+        "name": "github",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" },
+        "envKeys": ["GITHUB_TOKEN"]
+      }
+    ]
+  }
+}
+```
+
+Rules:
+- Omit `mcpServers` entirely when a stage needs no external MCPs (do not emit an empty array).
+- Re-use the exact object shape from `analysis.recommendedMcps[i]`; do not mutate server definitions per stage. If two stages use the same server (same `name`), both attach the SAME JSON subtree.
+- The user supplies each server's `envKeys` at `run_pipeline` time via the `envValues` argument.
+- Do NOT emit `mcpServers` entries with `name` matching `__*__` (reserved).
 
 ## Output (via write_port)
 

@@ -100,10 +100,33 @@ Emit all of the following port values:
 - `estimatedStageCount: number` — total stage count including sub-pipeline stages.
 - `usesFanout: boolean` — whether any stage has fanout.
 - `usesSubPipelines: boolean` — whether any stage invokes run_pipeline.
-- `recommendedMcps: string[]` — MCP names from PulseMCP search.
+- `recommendedMcps: Array<{ name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[] }>` — structured MCP server definitions discovered via PulseMCP search (see §mcpServers format below).
 - `recommendedSkills: string[]` — skills from external discovery.
 - `targetRepoName: string` — repository name if specified; empty string otherwise.
 - `assumptions: string[]` — assumptions made for user review.
 - `stageContracts: object[]` — array of StageContract objects (§ shape above).
 - `subPipelineContracts: object[]` — optional; array of SubPipelineContract objects.
 - `summary: markdown` — design summary for user.
+
+### mcpServers format (for `recommendedMcps` port)
+
+Each entry in `recommendedMcps` describes ONE external MCP server the pipeline may use:
+
+```json
+{
+  "name": "github",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-github"],
+  "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" },
+  "envKeys": ["GITHUB_TOKEN"]
+}
+```
+
+Field rules:
+- `name`: short identifier matching `^[a-zA-Z_][a-zA-Z0-9_-]*$`. Names matching `__*__` are RESERVED (would shadow the kernel MCP) and MUST NOT be used. Examples of valid names: `github`, `notion`, `figma`, `context7`, `linear`, `gitlab`, `pulsemcp`.
+- `command`: executable (typically `npx` for NPM-hosted MCP servers).
+- `args`: launch arguments — order matters.
+- `env`: optional — a map of environment-variable-name → value template. Use literal `${VAR_NAME}` placeholders for values the user must supply at runtime.
+- `envKeys`: list of env variable names the user must supply at `run_pipeline` time. This should equal the set of `${VAR}` tokens inside `env` values; enumerate them explicitly so the runtime can warn on missing keys.
+
+If PulseMCP search returns no matching server for a capability, emit what you found in `recommendedMcps` and describe the shortfall in `assumptions`. Do NOT invent server definitions for non-existent MCPs.
