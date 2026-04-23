@@ -241,10 +241,16 @@ export function createAgentMachine() {
       recordInterruptedFromWaiting: assign({
         result: () => ({ kind: "interrupted" as const, from: "waiting_for_claude" as const }),
       }),
-      // P5.3 / D7 — observability counter. Increments when utilization is
-      // >= threshold, resets otherwise. The machine does not transition
+      // P5.3 / D7 — observability counter. The machine does not transition
       // on this action; the counter is surfaced via context for the
       // executor's post-send inspection.
+      //
+      // Counter semantics:
+      //   - utilization >= threshold → increment consecutive-signal counter
+      //   - utilization < threshold  → reset to 0 (rate pressure has eased)
+      //   - utilization missing      → reset to 0 (conservative default:
+      //     treat absent data as recovery, not as a continuation of throttling —
+      //     avoids escalating backoff on malformed SDK events)
       updateRateLimitCounter: assign({
         consecutiveRateLimitSignals: ({ context, event }) => {
           if (event.type !== "RATE_LIMIT_SIGNAL") return context.consecutiveRateLimitSignals;

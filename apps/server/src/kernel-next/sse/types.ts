@@ -146,9 +146,10 @@ export interface RateLimitBackoffData {
   // 1-based count of consecutive signals that crossed the threshold on
   // this attempt. Resets between attempts (fresh executor, fresh count).
   signalCount: number;
-  // Latest observed utilization (0..1). Absent when the SDK emits a
-  // rate_limit_event without the utilization field populated.
-  utilization?: number;
+  // Latest observed utilization (0..1). Always present: real-executor
+  // only publishes when typeof util === "number" && shouldPause(util),
+  // so this field is guaranteed to be populated in every emitted event.
+  utilization: number;
 }
 
 // P4.4 / D30 — multi-diagnostic aggregation.
