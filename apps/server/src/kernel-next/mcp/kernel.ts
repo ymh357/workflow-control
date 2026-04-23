@@ -535,6 +535,22 @@ export class KernelService {
 
     const proposedHash = pipelineVersionHash({ ir: proposedIR, prompts: mergedPrompts });
 
+    // NO_OP_PROPOSAL: the merged IR + merged prompts produced the same
+    // version as the base. Either the patch was empty and prompts were
+    // absent / unchanged, or every op was idempotent. Reject — a
+    // proposal that doesn't change anything should never enter
+    // pipeline_proposals.
+    if (proposedHash === args.currentVersion) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "NO_OP_PROPOSAL",
+          message: "proposed version is identical to currentVersion — nothing changed",
+          context: { currentVersion: args.currentVersion },
+        }],
+      };
+    }
+
     // Persist new version (idempotent) and its prompt refs.
     if (getPipelineIR(this.db, proposedHash) === null) {
       const { source } = emitPipelineModule(proposedIR);

@@ -127,6 +127,7 @@ kernelProposalsRoute.post("/kernel/proposals", async (c) => {
   const code = result.diagnostics[0]?.code;
   const status =
     code === "PATCH_APPLY_ERROR" ? 400 :
+    code === "NO_OP_PROPOSAL" ? 400 :
     code === "PROMPT_REF_MISSING" ? 400 :
     code === "CONFLICT" ? 409 :
     code === "WIRE_TYPE_MISMATCH" ||

@@ -306,6 +306,63 @@ describe("KernelService", () => {
     expect(r.diagnostics.some((d) => d.code === "WIRE_TARGET_PORT_MISSING")).toBe(true);
     db.close();
   });
+
+  it("propose(empty patch, with prompts override) succeeds; proposedVersion differs from base", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+
+    const firstPromptRef = Object.keys(diamondPrompts())[0]!;
+    const r = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: { ops: [] },
+      actor: "ai:test-prompts-only",
+      prompts: { [firstPromptRef]: "fresh body" },
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.proposedVersion).not.toBe(submitted.versionHash);
+    db.close();
+  });
+
+  it("propose(empty patch, empty prompts) returns NO_OP_PROPOSAL", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+
+    const r = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: { ops: [] },
+      actor: "ai:test-truly-noop",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics[0]!.code).toBe("NO_OP_PROPOSAL");
+    db.close();
+  });
+
+  it("propose(idempotent patch, empty prompts) returns NO_OP_PROPOSAL", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+
+    // Find an agent stage and re-assign its promptRef to itself
+    // (the run-15 workaround pattern — now should be rejected).
+    const agentStage = diamondIR().stages.find((s) => s.type === "agent")!;
+    const currentRef = (agentStage as { config: { promptRef: string } }).config.promptRef;
+    const r = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: { ops: [{ op: "update_stage_config", stage: agentStage.name, configPatch: { promptRef: currentRef } }] },
+      actor: "ai:test-idempotent",
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics[0]!.code).toBe("NO_OP_PROPOSAL");
+    db.close();
+  });
 });
 
 // A1.2a: gate lifecycle — createGate + listGates + answerGate.

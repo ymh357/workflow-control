@@ -305,6 +305,27 @@ describe("REST /api/kernel/proposals", () => {
     expect(body.diagnostics[0]!.code).toBe("PATCH_APPLY_ERROR");
   });
 
+  it("POST /api/kernel/proposals returns 400 NO_OP_PROPOSAL for empty patch + empty prompts", async () => {
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/proposals", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        currentVersion: submitted.versionHash,
+        patch: { ops: [] },
+        actor: "ai:http-noop",
+      }),
+    }));
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.ok).toBe(false);
+    expect(body.diagnostics[0]!.code).toBe("NO_OP_PROPOSAL");
+  });
+
   it("POST /api/kernel/proposals accepts ops:[] at the route layer (service layer's NO_OP check is the gatekeeper)", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
     const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });

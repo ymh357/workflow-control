@@ -342,6 +342,12 @@ export const DiagnosticSchema = z.object({
     // before calling submit_pipeline. Without a dataflow the submitted
     // pipeline is a no-op but schema-legal. Reject.
     "EMPTY_DATAFLOW",
+    // Phase 6 propose-UI — IRPatchSchema now accepts ops:[] (for
+    // prompts-only proposals). The "nothing actually changed" guard
+    // lives at propose() and raises this when
+    // proposedHash === currentVersion (empty patch + no/identical
+    // prompts, or non-empty but idempotent patch).
+    "NO_OP_PROPOSAL",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),
