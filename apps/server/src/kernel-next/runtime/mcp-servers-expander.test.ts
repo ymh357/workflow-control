@@ -102,4 +102,12 @@ describe("expandMcpServers", () => {
     expect(out.a.env!.K).toBe("1");
     expect(out.b.env!.K).toBe("2");
   });
+
+  it("does not recursively expand taskEnv values (single-pass)", () => {
+    const decls: McpServerDecl[] = [{
+      name: "n", command: "c", args: [], env: { K: "${A}" }, envKeys: ["A"],
+    }];
+    const out = expandMcpServers(decls, { A: "${B}", B: "should-not-see" }, {});
+    expect(out.n.env!.K).toBe("${B}");
+  });
 });

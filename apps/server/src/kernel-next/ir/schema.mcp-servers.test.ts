@@ -84,4 +84,19 @@ describe("AgentStageSchema: mcpServers field", () => {
       })
     ).toThrow();
   });
+
+  it("rejects name matching reserved __*__ pattern", () => {
+    expect(() =>
+      AgentStageSchema.parse({
+        name: "s",
+        type: "agent",
+        inputs: [],
+        outputs: [{ name: "o", type: "string" }],
+        config: {
+          promptRef: "p",
+          mcpServers: [{ name: "__kernel_next__", command: "x", args: [], envKeys: [] }],
+        },
+      })
+    ).toThrow(/reserved/i);
+  });
 });

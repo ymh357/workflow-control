@@ -86,7 +86,9 @@ export const SubAgentDefSchema = z.object({
 });
 
 export const McpServerDeclSchema = z.object({
-  name: z.string().min(1).max(64).regex(/^[a-zA-Z_][a-zA-Z0-9_-]*$/, "must start with letter or underscore; letters, digits, underscore, dash only"),
+  name: z.string().min(1).max(64)
+    .regex(/^[a-zA-Z_][a-zA-Z0-9_-]*$/, "must start with letter or underscore; letters, digits, underscore, dash only")
+    .refine((n) => !/^__.+__$/.test(n), "names matching __*__ are reserved (would shadow kernel MCP)"),
   command: z.string().min(1),
   args: z.array(z.string()).default([]),
   env: z.record(z.string(), z.string()).optional(),
