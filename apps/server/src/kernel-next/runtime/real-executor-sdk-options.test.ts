@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import type { SubAgentDef } from "../ir/schema.js";
 import { buildSdkBaseOptions } from "./real-executor-sdk-options.js";
 
 describe("real-executor-sdk-options: buildSdkBaseOptions", () => {
@@ -88,5 +89,112 @@ describe("real-executor-sdk-options: buildSdkBaseOptions", () => {
       workspaceDir: "/tmp/wd",
     });
     expect(opts.cwd).toBe("/tmp/wd");
+  });
+
+  it("omits agents field when subAgents is an empty array", () => {
+    const opts = buildSdkBaseOptions({
+      systemPromptAppend: "",
+      kernelMcp: Symbol() as unknown as never,
+      model: undefined,
+      maxTurns: 5,
+      maxBudgetUsd: undefined,
+      claudePath: undefined,
+      childEnv: {},
+      subAgents: [],
+      workspaceDir: undefined,
+    });
+    expect(opts.agents).toBeUndefined();
+  });
+
+  it("populates agents map when subAgents array provided", () => {
+    const subAgents: SubAgentDef[] = [
+      { name: "researcher", description: "does research", prompt: "you research things" },
+    ];
+    const opts = buildSdkBaseOptions({
+      systemPromptAppend: "",
+      kernelMcp: Symbol() as unknown as never,
+      model: undefined,
+      maxTurns: 5,
+      maxBudgetUsd: undefined,
+      claudePath: undefined,
+      childEnv: {},
+      subAgents,
+      workspaceDir: undefined,
+    });
+    expect(opts.agents).toBeDefined();
+    expect(opts.agents).toHaveProperty("researcher");
+    expect(opts.agents!["researcher"]).toEqual({
+      description: "does research",
+      prompt: "you research things",
+    });
+  });
+
+  it("passes through tools/model/maxTurns from SubAgentDef when present", () => {
+    const subAgents: SubAgentDef[] = [
+      {
+        name: "r",
+        description: "d",
+        prompt: "p",
+        tools: ["Read"],
+        model: "sonnet",
+        maxTurns: 3,
+      },
+    ];
+    const opts = buildSdkBaseOptions({
+      systemPromptAppend: "",
+      kernelMcp: Symbol() as unknown as never,
+      model: undefined,
+      maxTurns: 5,
+      maxBudgetUsd: undefined,
+      claudePath: undefined,
+      childEnv: {},
+      subAgents,
+      workspaceDir: undefined,
+    });
+    expect(opts.agents).toBeDefined();
+    expect(opts.agents!["r"]).toEqual({
+      description: "d",
+      prompt: "p",
+      tools: ["Read"],
+      model: "sonnet",
+      maxTurns: 3,
+    });
+  });
+
+  it("omits absent optional fields from SubAgentDef entry (no tools/model/maxTurns keys)", () => {
+    const subAgents: SubAgentDef[] = [
+      { name: "writer", description: "writes things", prompt: "you write" },
+    ];
+    const opts = buildSdkBaseOptions({
+      systemPromptAppend: "",
+      kernelMcp: Symbol() as unknown as never,
+      model: undefined,
+      maxTurns: 5,
+      maxBudgetUsd: undefined,
+      claudePath: undefined,
+      childEnv: {},
+      subAgents,
+      workspaceDir: undefined,
+    });
+    const entry = opts.agents!["writer"];
+    expect(entry).not.toHaveProperty("tools");
+    expect(entry).not.toHaveProperty("model");
+    expect(entry).not.toHaveProperty("maxTurns");
+  });
+
+  it("passes childEnv through as opts.env", () => {
+    const env = { FOO: "bar", BAZ: "qux" };
+    const opts = buildSdkBaseOptions({
+      systemPromptAppend: "",
+      kernelMcp: Symbol() as unknown as never,
+      model: undefined,
+      maxTurns: 5,
+      maxBudgetUsd: undefined,
+      claudePath: undefined,
+      childEnv: env,
+      subAgents: undefined,
+      workspaceDir: undefined,
+    });
+    expect(opts.env).toEqual(env);
   });
 });
