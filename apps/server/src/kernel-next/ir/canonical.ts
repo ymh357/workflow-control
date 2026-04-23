@@ -77,12 +77,37 @@ function canonicalizeGateConfig(cfg: GateStage["config"]): CanonicalValue {
 // be sorted by sub-agent name so authoring permutations hash
 // identically. Absent subAgents omitted (preserves baseline hashes
 // for every pre-D1 fixture).
+//
+// mcpServers (D1.2): sorted by name; within each server object keys
+// are sorted (via sortKeys), BUT args are positional so order is
+// preserved, and envKeys are sorted (they're a set of required env
+// var names with no positional semantics).
 function canonicalizeAgentConfig(cfg: AgentStage["config"]): CanonicalValue {
   const out: Record<string, unknown> = { promptRef: cfg.promptRef };
   if (cfg.subAgents && cfg.subAgents.length > 0) {
     out.subAgents = [...cfg.subAgents].sort((a, b) =>
       codepointCompare(a.name, b.name),
     );
+  }
+  if (cfg.mcpServers && cfg.mcpServers.length > 0) {
+    out.mcpServers = [...cfg.mcpServers]
+      .sort((a, b) => codepointCompare(a.name, b.name))
+      .map((m) => {
+        const server: Record<string, unknown> = {
+          args: [...m.args],
+          command: m.command,
+          envKeys: [...m.envKeys].sort(codepointCompare),
+          name: m.name,
+        };
+        if (m.env) {
+          const sortedEnv: Record<string, string> = {};
+          for (const k of Object.keys(m.env).sort(codepointCompare)) {
+            sortedEnv[k] = m.env[k]!;
+          }
+          server.env = sortedEnv;
+        }
+        return server;
+      });
   }
   return sortKeys(out);
 }
