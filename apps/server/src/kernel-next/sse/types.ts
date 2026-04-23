@@ -32,6 +32,12 @@ export interface KernelNextSSEEvent {
   // rely on this for causal ordering; history order is authoritative.
   timestamp: string;
   data: unknown;
+  // Per-task monotonic sequence. Callers of `broadcaster.publish`
+  // never set this — the broadcaster stamps it. Present on every event
+  // observed by subscribers or inspected via `historyFor()`. Typed as
+  // optional only so authoring sites don't need to pass a placeholder;
+  // the runtime invariant is that every delivered event has a seq.
+  seq?: number;
 }
 
 export interface TaskStateData {

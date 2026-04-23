@@ -150,4 +150,26 @@ describe("KernelNextBroadcaster", () => {
       expect(received[0].data.affectedStages).toEqual(["A", "B", "G"]);
     }
   });
+
+  it("stamps monotonic seq per task on publish", () => {
+    const b = new KernelNextBroadcaster({ historyLimit: 10 });
+    b.publish({ type: "task_state", taskId: "t1", timestamp: "x", data: { state: "running" } } as unknown as KernelNextSSEEvent);
+    b.publish({ type: "task_state", taskId: "t1", timestamp: "y", data: { state: "running" } } as unknown as KernelNextSSEEvent);
+    b.publish({ type: "task_state", taskId: "t2", timestamp: "z", data: { state: "running" } } as unknown as KernelNextSSEEvent);
+    const h1 = b.historyFor("t1");
+    const h2 = b.historyFor("t2");
+    expect(h1.map((e) => e.seq)).toEqual([1, 2]);
+    expect(h2.map((e) => e.seq)).toEqual([1]);
+  });
+
+  it("subscribe honours fromSeq to skip already-seen events", () => {
+    const b = new KernelNextBroadcaster({ historyLimit: 10 });
+    for (let i = 0; i < 5; i += 1) {
+      b.publish({ type: "task_state", taskId: "t1", timestamp: String(i), data: { state: "running" } } as unknown as KernelNextSSEEvent);
+    }
+    const received: KernelNextSSEEvent[] = [];
+    const un = b.subscribe("t1", (e) => { received.push(e); }, { fromSeq: 3 });
+    expect(received.map((e) => e.seq)).toEqual([4, 5]);
+    un();
+  });
 });
