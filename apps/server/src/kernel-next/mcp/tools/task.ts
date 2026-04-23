@@ -127,6 +127,47 @@ export function buildTaskTools(deps: ToolsDeps): ToolDef[] {
       },
     },
     {
+      name: "cancel_task",
+      description:
+        "Cancel a task. If the task is actively running in this process, " +
+        "dispatches INTERRUPT to its machine so the runner can fold " +
+        "graceful-summary / checkpoint writes into its finally block. " +
+        "Writes task_finals.final_state='cancelled' and cleans up " +
+        "task_env_values (plaintext tokens removed per P3.6). Returns " +
+        "TASK_ALREADY_TERMINAL if a task_finals row already exists and " +
+        "TASK_NOT_FOUND if the task has no stage_attempts.",
+      inputSchema: {
+        taskId: z.string().min(1).describe("Task to cancel."),
+        reason: z.string().optional().describe(
+          "Free-form reason persisted to task_finals.reason. " +
+          "Defaults to 'cancelled via MCP'.",
+        ),
+        actor: z.string().optional().describe(
+          "Audit actor. Appended to the persisted reason string. " +
+          "Defaults to 'mcp-cancel'.",
+        ),
+      },
+      handler: async (args: Record<string, unknown>) => {
+        try {
+          const taskId = typeof args.taskId === "string" ? args.taskId : undefined;
+          if (!taskId) {
+            return errorResponse("taskId is required");
+          }
+          const reason =
+            typeof args.reason === "string" && args.reason.length > 0
+              ? args.reason
+              : undefined;
+          const actor =
+            typeof args.actor === "string" && args.actor.length > 0
+              ? args.actor
+              : undefined;
+          return jsonResponse(kernel.cancelTask({ taskId, reason, actor }));
+        } catch (err) {
+          return errorResponse(err instanceof Error ? err.message : String(err));
+        }
+      },
+    },
+    {
       name: "retry_task",
       description:
         "Retry a task from a specific stage (or the first errored stage " +

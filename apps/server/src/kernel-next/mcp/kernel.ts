@@ -29,6 +29,7 @@ import {
 } from "../ir/sql.js";
 import { applyPatch, PatchApplyError } from "./patch.js";
 import { taskRegistry } from "../runtime/task-registry.js";
+import { deleteTaskEnvValues } from "../runtime/task-env-values.js";
 import { compileIRToMachine } from "../compiler/ir-to-machine.js";
 import { dryRunProposal as runDryRun } from "../hot-update/dry-run.js";
 import type {
@@ -153,6 +154,20 @@ export type RetryTaskResult =
     }
   | { ok: false; diagnostics: Diagnostic[] };
 
+// Phase 4 P4.3 (D4) — cancel_task result. Dispatches INTERRUPT to the
+// task's live dispatcher (if any) and writes a task_finals row with
+// final_state='cancelled'. wasRunning signals whether an actual
+// dispatcher was found in the registry; callers that want to assert
+// the task was actively running can check it.
+export type CancelTaskResult =
+  | {
+      ok: true;
+      taskId: string;
+      wasRunning: boolean;
+      reason: string;
+    }
+  | { ok: false; diagnostics: Diagnostic[] };
+
 // Gate lifecycle (§3.3 / §8.1). createGate is called by the runner when
 // a gate-type stage enters its executing substate; answerGate is called
 // via MCP answer_gate or REST when an answer arrives.
@@ -193,7 +208,7 @@ export type AnswerGateResult =
       diagnostics: Diagnostic[];
     };
 
-export type TaskStatus = "not_found" | "running" | "gated" | "completed" | "failed" | "orphaned";
+export type TaskStatus = "not_found" | "running" | "gated" | "completed" | "failed" | "cancelled" | "orphaned";
 
 export interface PendingGate {
   gateId: string;
@@ -204,7 +219,7 @@ export interface PendingGate {
 
 export type TaskStatusReport =
   | { ok: true; status: "not_found"; taskId: string }
-  | { ok: true; status: "running" | "completed" | "failed" | "orphaned"; taskId: string }
+  | { ok: true; status: "running" | "completed" | "failed" | "cancelled" | "orphaned"; taskId: string }
   | { ok: true; status: "gated"; taskId: string; pending: PendingGate[] };
 
 /**
@@ -1320,7 +1335,7 @@ export class KernelService {
     //      controlled pipeline error.
     const finalRow = this.db.prepare(
       `SELECT final_state FROM task_finals WHERE task_id = ?`,
-    ).get(taskId) as { final_state: "completed" | "failed" } | undefined;
+    ).get(taskId) as { final_state: "completed" | "failed" | "cancelled" } | undefined;
 
     const attempts = this.db.prepare(
       `SELECT stage_name, attempt_idx, status FROM stage_attempts
@@ -1607,6 +1622,116 @@ export class KernelService {
       rerunFrom: fromStage,
       supersededStages: outcome.supersededStages,
     };
+  }
+
+  /**
+   * Phase 4 P4.3 (D4) — cancel a task. Dispatches INTERRUPT to the
+   * task's live machine dispatcher (if the runner is still active),
+   * writes a task_finals row with final_state='cancelled', and cleans
+   * up plaintext env values per the P3.6 contract.
+   *
+   * Ordering:
+   *   1. TASK_ALREADY_TERMINAL guard — task_finals already present.
+   *   2. TASK_NOT_FOUND guard — no stage_attempts rows at all.
+   *   3. Best-effort INTERRUPT dispatch — allows a live runner to
+   *      observe the cancel and fold graceful-summary / checkpoint
+   *      writes into its finally block. The runner's own task_finals
+   *      write (with reason='interrupted') races with ours below;
+   *      our write happens FIRST so an in-flight runner sees the
+   *      authoritative 'cancelled' verdict when its own upsert runs.
+   *   4. Write task_finals (cancelled/cancelled). Runner's ON
+   *      CONFLICT path will then update reason='interrupted' when
+   *      the INTERRUPT has propagated — final_state remains
+   *      'cancelled' because we wrote it first and the runner's
+   *      upsert overwrites reason/detail/ended_at but we'd prefer
+   *      'cancelled' to stick. We therefore only fall back to ON
+   *      CONFLICT DO NOTHING: the first writer wins. In practice
+   *      this means:
+   *         - cancel wins when INTERRUPT hasn't yet propagated;
+   *         - runner wins when the machine already terminated on
+   *           its own and task_finals existed (caught by guard 1).
+   *   5. deleteTaskEnvValues — P3.6 contract: plaintext tokens must
+   *      never outlive the task, regardless of how the task ended.
+   */
+  cancelTask(input: {
+    taskId: string;
+    reason?: string;
+    actor?: string;
+  }): CancelTaskResult {
+    const { taskId } = input;
+    const actor = input.actor ?? "mcp-cancel";
+    const baseReason = input.reason ?? "cancelled via MCP";
+    // task_finals.reason is a short enum (CHECK constraint); the
+    // free-form audit string goes into detail. Downstream readers
+    // that care about actor/message consult detail — reason alone
+    // just says "yes, this was a cancel".
+    const detail = `${baseReason} (actor=${actor})`;
+
+    // 1. TASK_ALREADY_TERMINAL — task_finals already present.
+    const existing = this.db.prepare(
+      `SELECT final_state FROM task_finals WHERE task_id = ?`,
+    ).get(taskId) as { final_state: string } | undefined;
+    if (existing) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "TASK_ALREADY_TERMINAL",
+          message:
+            `task '${taskId}' is already terminal with final_state='${existing.final_state}'`,
+          context: { taskId, currentFinalState: existing.final_state },
+        }],
+      };
+    }
+
+    // 2. TASK_NOT_FOUND — no stage_attempts for this taskId.
+    const latest = this.db.prepare(
+      `SELECT version_hash FROM stage_attempts
+       WHERE task_id = ? ORDER BY started_at DESC LIMIT 1`,
+    ).get(taskId) as { version_hash: string } | undefined;
+    if (!latest) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "TASK_NOT_FOUND",
+          message: `task '${taskId}' has no stage_attempts — nothing to cancel`,
+          context: { taskId },
+        }],
+      };
+    }
+
+    // 3. Best-effort INTERRUPT dispatch. If the runner is still live
+    //    in-process, this lets the machine observe the cancel. If not
+    //    (reconciler hasn't started, already crashed, etc.), we still
+    //    proceed to write the task_finals row below.
+    const dispatcher = taskRegistry.get(taskId);
+    const wasRunning = dispatcher !== undefined;
+    if (dispatcher) {
+      try {
+        dispatcher.send({ type: "INTERRUPT" } as never);
+      } catch {
+        // Swallow — dispatcher failure must not block the cancel write.
+      }
+    }
+
+    // 4. Write task_finals. INSERT OR IGNORE: if the runner's finally
+    //    fires between guard 1 and here, accept the runner's verdict
+    //    (completed/failed) over our cancel — the task genuinely
+    //    finished on its own path. deleteTaskEnvValues below still
+    //    runs for the cleanup invariant.
+    this.db.prepare(
+      `INSERT OR IGNORE INTO task_finals
+       (task_id, version_hash, final_state, reason, detail, ended_at)
+       VALUES (?, ?, 'cancelled', 'cancelled', ?, ?)`,
+    ).run(taskId, latest.version_hash, detail, Date.now());
+
+    // 5. P3.6 — plaintext env tokens must not outlive the task.
+    try {
+      deleteTaskEnvValues(this.db, taskId);
+    } catch {
+      // Swallow — env cleanup failure must not flip the cancel result.
+    }
+
+    return { ok: true, taskId, wasRunning, reason: detail };
   }
 
 }

@@ -342,9 +342,9 @@ CREATE TABLE IF NOT EXISTS task_finals (
   task_id       TEXT PRIMARY KEY,
   version_hash  TEXT NOT NULL,
   final_state   TEXT NOT NULL
-    CHECK (final_state IN ('completed','failed')),
+    CHECK (final_state IN ('completed','failed','cancelled')),
   reason        TEXT NOT NULL
-    CHECK (reason IN ('natural','timeout','interrupted','error','thrown')),
+    CHECK (reason IN ('natural','timeout','interrupted','error','thrown','cancelled')),
   detail        TEXT,
   ended_at      INTEGER NOT NULL
 );

@@ -369,6 +369,8 @@ export const DiagnosticSchema = z.object({
     "TASK_NOT_FOUND",
     "NO_FAILED_STAGE",
     "UNKNOWN_STAGE",
+    // Phase 4 P4.3 (D4) — cancel_task MCP tool diagnostics.
+    "TASK_ALREADY_TERMINAL",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),
