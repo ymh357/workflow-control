@@ -1,7 +1,7 @@
 # Phase 6 Session 4 — Handoff
 
 > **Date**: 2026-04-23
-> **Session head**: commit `a56c148`
+> **Session head**: commit `4890c33`
 > **Previous handoff**: `docs/superpowers/plans/2026-04-23-phase-6-session-3-handoff.md`（上个 session 头 `4caa76f` / 尾 `e39ff7b`）
 
 ---
@@ -86,22 +86,42 @@ smoke-test 跑完 → greet/echoBack 的 tool_calls_json 验证：`result = [{"t
 
 Writer 用合理 synthetic inputs 跑通：199 字 deliverable, 5 out ports 全写, tier labels compliance 100%, cost $0.1036, 9246 tokens out。**副发现**：每个 `write_port` 被调两次——第一次用 prompt 暗示的 `mcp__kernel_next__` 名（SDK 不存在 → `<tool_use_error>`），第二次用真实 `mcp____kernel_next____` 名（成功）。SDK wrap server name `__kernel_next__` 用 `mcp__..__` 定界符 → 4 下划线每侧。Fix 分布在 5 个源文件 + 1 个 builtin prompt（persist.md），修 13 处 tool-name 拼写。persist.md 改动会使 PG builtin versionHash 变化（下次启动 auto-seed 新 hash）。
 
+### 2.9 FAILED sentinel 清理（commit `0251c20`）
+
+PG `persist.md` prompt 里的 "write FAILED sentinel on failure" 分支改成 "skip write_port + end turn" → kernel 的 output-compliance check 会自然 mark stage error。根因（tscPath/tool_use_id/MCP name）修完后该分支已 dead，这是 defensive cleanup 避免未来真失败时写 DB 垃圾数据。
+
+### 2.10 tool_use_error isError detection（commit `f4283e1`）
+
+Run #22 观察到：SDK 返回 "No such tool" 时把 `<tool_use_error>...</tool_use_error>` 放进 tool_result content 但 `is_error` flag 保持 false。`tool_calls_json.isError` 永 false → 任何 observability/retry 逻辑被骗。Fix: sdk-adapter 识别两种信号（`is_error=true` 或 content 含 `<tool_use_error>`），set isError=true。3 新 test。
+
+### 2.11 M4 reject/rollback 真实触发（runs #23, #24 + commit `4890c33`）
+
+Run #23（reject）：HTTP propose → reject via `POST /api/kernel/proposals/:id/reject` → DB `status='rejected'` 验证。
+
+Run #24（rollback 完整路径）：
+- 新增 `POST /api/kernel/tasks/:taskId/rollback` HTTP 路由（3 新 test，执行层 rollback.ts 已完整）
+- 发 smoke-test 完成 → propose 1（prompt-only autoApprove migrate）→ migrate 成功
+- propose 2（IR-level update_stage_config 改 promptRef，autoApprove migrate）→ migrate 成功（supersededStages=[echoBack, greet]）
+- HTTP rollback 到 v2 → divergenceStage='greet'，`rolled_back` audit row 入 DB
+
+**发现设计语义**：rollback 用 **IR diff** 判断是否有差异，prompt-only 改动会返回 `ROLLBACK_EMPTY_DIFF`。要触发真实 rollback 需要 IR-level patch（如 `update_stage_config`）。
+
 ## 3. 当前状态
 
 ```
 Branch: main
-Head:   a56c148（docs 未 commit，待本 session 收尾 commit）
+Head:   4890c33（docs 未 commit，待本 session 收尾 commit）
 Status: 2 docs modified
 
-Server tests: 1493 pass / 4 skipped / tsc 0
+Server tests: 1499 pass / 4 skipped / tsc 0
 Web tests:    17 pass / tsc 0
 ```
 
 **M 指标快照**（`docs/phase6-usage-log.md`）：
-- **M1**: 9 数据点（含 run #22 Writer）
-- **M2**: 0 朋友在用；**Resumability + AI-pipeline DB 注册 + observability + 4/4 builtin coverage 均完整**
+- **M1**: 11 数据点（含 runs #22/#23/#24）
+- **M2**: 0 朋友在用；Resumability + AI-pipeline DB 注册 + observability + 4/4 builtin coverage + M4 full-path 均完整
 - **M3**: 15/22 = 68%；**post-audit 11/11 = 100%**
-- **M4**: 5 / 0 / 0
+- **M4**: **8 / 1 / 1**（首次 reject + rollback 真实覆盖）
 
 ## 4. 架构债清零
 
@@ -116,6 +136,9 @@ Web tests:    17 pass / tsc 0
 - 债 L/M 契约加固（validator 自 resolve tscPath 兜底）: ✅ `c06d21d`
 - 债 N（sdk-adapter 读 `id` 而非 `tool_use_id`，tool_calls_json.result 永 null）: ✅ `e3b9229`
 - 债 O（prompts 用 `mcp__kernel_next__` 而非 `mcp____kernel_next____` 真实 SDK 名）: ✅ `a56c148`
+- 债 P（FAILED sentinel 残留 prompt branch）: ✅ `0251c20`
+- 债 Q（tool_use_error 不被识别为 isError=true）: ✅ `f4283e1`
+- 债 R（rollback 只有 MCP surface，HTTP 缺失）: ✅ `4890c33`
 
 ## 5. 完整未完成清单
 
@@ -165,19 +188,22 @@ lsof -nP -iTCP:3001 | head -3
 
 ## 7. 下一步候选
 
-**本 session 已完成**原候选 1-3 + debt O：
+**本 session 已完成**所有原候选 + 4 条新债：
 - #2 tool_calls_json（debt N） → `e3b9229`
 - #3 tscPath 契约加固 → `c06d21d`
-- #1 Writer dogfood → run #22 成功 + 副发现 debt O fix `a56c148`
+- #1 Writer dogfood → run #22 + debt O fix `a56c148`
+- FAILED sentinel（debt P）→ `0251c20`
+- tool_use_error isError（debt Q）→ `f4283e1`
+- M4 reject/rollback + rollback HTTP route（debt R）→ run #23, #24 + `4890c33`
 
 剩余：
 
-1. **FAILED sentinel 清理**：run #19 persisting agent 首次 submit 失败后写 FAILED sentinel 到 ports。现在根因修完（tscPath + tool_use_id + MCP tool name），该 defensive code 永不触发。若未来真失败，prompt 层规则仍会写 FAILED——考虑是否改 prompt 让 agent 直接 throw 让 retry 机制 handle
-2. **deployment 便利化**（M2 外部阻塞）—— onboarding 最后一公里。非 autonomous
-3. **朋友邀请**——真实 M2 测试。非 autonomous
-4. **run #22 验证 debt O fix**：下次 PG run 应该观察到 write_port 不再 double-call（节省 ~5 tool calls/run）
+1. **README + 起动脚本**（M2 onboarding 最后一公里）—— autonomous 可做的最后一项
+2. **deployment 便利化**（README 之外的 OS 安装/依赖管理）—— 半 autonomous
+3. **朋友邀请**—— 非 autonomous
+4. **run #22 验证 debt O fix**：下次 PG run 应该观察到 write_port 不再 double-call（节省 ~5 tool calls/run）—— 下次 PG dogfood 自然覆盖
 
-**autonomous 空间见底**。架构债 A-O 全清。**4 个 builtin coverage 全部 dogfood**。剩的都是 onboarding/外部动作，不再是 architectural bug。
+**autonomous 空间接近见底**。架构债 A-R 全清。4 个 builtin coverage 全部 dogfood，M4 所有 3 条路径（propose/reject/rollback）真实触发。剩 #1 README 是最后一项 autonomous 工作。
 
 ## 8. 参考文档
 
