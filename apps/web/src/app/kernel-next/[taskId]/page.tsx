@@ -17,6 +17,7 @@
 
 import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
+import Link from "next/link";
 import { GateCard, type GateContextResponse } from "../../../components/gate-card";
 import { DiagnosticsPanel, type Diagnostic } from "../../../components/diagnostics-panel";
 import { AuditTimeline, type AuditEntry } from "../../../components/audit-timeline";
@@ -762,7 +763,14 @@ export default function KernelNextTaskPage() {
                                 <React.Fragment key={a.attempt_id}>
                                   <tr>
                                     <td className="px-2 py-1 text-gray-600">{a.attempt_idx}</td>
-                                    <td className="px-2 py-1 font-mono text-gray-700">{a.attempt_id}</td>
+                                    <td className="px-2 py-1 font-mono text-gray-700">
+                                      <Link
+                                        href={`/kernel-next/attempts/${encodeURIComponent(a.attempt_id)}`}
+                                        className="text-blue-600 hover:underline"
+                                      >
+                                        {a.attempt_id}
+                                      </Link>
+                                    </td>
                                     <td
                                       className={`px-2 py-1 ${
                                         a.status === "error" ? "text-red-600" :
