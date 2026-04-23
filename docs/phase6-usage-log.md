@@ -30,15 +30,16 @@
 | 15 | 2026-04-23 | **首次走正规 propose() 路径做 prompt iteration**（本轮架构修完验证） | pr-description-generator propose 新 hash `71d342d0` | `pr-description-generator-1776916294144-9d7d7019` | completed ✅ | 188s | — | 路径：`POST /api/kernel/proposals` 带 `prompts` override（加一条 "Notable changes must explain WHY, not just WHAT" 规则）→ `proposedVersion=71d342d0...` 不等于 base `96ab20f8...` → approve → run → 新 body 每条 Notable change 都是 `<file>: <WHAT> so <WHY>` 结构，**prompt 规则明显生效**。**M4 第 2 个数据点**：propose 1 次，autoApprove 未触发（safeRange.category=empty 没进入 safe-verdict 路径），人工 approve，0 reject，0 rollback。整条 HTTP 路径正常工作——Phase 6 架构审计的直接验证 |
 | 16 | 2026-04-23 | **Propose UI 端到端 dogfood**（browser-native propose 路径）| pr-description-generator propose 新 hash `29016dbb` | `pr-description-generator-1776922394245-15f8c88b` | completed ✅ | ~195s | — | **不再用 curl + 脚本做 iteration**。路径：`GET /api/kernel/pipelines` list → `GET /api/kernel/pipelines/:hash` detail（UI 展示 2 个 prompt ref）→ 改 `system/write-pr` 加一条 "Reference the related GitHub issue number if any (e.g., 'Closes #42')" → `POST /api/kernel/proposals` body `{patch:{ops:[]}, prompts:{...}}`（空 patch + prompts-only 路径，**A+ 架构**直接可用 no workaround）→ 202 新 `proposedVersion=29016dbb`；NO_OP 兜底用空 prompts 试了一次 → 400 `NO_OP_PROPOSAL`。Approve → run → new version 拉新 prompt content（DB `pipeline_prompt_refs.content_hash` 验证）→ task 正常 completed。新规则属 "if any" 类型，本次 diff 无相关 issue → agent 合规跳过（非 bug）。**M4 第 3 个数据点** + **M2 解锁关键基础设施完成** |
 | 17 | 2026-04-23 | **PG 真实 API 验证（tech-research 场景）** | Pipeline Generator → **Research Report Generator** (new hash `7fc2d175`) | `pipeline-generator-1776932730593-3835c6cb` | completed ✅ | ~7.5 min, $0.2983 | — | PG 全 5 stage 成功（analyzing → gate → genSkeleton → genPrompts → persisting）。生成了一个 2-stage `research-report-generator` pipeline（collectSources → generateReport，externalInputs=[topic:string]）。**validator.ok=true / missing=[] / extraneous=[]**。用 `topic="WebAssembly"` 跑 smoke → task completed；collectSources 写出 2676-byte sources 数组；generateReport 产出 6867-byte markdown 报告（含 Executive Summary / Overview / Detailed Findings / Source List），cost $0.0362。**Finding**: PG 未产出 `store_schema` 顶层字段——这是 A3 迁移 gap，当前 PG prompts 没强制要求生成 store_schema。详见本日志末尾 "PG API validation run #17" |
+| 18 | 2026-04-23 | **PG store_schema 升级 — Propose UI iteration + 真实 API 验证** | Pipeline Generator V1（`ecec9778`，通过 `system/gen-skeleton` prompt 提案升级）→ 生成 **Web Research Reporter** (new hash `dfa3b3cc`) | `pipeline-generator-1776935189303-cb23fdc4` | completed ✅ | ~9.1 min（含 ~2 min gate wait）, $0.9360 | — | 彻底消除 run #17 发现的 A3 gap。路径：从 V0 `f5dbdf18`（filesystem seeded）→ 通过 `POST /api/kernel/proposals`（`ops:[]` + 4-prompts map，只替换 `system/gen-skeleton` 加入 "Store schema generation (REQUIRED)" 章节 + 4 self-check 项）→ `proposedVersion=ecec9778`，safeRange=safe/empty → approve → run with `versionHash=ecec9778`。生成的 `Web Research Reporter` IR **包含 `store_schema` 顶层字段**：2 个 entry（`webResearch.sources` + `reportWriter.report`）全部正确，`produced_by` 精确、types 与端口 trim-equal。**Validator.ok=true / 0 diagnostic**；自定 validator（key count == stage×output expected，types match）：**COMPLETE**。**M4 第 4 个数据点**（propose 1 / approve 1 / reject 0 / rollback 0），**A3 gap 真实消除**，同时验证 Propose UI 在 iterative 场景（4 prompts map / 1 替换）可用 |
 
 ## 成熟度快照
 
-- **M3 分子/分母**: 10 / 17（run #2,3,4,9,11,12,14,15,16,17 真 completed；run #1,5,6,7,10,13 API completed 但未全跑 / 内容错；#8 是 B5 API 验证）
-- **真实成功率**: 10/17 = **59%**。架构审计修完后的 runs 全过
-- **post-architecture-audit 子集**: 6/6 = **100%**（runs #11,#12,#14,#15,#16,#17）
-- **M4 热更新 propose / reject / rollback**: **3 / 0 / 0** — 第 3 个数据点（run #16）**首次通过 UI 发起 propose**（不需要 curl 或手写脚本），并在同一 session 内 A+ 架构（propose 接受 `ops:[]` + prompts-only + `NO_OP_PROPOSAL` 兜底）端到端工作。Propose UI 7 个 milestone（M-A..M-G）连续完成，M2 的"朋友能用"硬前提满足
-- **覆盖的 builtin + generated**: 4 ✅ （`smoke-test`, `Tech Research Collector`, `Pipeline Generator`, `pr-description-generator`） + 2 AI-generated IR 完整（`markdown-table-of-contents-generator` run #11 未运行；`research-report-generator` run #17 **已运行并产 report**）; 1 pending: `Tech Research Writer`
-- **AI-generated pipeline schema 可用率**: 2 / 3（run #4 空壳；run #11 IR 结构完整过 validator；run #17 IR 完整过 validator 且端到端跑出真实 report）
+- **M3 分子/分母**: 11 / 18（run #2,3,4,9,11,12,14,15,16,17,18 真 completed；run #1,5,6,7,10,13 API completed 但未全跑 / 内容错；#8 是 B5 API 验证）
+- **真实成功率**: 11/18 = **61%**。架构审计修完后的 runs 全过
+- **post-architecture-audit 子集**: 7/7 = **100%**（runs #11,#12,#14,#15,#16,#17,#18）
+- **M4 热更新 propose / reject / rollback**: **4 / 0 / 0** — 第 4 个数据点（run #18）**首次对 pipeline-generator 本身做 propose iteration**（prompts-only 升级 `system/gen-skeleton`），approve 后新版本 V1 真实跑通并产出 schema-complete pipeline。**A3 gap 真正消除**：PG 现在会产出 `store_schema` 顶层字段
+- **覆盖的 builtin + generated**: 4 ✅ （`smoke-test`, `Tech Research Collector`, `Pipeline Generator`, `pr-description-generator`） + 3 AI-generated IR 完整（`markdown-table-of-contents-generator` run #11 未运行；`research-report-generator` run #17 **已运行并产 report**；`Web Research Reporter` run #18 **含 store_schema 且 validator 通过**）; 1 pending: `Tech Research Writer`
+- **AI-generated pipeline schema 可用率**: 3 / 4（run #4 空壳；run #11 IR 结构完整过 validator；run #17 IR 完整过 validator 且端到端跑出真实 report；run #18 IR 完整 **含 store_schema** 过 validator）
 
 ## 结论：B5 / B12 决策（基于实际使用数据）
 
@@ -439,3 +440,84 @@ write_port(
 - **Smoke maxTurns 过紧**：给了 5 turns 对 collectSources 抓 multiple sources 不够（它抓了 6 source 后超时）。但端到端 still completed 因为 port 早已写到。下次 smoke 默认 10-15 turns。
 - **PG 的 persist stage 成功提交**：对比 run #4 的"空壳 IR"失败，这次 persisting 直接成功一发命中。P6-8 fix + store_schema drift validator 没误伤合法 IR。
 - **未尝试替换现有 builtin**：按 spec non-goal 明确。research-report-generator 仅驻留 DB，下次 server 重启随 db wipe 消失。
+
+## PG store_schema upgrade run #18 (2026-04-23)
+
+### Path
+
+1. `seedBuiltinPipelineByName("pipeline-generator")` at server module load → filesystem IR + prompts seeded into `pipeline_versions` as V0=`f5dbdf18ca90a0664537fb417505b7b9a1ee548dad3012ab28f7cbc117553206`。
+2. `GET /api/kernel/pipelines/:V0` → 拉 4 prompts（analysis/gen-prompts/gen-skeleton/persist）。
+3. 组 body `{currentVersion:V0, patch:{ops:[]}, actor:"dogfood-session-3", prompts:{…, "system/gen-skeleton":<new>}}`，其中 new 内容加入"Store schema generation (REQUIRED)"章节 + 4 条 pre-submit self-check。
+4. `POST /api/kernel/proposals` → `proposalId=f72766d5-3699-42a7-8def-fa0e0e8612d8`，`proposedVersion=ecec9778c84000bb09dcff464386f0b860024c4dd08eb0fbbc5a0818e3b1a511` = V1，`safeRange=safe/empty`，`diff.stages={added:[],removed:[],modified:[]}`（prompts-only）。
+5. `POST /api/kernel/proposals/:id/approve` → `status=approved`。
+6. `POST /api/kernel/tasks/run` body `{versionHash:"ecec9778…", seedValues:{taskDescription:"<2-stage research pipeline>"}, model:"claude-sonnet-4-6", maxTurns:60, maxBudgetUsd:5}` → `taskId=pipeline-generator-1776935189303-cb23fdc4`。
+7. Gate（`gate_id=470244f4-53a8-42b3-9dc4-14ea37c1c915`）手动 approve → downstream 3 stages 自然完成。
+
+### Outcome
+
+- Task status: **completed / natural**，duration ~9.1 min（含 ~2 min gate wait），total $0.9360（analyzing $0.2935 / genSkeleton $0.1023 / genPrompts $0.3701 / persisting $0.1701）
+- Generated pipeline versionHash: `dfa3b3cc315d7ccc12a4450a79f292ba8fe95deb4cc9dcb7c1255bee99e66f19`
+- Generated pipeline name: **Web Research Reporter**（2 stages: webResearch → reportWriter；1 external input `topic:string`；3 wires）
+- `KernelService.validate()`: **ok=true / 0 diagnostics**
+- `pipeline_prompt_refs` has both `webResearch` and `reportWriter`（prompt coverage 完整）
+- **`store_schema` 顶层字段存在**，entry 全正确：
+  - `webResearch.sources` → `{ url: string, title: string, content: string }[]` / produced_by webResearch.sources
+  - `reportWriter.report` → `string` / produced_by reportWriter.report
+- 自定义 validator 结果：
+  - entry count (2) == expected (2, 每个 agent/script stage 一个 output)
+  - 每个 type 与端口 type `.trim()` 相等
+  - Coverage: **COMPLETE**
+
+### Generated IR (verbatim, canonical JSON)
+
+```json
+{
+  "name": "Web Research Reporter",
+  "stages": [
+    {
+      "name": "webResearch",
+      "inputs": [{ "name": "topic", "type": "string" }],
+      "outputs": [{ "name": "sources", "type": "{ url: string, title: string, content: string }[]" }],
+      "type": "agent",
+      "config": { "promptRef": "webResearch" }
+    },
+    {
+      "name": "reportWriter",
+      "inputs": [
+        { "name": "topic", "type": "string" },
+        { "name": "sources", "type": "{ url: string, title: string, content: string }[]" }
+      ],
+      "outputs": [{ "name": "report", "type": "string" }],
+      "type": "agent",
+      "config": { "promptRef": "reportWriter" }
+    }
+  ],
+  "wires": [
+    { "from": { "source": "external", "port": "topic" }, "to": { "stage": "webResearch", "port": "topic" } },
+    { "from": { "source": "external", "port": "topic" }, "to": { "stage": "reportWriter", "port": "topic" } },
+    { "from": { "source": "stage", "stage": "webResearch", "port": "sources" }, "to": { "stage": "reportWriter", "port": "sources" } }
+  ],
+  "externalInputs": [{ "name": "topic", "type": "string" }],
+  "store_schema": {
+    "webResearch.sources": {
+      "type": "{ url: string, title: string, content: string }[]",
+      "description": "List of researched web sources with URL, title, and content excerpt for each.",
+      "produced_by": { "stage": "webResearch", "port": "sources" }
+    },
+    "reportWriter.report": {
+      "type": "string",
+      "description": "Synthesized markdown report covering overview, key findings, and cited sources.",
+      "produced_by": { "stage": "reportWriter", "port": "report" }
+    }
+  }
+}
+```
+
+### Lessons
+
+- **A3 gap 真正消除**：run #17 诊断出"PG 不产 store_schema"，run #18 通过 Propose UI 发 prompts-only iteration 修好。单次 iteration 命中 — 不需要 reject / rollback。
+- **prompt 规则 take effect**：新规则写得足够具体（`{stage}.{port}` naming、character-identical type、forbidden entries 三条排除常见错误、4 条 self-check）。LLM 第一次 genSkeleton 就产出完全合规的 schema，包括对 gate stage 的正确排除（PG 生成的 pipeline 本身不含 gate，但若含则规则禁止为其建 entry）。
+- **Propose UI 在 iterative 场景可用**：4 prompts map 只替换一个；`patch:{ops:[]}` + prompts-only + `NO_OP_PROPOSAL` 兜底架构表现完美。API 即可操作，不需要 UI，但 UI 也能替代 — 这个 session 走 HTTP 是因为自动化 script 方便。
+- **不更新 filesystem 的 prompt**：V1 只存在 DB 里，server restart + DB wipe 会回到 V0。若要 V1 成为永久 builtin，需把更新后的 `system/gen-skeleton.md` 落盘（此次 session 明确 non-goal）。这一点很符合 product-roadmap 的"AI writes YAML, not human"方向 — PG prompts 本身未来也能走 Propose UI 迭代。
+- **gate_id ≠ attempt_id**：调用 `/api/kernel/gates/:id/answer` 时用的是 `gate_queue.gate_id`，不是 `stage_attempts.attempt_id`（即使两者一对一）。脚本化时从 `gate_queue` 读正确。
+- **M4 分数累加**：run #18 是第 4 个 propose + approve + run 完整数据点。前 3 个都针对 pr-description-generator；run #18 首次把 PG 自己拿来迭代 — 自举验证。
