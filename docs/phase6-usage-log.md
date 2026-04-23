@@ -27,13 +27,14 @@
 | 12 | 2026-04-23 | P6-5/6 修后跑 pr-description-generator（用 slug name） | pr-description-generator | `pr-description-generator-1776912404019-3768f94f` | completed ✅ | 275s, $0.276 | — | taskId **无空格**（slug 合成）；HTTP 调用无需 URL encode；title `"fix(kernel-next): gate race condition + slug support + pr-generator"` 准确识别 3 条独立主线；body 3 bullets + 6 notable changes 全部对应实际 commit，**0 编造**（对比 run #9 有 2 处小编造）。M1 第二个数据点，质量比首跑更高 |
 | 13 | 2026-04-23 | **M4 迭代**：改进 write-pr.md prompt（加 multi-theme 规则 + verb-first），对同 diff 重跑 | pr-description-generator (new hash `96ab20f8`) | `pr-description-generator-1776913226897-bd6a1d49` | API completed 但内容是 ERROR | 396s, $—（中断前分析） | **P6-12** | title=`"[no changes]"`；body=`"ERROR: upstream stage failed to produce diffText and commitMessages (port not found)"`。查 tool_calls：writePr agent 调用 `read_port(stage="writePr", port="diffText")` 读**自己**而非上游 fetchDiff → 404 → 假设上游失败 → 误写错误。**formatInputLine 把当前 stage 名传给了 read_port 指令**，这是 Phase 6 新发现的 bug |
 | 14 | 2026-04-23 | **P6-12 修后再重跑 run #13**（同 prompt + 同 diff） | pr-description-generator (hash `96ab20f8`) | `pr-description-generator-1776914057309-9a5ad8e2` | completed ✅ | 277s | — | Title `"fix(kernel): P6-10 gate race + P6-5/6 slug + pr-description-generator"` 严格按新 multi-theme 规则（69 chars, verb 开头, 3 theme 用 ` + ` 连接）。Body 7 个 notable changes 全部对应 commit，0 编造。**M4 首个真实数据点**：prompt iteration 1 次，reject 0 次，rollback 0 次，新版本输出质量 > 旧版本 |
+| 15 | 2026-04-23 | **首次走正规 propose() 路径做 prompt iteration**（本轮架构修完验证） | pr-description-generator propose 新 hash `71d342d0` | `pr-description-generator-1776916294144-9d7d7019` | completed ✅ | 188s | — | 路径：`POST /api/kernel/proposals` 带 `prompts` override（加一条 "Notable changes must explain WHY, not just WHAT" 规则）→ `proposedVersion=71d342d0...` 不等于 base `96ab20f8...` → approve → run → 新 body 每条 Notable change 都是 `<file>: <WHAT> so <WHY>` 结构，**prompt 规则明显生效**。**M4 第 2 个数据点**：propose 1 次，autoApprove 未触发（safeRange.category=empty 没进入 safe-verdict 路径），人工 approve，0 reject，0 rollback。整条 HTTP 路径正常工作——Phase 6 架构审计的直接验证 |
 
 ## 成熟度快照
 
-- **M3 分子/分母**: 7 / 14（run #2,3,4,9,11,12,14 真 completed；run #1,5,6,7,10,13 API completed 但未全跑 / 内容错；#8 是 B5 API 验证）
-- **真实成功率**: 7/14 = **50%**。P6-12 修后跑（run #14）继续成功，老 bug 堆积修完后新 runs 稳定
-- **P6-10 + P6-12 修后子集**: 3/3 = **100%**（runs #11, #12, #14 全过；run #13 在 P6-12 修前）
-- **M4 热更新 propose / reject / rollback**: **1 / 0 / 0** — 第一个真实数据点！（write-pr.md prompt 升级，新版本输出质量 > 旧版本，无 reject 无 rollback）
+- **M3 分子/分母**: 8 / 15（run #2,3,4,9,11,12,14,15 真 completed；run #1,5,6,7,10,13 API completed 但未全跑 / 内容错；#8 是 B5 API 验证）
+- **真实成功率**: 8/15 = **53%**。架构审计修完后的 runs 全过
+- **post-architecture-audit 子集**: 4/4 = **100%**（runs #11,#12,#14,#15）
+- **M4 热更新 propose / reject / rollback**: **2 / 0 / 0** — 第二个数据点通过**正规 HTTP propose()**路径（run #15），证明架构审计修完后 prompt iteration 可以不走"改文件+重启"的 shortcut
 - **覆盖的 builtin + generated**: 4 ✅ （`smoke-test`, `Tech Research Collector`, `Pipeline Generator`, `pr-description-generator`） + 1 AI-generated IR 完整（`markdown-table-of-contents-generator`，未运行）; 1 pending: `Tech Research Writer`
 - **AI-generated pipeline schema 可用率**: 1 / 2（run #4 空壳；run #11 IR 结构完整过 validator）
 
