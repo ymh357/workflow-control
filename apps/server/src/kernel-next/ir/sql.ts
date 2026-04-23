@@ -528,6 +528,31 @@ export function getPromptContent(
   return row ? row.content : null;
 }
 
+/**
+ * Return the full promptRef -> content map for a pipeline version.
+ * Used by propose() to carry the base version's prompts forward onto
+ * the newly proposed version when the caller doesn't supply their own
+ * prompts map. Without carry, the DbPromptResolver on the new version
+ * would raise "promptRef not found" at every resume / migrate
+ * attempt.
+ */
+export function getPromptsByVersion(
+  db: DatabaseSync,
+  versionHash: string,
+): Record<string, string> {
+  const rows = db
+    .prepare(
+      `SELECT ppr.prompt_ref, pc.content
+       FROM pipeline_prompt_refs ppr
+       JOIN prompt_contents pc ON pc.content_hash = ppr.content_hash
+       WHERE ppr.version_hash = ?`,
+    )
+    .all(versionHash) as Array<{ prompt_ref: string; content: string }>;
+  const out: Record<string, string> = {};
+  for (const r of rows) out[r.prompt_ref] = r.content;
+  return out;
+}
+
 export function getLatestVersionHashByName(
   db: DatabaseSync,
   pipelineName: string,

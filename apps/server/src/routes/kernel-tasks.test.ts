@@ -194,6 +194,10 @@ describe("REST POST /api/kernel/tasks/:taskId/migrate", () => {
       patch: { ops: [{ op: "update_stage_config", stage: "B", configPatch: { promptRef: "new-b" } }] },
       rerunFrom: opts.rerunFrom,
       migrateRunningTasks: opts.migrateList,
+      // Phase 6 audit: propose() now carries+merges prompts. Supply
+      // the new promptRef's content so it lands in
+      // pipeline_prompt_refs on the proposed version.
+      prompts: { "new-b": "dummy" },
     });
     if (!prop.ok) throw new Error(`seed propose failed: ${JSON.stringify(prop.diagnostics)}`);
     const approve = svc.approveProposal(prop.proposalId);

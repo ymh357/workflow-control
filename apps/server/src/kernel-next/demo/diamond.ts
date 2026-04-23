@@ -151,6 +151,11 @@ export async function runDemo(options: { skipTypeCheck?: boolean; tscPath?: stri
       currentVersion: submit.versionHash,
       patch,
       actor: "ai:pipeline-generator",
+      // Phase 6 audit: new stage E introduces a new promptRef; supply
+      // its content so pipeline_prompt_refs on the proposed version
+      // is complete. Without this propose() rejects with
+      // PROMPT_REF_MISSING (same contract as submit()).
+      prompts: { "consume the summary": "Summarize the upstream value and emit no outputs." },
     });
     const proposalRow = propose.ok
       ? db.prepare(`SELECT status FROM pipeline_proposals WHERE proposal_id = ?`)

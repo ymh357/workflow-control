@@ -25,6 +25,7 @@ import {
   getPipelineIR,
   insertPromptContent,
   insertPromptRefs,
+  getPromptsByVersion,
 } from "../ir/sql.js";
 import { applyPatch, PatchApplyError } from "./patch.js";
 import { taskRegistry } from "../runtime/task-registry.js";
@@ -402,6 +403,18 @@ export class KernelService {
      * ignore autoApprove and remain pending.
      */
     autoApprove?: boolean;
+    /**
+     * Phase 6 audit: optional prompt overrides. When provided, each
+     * (promptRef -> content) entry lands on the proposed version's
+     * pipeline_prompt_refs in place of the base version's entry for
+     * that ref. Refs NOT in this map are carried forward from the base
+     * version unchanged. Without this parameter, prompt iteration
+     * cannot be expressed via propose() — IRPatch does not model
+     * prompts, and the pre-audit propose() silently carried nothing,
+     * leaving the new version with an empty pipeline_prompt_refs set
+     * that broke DbPromptResolver on every subsequent run.
+     */
+    prompts?: Record<string, string>;
   }): ProposeResult {
     // Optimistic lock check.
     const base = getPipelineIR(this.db, args.currentVersion);
@@ -453,9 +466,76 @@ export class KernelService {
       }
     }
 
-    const proposedHash = versionHash(proposedIR);
+    // Phase 6 audit: propose must produce version_hash values in the
+    // same space as submit(). Both paths now use pipelineVersionHash
+    // (IR + prompts map). Pre-audit, propose() used versionHash(ir)
+    // which ignored prompts entirely — so a proposal that tweaked
+    // prompt content silently collided with the base version's hash,
+    // and later DbPromptResolver calls against "the new version" found
+    // an empty pipeline_prompt_refs because nothing got inserted for
+    // the collided hash.
+    //
+    // Prompt resolution order for the proposed version:
+    //   1. Each ref in args.prompts wins (user-supplied override).
+    //   2. Refs absent from args.prompts are carried from the base
+    //      version's pipeline_prompt_refs.
+    //   3. Agent stages in proposedIR whose promptRef isn't in the
+    //      merged map will surface PROMPT_REF_MISSING at validate
+    //      time below — same rule submit() enforces.
+    const basePrompts = getPromptsByVersion(this.db, args.currentVersion);
+    const mergedPrompts: Record<string, string> = {
+      ...basePrompts,
+      ...(args.prompts ?? {}),
+    };
 
-    // Persist new version (idempotent) and proposal row.
+    // Rename carry: if a stage renamed its promptRef but no content
+    // was supplied for the new ref, and that stage existed in the
+    // base with a different promptRef whose content IS in
+    // basePrompts, copy the old content to the new ref. This makes
+    // the natural "I just renamed, same prompt body" flow work
+    // without forcing every caller to restate the content. New refs
+    // that do NOT correspond to a renamed stage still require
+    // explicit content (the PROMPT_REF_MISSING check below).
+    for (const newStage of proposedIR.stages) {
+      if (newStage.type !== "agent") continue;
+      const newRef = newStage.config.promptRef;
+      if (!newRef || newRef in mergedPrompts) continue;
+      const oldStage = base.stages.find(
+        (s) => s.name === newStage.name && s.type === "agent",
+      );
+      if (!oldStage || oldStage.type !== "agent") continue;
+      const oldRef = oldStage.config.promptRef;
+      if (oldRef && oldRef !== newRef && oldRef in basePrompts) {
+        mergedPrompts[newRef] = basePrompts[oldRef]!;
+      }
+    }
+
+    // Validate that every agent stage's promptRef resolves under
+    // mergedPrompts. submit() enforces this; propose() was skipping
+    // it, which let patches that renamed promptRef to a non-existent
+    // key slip through silently.
+    const agentRefs = new Set<string>();
+    for (const s of proposedIR.stages) {
+      if (s.type === "agent" && s.config.promptRef) {
+        agentRefs.add(s.config.promptRef);
+      }
+    }
+    for (const ref of agentRefs) {
+      if (!(ref in mergedPrompts)) {
+        return {
+          ok: false,
+          diagnostics: [{
+            code: "PROMPT_REF_MISSING",
+            message: `prompt for AgentStage promptRef '${ref}' was not supplied and is not carried from base version`,
+            context: { promptRef: ref, currentVersion: args.currentVersion },
+          }],
+        };
+      }
+    }
+
+    const proposedHash = pipelineVersionHash({ ir: proposedIR, prompts: mergedPrompts });
+
+    // Persist new version (idempotent) and its prompt refs.
     if (getPipelineIR(this.db, proposedHash) === null) {
       const { source } = emitPipelineModule(proposedIR);
       insertPipelineVersion(this.db, proposedIR, {
@@ -463,6 +543,17 @@ export class KernelService {
         parentHash: args.currentVersion,
         tsSource: source,
       });
+      // Write content rows + version->ref mapping so the resolver can
+      // hydrate prompts for tasks running on the new version. Same
+      // semantics as submit() — INSERT OR IGNORE so we tolerate
+      // content_hash collisions with the base version's refs.
+      const refMap: Record<string, string> = {};
+      for (const [ref, content] of Object.entries(mergedPrompts)) {
+        const ch = promptContentHash(content);
+        insertPromptContent(this.db, ch, normalizePromptContent(content));
+        refMap[ref] = ch;
+      }
+      insertPromptRefs(this.db, proposedHash, refMap);
     }
 
     // Stage 5A — re-run the hot-update dry-run to compute diff + impact
