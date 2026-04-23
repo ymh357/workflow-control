@@ -8,6 +8,7 @@ import { logger as honoLogger } from "hono/logger";
 import { serve } from "@hono/node-server";
 import { kernelProposalsRoute } from "./routes/kernel-proposals.js";
 import { kernelProposalsStreamRoute } from "./routes/kernel-proposals-stream.js";
+import { kernelProposalPreviewRoute } from "./routes/kernel-proposal-preview.js";
 import { kernelPipelinesRoute } from "./routes/kernel-pipelines.js";
 import { kernelGatesRoute } from "./routes/kernel-gates.js";
 import { kernelTasksRoute } from "./routes/kernel-tasks.js";
@@ -207,6 +208,7 @@ app.get("/health/ready", async (c) => {
 
 app.route("/api", kernelProposalsRoute);
 app.route("/api", kernelProposalsStreamRoute);
+app.route("/api", kernelProposalPreviewRoute);
 app.route("/api", kernelPipelinesRoute);
 app.route("/api", kernelGatesRoute);
 app.route("/api", kernelTasksRoute);
