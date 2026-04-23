@@ -276,6 +276,53 @@ export interface RejectRollback {
   affectedStages: string[];
 }
 
+/**
+ * P6-10: compute the gateAuthorizedTargets + gateSkippedTargets
+ * context update for a GATE_ANSWERED event. Factored out of the root
+ * handler so the gate region's own transition can run it too — XState
+ * v5 consumes the event at the descendant (gate) transition and does
+ * NOT then fire the root-level on.GATE_ANSWERED handler. Without the
+ * gate region also running this assign, gateAuthorizedTargets stays
+ * empty, the picked downstream stage's allInboundDelivered guard keeps
+ * returning false, and the pipeline hangs waiting for an authorization
+ * that can never be written under later PORT_WRITTEN events.
+ *
+ * Closure over gateRoutingMap (the sibling-set lookup) so the factory
+ * produces a ready-to-use assign updater given only (context, event).
+ */
+function applyGateAnsweredContextAssign(
+  gateRoutingMap: Map<string, string[]>,
+): (args: { context: MachineContext; event: MachineEvent }) => Partial<MachineContext> {
+  return ({ context, event }) => {
+    if (event.type !== "GATE_ANSWERED") return {};
+    const pickedTargets = Array.isArray(event.targetStage)
+      ? event.targetStage
+      : [event.targetStage];
+
+    // Add every picked target that isn't already authorized.
+    let authorized = context.gateAuthorizedTargets;
+    for (const t of pickedTargets) {
+      if (!authorized.includes(t)) {
+        authorized = [...authorized, t];
+      }
+    }
+
+    // Compute which siblings are SKIPPED for this answered gate.
+    const siblings = gateRoutingMap.get(event.stageName) ?? [];
+    const pickedSet = new Set(pickedTargets);
+    const pickedIsKnown = pickedTargets.every((t) => siblings.includes(t));
+    const newSkips = pickedIsKnown
+      ? siblings.filter(
+          (t) => !pickedSet.has(t) && !context.gateSkippedTargets.includes(t),
+        )
+      : [];
+    const skipped = newSkips.length === 0
+      ? context.gateSkippedTargets
+      : [...context.gateSkippedTargets, ...newSkips];
+    return { gateAuthorizedTargets: authorized, gateSkippedTargets: skipped };
+  };
+}
+
 export interface CompiledMachine {
   machine: AnyStateMachine;
   stageMeta: Map<string, StageMeta>;
@@ -412,39 +459,19 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
       // array are authorized; every sibling NOT in the picked set is skipped.
       // Stage regions also observe GATE_ANSWERED (for routing/gate-resolve
       // transitions), unaffected by this root-level assign.
+      // Root-level fallback. P6-10: in XState v5, when any descendant
+      // region's on.X transition fires (guard true) and consumes the
+      // event, this root-level on.X is NOT invoked. The gate region's
+      // own GATE_ANSWERED handler always fires (its gateAnsweredIsMe
+      // guard is true on its own answer event) — so this root handler
+      // is dead code on the gate-answer path. It remains as a safety
+      // net for any future event source that bypasses the gate region.
+      //
+      // The authoritative assign that MUST run on every gate answer
+      // now lives on the gate region's executingBody.GATE_ANSWERED
+      // transition (see buildStageRegion / applyGateAnsweredContextAssign).
       GATE_ANSWERED: {
-        actions: assign(({ context, event }) => {
-          // Normalize to array for uniform handling.
-          const pickedTargets = Array.isArray(event.targetStage)
-            ? event.targetStage
-            : [event.targetStage];
-
-          // Add every picked target that isn't already authorized.
-          let authorized = context.gateAuthorizedTargets;
-          for (const t of pickedTargets) {
-            if (!authorized.includes(t)) {
-              authorized = [...authorized, t];
-            }
-          }
-
-          // Compute which siblings are SKIPPED for this answered gate.
-          // A sibling is "picked" iff it's in pickedTargets. Every other
-          // sibling not already in skipped goes into skipped. Only skip when
-          // the answer routed to KNOWN siblings — otherwise the answer was
-          // malformed and we leave every branch untouched.
-          const siblings = gateRoutingMap.get(event.stageName) ?? [];
-          const pickedSet = new Set(pickedTargets);
-          const pickedIsKnown = pickedTargets.every((t) => siblings.includes(t));
-          const newSkips = pickedIsKnown
-            ? siblings.filter(
-                (t) => !pickedSet.has(t) && !context.gateSkippedTargets.includes(t),
-              )
-            : [];
-          const skipped = newSkips.length === 0
-            ? context.gateSkippedTargets
-            : [...context.gateSkippedTargets, ...newSkips];
-          return { gateAuthorizedTargets: authorized, gateSkippedTargets: skipped };
-        }),
+        actions: assign(applyGateAnsweredContextAssign(gateRoutingMap)),
       },
     },
     states: {
@@ -668,8 +695,21 @@ function buildStageRegion(
     // trivially true which would immediately `always` the gate through
     // to `done`. Suppress that transition and only resolve via the
     // GATE_ANSWERED event whose stageName matches this gate.
+    //
+    // P6-10: the transition action MUST also run the
+    // gateAuthorizedTargets / gateSkippedTargets assign. Root-level
+    // on.GATE_ANSWERED doesn't fire once this region consumes the
+    // event (XState v5 semantics), so any downstream stage waiting
+    // for authorization would never see it written. Running the assign
+    // here is safe because gateAnsweredIsMe means the event IS for
+    // this gate; a different gate's answer doesn't match this guard
+    // and this region doesn't fire / consume the event.
     (executingBody.on as Record<string, unknown>).GATE_ANSWERED = [
-      { target: "done", guard: gateAnsweredIsMe },
+      {
+        target: "done",
+        guard: gateAnsweredIsMe,
+        actions: assign(applyGateAnsweredContextAssign(gateSiblingsByGate)),
+      },
     ];
     // Intentionally no `always` — gate blocks until answered.
   } else {
