@@ -22,4 +22,19 @@ describe("server-lock", () => {
     if (handle.ok) releaseServerLock(handle.release);
     expect(existsSync(path)).toBe(false);
   });
+
+  it("rejects acquire when existing lock holder is alive", () => {
+    const path = join(dir, "kernel-next.lock");
+    const first = acquireServerLock(path);
+    expect(first.ok).toBe(true);
+    const second = acquireServerLock(path);
+    expect(second.ok).toBe(false);
+    if (!second.ok) {
+      expect(second.reason).toBe("already_held_alive");
+      if (second.reason === "already_held_alive") {
+        expect(second.pid).toBe(process.pid);
+      }
+    }
+    if (first.ok) releaseServerLock(first.release);
+  });
 });
