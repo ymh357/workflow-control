@@ -24,12 +24,14 @@
 | 9 | 2026-04-23 | Phase 6 Path 3: dogfood pr-description-generator | pr-description-generator | `PR Description Generator-1776909721698-d441911f` | completed ✅ | 229s, $0.23 | — | 非 watch 模式跑通。title 准确、summary 3 bullets OK、notable changes 有 2 个小编造（`gates()` 应为 `getGateContext()`；load-builtin-pipeline 只改 test）。**比手写快 ~5x**。M1 首个真实数据点 |
 | 10 | 2026-04-23 | **P6-10 诊断：非 watch 下重跑 Pipeline Generator**（假说验证） | Pipeline Generator | `Pipeline Generator-1776909980634-8dcfaf27` | 仍 stuck after awaitingConfirm | 48s API 说 completed（fallback 派生） | P6-10 根因确认 | **watch 不是元凶**。真 bug：XState v5 下 gate 自身 region 的 GATE_ANSWERED transition fire 后消耗 event，root-level on.GATE_ANSWERED 不再运行 → gateAuthorizedTargets 永不更新 → downstream picked target 的 allInboundDelivered 返回 false → hang |
 | 11 | 2026-04-23 | **P6-10 修后再跑 Pipeline Generator** | Pipeline Generator | `Pipeline Generator-1776911258984-66db2597` | completed ✅ 5 stages 全跑 | 241s, $0.612 | — | analyzing 40s → gate → approve → genSkeleton 25s → genPrompts 103s → persisting 82s。生成 pipeline `markdown-table-of-contents-generator` 的 IR schema 完整（3 stages / 3 wires / externalInputs 正确）。P6-10 真修了。M3 分数大幅跳升 |
+| 12 | 2026-04-23 | P6-5/6 修后跑 pr-description-generator（用 slug name） | pr-description-generator | `pr-description-generator-1776912404019-3768f94f` | completed ✅ | 275s, $0.276 | — | taskId **无空格**（slug 合成）；HTTP 调用无需 URL encode；title `"fix(kernel-next): gate race condition + slug support + pr-generator"` 准确识别 3 条独立主线；body 3 bullets + 6 notable changes 全部对应实际 commit，**0 编造**（对比 run #9 有 2 处小编造）。M1 第二个数据点，质量比首跑更高 |
 
 ## 成熟度快照
 
-- **M3 分子/分母**: 5 / 11（run #2,3,4,9,11 真 completed；run #1,5,6,7,10 API completed 但未全跑；#8 是 B5 API 验证）
-- **真实成功率**: 5/11 = **45%**。P6-10 修前老 runs 的 stuck 可追溯到该 bug；修后新跑（#11）完整成功
-- **M4 热更新总数 / reject + rollback 次数**: 0 / 0
+- **M3 分子/分母**: 6 / 12（run #2,3,4,9,11,12 真 completed；run #1,5,6,7,10 API completed 但未全跑；#8 是 B5 API 验证）
+- **真实成功率**: 6/12 = **50%**。P6-10 修后（runs #11,#12）连续成功，老 runs 的 stuck 可追溯到该 bug
+- **P6-10 修后子集成功率**: 2/2 = **100%**（修后 runs 全过）
+- **M4 热更新总数 / reject + rollback 次数**: 0 / 0（仍无真实热更新场景触发）
 - **覆盖的 builtin + generated**: 4 ✅ （`smoke-test`, `Tech Research Collector`, `Pipeline Generator`, `pr-description-generator`） + 1 AI-generated IR 完整（`markdown-table-of-contents-generator`，未运行）; 1 pending: `Tech Research Writer`
 - **AI-generated pipeline schema 可用率**: 1 / 2（run #4 空壳；run #11 IR 结构完整过 validator）
 
@@ -105,17 +107,17 @@
 **根因**：smoke-test IR 停留在"echo back 能运行"这一级验证，没设计真实用户输入通路。
 **修复**：给 smoke-test IR 加 `externalInputs: [{ name: "task_text", type: "string" }]` 和对应 wire 到 greet.inputs。低优先级——这只是 builtin pipeline 自身的完整性问题，不阻塞系统功能。
 
-### P6-5 — HTTP `run` 要求传 IR 显示名而非目录标识
+### P6-5 — HTTP `run` 要求传 IR 显示名而非目录标识 ✅ 已修 (2026-04-23)
 
-**现象**：`POST /api/kernel/tasks/run { name: "tech-research-collector" }` 返回 `UNKNOWN_PIPELINE`；必须传 `"Tech Research Collector"`（IR.name）。
-**根因**：`start-pipeline-run` 按 `pipeline_versions.pipeline_name` 查找，而 `seedBuiltinPipelineByName` 调用 `svc.submit(loaded.ir, ...)` 把 IR.name 作为 pipeline_name 写入。目录名 vs 显示名不对应。
-**修复**：两条路，任选—— (a) 统一用目录名作为 pipeline_name（改 IR.name 或另加字段）； (b) 允许 `run` 按模糊 match（目录名/IR.name 都认）。先采 (a)：IR.name = 目录名是唯一 SSO 原则。
+**现象**：`POST /api/kernel/tasks/run { name: "tech-research-collector" }` 返回 `UNKNOWN_PIPELINE`。
+**修复**：采用方案 (b) —— `start-pipeline-run` 在 exact `pipeline_name` lookup 失败时 fallback 到 slug-equivalence scan（`slugifyPipelineName(stored) === slugifyPipelineName(input)` 即命中）。exact match 路径保留，完全向后兼容。commit ccd34b0。
+**验证**：run #12 用 `"pr-description-generator"` 调 run，server 返回正确 versionHash。
 
-### P6-6 — taskId 默认含空格（URL 编码障碍）
+### P6-6 — taskId 默认含空格（URL 编码障碍） ✅ 已修 (2026-04-23)
 
-**现象**：`Tech Research Collector-1776879895803-4a4424cd` 这种 taskId 在 HTTP path 里要 URL-encode；SSE URL 更麻烦。
-**根因**：`startPipelineRun` 合成 taskId = `${pipelineName}-${ts}-${rand}`。pipelineName 有空格时 taskId 就坏了。
-**修复**：合成时 slugify pipelineName（`/[^a-zA-Z0-9-]/g -> '-'`）。与 P6-5 根治方案（IR.name 保持目录标识）重合：两问题一并解决。
+**现象**：`Tech Research Collector-1776879895803-4a4424cd` 这种 taskId 要 URL-encode。
+**修复**：`startPipelineRun` 合成 taskId 时对 name 调用 slugifyPipelineName。如果 name 无 alphanumeric 内容（几乎不可能），fallback 到 `"task-"` 前缀。显式 `input.taskId` 原样通过作 escape hatch。commit ccd34b0。
+**验证**：run #12 taskId = `pr-description-generator-1776912404019-3768f94f`，全程 URL 不需 encode。
 
 ### P6-2 — runPipeline 默认 10s timeout 对真实 agent 不可用
 
