@@ -37,7 +37,9 @@ const rejectBodySchema = z.object({
 // that separation keeps the routing layer simple.
 const createProposalBodySchema = z.object({
   currentVersion: z.string().min(1),
-  patch: z.object({ ops: z.array(z.unknown()).min(1) }).passthrough(),
+  // ops may be empty — prompts-only proposal is legitimate.
+  // NO_OP_PROPOSAL at service layer rejects if nothing actually changed.
+  patch: z.object({ ops: z.array(z.unknown()).min(0) }).passthrough(),
   actor: z.string().min(1).max(256),
   rerunFrom: z.union([z.string().min(1), z.null()]).optional(),
   migrateRunningTasks: z.union([
