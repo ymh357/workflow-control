@@ -53,6 +53,7 @@ export {
   exampleValueFor,
 } from "./real-executor-prompt-builder.js";
 import { buildSystemPromptAppend } from "./real-executor-prompt-builder.js";
+import { buildSdkBaseOptions } from "./real-executor-sdk-options.js";
 
 export interface RealStageExecutorOptions {
   /**
@@ -305,32 +306,20 @@ export class RealStageExecutor implements StageExecutor {
       const effectiveMaxTurns = args.resumeSessionId
         ? clampMaxTurns(this.maxTurns, args.priorNumTurns ?? 0)
         : this.maxTurns;
-      const baseOptions: SdkOptions = {
-        systemPrompt: {
-          type: "preset",
-          preset: "claude_code",
-          append: systemPromptAppend,
-        },
-        mcpServers: {
-          __kernel_next__: mcpServer as NonNullable<SdkOptions["mcpServers"]>[string],
-        },
+      // F3: set SDK cwd only when the caller supplied a workspace.
+      // Otherwise leave it undefined so the SDK default (process.cwd())
+      // stays in force, preserving legacy test expectations.
+      const baseOptions: SdkOptions = buildSdkBaseOptions({
+        systemPromptAppend,
+        kernelMcp: mcpServer as NonNullable<SdkOptions["mcpServers"]>[string],
         model: this.model,
         maxTurns: effectiveMaxTurns,
         maxBudgetUsd: this.maxBudgetUsd,
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
-        settingSources: [],
-        disallowedTools: ["ToolSearch", "mcp__claude_ai_*"],
-        pathToClaudeCodeExecutable: this.claudePath,
-        env: buildChildEnv(),
-        ...(subAgents && subAgents.length > 0
-          ? { agents: buildSdkAgents(subAgents) }
-          : {}),
-        // F3: set SDK cwd only when the caller supplied a workspace.
-        // Otherwise leave it undefined so the SDK default (process.cwd())
-        // stays in force, preserving legacy test expectations.
-        ...(this.workspaceDir !== undefined ? { cwd: this.workspaceDir } : {}),
-      };
+        claudePath: this.claudePath,
+        childEnv: buildChildEnv(),
+        subAgents,
+        workspaceDir: this.workspaceDir,
+      });
       // M-R5: plumb the resume session id via options.resume when the
       // caller has one. queryFn failure (missing / corrupt session file)
       // surfaces as a thrown error inside the stream iteration below;
@@ -626,27 +615,6 @@ function queryAttemptPortWrites(
 
 
 // --- helpers ---
-
-/**
- * Maps IR SubAgentDef[] to the Claude SDK options.agents record shape.
- * Conditionally spreads optional fields so absent IR values yield absent
- * SDK keys (SDK treats tools: undefined as "inherit from parent").
- */
-function buildSdkAgents(
-  defs: NonNullable<AgentStage["config"]["subAgents"]>,
-): NonNullable<SdkOptions["agents"]> {
-  const out: Record<string, NonNullable<SdkOptions["agents"]>[string]> = {};
-  for (const d of defs) {
-    out[d.name] = {
-      description: d.description,
-      prompt: d.prompt,
-      ...(d.tools ? { tools: d.tools } : {}),
-      ...(d.model ? { model: d.model } : {}),
-      ...(d.maxTurns !== undefined ? { maxTurns: d.maxTurns } : {}),
-    };
-  }
-  return out;
-}
 
 /**
  * Project a stage's declared output ports into a JSON-schema object.
