@@ -15,7 +15,7 @@
 // runner → broadcaster → HTTP route → dashboard works; polished UX
 // is a later concern.
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { GateCard, type GateContextResponse } from "../../../components/gate-card";
 import { DiagnosticsPanel, type Diagnostic } from "../../../components/diagnostics-panel";
@@ -58,6 +58,31 @@ interface StageRow {
   // treated as no_active_wire by the renderer (runner invariant).
   errorReason?: StageErrorReason;
 }
+
+// P6.2 / D24 — mirror of server's AttemptRow shape from
+// routes/kernel-attempts.ts. Duplicated locally so the web app does not
+// take a cross-workspace types-only import.
+interface AttemptRow {
+  attempt_id: string;
+  stage_name: string;
+  attempt_idx: number;
+  status: string;
+  started_at: number;
+  ended_at: number | null;
+  duration_ms: number | null;
+}
+
+// Formats a duration in ms into a compact, human-readable string.
+// Returns an em dash for null (in-flight attempts). Matches the
+// existing dashboard typography (lowercase units, no spaces).
+const formatDuration = (ms: number | null): string => {
+  if (ms === null) return "—";
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60_000);
+  const s = Math.floor((ms % 60_000) / 1000);
+  return `${m}m${s}s`;
+};
 
 interface PortWriteRow {
   stage: string;
@@ -127,6 +152,24 @@ export default function KernelNextTaskPage() {
   const [pendingGateIds, setPendingGateIds] = useState<string[]>([]);
   const [gateContexts, setGateContexts] = useState<Map<string, GateContextResponse>>(new Map());
   const [cost, setCost] = useState<TaskCostUpdatePayload | null>(null);
+  const [attempts, setAttempts] = useState<AttemptRow[]>([]);
+  const [expandedStage, setExpandedStage] = useState<string | null>(null);
+
+  // P6.2 / D24 — fetch per-task stage_attempts history. Called on mount
+  // and whenever a stage lifecycle event fires so the Duration column
+  // and the expandable Attempts sub-table stay roughly live. Errors are
+  // swallowed — next lifecycle event (or page reload) will retry.
+  const refreshAttempts = useCallback(async (): Promise<void> => {
+    if (!taskId) return;
+    try {
+      const r = await fetch(`${API_BASE}/api/kernel/tasks/${encodeURIComponent(taskId)}/attempts`);
+      if (!r.ok) return;
+      const body = await r.json() as { ok: boolean; attempts: AttemptRow[] };
+      if (body.ok) setAttempts(body.attempts);
+    } catch {
+      /* ignore — next event or manual reload retries */
+    }
+  }, [taskId]);
 
   const upsertStage = useCallback((row: StageRow) => {
     setStages((prev) => {
@@ -155,12 +198,14 @@ export default function KernelNextTaskPage() {
         // the __external__ sentinel, but drop them if it ever does.
         if (d.stage === EXTERNAL_STAGE) break;
         upsertStage({ stage: d.stage, state: "executing", attemptId: d.attemptId });
+        void refreshAttempts();
         break;
       }
       case "stage_done": {
         const d = event.data as { stage: string; attemptId?: string };
         if (d.stage === EXTERNAL_STAGE) break;
         upsertStage({ stage: d.stage, state: "done", attemptId: d.attemptId });
+        void refreshAttempts();
         break;
       }
       case "stage_error": {
@@ -178,6 +223,7 @@ export default function KernelNextTaskPage() {
           errorMessage: d.message,
           errorReason: d.reason,
         });
+        void refreshAttempts();
         break;
       }
       case "port_written": {
@@ -224,7 +270,12 @@ export default function KernelNextTaskPage() {
         // break old clients.
         break;
     }
-  }, [upsertStage, appendPort]);
+  }, [upsertStage, appendPort, refreshAttempts]);
+
+  // Fetch attempts once on mount (and on taskId change) so the Duration
+  // column is populated for tasks that are already finished when the
+  // page opens. Live updates come via the SSE lifecycle events above.
+  useEffect(() => { void refreshAttempts(); }, [refreshAttempts]);
 
   useEffect(() => {
     if (!taskId) return;
@@ -401,6 +452,21 @@ export default function KernelNextTaskPage() {
   const stageRows = Array.from(stages.values()).sort((a, b) => a.stage.localeCompare(b.stage));
   const seedRows = Array.from(seedPorts.entries()).sort(([a], [b]) => a.localeCompare(b));
 
+  // P6.2 / D24 — group attempts by stage_name for the expandable row +
+  // pick the "latest" attempt (highest started_at) per stage for the
+  // Duration column. attempts[] is already started_at-ASC from the
+  // server so the last entry per stage wins.
+  const attemptsByStage = new Map<string, AttemptRow[]>();
+  for (const a of attempts) {
+    const list = attemptsByStage.get(a.stage_name);
+    if (list) list.push(a);
+    else attemptsByStage.set(a.stage_name, [a]);
+  }
+  const latestAttemptByStage = new Map<string, AttemptRow>();
+  for (const [stage, list] of attemptsByStage) {
+    latestAttemptByStage.set(stage, list[list.length - 1]!);
+  }
+
   return (
     <div className="mx-auto max-w-5xl p-6 font-mono text-sm">
       <h1 className="mb-4 text-xl font-bold">
@@ -502,32 +568,106 @@ export default function KernelNextTaskPage() {
                 <th className="border border-gray-300 px-2 py-1 text-left">Stage</th>
                 <th className="border border-gray-300 px-2 py-1 text-left">State</th>
                 <th className="border border-gray-300 px-2 py-1 text-left">Attempt</th>
+                <th className="border border-gray-300 px-2 py-1 text-left">Duration</th>
+                <th className="border border-gray-300 px-2 py-1 text-left">History</th>
                 <th className="border border-gray-300 px-2 py-1 text-left">Error</th>
               </tr>
             </thead>
             <tbody>
-              {stageRows.map((row) => (
-                <tr key={row.stage}>
-                  <td className="border border-gray-300 px-2 py-1">{row.stage}</td>
-                  <td
-                    className={`border border-gray-300 px-2 py-1 ${
-                      row.state === "error" ? "text-red-600" :
-                      row.state === "done" ? "text-green-600" : "text-blue-600"
-                    }`}
-                  >
-                    {row.state}
-                  </td>
-                  <td className="border border-gray-300 px-2 py-1 text-xs text-gray-600">
-                    {row.attemptId ?? "—"}
-                  </td>
-                  <td className="border border-gray-300 px-2 py-1 text-xs text-red-600">
-                    {row.state === "error" && (
-                      <ErrorReasonBadge reason={row.errorReason} />
+              {stageRows.map((row) => {
+                const stageAttempts = attemptsByStage.get(row.stage) ?? [];
+                const latest = latestAttemptByStage.get(row.stage);
+                const isExpanded = expandedStage === row.stage;
+                const canExpand = stageAttempts.length > 0;
+                return (
+                  <React.Fragment key={row.stage}>
+                    <tr>
+                      <td className="border border-gray-300 px-2 py-1">{row.stage}</td>
+                      <td
+                        className={`border border-gray-300 px-2 py-1 ${
+                          row.state === "error" ? "text-red-600" :
+                          row.state === "done" ? "text-green-600" : "text-blue-600"
+                        }`}
+                      >
+                        {row.state}
+                      </td>
+                      <td className="border border-gray-300 px-2 py-1 text-xs text-gray-600">
+                        {row.attemptId ?? "—"}
+                      </td>
+                      <td className="border border-gray-300 px-2 py-1 text-xs text-gray-700">
+                        {formatDuration(latest?.duration_ms ?? null)}
+                      </td>
+                      <td className="border border-gray-300 px-2 py-1 text-xs">
+                        {canExpand ? (
+                          <button
+                            type="button"
+                            onClick={() => setExpandedStage(isExpanded ? null : row.stage)}
+                            className="text-blue-600 hover:underline"
+                            aria-expanded={isExpanded}
+                          >
+                            {isExpanded ? "hide" : "show"} ({stageAttempts.length})
+                          </button>
+                        ) : (
+                          <span className="text-gray-400">—</span>
+                        )}
+                      </td>
+                      <td className="border border-gray-300 px-2 py-1 text-xs text-red-600">
+                        {row.state === "error" && (
+                          <ErrorReasonBadge reason={row.errorReason} />
+                        )}
+                        {row.errorMessage ?? ""}
+                      </td>
+                    </tr>
+                    {isExpanded && canExpand && (
+                      <tr>
+                        <td
+                          colSpan={6}
+                          className="border border-gray-300 bg-gray-50 px-2 py-2"
+                        >
+                          <table className="w-full border-collapse text-xs">
+                            <thead className="text-left text-gray-600">
+                              <tr>
+                                <th className="px-2 py-1">#</th>
+                                <th className="px-2 py-1">attempt_id</th>
+                                <th className="px-2 py-1">status</th>
+                                <th className="px-2 py-1">started_at</th>
+                                <th className="px-2 py-1">ended_at</th>
+                                <th className="px-2 py-1">duration</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {stageAttempts.map((a) => (
+                                <tr key={a.attempt_id}>
+                                  <td className="px-2 py-1 text-gray-600">{a.attempt_idx}</td>
+                                  <td className="px-2 py-1 font-mono text-gray-700">{a.attempt_id}</td>
+                                  <td
+                                    className={`px-2 py-1 ${
+                                      a.status === "error" ? "text-red-600" :
+                                      a.status === "success" ? "text-green-600" :
+                                      a.status === "running" ? "text-blue-600" : "text-gray-500"
+                                    }`}
+                                  >
+                                    {a.status}
+                                  </td>
+                                  <td className="px-2 py-1 text-gray-600">
+                                    {new Date(a.started_at).toLocaleTimeString()}
+                                  </td>
+                                  <td className="px-2 py-1 text-gray-600">
+                                    {a.ended_at !== null ? new Date(a.ended_at).toLocaleTimeString() : "—"}
+                                  </td>
+                                  <td className="px-2 py-1 text-gray-700">
+                                    {formatDuration(a.duration_ms)}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
                     )}
-                    {row.errorMessage ?? ""}
-                  </td>
-                </tr>
-              ))}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         )}

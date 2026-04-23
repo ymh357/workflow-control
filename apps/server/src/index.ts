@@ -11,6 +11,7 @@ import { kernelProposalsStreamRoute } from "./routes/kernel-proposals-stream.js"
 import { kernelPipelinesRoute } from "./routes/kernel-pipelines.js";
 import { kernelGatesRoute } from "./routes/kernel-gates.js";
 import { kernelTasksRoute } from "./routes/kernel-tasks.js";
+import { kernelAttemptsRoute } from "./routes/kernel-attempts.js";
 import { kernelNextStreamRoute } from "./routes/kernel-next-stream.js";
 import { kernelRunRoute } from "./routes/kernel-run.js";
 import { runPreflight, printPreflightResults } from "./lib/preflight.js";
@@ -206,6 +207,7 @@ app.route("/api", kernelProposalsStreamRoute);
 app.route("/api", kernelPipelinesRoute);
 app.route("/api", kernelGatesRoute);
 app.route("/api", kernelTasksRoute);
+app.route("/api", kernelAttemptsRoute);
 app.route("/api", kernelNextStreamRoute);
 app.route("/api", kernelRunRoute);
 
