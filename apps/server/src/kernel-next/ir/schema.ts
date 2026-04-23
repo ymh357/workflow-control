@@ -154,6 +154,12 @@ export const GateStageSchema = z.object({
   config: z.object({
     question: GateQuestionSchema,
     routing: GateRoutingSchema,
+    // P5.2 (D6) — opt-in gate deadline. When set, a periodic sweeper
+    // (gate-timeout-sweeper) cancels the owning task once created_at +
+    // timeout_minutes*60_000 has elapsed without an answer. Omitted →
+    // gate never times out. Upper bound (7 days) is a typo guard, not
+    // policy — mirrors RetrySpec's pattern.
+    timeout_minutes: z.number().int().positive().max(10080).optional(),
   }),
   // Gates cannot fanout: the schema simply does not declare a `fanout`
   // field, so TS narrowing prevents it at compile time. Runtime IR (loaded

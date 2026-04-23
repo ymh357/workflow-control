@@ -67,9 +67,15 @@ function canonicalizeGateConfig(cfg: GateStage["config"]): CanonicalValue {
       routesOut[ans] = target;
     }
   }
+  // P5.2 (D6): include timeout_minutes in canonical form only when set.
+  // sortKeys filters undefined values, so a gate without timeout_minutes
+  // hashes identically to any pre-P5.2 gate (baseline fixtures stable).
+  // An explicit timeout_minutes is a meaningful hot-update — it changes
+  // the cancellation policy, so it must participate in version_hash.
   return sortKeys({
     question: cfg.question,
     routing: { routes: routesOut },
+    timeout_minutes: cfg.timeout_minutes,
   });
 }
 

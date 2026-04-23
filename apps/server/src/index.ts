@@ -145,6 +145,24 @@ startPeriodicCleanup();
   logger.info(res, "resumability: boot scan complete");
 }
 
+// --- P5.2 (D6) — periodic gate-timeout sweeper ---
+// Scans gate_queue every 60s for unanswered gates whose deadline
+// (created_at + config.timeout_minutes * 60_000) has elapsed and
+// cancels the owning task via KernelService.cancelTask. Opt-in only —
+// gates without timeout_minutes are never swept.
+const { sweepTimedOutGates } = await import("./kernel-next/runtime/gate-timeout-sweeper.js");
+const gateTimeoutTimer = setInterval(() => {
+  try {
+    const result = sweepTimedOutGates(getKernelNextDb());
+    if (result.swept > 0) {
+      logger.info({ swept: result.swept, cancelled: result.cancelled }, "gate-timeout-sweeper: swept timed-out gates");
+    }
+  } catch (err) {
+    logger.error({ err }, "gate-timeout-sweeper: sweep failed");
+  }
+}, 60_000);
+gateTimeoutTimer.unref?.();
+
 // --- Middleware & Routes ---
 
 const app = new Hono();
@@ -199,6 +217,7 @@ const server = serve({ fetch: app.fetch, port });
 
 async function gracefulShutdown(signal: string): Promise<void> {
   logger.info(`${signal} received — shutting down gracefully`);
+  try { clearInterval(gateTimeoutTimer); } catch { /* best-effort */ }
   try { server.close(); } catch { /* best-effort */ }
   try {
     const { closeDb } = await import("./lib/db.js");
