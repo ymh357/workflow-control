@@ -213,6 +213,24 @@ export default function AttemptDetailsPage(): React.JSX.Element {
   );
 }
 
+// Extract a short label from a JSON item for the collapsed summary row.
+// Probes common identifier fields so tool calls show as `#1 write_port`,
+// stream events as `#1 text` / `#1 thinking`, status rows as `#1 running`.
+// Falls back to nothing when none match — caller still shows `#N`.
+function itemHint(item: unknown): string | null {
+  if (typeof item !== "object" || item === null) return null;
+  const r = item as Record<string, unknown>;
+  const first = (...keys: string[]): string | null => {
+    for (const k of keys) {
+      const v = r[k];
+      if (typeof v === "string" && v.length > 0) return v;
+    }
+    return null;
+  };
+  // tool_calls → name; stream events → type; status/role fallbacks
+  return first("name", "type", "role", "status", "kind");
+}
+
 // Generic JSON list panel: each item collapsed behind a <details>
 // summary so long tool-call / message blobs don't blow up the viewport.
 function JsonPanel({
@@ -227,21 +245,24 @@ function JsonPanel({
   }
   return (
     <ol className="space-y-2">
-      {items.map((item, i) => (
+      {items.map((item, i) => {
+        const hint = itemHint(item);
+        return (
         <li
           key={i}
           className="rounded border border-gray-200 bg-white p-2"
         >
           <details>
             <summary className="cursor-pointer text-xs text-gray-700">
-              #{i + 1}
+              #{i + 1}{hint ? <span className="ml-1 font-mono text-gray-500">{hint}</span> : null}
             </summary>
             <pre className="mt-2 overflow-auto text-xs">
               {JSON.stringify(item, null, 2)}
             </pre>
           </details>
         </li>
-      ))}
+        );
+      })}
     </ol>
   );
 }
