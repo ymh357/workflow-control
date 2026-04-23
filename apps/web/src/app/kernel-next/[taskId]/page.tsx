@@ -17,6 +17,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
+import { GateCard, type GateContextResponse } from "../../../components/gate-card";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
@@ -99,6 +100,8 @@ export default function KernelNextTaskPage() {
   const [finalResult, setFinalResult] = useState<RunFinalPayload | null>(null);
   const [connected, setConnected] = useState(false);
   const eventCountRef = useRef(0);
+  const [pendingGateIds, setPendingGateIds] = useState<string[]>([]);
+  const [gateContexts, setGateContexts] = useState<Map<string, GateContextResponse>>(new Map());
 
   const upsertStage = useCallback((row: StageRow) => {
     setStages((prev) => {
@@ -247,6 +250,115 @@ export default function KernelNextTaskPage() {
     };
   }, [taskId, handleEvent]);
 
+  // B5: poll /status every 2s to discover pending gate IDs. Polling is
+  // cheap at per-task granularity (one open page = one poller) and
+  // avoids introducing a new SSE event type. The poll runs for the
+  // lifetime of the page — aborted via the controller.
+  useEffect(() => {
+    if (!taskId) return;
+    const controller = new AbortController();
+
+    const tick = async (): Promise<void> => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/kernel/tasks/${encodeURIComponent(taskId)}/status`,
+          { signal: controller.signal },
+        );
+        if (!res.ok) {
+          setPendingGateIds([]);
+          return;
+        }
+        const body = await res.json() as {
+          status: string;
+          pending?: Array<{ gateId: string }>;
+        };
+        if (body.status === "gated" && Array.isArray(body.pending)) {
+          setPendingGateIds(body.pending.map((g) => g.gateId));
+        } else {
+          setPendingGateIds([]);
+        }
+      } catch {
+        // network error — leave last known state and retry next tick
+      }
+    };
+
+    void tick();
+    const interval = setInterval(() => void tick(), 2000);
+    return () => {
+      controller.abort();
+      clearInterval(interval);
+    };
+  }, [taskId]);
+
+  // B5: for every pending gateId we don't already have a context for,
+  // fetch it once. Evict contexts whose gateId left pendingGateIds to
+  // prevent unbounded growth on long-running tasks with many gates.
+  useEffect(() => {
+    if (pendingGateIds.length === 0) {
+      setGateContexts((prev) => (prev.size === 0 ? prev : new Map()));
+      return;
+    }
+    const controller = new AbortController();
+
+    // Evict stale entries.
+    setGateContexts((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const key of next.keys()) {
+        if (!pendingGateIds.includes(key)) { next.delete(key); changed = true; }
+      }
+      return changed ? next : prev;
+    });
+
+    // Fetch missing entries.
+    for (const id of pendingGateIds) {
+      if (gateContexts.has(id)) continue;
+      void (async () => {
+        try {
+          const res = await fetch(
+            `${API_BASE}/api/kernel/gates/${encodeURIComponent(id)}/context`,
+            { signal: controller.signal },
+          );
+          if (!res.ok) return;
+          const body = await res.json() as { ok: boolean } & GateContextResponse;
+          if (!body.ok) return;
+          setGateContexts((prev) => {
+            if (prev.has(id)) return prev;
+            const next = new Map(prev);
+            next.set(id, body);
+            return next;
+          });
+        } catch {
+          // network error — next poll tick can retry
+        }
+      })();
+    }
+    return () => controller.abort();
+  }, [pendingGateIds, gateContexts]);
+
+  const answerGate = useCallback(async (gateId: string, answer: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/kernel/gates/${encodeURIComponent(gateId)}/answer`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ answer }),
+        },
+      );
+      const body = await res.json() as {
+        ok: boolean;
+        diagnostics?: Array<{ message: string; code: string }>;
+      };
+      if (!res.ok || !body.ok) {
+        return { ok: false, error: body.diagnostics?.[0]?.message ?? `HTTP ${res.status}` };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }, []);
+
   const stageRows = Array.from(stages.values()).sort((a, b) => a.stage.localeCompare(b.stage));
   const seedRows = Array.from(seedPorts.entries()).sort(([a], [b]) => a.localeCompare(b));
 
@@ -300,6 +412,30 @@ export default function KernelNextTaskPage() {
             </tbody>
           </table>
         </section>
+      )}
+
+      {pendingGateIds.length > 0 && (
+        <div className="mb-6">
+          {pendingGateIds.map((gid) => {
+            const ctx = gateContexts.get(gid);
+            if (!ctx) {
+              return (
+                <section key={gid} className="mb-2 rounded border border-amber-400 bg-amber-50 p-3">
+                  <p className="text-sm text-amber-900">
+                    Gate <code>{gid}</code> pending — loading context…
+                  </p>
+                </section>
+              );
+            }
+            return (
+              <GateCard
+                key={gid}
+                context={ctx}
+                onAnswer={(ans) => answerGate(gid, ans)}
+              />
+            );
+          })}
+        </div>
       )}
 
       <section className="mb-6">
