@@ -441,6 +441,86 @@ describe("RealStageExecutor subAgents pass-through", () => {
   });
 });
 
+// F3 — per-task workspace cwd. agent SDK default cwd is process.cwd()
+// (the server's launch dir), which has historically caused agents to
+// write files into the repo root when prompts use relative paths
+// (P6-3). RealStageExecutor now accepts an optional workspaceDir option
+// and forwards it as SDK options.cwd so each task runs in its own
+// sandbox when the caller supplies one.
+describe("RealStageExecutor workspaceDir (F3)", () => {
+  it("passes workspaceDir to SDK options.cwd when provided", async () => {
+    const db = makeDb();
+    // Empty-outputs fixture lets us short-circuit with error_max_turns
+    // and skip port writes — we only care about the captured SDK options.
+    const ir: PipelineIR = {
+      name: "f3-cwd-set",
+      // Placate EMPTY_DATAFLOW validator: any external input declaration
+      // flips hasExternals=true without wiring requirements.
+      externalInputs: [{ name: "unused", type: "unknown" }],
+      stages: [{ name: "S", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } }],
+      wires: [],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const portRuntime = new PortRuntime(db, { send: () => { /* inert */ } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const capturedOptions: any[] = [];
+    const executor = new RealStageExecutor({
+      mcpServerFactory: () => ({}),
+      workspaceDir: "/tmp/f3-workspace",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      queryFn: ((args: any) => {
+        capturedOptions.push(args.options);
+        return makeFakeStream("error_max_turns");
+      }) as never,
+    });
+
+    await executor.executeStage({
+      ir, stageName: "S", taskId: "t-f3", versionHash: hash,
+      portValues: {}, handlers: {}, portRuntime,
+    });
+
+    expect(capturedOptions).toHaveLength(1);
+    expect(capturedOptions[0].cwd).toBe("/tmp/f3-workspace");
+    db.close();
+  });
+
+  it("omits options.cwd when workspaceDir is not provided (SDK default stays)", async () => {
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "f3-cwd-absent",
+      externalInputs: [{ name: "unused", type: "unknown" }],
+      stages: [{ name: "S", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } }],
+      wires: [],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const portRuntime = new PortRuntime(db, { send: () => { /* inert */ } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const capturedOptions: any[] = [];
+    const executor = new RealStageExecutor({
+      mcpServerFactory: () => ({}),
+      // no workspaceDir
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      queryFn: ((args: any) => {
+        capturedOptions.push(args.options);
+        return makeFakeStream("error_max_turns");
+      }) as never,
+    });
+
+    await executor.executeStage({
+      ir, stageName: "S", taskId: "t-f3n", versionHash: hash,
+      portValues: {}, handlers: {}, portRuntime,
+    });
+
+    expect(capturedOptions).toHaveLength(1);
+    expect(capturedOptions[0].cwd).toBeUndefined();
+    db.close();
+  });
+});
+
 // Stage 6 — execution-record sidecar integration. Every agent-stage
 // attempt writes exactly one agent_execution_details row populated
 // with prompt context + lifecycle metadata.

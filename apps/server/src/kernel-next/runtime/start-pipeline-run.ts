@@ -13,6 +13,8 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 
 import type { PipelineIR } from "../ir/schema.js";
 import {
@@ -70,6 +72,17 @@ export interface StartPipelineRunInput {
   worktreeRoot?: string;
   /** Branch ref to start the worktree from. Defaults to source repo HEAD. */
   baseBranch?: string;
+  /**
+   * F3 (2026-04-23): per-task workspace directory for the agent's
+   * filesystem operations (Read/Write/Edit with relative paths).
+   * Forwarded to the SDK as `options.cwd`. When omitted, the runtime
+   * defaults to `{DATA_DIR}/workspaces/{taskId}/` and mkdir's it
+   * before launching the runner so agents writing to `./whatever`
+   * land in a per-task sandbox instead of the server process cwd.
+   * Set to `null` explicitly to suppress the default and fall back to
+   * SDK-level `process.cwd()` (tests and specific worktree flows).
+   */
+  workspaceDir?: string | null;
 }
 
 // Minimal ExecutionPolicy shape — only policy.default is consumed by
@@ -237,6 +250,45 @@ export async function startPipelineRun(
     ?? input.policy?.default?.budget?.maxCostUsd
     ?? DEFAULT_MAX_BUDGET_USD;
 
+  // --- Resolve taskId first (needed for per-task workspace) ---
+  //
+  // P6-6: synthesize taskId with the slug form of the pipeline name so
+  // it's URL-safe and readable in logs. An explicit caller-supplied
+  // taskId is passed through verbatim — tests and migration flows rely
+  // on that escape hatch.
+  const taskId = input.taskId
+    ?? `${slugifyPipelineName(nameForRegistry) || "task"}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+
+  // --- Resolve workspaceDir (F3, 2026-04-23) ---
+  //
+  // Default per-task workspace at {DATA_DIR}/workspaces/{taskId}/ so
+  // agents using relative filesystem paths (Write/Read/Edit on
+  // "./file.md") stay sandboxed and don't pollute the server cwd
+  // (P6-3 root cause). Callers can pass `null` to suppress the
+  // default (tests, explicit worktree flows) or a concrete path to
+  // override. When a path is used, mkdir -p beforehand — the runtime
+  // owns the lifecycle so agents can assume the dir exists.
+  let resolvedWorkspaceDir: string | undefined;
+  if (input.workspaceDir === null) {
+    resolvedWorkspaceDir = undefined;
+  } else if (input.workspaceDir !== undefined) {
+    resolvedWorkspaceDir = input.workspaceDir;
+  } else {
+    const dataDir = process.env.DATA_DIR || "/tmp/workflow-control-data";
+    resolvedWorkspaceDir = join(dataDir, "workspaces", taskId);
+  }
+  if (resolvedWorkspaceDir !== undefined) {
+    try {
+      mkdirSync(resolvedWorkspaceDir, { recursive: true });
+    } catch (err) {
+      logger.warn(
+        { taskId, workspaceDir: resolvedWorkspaceDir, err: (err as Error).message },
+        "[startPipelineRun] workspace mkdir failed; agent falls back to SDK default cwd",
+      );
+      resolvedWorkspaceDir = undefined;
+    }
+  }
+
   // --- Build executor ---
   //
   // runner.ts picks `opts.executor ?? new MockStageExecutor({handlers})`.
@@ -261,14 +313,8 @@ export async function startPipelineRun(
         model,
         maxTurns,
         maxBudgetUsd,
+        workspaceDir: resolvedWorkspaceDir,
       });
-
-  // P6-6: synthesize taskId with the slug form of the pipeline name so
-  // it's URL-safe and readable in logs. An explicit caller-supplied
-  // taskId is passed through verbatim — tests and migration flows rely
-  // on that escape hatch.
-  const taskId = input.taskId
-    ?? `${slugifyPipelineName(nameForRegistry) || "task"}-${Date.now()}-${randomUUID().slice(0, 8)}`;
 
   // --- Worktree allocation (Phase 5C) -------------------------------
   //

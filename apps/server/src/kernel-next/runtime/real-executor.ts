@@ -100,6 +100,16 @@ export interface RealStageExecutorOptions {
    * Claude CLI. Production callers omit it (the real SDK query is used).
    */
   queryFn?: typeof query;
+  /**
+   * F3 (2026-04-23): per-task workspace directory. Forwarded to the SDK
+   * as `options.cwd` so agents that use relative filesystem paths in
+   * prompts (e.g. Write/Edit) stay sandboxed inside the task's own
+   * workspace rather than polluting the server process cwd (P6-3 root
+   * cause). When omitted, SDK default cwd (= `process.cwd()`) applies.
+   * The kernel does NOT create this directory — caller (startPipelineRun)
+   * owns allocation + mkdir, matching how worktreeSourceRepo is handled.
+   */
+  workspaceDir?: string;
 }
 
 const DEFAULT_MODEL = "claude-haiku-4-5";
@@ -120,6 +130,7 @@ export class RealStageExecutor implements StageExecutor {
   private readonly maxRetries: number;
   private readonly promptResolver: PromptResolver;
   private readonly queryFn: typeof query;
+  private readonly workspaceDir: string | undefined;
 
   constructor(options: RealStageExecutorOptions) {
     this.mcpServerFactory = options.mcpServerFactory;
@@ -130,6 +141,7 @@ export class RealStageExecutor implements StageExecutor {
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
     this.promptResolver = options.promptResolver ?? new TrivialPromptResolver();
     this.queryFn = options.queryFn ?? query;
+    this.workspaceDir = options.workspaceDir;
   }
 
   async executeStage(args: ExecuteStageArgs): Promise<ExecuteStageResult> {
@@ -257,6 +269,10 @@ export class RealStageExecutor implements StageExecutor {
         ...(subAgents && subAgents.length > 0
           ? { agents: buildSdkAgents(subAgents) }
           : {}),
+        // F3: set SDK cwd only when the caller supplied a workspace.
+        // Otherwise leave it undefined so the SDK default (process.cwd())
+        // stays in force, preserving legacy test expectations.
+        ...(this.workspaceDir !== undefined ? { cwd: this.workspaceDir } : {}),
       };
 
       const stream = this.queryFn({ prompt: userPrompt, options });
