@@ -29,15 +29,16 @@
 | 14 | 2026-04-23 | **P6-12 修后再重跑 run #13**（同 prompt + 同 diff） | pr-description-generator (hash `96ab20f8`) | `pr-description-generator-1776914057309-9a5ad8e2` | completed ✅ | 277s | — | Title `"fix(kernel): P6-10 gate race + P6-5/6 slug + pr-description-generator"` 严格按新 multi-theme 规则（69 chars, verb 开头, 3 theme 用 ` + ` 连接）。Body 7 个 notable changes 全部对应 commit，0 编造。**M4 首个真实数据点**：prompt iteration 1 次，reject 0 次，rollback 0 次，新版本输出质量 > 旧版本 |
 | 15 | 2026-04-23 | **首次走正规 propose() 路径做 prompt iteration**（本轮架构修完验证） | pr-description-generator propose 新 hash `71d342d0` | `pr-description-generator-1776916294144-9d7d7019` | completed ✅ | 188s | — | 路径：`POST /api/kernel/proposals` 带 `prompts` override（加一条 "Notable changes must explain WHY, not just WHAT" 规则）→ `proposedVersion=71d342d0...` 不等于 base `96ab20f8...` → approve → run → 新 body 每条 Notable change 都是 `<file>: <WHAT> so <WHY>` 结构，**prompt 规则明显生效**。**M4 第 2 个数据点**：propose 1 次，autoApprove 未触发（safeRange.category=empty 没进入 safe-verdict 路径），人工 approve，0 reject，0 rollback。整条 HTTP 路径正常工作——Phase 6 架构审计的直接验证 |
 | 16 | 2026-04-23 | **Propose UI 端到端 dogfood**（browser-native propose 路径）| pr-description-generator propose 新 hash `29016dbb` | `pr-description-generator-1776922394245-15f8c88b` | completed ✅ | ~195s | — | **不再用 curl + 脚本做 iteration**。路径：`GET /api/kernel/pipelines` list → `GET /api/kernel/pipelines/:hash` detail（UI 展示 2 个 prompt ref）→ 改 `system/write-pr` 加一条 "Reference the related GitHub issue number if any (e.g., 'Closes #42')" → `POST /api/kernel/proposals` body `{patch:{ops:[]}, prompts:{...}}`（空 patch + prompts-only 路径，**A+ 架构**直接可用 no workaround）→ 202 新 `proposedVersion=29016dbb`；NO_OP 兜底用空 prompts 试了一次 → 400 `NO_OP_PROPOSAL`。Approve → run → new version 拉新 prompt content（DB `pipeline_prompt_refs.content_hash` 验证）→ task 正常 completed。新规则属 "if any" 类型，本次 diff 无相关 issue → agent 合规跳过（非 bug）。**M4 第 3 个数据点** + **M2 解锁关键基础设施完成** |
+| 17 | 2026-04-23 | **PG 真实 API 验证（tech-research 场景）** | Pipeline Generator → **Research Report Generator** (new hash `7fc2d175`) | `pipeline-generator-1776932730593-3835c6cb` | completed ✅ | ~7.5 min, $0.2983 | — | PG 全 5 stage 成功（analyzing → gate → genSkeleton → genPrompts → persisting）。生成了一个 2-stage `research-report-generator` pipeline（collectSources → generateReport，externalInputs=[topic:string]）。**validator.ok=true / missing=[] / extraneous=[]**。用 `topic="WebAssembly"` 跑 smoke → task completed；collectSources 写出 2676-byte sources 数组；generateReport 产出 6867-byte markdown 报告（含 Executive Summary / Overview / Detailed Findings / Source List），cost $0.0362。**Finding**: PG 未产出 `store_schema` 顶层字段——这是 A3 迁移 gap，当前 PG prompts 没强制要求生成 store_schema。详见本日志末尾 "PG API validation run #17" |
 
 ## 成熟度快照
 
-- **M3 分子/分母**: 9 / 16（run #2,3,4,9,11,12,14,15,16 真 completed；run #1,5,6,7,10,13 API completed 但未全跑 / 内容错；#8 是 B5 API 验证）
-- **真实成功率**: 9/16 = **56%**。架构审计修完后的 runs 全过
-- **post-architecture-audit 子集**: 5/5 = **100%**（runs #11,#12,#14,#15,#16）
+- **M3 分子/分母**: 10 / 17（run #2,3,4,9,11,12,14,15,16,17 真 completed；run #1,5,6,7,10,13 API completed 但未全跑 / 内容错；#8 是 B5 API 验证）
+- **真实成功率**: 10/17 = **59%**。架构审计修完后的 runs 全过
+- **post-architecture-audit 子集**: 6/6 = **100%**（runs #11,#12,#14,#15,#16,#17）
 - **M4 热更新 propose / reject / rollback**: **3 / 0 / 0** — 第 3 个数据点（run #16）**首次通过 UI 发起 propose**（不需要 curl 或手写脚本），并在同一 session 内 A+ 架构（propose 接受 `ops:[]` + prompts-only + `NO_OP_PROPOSAL` 兜底）端到端工作。Propose UI 7 个 milestone（M-A..M-G）连续完成，M2 的"朋友能用"硬前提满足
-- **覆盖的 builtin + generated**: 4 ✅ （`smoke-test`, `Tech Research Collector`, `Pipeline Generator`, `pr-description-generator`） + 1 AI-generated IR 完整（`markdown-table-of-contents-generator`，未运行）; 1 pending: `Tech Research Writer`
-- **AI-generated pipeline schema 可用率**: 1 / 2（run #4 空壳；run #11 IR 结构完整过 validator）
+- **覆盖的 builtin + generated**: 4 ✅ （`smoke-test`, `Tech Research Collector`, `Pipeline Generator`, `pr-description-generator`） + 2 AI-generated IR 完整（`markdown-table-of-contents-generator` run #11 未运行；`research-report-generator` run #17 **已运行并产 report**）; 1 pending: `Tech Research Writer`
+- **AI-generated pipeline schema 可用率**: 2 / 3（run #4 空壳；run #11 IR 结构完整过 validator；run #17 IR 完整过 validator 且端到端跑出真实 report）
 
 ## 结论：B5 / B12 决策（基于实际使用数据）
 
@@ -181,3 +182,260 @@ commit 2103aa7。
 **回归测试**：待加。
 
 ---
+
+## PG API validation run #17 (2026-04-23)
+
+### Input
+
+**taskDescription**（verbatim）：
+
+> Build a technical research pipeline that takes a topic name as input, collects authoritative sources (official docs, reputable engineering blogs, peer-reviewed papers if any), and synthesises a structured report with an executive summary, source list, and detailed findings. Output a single markdown report.
+
+### Outcome
+
+- PG status: **completed ✅**
+- Stage attempts (task `pipeline-generator-1776932730593-3835c6cb`):
+
+| stage | attempt | status | kind |
+|---|---|---|---|
+| __external__ | 1 | success | external |
+| analyzing | 1 | success | regular |
+| awaitingConfirm | 1 | success | regular |
+| genSkeleton | 1 | success | regular |
+| genPrompts | 1 | success | regular |
+| persisting | 1 | success | regular |
+
+- Cost: **$0.2983**（全 PG 链路）
+- Duration: ~7.5 min（含 gate 等我批准 ~20s）
+- Generated versionHash: `7fc2d175aa8b2f7ea6a420ab120d09fb78ccd68c9b5e109794f9b9d1654fb1f6`
+- Generated pipeline name: `research-report-generator`
+- Validator: `{ ok: true, diagnostics: [] }`
+- Prompt coverage: missing=[], extraneous=[]
+- **Finding**: 生成的 IR **没有 `store_schema` 顶层字段**。当前 PG prompts（analysis / genSkeleton / genPrompts）未强制要求产出 store_schema，这是 A3 迁移的真实 gap——现行 4 个 builtin 的 store_schema 是 Phase 4.5 T5 手工机械镜像补的，PG 自己不会产出。
+
+### Smoke run
+
+- Task: `research-report-generator-1776933048333-c114cdc0`，seed=`{topic:"WebAssembly"}`, maxTurns=5, maxBudget=$0.5
+- 状态：task **completed**
+- 细节：
+  - `collectSources`: agent 超 maxTurns（5 太紧），但**在超之前已写出 port `sources`（2676 bytes，数组含多个 source 对象）**。stage_attempts.status=error / termination_reason=error，但下游 wire 因 port 已写而激活
+  - `generateReport`: success，消费 sources + topic，产出 `report`（6867 bytes）完整 markdown 报告（含 Executive Summary / Overview / Detailed Findings / Source List）
+- Cost（smoke）: $0.0362
+- **PG 生成的 pipeline 端到端可执行并产出真实内容**
+
+### Generated IR (verbatim, canonical JSON)
+
+```json
+{
+    "name": "research-report-generator",
+    "stages": [
+        {
+            "name": "collectSources",
+            "inputs": [
+                {
+                    "name": "topic",
+                    "type": "string"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "sources",
+                    "type": "{ url: string; title: string; type: 'official-docs' | 'blog' | 'paper' | 'other'; summary: string; }[]"
+                }
+            ],
+            "type": "agent",
+            "config": {
+                "promptRef": "collectSources"
+            }
+        },
+        {
+            "name": "generateReport",
+            "inputs": [
+                {
+                    "name": "topic",
+                    "type": "string"
+                },
+                {
+                    "name": "sources",
+                    "type": "{ url: string; title: string; type: 'official-docs' | 'blog' | 'paper' | 'other'; summary: string; }[]"
+                }
+            ],
+            "outputs": [
+                {
+                    "name": "report",
+                    "type": "string"
+                }
+            ],
+            "type": "agent",
+            "config": {
+                "promptRef": "generateReport"
+            }
+        }
+    ],
+    "wires": [
+        {
+            "from": {
+                "source": "external",
+                "port": "topic"
+            },
+            "to": {
+                "stage": "collectSources",
+                "port": "topic"
+            }
+        },
+        {
+            "from": {
+                "source": "external",
+                "port": "topic"
+            },
+            "to": {
+                "stage": "generateReport",
+                "port": "topic"
+            }
+        },
+        {
+            "from": {
+                "source": "stage",
+                "stage": "collectSources",
+                "port": "sources"
+            },
+            "to": {
+                "stage": "generateReport",
+                "port": "sources"
+            }
+        }
+    ],
+    "externalInputs": [
+        {
+            "name": "topic",
+            "type": "string"
+        }
+    ]
+}
+```
+
+### Generated prompts (verbatim)
+
+#### `collectSources`
+
+```markdown
+# collectSources Stage Prompt
+
+You are the research stage of a technical report pipeline. Find and collect 4-8 authoritative sources on the given topic.
+
+## Available Inputs
+
+- **topic** (string): Technical topic to research (e.g., "Kubernetes observability", "React performance")
+
+## Workflow
+
+1. Use WebSearch to find authoritative sources:
+   - Official documentation from project maintainers
+   - Technical blog posts from recognized engineers/companies
+   - Peer-reviewed papers or research publications
+   - Avoid low-quality, outdated, or thin sources
+
+2. For each promising result:
+   - Use WebFetch to retrieve full content
+   - Extract clear title and key points
+   - Classify source type: official-docs, blog, paper, or other
+   - Write 1-2 sentence summary of key content
+
+3. Collect at least 4-6 high-quality sources before writing output
+
+## Output Format
+
+Each source must be a JSON object:
+\`\`\`json
+{
+  "url": "https://example.com/resource",
+  "title": "Source Title",
+  "type": "official-docs",
+  "summary": "Concise summary of key content"
+}
+\`\`\`
+
+## write_port Example
+
+\`\`\`
+write_port(
+  taskId="pipeline-generator-1776932730593-3835c6cb",
+  attemptId="18f6b974-c574-4a6b-a585-38a9cde0e1b9",
+  stage="collectSources",
+  port="sources",
+  value=[
+    {"url": "https://kubernetes.io/docs/concepts/", "title": "Kubernetes Concepts", "type": "official-docs", "summary": "Official guide..."},
+    {"url": "https://example.com/blog", "title": "Blog Post", "type": "blog", "summary": "Technical insights..."}
+  ]
+)
+\`\`\`
+
+## Error Handling
+
+- If WebSearch returns limited results, broaden search terms and try variations
+- If a source URL fails to fetch, skip it and find alternatives
+- If sources are sparse, note in comments but proceed with available sources
+- Ensure all URLs are valid and content is accessible
+```
+
+#### `generateReport`
+
+```markdown
+# generateReport Stage Prompt
+
+You are the synthesis stage. Create a structured markdown report synthesizing the collected sources into a cohesive narrative.
+
+## Available Inputs
+
+- **topic** (string): The technical topic being researched
+- **sources** (array): Source objects with url, title, type, and summary fields
+
+## Workflow
+
+1. Review all sources to identify common themes and unique insights
+
+2. Structure the report with:
+   - **Title** (H1): "Research Report: {topic}"
+   - **Executive Summary** (H2): 2-3 sentence overview of topic and key findings
+   - **Overview** (H2): Context and importance
+   - **Key Findings** (H2): 3-5 subsections synthesizing insights across sources
+   - **Best Practices** (H2): Actionable recommendations
+   - **References** (H2): Numbered list of all sources with links
+
+3. When writing:
+   - Synthesize across sources rather than summarizing individually
+   - Use [1], [2] citation format to reference sources
+   - Focus on unique insights, patterns, and actionable advice
+   - Aim for 800-1500 words total
+
+4. Format as valid markdown with proper hierarchy and links
+
+## write_port Example
+
+\`\`\`
+write_port(
+  taskId="pipeline-generator-1776932730593-3835c6cb",
+  attemptId="18f6b974-c574-4a6b-a585-38a9cde0e1b9",
+  stage="generateReport",
+  port="report",
+  value="# Research Report: Kubernetes Observability\n\n## Executive Summary\n\n[full markdown report as single string]..."
+)
+\`\`\`
+
+## Error Handling
+
+- If sources are limited, create report with available sources and note constraints
+- If topic is unfamiliar, rely on source material to guide structure
+- If markdown formatting fails, validate syntax and retry
+- Ensure all reference links are valid and clickable
+```
+
+### Lessons
+
+- **PG 能自主产出合法 tech-research 类 pipeline**：结构清晰（2 stage 线性 + external input 分发到两个 stage + 中间 wire），过 validator，端到端能跑出真实输出。比 run #11 `markdown-toc-generator`（未运行）进一步——这次是**真的 smoke 跑完出 report**。
+- **PG 的 prompt 质量合理**：生成的 `collectSources` / `generateReport` prompts 有结构化 Workflow / Output Format / write_port Example / Error Handling 段。比人类匆忙写的同类 prompt 质量不差。
+- **PG 缺 store_schema 产出**：A3 迁移原意是让 PG 产出带 store_schema 的 pipeline；当前 PG prompts 没教它这么做。现行 builtin 的 store_schema 全是 Phase 4.5 T5 手工镜像补的。若要真正让 A3 "AI 代写 YAML 含 schema" 成立，需要升级 PG 的 genSkeleton / genPrompts 让它产出 store_schema。但这不是 run #17 要做的；run #17 只是诊断。
+- **PG 没用 fanout / sub-pipelines**：尽管 PG 的 analysis stage 输出 `usesFanout`/`usesSubPipelines` 标志，本轮明确选了 `usesFanout=false` / `usesSubPipelines=false`。对"2 stage 简单线性"是合理选择（多 source 并行抓取本可用 fanout，但 LLM 判断"线性够用"——YAGNI 意义上合理）。
+- **Smoke maxTurns 过紧**：给了 5 turns 对 collectSources 抓 multiple sources 不够（它抓了 6 source 后超时）。但端到端 still completed 因为 port 早已写到。下次 smoke 默认 10-15 turns。
+- **PG 的 persist stage 成功提交**：对比 run #4 的"空壳 IR"失败，这次 persisting 直接成功一发命中。P6-8 fix + store_schema drift validator 没误伤合法 IR。
+- **未尝试替换现有 builtin**：按 spec non-goal 明确。research-report-generator 仅驻留 DB，下次 server 重启随 db wipe 消失。
