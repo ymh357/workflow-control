@@ -765,7 +765,7 @@ const PROMPT_SUMMARY_CHAR_LIMIT = 400;
  *     inline the full value into `### Inputs`.
  *   - Large port value: emit a `<inlined: false>` summary line with
  *     type + byte size and direct the agent to call
- *     `mcp__kernel_next__read_port({taskId, stage, port})` to fetch
+ *     `mcp____kernel_next____read_port({taskId, stage, port})` to fetch
  *     the complete value.
  *
  * Saves tokens on large inputs the agent may not need, and (equally
@@ -857,7 +857,7 @@ export function buildSystemPromptAppend(
     "",
     "### Output protocol (MANDATORY — read carefully)",
     "The ONLY way to emit output for this stage is to call the MCP tool",
-    "  `mcp__kernel_next__write_port`",
+    "  `mcp____kernel_next____write_port`",
     "exactly once per declared output port. The arguments are:",
     "  - taskId      (use the exact string provided below)",
     "  - attemptId   (use the exact string provided below)",
@@ -912,7 +912,7 @@ function formatInputLine(
   const typeLabel = typeOfValueForHuman(value);
   return (
     `  - ${portName} [large; ${serialized.length} chars as JSON; type: ${typeLabel}]\n` +
-    `      Call mcp__kernel_next__read_port with { taskId: "${ctx.taskId}", stage: "${stageName}", port: "${portName}" }\n` +
+    `      Call mcp____kernel_next____read_port with { taskId: "${ctx.taskId}", stage: "${stageName}", port: "${portName}" }\n` +
     `      to fetch the full value. (Inlining would cost ~${Math.round(serialized.length / 4)} tokens.)`
   );
 }

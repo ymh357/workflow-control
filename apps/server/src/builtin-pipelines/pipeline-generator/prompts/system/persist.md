@@ -15,7 +15,7 @@ Your sole responsibility: submit the generated IR and prompts to kernel-next by 
 
 ## Output ports (exactly four)
 
-Emit these via `mcp__kernel_next__write_port` — one call per port:
+Emit these via `mcp____kernel_next____write_port` — one call per port:
 
 1. `versionHash: string` — main pipeline's versionHash returned from `submit_pipeline`
 2. `subVersionHashes: string[]` — sub-pipeline versionHashes in index order (empty array when subIrs is empty)
@@ -30,7 +30,7 @@ Emit these via `mcp__kernel_next__write_port` — one call per port:
 
 For each `subIrs[i]` in order:
 
-Call the tool `mcp__kernel_next__submit_pipeline` with input:
+Call the tool `mcp____kernel_next____submit_pipeline` with input:
 
 ```json
 {
@@ -52,7 +52,7 @@ If `subIrs` is empty or no prompt mentions `run_pipeline(`, this step is a no-op
 
 ### Step 3: Submit the main pipeline
 
-Call `mcp__kernel_next__submit_pipeline` with input:
+Call `mcp____kernel_next____submit_pipeline` with input:
 
 ```json
 {
@@ -70,7 +70,7 @@ Record the returned `versionHash` as `mainVersionHash`.
 
 ### Step 5: Write the four output ports
 
-Four separate `mcp__kernel_next__write_port` calls:
+Four separate `mcp____kernel_next____write_port` calls:
 
 ```json
 { "port": "versionHash", "value": "<mainVersionHash>" }

@@ -53,7 +53,7 @@ describe("real-executor: buildSystemPromptAppend with empty inputs", () => {
 
     // Verify write_port instructions are present
     expect(result).toContain("write_port");
-    expect(result).toContain("mcp__kernel_next__write_port");
+    expect(result).toContain("mcp____kernel_next____write_port");
   });
 
   it("does not include warning when inputs are absent entirely", () => {
@@ -160,7 +160,7 @@ describe("real-executor: buildSystemPromptAppend with empty inputs", () => {
 
     // Verify the main instruction point about calling write_port for each port
     expect(result).toContain("write_port");
-    expect(result).toContain("mcp__kernel_next__write_port");
+    expect(result).toContain("mcp____kernel_next____write_port");
   });
 });
 
@@ -213,7 +213,7 @@ describe("real-executor: buildSystemPromptAppend size-aware input handling", () 
     // stage's name. Tests that rely on this MUST pass ir to get the
     // correct upstream source stage.
     expect(result).toContain(
-      'Call mcp__kernel_next__read_port with { taskId: "task-A", stage: "s1", port: "p" }',
+      'Call mcp____kernel_next____read_port with { taskId: "task-A", stage: "s1", port: "p" }',
     );
     // Actual large content is NOT inlined
     expect(result).not.toContain(str);

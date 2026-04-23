@@ -72,7 +72,7 @@ function buildSystemPrompt(stage: StageIR, taskId: string, attemptId: string): s
     "### Required tool calls:",
     examples,
     "",
-    "Use only the mcp__kernel_next__write_port tool. Do not return a",
+    "Use only the mcp____kernel_next____write_port tool. Do not return a",
     "final JSON object in text — only tool calls count. After every",
     "port is written, end your turn with a one-sentence confirmation.",
   ].join("\n");

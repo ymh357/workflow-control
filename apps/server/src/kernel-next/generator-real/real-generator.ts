@@ -92,8 +92,8 @@ export interface GeneratePatchResult {
   durationMs: number;
 }
 
-const SUBMIT_TOOL = "mcp__kernel_next__submit_pipeline";
-const PROPOSE_TOOL = "mcp__kernel_next__propose_pipeline_change";
+const SUBMIT_TOOL = "mcp____kernel_next____submit_pipeline";
+const PROPOSE_TOOL = "mcp____kernel_next____propose_pipeline_change";
 
 /**
  * Ask Claude to produce and submit a fresh pipeline.
@@ -126,7 +126,7 @@ export async function generateSubmit(args: GenerateSubmitArgs): Promise<Generate
     settingSources: [],
     // Limit surface to kernel-next MCP: no file system, no web, no git.
     // The generator's only job is to call submit_pipeline.
-    allowedTools: [SUBMIT_TOOL, "mcp__kernel_next__validate_pipeline"],
+    allowedTools: [SUBMIT_TOOL, "mcp____kernel_next____validate_pipeline"],
     pathToClaudeCodeExecutable: args.claudePath ?? DEFAULT_CLAUDE_PATH,
     env: buildChildEnv(),
   };
@@ -204,7 +204,7 @@ export async function generatePatch(args: GeneratePatchArgs): Promise<GeneratePa
     permissionMode: "bypassPermissions",
     allowDangerouslySkipPermissions: true,
     settingSources: [],
-    allowedTools: [PROPOSE_TOOL, "mcp__kernel_next__validate_pipeline"],
+    allowedTools: [PROPOSE_TOOL, "mcp____kernel_next____validate_pipeline"],
     pathToClaudeCodeExecutable: args.claudePath ?? DEFAULT_CLAUDE_PATH,
     env: buildChildEnv(),
   };
@@ -349,7 +349,7 @@ function buildSubmitSystemPrompt(): string {
     "  - GATE_ROUTING_TARGET_MISSING: routing targets a non-existent stage",
     "  - FANOUT_INPUT_MISSING: fanout.input doesn't match a declared input",
     "",
-    "You may pre-flight with `mcp__kernel_next__validate_pipeline` if",
+    "You may pre-flight with `mcp____kernel_next____validate_pipeline` if",
     "helpful (same diagnostics, no persistence).",
     "",
     "Do NOT emit the IR as text. Only the tool call counts. Once the tool",
