@@ -1,0 +1,139 @@
+"use client";
+
+// /kernel-next/proposals — three-section list (pending/approved/
+// rejected). Pending rows have Approve / Reject buttons that POST to
+// the existing endpoints and locally move the row out of pending on
+// success. No migrate-on-approve from UI (see design spec §8); use
+// MCP or curl for that.
+
+import { useCallback, useEffect, useState } from "react";
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+
+type Status = "pending" | "approved" | "rejected";
+
+interface ProposalRow {
+  proposalId: string;
+  pipelineName: string;
+  baseVersion: string;
+  proposedVersion: string | null;
+  actor: string;
+  status: Status;
+  createdAt: number;
+  diagnosticJson: string | null;
+  rerunFrom: string | null;
+  migrateRunning: "all" | "none" | string[];
+}
+
+export default function ProposalsPage() {
+  const [rows, setRows] = useState<ProposalRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/kernel/proposals`, { signal: controller.signal });
+        const body = await res.json() as { ok: boolean; proposals: ProposalRow[] };
+        setRows(body.ok ? body.proposals : []);
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        setError(err instanceof Error ? err.message : String(err));
+        setRows([]);
+      }
+    })();
+    return () => controller.abort();
+  }, []);
+
+  const mutateStatus = useCallback(async (id: string, endpoint: "approve" | "reject") => {
+    const res = await fetch(`${API_BASE}/api/kernel/proposals/${encodeURIComponent(id)}/${endpoint}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: endpoint === "reject" ? JSON.stringify({}) : "",
+    });
+    const body = await res.json() as { ok: boolean; diagnostics?: Array<{ message: string }> };
+    if (!res.ok || !body.ok) {
+      setError(body.diagnostics?.[0]?.message ?? `HTTP ${res.status}`);
+      return;
+    }
+    setRows((prev) => (prev ?? []).map((r) =>
+      r.proposalId === id ? { ...r, status: endpoint === "approve" ? "approved" : "rejected" } : r,
+    ));
+  }, []);
+
+  if (error && !rows) return <p className="p-6 font-mono text-red-600">Error: {error}</p>;
+  if (!rows) return <p className="p-6 font-mono text-gray-600">Loading…</p>;
+
+  const pending = rows.filter((r) => r.status === "pending");
+  const approved = rows.filter((r) => r.status === "approved");
+  const rejected = rows.filter((r) => r.status === "rejected");
+
+  const Section = ({ title, items, actions }: {
+    title: string;
+    items: ProposalRow[];
+    actions?: (r: ProposalRow) => React.ReactNode;
+  }) => (
+    <section className="mb-6">
+      <h2 className="mb-2 text-base font-semibold">{title} ({items.length})</h2>
+      {items.length === 0 ? (
+        <p className="text-xs text-gray-500">none</p>
+      ) : (
+        <table className="w-full border-collapse border border-gray-300">
+          <thead className="bg-gray-100">
+            <tr>
+              <th className="border border-gray-300 px-2 py-1 text-left">Proposal</th>
+              <th className="border border-gray-300 px-2 py-1 text-left">Pipeline</th>
+              <th className="border border-gray-300 px-2 py-1 text-left">Actor</th>
+              <th className="border border-gray-300 px-2 py-1 text-left">Created</th>
+              {actions && <th className="border border-gray-300 px-2 py-1 text-left">Actions</th>}
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((r) => (
+              <tr key={r.proposalId}>
+                <td className="border border-gray-300 px-2 py-1 text-xs">{r.proposalId}</td>
+                <td className="border border-gray-300 px-2 py-1">{r.pipelineName}</td>
+                <td className="border border-gray-300 px-2 py-1 text-xs">{r.actor}</td>
+                <td className="border border-gray-300 px-2 py-1 text-xs text-gray-500">
+                  {new Date(r.createdAt).toLocaleString()}
+                </td>
+                {actions && <td className="border border-gray-300 px-2 py-1">{actions(r)}</td>}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+
+  return (
+    <div className="mx-auto max-w-5xl p-6 font-mono text-sm">
+      <h1 className="mb-4 text-xl font-bold">Proposals</h1>
+      {error && <p className="mb-3 text-red-600">Error: {error}</p>}
+      <Section
+        title="Pending"
+        items={pending}
+        actions={(r) => (
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => void mutateStatus(r.proposalId, "approve")}
+              className="rounded bg-green-700 px-2 py-1 text-xs font-semibold text-white hover:bg-green-800"
+            >
+              Approve
+            </button>
+            <button
+              type="button"
+              onClick={() => void mutateStatus(r.proposalId, "reject")}
+              className="rounded bg-red-700 px-2 py-1 text-xs font-semibold text-white hover:bg-red-800"
+            >
+              Reject
+            </button>
+          </div>
+        )}
+      />
+      <Section title="Approved" items={approved} />
+      <Section title="Rejected" items={rejected} />
+    </div>
+  );
+}
