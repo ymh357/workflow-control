@@ -1,7 +1,7 @@
 # Phase 6 Session 4 — Handoff
 
 > **Date**: 2026-04-23
-> **Session head**: commit `83daf77`
+> **Session head**: commit `e3b9229`
 > **Previous handoff**: `docs/superpowers/plans/2026-04-23-phase-6-session-3-handoff.md`（上个 session 头 `4caa76f` / 尾 `e39ff7b`）
 
 ---
@@ -62,25 +62,41 @@
 `pg-entry.test.ts`:
 - 新 test "forwards deps.tscPath to executorFactory so the per-stage MCP can run validateTypes"
 
-### 2.4 Run #20 re-dogfood（未 commit, 日志记录）
+### 2.4 Run #20 re-dogfood（commit `9e1072e` 的一部分）
 
 Clean DB，发 PG（"A tiny pipeline that takes a URL string and returns its hostname..."）→ 全 5 stage 跑完 → `persisting.versionHash="52d3b767...cacd8440"`（real SHA）/ `pipelineId="extract-hostname"`（real slug）/ `pipeline_versions` 新行 `Extract Hostname` 入表。**与 run #19 相比，FAILED 完全消失**。
+
+### 2.5 tscPath contract tightening（commit `c06d21d`）
+
+防止 debt L/M 类 bug 再现。新增 `src/kernel-next/runtime/monorepo-tsc-path.ts`：singleton `resolveMonorepoTscPath()` 一次性定位 `apps/server/node_modules/.bin/tsc`，process-wide cache。修改 `validator/types.ts:runTsc`：当 caller 未传 tscPath 时**先试 `resolveMonorepoTscPath()`**再 fallback npx。结果：无论上游是否漏传，validator 都能跑真 tsc。3 个新 test（2 unit + 1 contract），总 1491 pass。
+
+### 2.6 sdk-adapter tool_use_id fix（commit `e3b9229`）
+
+**Debt N 发现**：`agent_execution_details.tool_calls_json` 每条 entry 的 `result` + `finishedAt` 都是 null——observability 失效。Investigate 流程：
+1. Grep SDK `sdk.mjs` 找 tool_result 字段 → 发现 **`tool_use_id`**（snake）和 **`toolUseId`**（camel）都出现
+2. `sdk-adapter.ts:124` 只读 `b.id` → real SDK 永远不 emit 该字段 → 每个 TOOL_RESULT_RECEIVED 被 silent drop → `completeToolCall` 从不调用
+
+Fix：adapter 接受三种形式（`tool_use_id` → `toolUseId` → 回退 `id`）。扩展 `SdkMessageLike` type。2 个新 test。
+
+### 2.7 Run #21 re-dogfood tool_result（commit `e3b9229` + docs）
+
+smoke-test 跑完 → greet/echoBack 的 tool_calls_json 验证：`result = [{"type":"text","text":"{\"ok\":true}"}]`，`finishedAt` 时间戳 populated。Observability 端到端修复。
 
 ## 3. 当前状态
 
 ```
 Branch: main
-Head:   83daf77
-Status: clean（除 docs 修改待 commit）
+Head:   e3b9229（docs 未 commit，待本 session 收尾 commit）
+Status: 2 docs modified
 
-Server tests: 1488 pass / 4 skipped / tsc 0
+Server tests: 1493 pass / 4 skipped / tsc 0
 Web tests:    17 pass / tsc 0
 ```
 
 **M 指标快照**（`docs/phase6-usage-log.md`）：
-- **M1**: 7 数据点（含 run #20 完整 PG→DB 链）
-- **M2**: 0 朋友在用；**Resumability + AI-generated pipeline DB 注册均可用** + UI + SSE + crash-safety 完整
-- **M3**: 13/20 = 65%；**post-audit 9/9 = 100%**
+- **M1**: 8 数据点（含 run #21 tool_result 验证）
+- **M2**: 0 朋友在用；**Resumability + AI-pipeline DB 注册 + observability 均完整**
+- **M3**: 14/21 = 67%；**post-audit 10/10 = 100%**
 - **M4**: 5 / 0 / 0
 
 ## 4. 架构债清零
@@ -93,6 +109,8 @@ Web tests:    17 pass / tsc 0
 - 债 K（M-R5 session_id 只在 close 时 flush）: ✅ `dec8313`
 - 债 L（bootResumability 未透传 tscPath）: ✅ `8b5f92d`
 - 债 M（MCP start_pipeline_generator handler 未透传 tscPath）: ✅ `83daf77`
+- 债 L/M 契约加固（validator 自 resolve tscPath 兜底）: ✅ `c06d21d`
+- 债 N（sdk-adapter 读 `id` 而非 `tool_use_id`，tool_calls_json.result 永 null）: ✅ `e3b9229`
 
 ## 5. 完整未完成清单
 
@@ -107,7 +125,7 @@ Web tests:    17 pass / tsc 0
 - **Tscpath 设计级加固**：当前 `startPipelineRun` 的 `tscPath` 是 optional，每个 caller 可以悄悄漏掉（run #20 暴露的 debt L/M 就是两个独立 caller 同一漏）。未来可考虑 required 参数或 default-to-resolved 以契约层阻断此类 bug 再现
 
 ### 5.3 剩余 known bugs
-- **tool_calls_json partial 记录**：run #19 和 #20 观察到 `persisting` stage 的 tool_calls_json 只记录了部分 write_port（例如 run #20 `persisting` 里有 5 ports 的 write_port 实际发生但 tool_calls 短）。agent_stream 里有推理文本但没 tool_use/tool_result events。不阻塞任何功能，但 observability/debug 能力受影响。优先级低，可后续排查 execution-record-writer 的 tool_use 捕获路径
+- **~~tool_calls_json partial 记录~~**：**已修** (`e3b9229`)。root cause 不是 partial，是 `id` vs `tool_use_id` 字段拼错导致 tool_result 全被 silent drop → `result/finishedAt` 永 null。Run #21 验证修复。
 - **第二次写 FAILED 的 defensive sentinel**（run #19）：persisting agent 首次 submit 失败后写了 `versionHash=FAILED`；这是 prompt 层 defensive 行为。虽不 ideal，但 task_finals 正确写 completed/natural。若 B/C 进一步修 prompt 可避免 dead 数据
 
 ### 5.4 非 autonomous
@@ -142,17 +160,16 @@ lsof -nP -iTCP:3001 | head -3
 
 ## 7. 下一步候选
 
-按"合理正确优先" + 实际价值：
+按"合理正确优先" + 实际价值。**本 session 已完成原候选 #2（tool_calls_json）和 #3（tscPath 契约）**。剩余：
 
-1. **Tech Research Writer builtin dogfood**——补 builtin coverage，发现剩余 prompt/builtin bug。工作量低。
-2. **tool_calls_json partial 记录排查**——observability 修复。需 trace execution-record-writer 怎么处理 SDK tool_use events。工作量中。
-3. **tscPath contract tightening**——把 `tscPath` 改 required（或 default-resolved），architectural 层阻止 debt L/M 类 bug 再现。工作量低。
-4. **deployment 便利化**（M2 外部阻塞）—— onboarding 最后一公里。非代码。
-5. **朋友邀请**——真实 M2 测试。
+1. **Tech Research Writer builtin dogfood**——补 builtin coverage。但 Writer 是 13-externalInputs single-agent pipeline，期望 `.workflow/outline-*.md` + 多个 `research-*.md` 文件，独立 dogfood 需要先造合理 inputs 或编排 Collector→Writer 链。工作量中，价值中
+2. **FAILED sentinel 清理**：run #19 persisting agent 首次 submit 失败后写 FAILED sentinel 到 ports。现在根因修完（tscPath + tool_use_id），该 defensive code 永不触发。若未来真失败，prompt 层规则仍会写 FAILED——考虑是否改 prompt 让 agent 直接 throw 让 retry 机制 handle
+3. **deployment 便利化**（M2 外部阻塞）—— onboarding 最后一公里。非 autonomous
+4. **朋友邀请**——真实 M2 测试。非 autonomous
 
-自决推 **#1（Tech Research Writer dogfood）**：autonomous 可做、覆盖剩余 builtin、可能暴露新 bug；或 **#2（tool_calls_json）**：observability 债很小但具体，修得快。
+**autonomous 空间越来越小**。架构债 A-N 全清。剩的都是 coverage/onboarding，不再是 architectural bug。
 
-#4 和 #5 依赖外部动作，非 autonomous。
+自决：若用户继续要求 autonomous 推进，推 **#1 Writer dogfood**——造最小合理 inputs（1-2 个 dummy outline + project/verification facts）跑 Writer 看能否 produce deliverable，即使失败也能暴露新 bug。
 
 ## 8. 参考文档
 
@@ -166,6 +183,6 @@ lsof -nP -iTCP:3001 | head -3
 
 1. 读本 handoff
 2. `git log --oneline -10` 快速看 commit 链
-3. `cd apps/server && npx vitest run` 确认 1488 pass 基线
+3. `cd apps/server && npx vitest run` 确认 1493 pass 基线
 4. 按 §7 推进 #1 或按用户指示
 5. 新架构债出现时系统性修到根，不小修小补
