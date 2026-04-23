@@ -105,6 +105,51 @@ describe("sdk-adapter — individual message mapping", () => {
     expect(evs[0]).toMatchObject({ type: "TOOL_RESULT_RECEIVED", id: "toolu_01Q7NHhUa" });
   });
 
+  // Bug fix (run #22 observed): SDK sometimes returns tool_use_error
+  // as plain content without setting is_error=true, so observability
+  // can't distinguish it from a real success. Adapter must detect the
+  // <tool_use_error> pattern and surface isError=true to the executor.
+  it("tool_result with is_error=true → TOOL_RESULT_RECEIVED carries isError=true", () => {
+    const a = createSdkAdapter();
+    const evs = a.translate({
+      type: "user",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: "toolu_err",
+          content: "No such tool",
+          is_error: true,
+        }],
+      },
+    });
+    expect(evs).toHaveLength(1);
+    expect(evs[0]).toMatchObject({ type: "TOOL_RESULT_RECEIVED", id: "toolu_err", isError: true });
+  });
+
+  it("tool_result with <tool_use_error> in content → TOOL_RESULT_RECEIVED carries isError=true", () => {
+    const a = createSdkAdapter();
+    const evs = a.translate({
+      type: "user",
+      message: {
+        content: [{
+          type: "tool_result",
+          tool_use_id: "toolu_err",
+          content: "<tool_use_error>Error: No such tool available: mcp__kernel_next__write_port</tool_use_error>",
+        }],
+      },
+    });
+    expect(evs).toHaveLength(1);
+    expect(evs[0]).toMatchObject({ type: "TOOL_RESULT_RECEIVED", id: "toolu_err", isError: true });
+  });
+
+  it("tool_result with normal success content → isError is false (or absent)", () => {
+    const a = createSdkAdapter();
+    const evs = a.translate(tool_result_spec_compliant("toolu_ok"));
+    expect(evs).toHaveLength(1);
+    const ev = evs[0] as { type: string; id: string; isError?: boolean };
+    expect(ev.isError !== true).toBe(true);
+  });
+
   it("rate_limit_event → RATE_LIMIT_SIGNAL with utilization", () => {
     const a = createSdkAdapter();
     expect(a.translate(rate_limit)).toEqual([

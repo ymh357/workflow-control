@@ -123,7 +123,7 @@ export type AgentEvent =
   | { type: "SDK_INIT" }
   | { type: "ASSISTANT_TEXT" }
   | { type: "TOOL_USE_REQUESTED"; name: string; input: unknown; id: string }
-  | { type: "TOOL_RESULT_RECEIVED"; id: string; output?: unknown }
+  | { type: "TOOL_RESULT_RECEIVED"; id: string; output?: unknown; isError?: boolean }
   | { type: "COMPACT_STARTED"; trigger: "manual" | "auto"; pre_tokens: number }
   | { type: "COMPACT_ENDED" }
   | { type: "RATE_LIMIT_SIGNAL"; utilization?: number }

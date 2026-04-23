@@ -32,6 +32,12 @@ export type SdkMessageLike = {
       // fixtures can construct either shape.
       tool_use_id?: string;
       toolUseId?: string;
+      // Anthropic tool_result block error flag. When true, the content
+      // describes a tool-invocation error (e.g. permission denial,
+      // unknown tool). SDK also sometimes inlines <tool_use_error>...</tool_use_error>
+      // into content without flipping this flag — adapter detects that
+      // pattern and surfaces isError=true regardless.
+      is_error?: boolean;
       name?: string;
       input?: unknown;
       content?: unknown;
@@ -143,10 +149,20 @@ export function createSdkAdapter(): SdkAdapter {
                     ? b.id
                     : undefined;
             if (id !== undefined) {
+              // Two sources of truth for errors: the block's is_error
+              // flag (spec form) and <tool_use_error> content pattern
+              // (observed in run #22 when SDK did NOT set is_error but
+              // still reported "No such tool"). Accept either — belt
+              // and braces.
+              const hasErrorFlag = b.is_error === true;
+              const hasErrorTag =
+                typeof b.content === "string" && b.content.includes("<tool_use_error>");
+              const isError = hasErrorFlag || hasErrorTag;
               events.push({
                 type: "TOOL_RESULT_RECEIVED",
                 id,
                 output: b.content,
+                ...(isError ? { isError: true } : {}),
               });
             }
           }

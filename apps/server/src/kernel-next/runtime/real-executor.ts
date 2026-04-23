@@ -416,6 +416,7 @@ export class RealStageExecutor implements StageExecutor {
               writer.completeToolCall(ev.id, {
                 result: ev.output,
                 finishedAt: new Date().toISOString(),
+                ...(ev.isError === true ? { isError: true } : {}),
               });
             } else if (ev.type === "RESULT_SUCCESS") {
               if (typeof ev.cost_usd === "number") {
