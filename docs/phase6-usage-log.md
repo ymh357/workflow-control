@@ -25,13 +25,15 @@
 | 10 | 2026-04-23 | **P6-10 诊断：非 watch 下重跑 Pipeline Generator**（假说验证） | Pipeline Generator | `Pipeline Generator-1776909980634-8dcfaf27` | 仍 stuck after awaitingConfirm | 48s API 说 completed（fallback 派生） | P6-10 根因确认 | **watch 不是元凶**。真 bug：XState v5 下 gate 自身 region 的 GATE_ANSWERED transition fire 后消耗 event，root-level on.GATE_ANSWERED 不再运行 → gateAuthorizedTargets 永不更新 → downstream picked target 的 allInboundDelivered 返回 false → hang |
 | 11 | 2026-04-23 | **P6-10 修后再跑 Pipeline Generator** | Pipeline Generator | `Pipeline Generator-1776911258984-66db2597` | completed ✅ 5 stages 全跑 | 241s, $0.612 | — | analyzing 40s → gate → approve → genSkeleton 25s → genPrompts 103s → persisting 82s。生成 pipeline `markdown-table-of-contents-generator` 的 IR schema 完整（3 stages / 3 wires / externalInputs 正确）。P6-10 真修了。M3 分数大幅跳升 |
 | 12 | 2026-04-23 | P6-5/6 修后跑 pr-description-generator（用 slug name） | pr-description-generator | `pr-description-generator-1776912404019-3768f94f` | completed ✅ | 275s, $0.276 | — | taskId **无空格**（slug 合成）；HTTP 调用无需 URL encode；title `"fix(kernel-next): gate race condition + slug support + pr-generator"` 准确识别 3 条独立主线；body 3 bullets + 6 notable changes 全部对应实际 commit，**0 编造**（对比 run #9 有 2 处小编造）。M1 第二个数据点，质量比首跑更高 |
+| 13 | 2026-04-23 | **M4 迭代**：改进 write-pr.md prompt（加 multi-theme 规则 + verb-first），对同 diff 重跑 | pr-description-generator (new hash `96ab20f8`) | `pr-description-generator-1776913226897-bd6a1d49` | API completed 但内容是 ERROR | 396s, $—（中断前分析） | **P6-12** | title=`"[no changes]"`；body=`"ERROR: upstream stage failed to produce diffText and commitMessages (port not found)"`。查 tool_calls：writePr agent 调用 `read_port(stage="writePr", port="diffText")` 读**自己**而非上游 fetchDiff → 404 → 假设上游失败 → 误写错误。**formatInputLine 把当前 stage 名传给了 read_port 指令**，这是 Phase 6 新发现的 bug |
+| 14 | 2026-04-23 | **P6-12 修后再重跑 run #13**（同 prompt + 同 diff） | pr-description-generator (hash `96ab20f8`) | `pr-description-generator-1776914057309-9a5ad8e2` | completed ✅ | 277s | — | Title `"fix(kernel): P6-10 gate race + P6-5/6 slug + pr-description-generator"` 严格按新 multi-theme 规则（69 chars, verb 开头, 3 theme 用 ` + ` 连接）。Body 7 个 notable changes 全部对应 commit，0 编造。**M4 首个真实数据点**：prompt iteration 1 次，reject 0 次，rollback 0 次，新版本输出质量 > 旧版本 |
 
 ## 成熟度快照
 
-- **M3 分子/分母**: 6 / 12（run #2,3,4,9,11,12 真 completed；run #1,5,6,7,10 API completed 但未全跑；#8 是 B5 API 验证）
-- **真实成功率**: 6/12 = **50%**。P6-10 修后（runs #11,#12）连续成功，老 runs 的 stuck 可追溯到该 bug
-- **P6-10 修后子集成功率**: 2/2 = **100%**（修后 runs 全过）
-- **M4 热更新总数 / reject + rollback 次数**: 0 / 0（仍无真实热更新场景触发）
+- **M3 分子/分母**: 7 / 14（run #2,3,4,9,11,12,14 真 completed；run #1,5,6,7,10,13 API completed 但未全跑 / 内容错；#8 是 B5 API 验证）
+- **真实成功率**: 7/14 = **50%**。P6-12 修后跑（run #14）继续成功，老 bug 堆积修完后新 runs 稳定
+- **P6-10 + P6-12 修后子集**: 3/3 = **100%**（runs #11, #12, #14 全过；run #13 在 P6-12 修前）
+- **M4 热更新 propose / reject / rollback**: **1 / 0 / 0** — 第一个真实数据点！（write-pr.md prompt 升级，新版本输出质量 > 旧版本，无 reject 无 rollback）
 - **覆盖的 builtin + generated**: 4 ✅ （`smoke-test`, `Tech Research Collector`, `Pipeline Generator`, `pr-description-generator`） + 1 AI-generated IR 完整（`markdown-table-of-contents-generator`，未运行）; 1 pending: `Tech Research Writer`
 - **AI-generated pipeline schema 可用率**: 1 / 2（run #4 空壳；run #11 IR 结构完整过 validator）
 
@@ -60,6 +62,16 @@
 **做 B12（single-session）**的净效果：未验证的 token 节约 vs 明显的 resumability 不稳定。**不做 B12，做 resumability**净效果：M3 从 43% 提到 >90% 的硬路径。
 
 ## Bug 清单
+
+### P6-12 — buildSystemPromptAppend 把大 input 的 read_port 指令指错 stage ✅ 已修 (2026-04-23)
+
+**发现**: run #13 pr-description-generator 的 writePr stage，43 KB diffText 超过 1 KiB inline 阈值 → system prompt 让 agent 用 `read_port` 读取。指令里 `stage: "writePr"`——当前 stage 名，**不是产出 port 的上游 stage 名**。agent 调 `read_port(stage="writePr", port="diffText")` 返回 port-not-found → 误写 `"ERROR: upstream stage failed"`。
+**根因**: `formatInputLine(k, v, stage.name, ctx)` 传 current stage 名，缺 wire source 查找。
+**修复**: `buildSystemPromptAppend` 接收 optional `ir` 参数；内部建 port→source stage 查表，formatInputLine 用上游 stage 名。legacy 调用（无 ir）仍 fallback 到 stage.name 不破坏现有测试。commit a02502c。
+**影响**: 任何大于 1 KiB 的 cross-stage input（典型业务场景）自 size-aware 特性上线以来都有这个 bug。只因大部分 pipeline 的 inputs 小（或 agent 容错）才未被发现。M3/M4 数据未来受此影响显著。
+**回归**: real-executor.empty-inputs.test.ts 新增一例。
+
+
 
 按发现时间倒序。每条给出：发现场景 / 根因 / 修复 commit / 回归测试。
 
