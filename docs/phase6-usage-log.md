@@ -61,6 +61,44 @@
 
 **做 B12（single-session）**的净效果：未验证的 token 节约 vs 明显的 resumability 不稳定。**不做 B12，做 resumability**净效果：M3 从 43% 提到 >90% 的硬路径。
 
+## 架构审计（2026-04-23 post-P6-12）
+
+用户指示："不要小修小补，系统性修"。审视 P6-1..P6-12，归纳三条**真架构债**，一次性修到根：
+
+### 债 A：task 生命周期的多源真相（了结 P6-1 / P6-9）
+
+**问题**：getTaskStatus 有三套信号（machine 终态、runner.finally 写的 task_finals、stage_attempts latest 派生），之前 fallback 允许派生 'completed' 从 stage_attempts——但 runner 如果 crash 在 finally 前，这个派生**会撒谎**（run #6/#7/#10 stuck 时就是这样报 completed）。
+
+**修法**：getTaskStatus **永不从 stage_attempts 派生 completed/failed**。引入 'orphaned' 显式 label："attempts 存在但无 task_finals 又没 running"——这个 runner 是 crashed / killed。调用方处理 orphaned 如 failed 但 ops 视角有真相。commit 98ac034。
+
+### 债 B：XState v5 parallel region event consumption（了结 P6-10）
+
+**问题**：v5 语义下 region 的 on.X transition 若 guard=true 会 fire 并 consume event，此后 **root-level on.X 不触发**。P6-10 时 gate region 每次都 consume GATE_ANSWERED → root 的 assign gateAuthorizedTargets 成 dead code。
+
+**审视结果**：
+- PORT_WRITTEN 的 root assign safe（region guard 总读 pre-event context，guard 永 false → root 跑）
+- GATE_ANSWERED 原本 broken；已修（gate region 自己做 assign）
+- STAGE_FAILED 无 root handler 不受影响
+- GATE_REJECTED / INTERRUPT / RETRY_TO_STAGE 无 root handler
+
+**清理**：删掉 root-level on.GATE_ANSWERED 的 dead-code "safety net"——它**永远不跑**，留着误导未来 reader。commit 98ac034。
+
+### 债 C：propose() prompt 迭代路径失效（了结 P6-11）
+
+**问题**：propose() 用 versionHash(ir)（IR-only）算新 hash。prompt-only 改动**哈希碰撞**——新 version 不被创建；就算 IR 有 delta 新 version_hash 诞生了，**pipeline_prompt_refs 从未写入**。DbPromptResolver 在新 version 上跑第一个 stage 即 throw。
+
+**这意味着 propose() 完全没法做 prompt iteration**——我改 write-pr.md 迭代不得不走 "改文件 + 重启 server + 重新 seed" 而不是正规 API。M4 数据收集因此无法走标准路径。
+
+**修法**：
+- propose() 签名加 `prompts?: Record<string, string>`
+- 使用 `pipelineVersionHash({ir, prompts})` — 与 submit() 同一空间
+- 合并策略：`args.prompts` override base，未改部分 carry 自 base version
+- **Rename-carry**：stage 改 promptRef 但没传新 content 时，自动把 base 里老 promptRef 的 content 附到新 ref
+- Validate 每个 agent stage 的 promptRef 能 resolve，否则 PROMPT_REF_MISSING
+- Persist prompt_contents + pipeline_prompt_refs 于新 version
+
+commit 2103aa7。
+
 ## Bug 清单
 
 ### P6-12 — buildSystemPromptAppend 把大 input 的 read_port 指令指错 stage ✅ 已修 (2026-04-23)
