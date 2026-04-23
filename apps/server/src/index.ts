@@ -7,6 +7,7 @@ import { bodyLimit } from "hono/body-limit";
 import { logger as honoLogger } from "hono/logger";
 import { serve } from "@hono/node-server";
 import { kernelProposalsRoute } from "./routes/kernel-proposals.js";
+import { kernelPipelinesRoute } from "./routes/kernel-pipelines.js";
 import { kernelGatesRoute } from "./routes/kernel-gates.js";
 import { kernelTasksRoute } from "./routes/kernel-tasks.js";
 import { kernelNextStreamRoute } from "./routes/kernel-next-stream.js";
@@ -108,6 +109,7 @@ app.get("/health/ready", async (c) => {
 });
 
 app.route("/api", kernelProposalsRoute);
+app.route("/api", kernelPipelinesRoute);
 app.route("/api", kernelGatesRoute);
 app.route("/api", kernelTasksRoute);
 app.route("/api", kernelNextStreamRoute);
