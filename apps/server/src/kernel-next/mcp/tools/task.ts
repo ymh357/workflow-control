@@ -143,7 +143,7 @@ export function buildTaskTools(deps: ToolsDeps): ToolDef[] {
           "Defaults to 'cancelled via MCP'.",
         ),
         actor: z.string().optional().describe(
-          "Audit actor. Appended to the persisted reason string. " +
+          "Audit actor. Appended to the persisted detail field. " +
           "Defaults to 'mcp-cancel'.",
         ),
       },

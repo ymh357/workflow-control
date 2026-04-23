@@ -740,7 +740,11 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
            final_state  = excluded.final_state,
            reason       = excluded.reason,
            detail       = excluded.detail,
-           ended_at     = excluded.ended_at`,
+           ended_at     = excluded.ended_at
+         -- 'cancelled' is a sticky terminal state: cancel_task writes it
+         -- via INSERT OR IGNORE before dispatching INTERRUPT. If our row
+         -- lands first we must not flip it back to 'failed'/'interrupted'.
+         WHERE task_finals.final_state != 'cancelled'`,
       ).run(
         opts.taskId,
         opts.versionHash,

@@ -1639,14 +1639,15 @@ export class KernelService {
    *      write (with reason='interrupted') races with ours below;
    *      our write happens FIRST so an in-flight runner sees the
    *      authoritative 'cancelled' verdict when its own upsert runs.
-   *   4. Write task_finals (cancelled/cancelled). Runner's ON
-   *      CONFLICT path will then update reason='interrupted' when
-   *      the INTERRUPT has propagated — final_state remains
-   *      'cancelled' because we wrote it first and the runner's
-   *      upsert overwrites reason/detail/ended_at but we'd prefer
-   *      'cancelled' to stick. We therefore only fall back to ON
-   *      CONFLICT DO NOTHING: the first writer wins. In practice
-   *      this means:
+   *   4. Write task_finals (cancelled/cancelled). Race coordination
+   *      with the runner's finally-block upsert: both sides cooperate
+   *      to keep the cancel verdict sticky. We use INSERT OR IGNORE so
+   *      a pre-existing terminal row wins over our cancel
+   *      (TASK_ALREADY_TERMINAL is returned upstream by guard 1). The
+   *      runner's DO UPDATE is guarded by
+   *      WHERE task_finals.final_state != 'cancelled', so if we commit
+   *      'cancelled' before the runner's finally fires, runner leaves
+   *      our row alone. Either order produces the correct final state:
    *         - cancel wins when INTERRUPT hasn't yet propagated;
    *         - runner wins when the machine already terminated on
    *           its own and task_finals existed (caught by guard 1).
