@@ -77,7 +77,7 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("combined surface exposes 26 tools with expected names", () => {
+  it("combined surface exposes 27 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
@@ -95,6 +95,7 @@ describe("kernel-next MCP server", () => {
       "migrate_task",
       "propose_pipeline_change",
       "propose_pipeline_fix",
+      "prune_records",
       "query_hot_update_stats",
       "query_lineage",
       "read_port",
@@ -402,6 +403,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
       "migrate_task",
       "propose_pipeline_change",
       "propose_pipeline_fix",
+      "prune_records",
       "query_hot_update_stats",
       "query_lineage",
       "read_port",
@@ -451,7 +453,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     // Phase 4.5 Tier3: +2 tools (dry_run_stage, propose_pipeline_fix)
     // Phase 4.5 T3: +1 tool (compare_runs)
     // Phase 4 P4.1 (D8): +1 tool (retry_task)
-    expect(tools.size).toBe(26);
+    // Phase 4 P4.2 (D9): +1 tool (prune_records)
+    expect(tools.size).toBe(27);
     expect(tools.has("write_port")).toBe(true);
     expect(tools.has("submit_pipeline")).toBe(true);
     expect(tools.has("migrate_task")).toBe(true);
@@ -474,8 +477,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
     const tools = getTools(mcp);
-    // 'external' = EXTERNAL_TOOLS only (25 tools after P4.1 D8; excludes write_port).
-    expect(tools.size).toBe(25);
+    // 'external' = EXTERNAL_TOOLS only (26 tools after P4.2 D9; excludes write_port).
+    expect(tools.size).toBe(26);
     expect(tools.has("write_port")).toBe(false);
     expect(tools.has("submit_pipeline")).toBe(true);
     db.close();

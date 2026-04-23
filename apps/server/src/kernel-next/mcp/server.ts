@@ -20,6 +20,7 @@ import { buildGateTools } from "./tools/gate.js";
 import { buildPgTools } from "./tools/pg.js";
 import { buildDebugTools } from "./tools/debug.js";
 import { buildHotUpdateTools } from "./tools/hot-update.js";
+import { buildAdminTools } from "./tools/admin.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
 
@@ -95,7 +96,9 @@ type ToolName =
   // A4 Phase 4.5 Tier3
   | "dry_run_stage" | "propose_pipeline_fix"
   // Phase 4 P4.1 (D8)
-  | "retry_task";
+  | "retry_task"
+  // Phase 4 P4.2 (D9)
+  | "prune_records";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
@@ -115,6 +118,8 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "dry_run_stage", "propose_pipeline_fix",
   // Phase 4 P4.1 (D8)
   "retry_task",
+  // Phase 4 P4.2 (D9)
+  "prune_records",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
@@ -155,6 +160,7 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
       ...buildPgTools(deps),
       ...buildDebugTools(deps),
       ...buildHotUpdateTools(deps),
+      ...buildAdminTools(deps),
   ];
 
   return createSdkMcpServer({
