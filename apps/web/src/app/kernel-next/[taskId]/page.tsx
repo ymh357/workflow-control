@@ -19,6 +19,7 @@ import React, { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { GateCard, type GateContextResponse } from "../../../components/gate-card";
 import { DiagnosticsPanel, type Diagnostic } from "../../../components/diagnostics-panel";
+import { AuditTimeline, type AuditEntry } from "../../../components/audit-timeline";
 
 // Payload shape for the `diagnostics_emitted` SSE event. Kept local
 // (rather than imported from server) so the web app does not reach
@@ -154,6 +155,9 @@ export default function KernelNextTaskPage() {
   const [cost, setCost] = useState<TaskCostUpdatePayload | null>(null);
   const [attempts, setAttempts] = useState<AttemptRow[]>([]);
   const [expandedStage, setExpandedStage] = useState<string | null>(null);
+  // P6.3 / D26 — hot-update audit trail. Fetched once on mount and
+  // refreshed whenever a migrate or rollback SSE event arrives.
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
 
   // P6.2 / D24 — fetch per-task stage_attempts history. Called on mount
   // and whenever a stage lifecycle event fires so the Duration column
@@ -166,6 +170,20 @@ export default function KernelNextTaskPage() {
       if (!r.ok) return;
       const body = await r.json() as { ok: boolean; attempts: AttemptRow[] };
       if (body.ok) setAttempts(body.attempts);
+    } catch {
+      /* ignore — next event or manual reload retries */
+    }
+  }, [taskId]);
+
+  // P6.3 / D26 — fetch hot-update audit trail. Called on mount and
+  // whenever a hot-update-related SSE event indicates new activity.
+  const refreshAudit = useCallback(async (): Promise<void> => {
+    if (!taskId) return;
+    try {
+      const r = await fetch(`${API_BASE}/api/kernel/tasks/${encodeURIComponent(taskId)}/audit`);
+      if (!r.ok) return;
+      const body = await r.json() as { ok: boolean; events: AuditEntry[] };
+      if (body.ok) setAuditEntries(body.events);
     } catch {
       /* ignore — next event or manual reload retries */
     }
@@ -190,6 +208,11 @@ export default function KernelNextTaskPage() {
       case "task_state": {
         const d = event.data as { state: TopLevelState };
         setTopState(d.state);
+        // Refresh audit when the task reaches a terminal state — a
+        // migrate or rollback may have just completed.
+        if (d.state === "completed" || d.state === "failed") {
+          void refreshAudit();
+        }
         break;
       }
       case "stage_executing": {
@@ -249,6 +272,9 @@ export default function KernelNextTaskPage() {
       }
       case "run_final": {
         setFinalResult(event.data as RunFinalPayload);
+        // Refresh audit on run completion — hot-update events may have
+        // been written during the run (migrate/rollback).
+        void refreshAudit();
         break;
       }
       case "diagnostics_emitted": {
@@ -270,12 +296,16 @@ export default function KernelNextTaskPage() {
         // break old clients.
         break;
     }
-  }, [upsertStage, appendPort, refreshAttempts]);
+  }, [upsertStage, appendPort, refreshAttempts, refreshAudit]);
 
   // Fetch attempts once on mount (and on taskId change) so the Duration
   // column is populated for tasks that are already finished when the
   // page opens. Live updates come via the SSE lifecycle events above.
   useEffect(() => { void refreshAttempts(); }, [refreshAttempts]);
+
+  // Fetch audit once on mount so historical migrate/rollback events are
+  // visible even when the task has already finished.
+  useEffect(() => { void refreshAudit(); }, [refreshAudit]);
 
   useEffect(() => {
     if (!taskId) return;
@@ -556,6 +586,8 @@ export default function KernelNextTaskPage() {
       )}
 
       <DiagnosticsPanel diagnostics={diagnostics} />
+
+      <AuditTimeline entries={auditEntries} />
 
       <section className="mb-6">
         <h2 className="mb-2 font-semibold">Stages</h2>
