@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { AgentStageSchema, GateRoutingSchema, PipelineIRSchema, ScriptStageSchema, WireIRSchema } from "./schema.js";
+import { AgentStageSchema, GateRoutingSchema, IRPatchSchema, PipelineIRSchema, ScriptStageSchema, WireIRSchema } from "./schema.js";
 
 describe("PipelineIRSchema externalInputs", () => {
   it("accepts externalInputs: []", () => {
@@ -192,3 +192,11 @@ describe("AgentStage.config.subAgents", () => {
     ).toThrow();
   });
 });
+
+describe("IRPatchSchema — NO_OP_PROPOSAL prep", () => {
+  it("accepts empty ops (no-op check is enforced at propose() layer, not schema)", () => {
+    const r = IRPatchSchema.safeParse({ ops: [] });
+    expect(r.success).toBe(true);
+  });
+});
+

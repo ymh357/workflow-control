@@ -268,7 +268,11 @@ export const IRPatchOpSchema = z.discriminatedUnion("op", [
 ]);
 
 export const IRPatchSchema = z.object({
-  ops: z.array(IRPatchOpSchema).min(1),
+  // ops may be empty: a prompts-only change is a legitimate proposal
+  // (pipelineVersionHash folds prompts into the hash). The "is this
+  // actually a change?" guard lives at propose() and raises
+  // NO_OP_PROPOSAL when proposedHash === currentVersion.
+  ops: z.array(IRPatchOpSchema).min(0),
 });
 
 // IRPatchOp/IRPatch types use the relaxed WireIR at the add_wire/remove_wire
