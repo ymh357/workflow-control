@@ -151,7 +151,7 @@ export function buildTaskTools(deps: ToolsDeps): ToolDef[] {
         try {
           const taskId = typeof args.taskId === "string" ? args.taskId : undefined;
           if (!taskId) {
-            return errorResponse("taskId is required", { code: "INVALID_INPUT" });
+            return errorResponse("taskId is required");
           }
           const fromStage =
             typeof args.fromStage === "string" && args.fromStage.length > 0
