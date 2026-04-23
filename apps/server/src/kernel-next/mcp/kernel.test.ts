@@ -1222,4 +1222,184 @@ describe("KernelService.getGateContext — B5", () => {
       db.close();
     }
   });
+
+  it("unknown gate -> GATE_NOT_FOUND", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      initKernelNextSchema(db);
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const r = svc.getGateContext("does-not-exist");
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.diagnostics[0]!.code).toBe("GATE_NOT_FOUND");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("already-answered gate still returns 200 with answer and answeredAt populated", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      initKernelNextSchema(db);
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const submit = svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
+      if (!submit.ok) throw new Error("submit failed");
+      seedUpstreamOutputs(db, "t2", submit.versionHash);
+      const gateAttempt = openGateAttempt(db, "t2", submit.versionHash);
+      const { gateId } = svc.createGate({
+        taskId: "t2", stageName: "G", attemptId: gateAttempt,
+        question: { text: "Continue?", options: ["approve", "reject"] },
+      });
+      const ans = svc.answerGate(gateId, "approve");
+      expect(ans.ok).toBe(true);
+
+      const r = svc.getGateContext(gateId);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.context.answer).toBe("approve");
+      expect(typeof r.context.answeredAt).toBe("number");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("gate with zero stage upstream (pure external-feed) returns upstreams=[]", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      initKernelNextSchema(db);
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const ir = {
+        name: "ext-only-gate",
+        externalInputs: [{ name: "sig", type: "unknown" as const }],
+        stages: [
+          { name: "G", type: "gate" as const,
+            inputs: [{ name: "__gate_signal", type: "unknown" as const }],
+            outputs: [],
+            config: {
+              question: { text: "?" },
+              routing: { routes: { approve: "done" } },
+            } },
+          { name: "done", type: "agent" as const,
+            inputs: [{ name: "ack", type: "unknown" as const }],
+            outputs: [],
+            config: { promptRef: "p" } },
+        ],
+        wires: [
+          { from: { source: "external" as const, port: "sig" },
+            to: { stage: "G", port: "__gate_signal" } },
+        ],
+      };
+      const submit = svc.submit(ir, { prompts: { p: "dummy" } });
+      if (!submit.ok) throw new Error("submit failed");
+      const gateAttempt = openGateAttempt(db, "t3", submit.versionHash);
+      const { gateId } = svc.createGate({
+        taskId: "t3", stageName: "G", attemptId: gateAttempt,
+        question: { text: "?" },
+      });
+
+      const r = svc.getGateContext(gateId);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.context.upstreams).toEqual([]);
+      expect(r.context.answerOptions).toEqual(["approve"]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("superseded attempts are ignored; only success attempts' latest port values surface", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      initKernelNextSchema(db);
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const submit = svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
+      if (!submit.ok) throw new Error("submit failed");
+
+      // 1) Superseded attempt with an early "wrong" value.
+      const supAttempt = "sup-" + Math.random().toString(36).slice(2, 10);
+      db.prepare(
+        `INSERT INTO stage_attempts
+         (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+          started_at, ended_at, status, kind)
+         VALUES (?, 't4', ?, 'A', 1, ?, ?, 'superseded', 'regular')`,
+      ).run(supAttempt, submit.versionHash, 100, 200);
+      db.prepare(
+        `INSERT INTO port_values
+         (value_id, attempt_id, stage_name, port_name, direction,
+          value_json, written_at)
+         VALUES ('v-sup-x', ?, 'A', 'x', 'out', '999', 150)`,
+      ).run(supAttempt);
+
+      // 2) Subsequent success attempt with the real value.
+      const successAttempt = "succ-" + Math.random().toString(36).slice(2, 10);
+      db.prepare(
+        `INSERT INTO stage_attempts
+         (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+          started_at, ended_at, status, kind)
+         VALUES (?, 't4', ?, 'A', 2, ?, ?, 'success', 'regular')`,
+      ).run(successAttempt, submit.versionHash, 300, 400);
+      db.prepare(
+        `INSERT INTO port_values
+         (value_id, attempt_id, stage_name, port_name, direction,
+          value_json, written_at)
+         VALUES ('v-suc-x', ?, 'A', 'x', 'out', '42', 350)`,
+      ).run(successAttempt);
+
+      const gateAttempt = openGateAttempt(db, "t4", submit.versionHash);
+      const { gateId } = svc.createGate({
+        taskId: "t4", stageName: "G", attemptId: gateAttempt,
+        question: { text: "Continue?", options: ["approve", "reject"] },
+      });
+
+      const r = svc.getGateContext(gateId);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      const xOut = r.context.upstreams[0]!.outputs.find((o) => o.port === "x");
+      expect(xOut).toBeDefined();
+      expect(xOut!.value).toBe(42); // not 999
+    } finally {
+      db.close();
+    }
+  });
+
+  it("corrupted value_json surfaces as value=null without throwing", () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      initKernelNextSchema(db);
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const submit = svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
+      if (!submit.ok) throw new Error("submit failed");
+
+      const attemptId = "a-" + Math.random().toString(36).slice(2, 10);
+      const now = Date.now();
+      db.prepare(
+        `INSERT INTO stage_attempts
+         (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+          started_at, ended_at, status, kind)
+         VALUES (?, 't5', ?, 'A', 1, ?, ?, 'success', 'regular')`,
+      ).run(attemptId, submit.versionHash, now - 100, now - 50);
+      // Intentionally invalid JSON — simulates lineage corruption.
+      db.prepare(
+        `INSERT INTO port_values
+         (value_id, attempt_id, stage_name, port_name, direction,
+          value_json, written_at)
+         VALUES ('v-bad', ?, 'A', 'x', 'out', '{not valid json', ?)`,
+      ).run(attemptId, now - 50);
+
+      const gateAttempt = openGateAttempt(db, "t5", submit.versionHash);
+      const { gateId } = svc.createGate({
+        taskId: "t5", stageName: "G", attemptId: gateAttempt,
+        question: { text: "?" },
+      });
+
+      const r = svc.getGateContext(gateId);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      const xOut = r.context.upstreams[0]!.outputs.find((o) => o.port === "x");
+      expect(xOut).toBeDefined();
+      expect(xOut!.value).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
 });
