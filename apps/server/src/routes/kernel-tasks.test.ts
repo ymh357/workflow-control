@@ -310,3 +310,60 @@ describe("REST POST /api/kernel/tasks/:taskId/migrate", () => {
     expect(body.diagnostics[0]!.code).toBe("INVALID_JSON_BODY");
   });
 });
+
+describe("REST POST /api/kernel/tasks/:taskId/rollback", () => {
+  let db: DatabaseSync;
+
+  beforeEach(() => {
+    db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    __setKernelNextDbForTest(db);
+  });
+
+  afterEach(() => {
+    __setKernelNextDbForTest(undefined);
+    db.close();
+  });
+
+  it("returns 400 when body is missing toVersion", async () => {
+    const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-rb/rollback", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    }));
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.ok).toBe(false);
+    expect(body.diagnostics[0]!.code).toBe("INVALID_REQUEST_BODY");
+  });
+
+  it("returns 400 on malformed JSON", async () => {
+    const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-rb/rollback", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{not-json",
+    }));
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.ok).toBe(false);
+    expect(body.diagnostics[0]!.code).toBe("INVALID_JSON_BODY");
+  });
+
+  it("returns 400 diagnostic when toVersion is not in the task's migration history", async () => {
+    // Seed a task that has an attempt but no hot_update_events — rollback
+    // should fail with VERSION_NOT_IN_HISTORY.
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submit = svc.submit(linearIR(), { prompts: { p: "dummy" } });
+    if (!submit.ok) throw new Error("seed submit failed");
+    openAttempt(db, "t-rb-nohist", submit.versionHash, "A", "success");
+    const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-rb-nohist/rollback", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ toVersion: submit.versionHash, actor: "test" }),
+    }));
+    expect(res.status).toBe(409);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.ok).toBe(false);
+    expect(body.diagnostics[0]!.code).toBe("VERSION_NOT_IN_HISTORY");
+  });
+});

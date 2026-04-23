@@ -2,6 +2,7 @@
 //
 // GET  /api/kernel/tasks/:taskId/status
 // POST /api/kernel/tasks/:taskId/migrate     body: { proposalId: string }
+// POST /api/kernel/tasks/:taskId/rollback    body: { toVersion: string; actor?: string }
 //
 // Status shape mirrors KernelService.getTaskStatus — see §3.3 gate
 // lifecycle. Main Claude Code polls this while a task runs; when the
@@ -25,6 +26,11 @@ export const kernelTasksRoute = new Hono();
 
 const migrateBodySchema = z.object({
   proposalId: z.string().min(1),
+}).strict();
+
+const rollbackBodySchema = z.object({
+  toVersion: z.string().min(1),
+  actor: z.string().min(1).optional(),
 }).strict();
 
 function badRequest(
@@ -101,3 +107,46 @@ function statusForMigrateDiagnostic(code: string | undefined): 404 | 409 | 500 {
   if (code === "MIGRATION_FAILED") return 500;
   return 500;
 }
+
+// Rollback diagnostic → HTTP status
+// VERSION_NOT_IN_HISTORY → 409 (toVersion never migrated for this task)
+// PATCH_APPLY_ERROR → 409 (rollback patch couldn't apply — conflict)
+// ROLLBACK_EMPTY_DIFF → 409 (nothing to rollback)
+// anything else → 500
+function statusForRollbackDiagnostic(code: string | undefined): 404 | 409 | 500 {
+  if (code === "VERSION_NOT_IN_HISTORY") return 409;
+  if (code === "PATCH_APPLY_ERROR") return 409;
+  if (code === "ROLLBACK_EMPTY_DIFF") return 409;
+  return 500;
+}
+
+kernelTasksRoute.post("/kernel/tasks/:taskId/rollback", async (c) => {
+  const taskId = c.req.param("taskId");
+
+  const raw = await c.req.text();
+  let body: unknown;
+  try {
+    body = raw.trim().length === 0 ? {} : JSON.parse(raw);
+  } catch {
+    return badRequest(c, "INVALID_JSON_BODY", "invalid JSON body");
+  }
+  const parsed = rollbackBodySchema.safeParse(body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    return badRequest(
+      c,
+      "INVALID_REQUEST_BODY",
+      issue?.message ?? "bad request",
+      issue ? { path: issue.path } : undefined,
+    );
+  }
+
+  const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
+  const result = await svc.rollbackHotUpdate({
+    taskId,
+    toVersion: parsed.data.toVersion,
+    actor: parsed.data.actor ?? "unknown",
+  });
+  if (result.ok) return c.json(result);
+  return c.json(result, statusForRollbackDiagnostic(result.diagnostics[0]?.code));
+});
