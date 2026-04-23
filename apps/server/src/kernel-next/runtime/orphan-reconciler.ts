@@ -76,6 +76,74 @@ export function classifyOrphan(
   return { kind: "resume", versionHash: latest.version_hash, resumeFrom: firstPending };
 }
 
+export interface BootResumabilityInput {
+  db: DatabaseSync;
+  startPipelineRun: (input: {
+    taskId: string;
+    versionHash: string;
+    resumeFrom?: string;
+    resumeSessionId?: string;
+  }) => Promise<unknown>;
+}
+
+export interface BootResumabilityResult {
+  resumed: number;
+  terminalRecovered: number;
+  unresolvable: number;
+}
+
+export async function bootResumability(
+  input: BootResumabilityInput,
+): Promise<BootResumabilityResult> {
+  const { db } = input;
+  const orphans = scanOrphanTaskIds(db);
+  // Reconcile every orphan's running attempts up front so the resumed
+  // runner sees a clean world. Classifier then reads the post-reconcile
+  // state consistently.
+  reconcileRunningAttempts(db, orphans);
+  let resumed = 0;
+  let terminalRecovered = 0;
+  let unresolvable = 0;
+  const now = Date.now();
+  const promises: Array<Promise<unknown>> = [];
+  for (const taskId of orphans) {
+    const cls = classifyOrphan(db, taskId);
+    if (cls.kind === "terminal") {
+      db.prepare(
+        `INSERT OR IGNORE INTO task_finals (task_id, version_hash, final_state, reason, detail, ended_at)
+         VALUES (?, ?, 'completed', 'natural', 'recovered_no_finals_row', ?)`,
+      ).run(taskId, cls.versionHash, now);
+      terminalRecovered += 1;
+      continue;
+    }
+    if (cls.kind === "unresolvable") {
+      // Use a placeholder version hash when the task has no resolvable
+      // version; task_finals.version_hash is TEXT NOT NULL but has no FK.
+      const vhRow = db.prepare(
+        `SELECT version_hash FROM stage_attempts WHERE task_id=? ORDER BY started_at DESC LIMIT 1`,
+      ).get(taskId) as { version_hash: string } | undefined;
+      db.prepare(
+        `INSERT OR IGNORE INTO task_finals (task_id, version_hash, final_state, reason, detail, ended_at)
+         VALUES (?, ?, 'failed', 'error', ?, ?)`,
+      ).run(taskId, vhRow?.version_hash ?? "-", `unresolvable:${cls.reason}`, now);
+      unresolvable += 1;
+      continue;
+    }
+    const resumeSessionId = lookupResumeSessionId(db, taskId, cls.resumeFrom);
+    promises.push(
+      input.startPipelineRun({
+        taskId,
+        versionHash: cls.versionHash,
+        resumeFrom: cls.resumeFrom,
+        resumeSessionId,
+      }).catch((err: unknown) => err),
+    );
+    resumed += 1;
+  }
+  await Promise.allSettled(promises);
+  return { resumed, terminalRecovered, unresolvable };
+}
+
 export function lookupResumeSessionId(
   db: DatabaseSync,
   taskId: string,
