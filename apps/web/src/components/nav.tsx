@@ -12,12 +12,14 @@ const Nav = () => {
     router.refresh();
   };
 
+  const linkClass = "text-sm text-zinc-400 hover:text-zinc-200 transition-colors";
+
   return (
     <nav className="flex items-center gap-6">
       <h1 className="text-lg font-semibold">{t("appTitle")}</h1>
-      <a href="/" className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors">
-        {t("nav.tasks")}
-      </a>
+      <a href="/" className={linkClass}>{t("nav.tasks")}</a>
+      <a href="/kernel-next/pipelines" className={linkClass}>{t("nav.pipelines")}</a>
+      <a href="/kernel-next/proposals" className={linkClass}>{t("nav.proposals")}</a>
       <div className="ml-auto flex items-center gap-1 text-xs">
         <button
           onClick={() => switchLocale("en")}

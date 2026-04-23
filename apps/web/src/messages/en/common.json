@@ -1,6 +1,8 @@
 {
   "nav": {
     "tasks": "Tasks",
+    "pipelines": "Pipelines",
+    "proposals": "Proposals",
     "config": "Config",
     "store": "Store",
     "help": "Help"

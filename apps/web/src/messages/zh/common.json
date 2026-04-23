@@ -1,6 +1,8 @@
 {
   "nav": {
     "tasks": "任务",
+    "pipelines": "流水线",
+    "proposals": "版本提案",
     "config": "配置",
     "store": "商店",
     "help": "帮助"
