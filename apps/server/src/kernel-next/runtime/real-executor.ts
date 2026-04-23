@@ -54,6 +54,12 @@ export {
 } from "./real-executor-prompt-builder.js";
 import { buildSystemPromptAppend } from "./real-executor-prompt-builder.js";
 import { buildSdkBaseOptions } from "./real-executor-sdk-options.js";
+import {
+  expandMcpServers,
+  McpEnvExpansionError,
+  type ExpandedMcpServer,
+} from "./mcp-servers-expander.js";
+import { loadTaskEnvValues } from "./task-env-values.js";
 
 export interface RealStageExecutorOptions {
   /**
@@ -306,6 +312,26 @@ export class RealStageExecutor implements StageExecutor {
       const effectiveMaxTurns = args.resumeSessionId
         ? clampMaxTurns(this.maxTurns, args.priorNumTurns ?? 0)
         : this.maxTurns;
+      // P3.5: expand ${VAR} placeholders in stage.config.mcpServers into
+      // concrete ExpandedMcpServer records. Precedence: task_env_values
+      // (from run_pipeline args) > process.env. Missing variables fail
+      // the stage with a MCP_ENV_MISSING diagnostic; downstream stages
+      // never see a silent kernel-only fallback.
+      let externalMcpServers: Record<string, ExpandedMcpServer> | undefined;
+      if (stage.config.mcpServers && stage.config.mcpServers.length > 0) {
+        const taskEnv = loadTaskEnvValues(portRuntime.getDb(), taskId);
+        try {
+          externalMcpServers = expandMcpServers(stage.config.mcpServers, taskEnv);
+        } catch (e) {
+          if (e instanceof McpEnvExpansionError) {
+            const errMsg = `MCP_ENV_MISSING: server '${e.server}' field '${e.fieldKey}' references unset env variable '${e.variable}'`;
+            writer.close({ terminationReason: "error" });
+            portRuntime.finishAttempt(attemptId, "error", errMsg, { silent: failSilently });
+            return { attemptId, attemptIdx, status: "error", error: errMsg };
+          }
+          throw e;
+        }
+      }
       // F3: set SDK cwd only when the caller supplied a workspace.
       // Otherwise leave it undefined so the SDK default (process.cwd())
       // stays in force, preserving legacy test expectations.
@@ -319,6 +345,7 @@ export class RealStageExecutor implements StageExecutor {
         childEnv: buildChildEnv(),
         subAgents,
         workspaceDir: this.workspaceDir,
+        externalMcpServers,
       });
       // M-R5: plumb the resume session id via options.resume when the
       // caller has one. queryFn failure (missing / corrupt session file)

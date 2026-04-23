@@ -4,6 +4,7 @@
 
 import type { Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
 import type { AgentStage } from "../ir/schema.js";
+import type { ExpandedMcpServer } from "./mcp-servers-expander.js";
 
 export interface BuildSdkBaseOptionsArgs {
   systemPromptAppend: string;
@@ -15,6 +16,13 @@ export interface BuildSdkBaseOptionsArgs {
   childEnv: NodeJS.ProcessEnv;
   subAgents: AgentStage["config"]["subAgents"];
   workspaceDir: string | undefined;
+  /**
+   * P3.5 — per-stage external MCP servers already expanded from
+   * stage.config.mcpServers (${VAR} → concrete values) by
+   * mcp-servers-expander.ts. Merged into mcpServers alongside the
+   * built-in __kernel_next__ entry. Absent/empty → kernel-only mode.
+   */
+  externalMcpServers?: Record<string, ExpandedMcpServer>;
 }
 
 export function buildSdkBaseOptions(args: BuildSdkBaseOptionsArgs): SdkOptions {
@@ -26,6 +34,7 @@ export function buildSdkBaseOptions(args: BuildSdkBaseOptionsArgs): SdkOptions {
     },
     mcpServers: {
       __kernel_next__: args.kernelMcp,
+      ...(args.externalMcpServers ?? {}),
     },
     model: args.model,
     maxTurns: args.maxTurns,

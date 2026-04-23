@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import type { SubAgentDef } from "../ir/schema.js";
 import { buildSdkBaseOptions } from "./real-executor-sdk-options.js";
+import type { ExpandedMcpServer } from "./mcp-servers-expander.js";
 
 describe("real-executor-sdk-options: buildSdkBaseOptions", () => {
   it("wires kernel-next MCP under the __kernel_next__ key", () => {
@@ -196,5 +197,41 @@ describe("real-executor-sdk-options: buildSdkBaseOptions", () => {
       workspaceDir: undefined,
     });
     expect(opts.env).toEqual(env);
+  });
+
+  it("merges externalMcpServers alongside __kernel_next__", () => {
+    const external: Record<string, ExpandedMcpServer> = {
+      github: { type: "stdio", command: "npx", args: ["-y", "@mcp/server-github"], env: { GITHUB_TOKEN: "ghp_x" } },
+    };
+    const opts = buildSdkBaseOptions({
+      systemPromptAppend: "",
+      kernelMcp: Symbol() as unknown as never,
+      model: undefined,
+      maxTurns: 5,
+      maxBudgetUsd: undefined,
+      claudePath: undefined,
+      childEnv: {},
+      subAgents: undefined,
+      workspaceDir: undefined,
+      externalMcpServers: external,
+    });
+    expect(opts.mcpServers).toHaveProperty("__kernel_next__");
+    expect(opts.mcpServers).toHaveProperty("github");
+    expect(opts.mcpServers!.github).toEqual(external.github);
+  });
+
+  it("ignores absent externalMcpServers (backwards compat)", () => {
+    const opts = buildSdkBaseOptions({
+      systemPromptAppend: "",
+      kernelMcp: Symbol() as unknown as never,
+      model: undefined,
+      maxTurns: 5,
+      maxBudgetUsd: undefined,
+      claudePath: undefined,
+      childEnv: {},
+      subAgents: undefined,
+      workspaceDir: undefined,
+    });
+    expect(Object.keys(opts.mcpServers!)).toEqual(["__kernel_next__"]);
   });
 });
