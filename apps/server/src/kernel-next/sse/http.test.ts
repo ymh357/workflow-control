@@ -69,11 +69,12 @@ describe("createKernelNextStream", () => {
     const { text, reader } = await readUntilQuiet(stream);
     reader.cancel();
 
-    // Each frame = "event: <type>\ndata: <json>\n\n"
-    const frames = text.split("\n\n").filter((f) => f.startsWith("event:"));
+    // Each frame = "id: <taskId>:<seq>\nevent: <type>\ndata: <json>\n\n"
+    const frames = text.split("\n\n").filter((f) => f.startsWith("id:"));
     expect(frames.length).toBeGreaterThanOrEqual(2);
     for (const frame of frames) {
-      expect(frame).toMatch(/^event: task_state\n/);
+      expect(frame).toMatch(/^id: T1:\d+\n/);
+      expect(frame).toMatch(/\nevent: task_state\n/);
       expect(frame).toMatch(/\ndata: \{/);
     }
     // Both history events are present.
@@ -153,5 +154,48 @@ describe("createKernelNextStream", () => {
       expect(text).not.toContain('"seq":42');
       expect(text).not.toContain('"taskId":"T6"');
     }
+  });
+
+  it("emits id:<taskId>:<seq> alongside each data frame", async () => {
+    vi.useRealTimers();
+    broadcaster.publish(makeEvent("T7", 1));
+
+    const stream = createKernelNextStream(broadcaster, "T7");
+    const { text, reader } = await readUntilQuiet(stream);
+    reader.cancel();
+
+    expect(text).toContain("id: T7:1");
+    expect(text).toContain("event: task_state");
+    expect(text).toContain("data: ");
+  });
+
+  it("honours Last-Event-ID by filtering replay", async () => {
+    vi.useRealTimers();
+    broadcaster.publish(makeEvent("T8", 1));
+    broadcaster.publish(makeEvent("T8", 2));
+    broadcaster.publish(makeEvent("T8", 3));
+
+    const stream = createKernelNextStream(broadcaster, "T8", { lastEventId: "T8:2" });
+    const { text, reader } = await readUntilQuiet(stream);
+    reader.cancel();
+
+    expect(text).toContain("id: T8:3");
+    expect(text).not.toContain("id: T8:1");
+    expect(text).not.toContain("id: T8:2");
+  });
+
+  it("ignores Last-Event-ID from a different task", async () => {
+    vi.useRealTimers();
+    broadcaster.publish(makeEvent("T9", 1));
+    broadcaster.publish(makeEvent("T9", 2));
+
+    // lastEventId prefix does not match the subscribed taskId, so
+    // we treat it as "no resume point known" and replay everything.
+    const stream = createKernelNextStream(broadcaster, "T9", { lastEventId: "OtherTask:5" });
+    const { text, reader } = await readUntilQuiet(stream);
+    reader.cancel();
+
+    expect(text).toContain("id: T9:1");
+    expect(text).toContain("id: T9:2");
   });
 });

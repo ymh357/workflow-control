@@ -20,10 +20,13 @@ import type { KernelNextSSEEvent } from "./types.js";
 const encoder = new TextEncoder();
 
 function formatEvent(event: KernelNextSSEEvent): Uint8Array {
-  // Standard SSE data frame. `event:` field matches type so
-  // EventSource clients can `addEventListener(type, ...)` instead
-  // of always parsing `message`.
+  // Standard SSE data frame. `id:` enables Last-Event-ID reconnection,
+  // `event:` matches type so EventSource clients can addEventListener.
+  // seq should always be present on history/live events post-M-R4;
+  // the fallback exists only to survive older fixtures in tests.
+  const seqPart = event.seq ?? 0;
   const lines = [
+    `id: ${event.taskId}:${seqPart}`,
     `event: ${event.type}`,
     `data: ${JSON.stringify(event)}`,
     "",
@@ -34,6 +37,14 @@ function formatEvent(event: KernelNextSSEEvent): Uint8Array {
 
 export interface CreateKernelNextStreamOptions {
   heartbeatMs?: number;
+  /**
+   * Value of the incoming `Last-Event-ID` header, if present. Format is
+   * `<taskId>:<seq>`. If the prefix matches this stream's taskId, the
+   * broadcaster replays only events with `seq > <seq>`; otherwise the
+   * ID is treated as unknown and replay starts from the beginning of
+   * the ring.
+   */
+  lastEventId?: string;
 }
 
 /**
@@ -47,15 +58,16 @@ export function createKernelNextStream(
   options: CreateKernelNextStreamOptions = {},
 ): ReadableStream<Uint8Array> {
   const heartbeatMs = options.heartbeatMs ?? 30_000;
+  const fromSeq = parseLastEventId(options.lastEventId, taskId);
   let unsubscribe: (() => void) | null = null;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let closed = false;
 
   return new ReadableStream<Uint8Array>({
     start(controller) {
-      // Broadcaster will synchronously replay existing history before
-      // returning from subscribe(); subsequent live publishes arrive
-      // asynchronously via the same listener.
+      // Broadcaster will synchronously replay existing history (filtered
+      // by fromSeq) before returning from subscribe(); subsequent live
+      // publishes arrive asynchronously via the same listener.
       unsubscribe = broadcaster.subscribe(taskId, (event) => {
         if (closed) return;
         try {
@@ -65,7 +77,7 @@ export function createKernelNextStream(
           // heartbeat / cancel will clean up.
           closed = true;
         }
-      });
+      }, { fromSeq });
 
       heartbeat = setInterval(() => {
         if (closed) {
@@ -92,4 +104,15 @@ export function createKernelNextStream(
       }
     },
   });
+}
+
+function parseLastEventId(raw: string | undefined, expectedTaskId: string): number {
+  if (!raw) return 0;
+  const colon = raw.lastIndexOf(":");
+  if (colon <= 0) return 0;
+  const prefix = raw.slice(0, colon);
+  const seqStr = raw.slice(colon + 1);
+  if (prefix !== expectedTaskId) return 0;
+  const seq = Number.parseInt(seqStr, 10);
+  return Number.isFinite(seq) && seq > 0 ? seq : 0;
 }

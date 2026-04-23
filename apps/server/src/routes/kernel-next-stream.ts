@@ -10,7 +10,11 @@ export const kernelNextStreamRoute = new Hono();
 // they disconnect.
 kernelNextStreamRoute.get("/kernel-next/tasks/:taskId/stream", (c) => {
   const taskId = c.req.param("taskId");
-  const stream = createKernelNextStream(kernelNextBroadcaster, taskId);
+  // EventSource auto-sets Last-Event-ID on reconnect; we let the
+  // broadcaster skip events with seq <= the recorded value so the
+  // client does not re-render events it already acknowledged.
+  const lastEventId = c.req.header("Last-Event-ID") ?? undefined;
+  const stream = createKernelNextStream(kernelNextBroadcaster, taskId, { lastEventId });
 
   c.header("Content-Type", "text/event-stream");
   c.header("Cache-Control", "no-cache");
