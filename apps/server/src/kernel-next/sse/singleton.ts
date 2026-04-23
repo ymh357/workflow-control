@@ -11,5 +11,12 @@
 // per-tenant isolation — revisit then.
 
 import { KernelNextBroadcaster } from "./broadcaster.js";
+import { ProposalsBroadcaster } from "./proposals-broadcaster.js";
 
 export const kernelNextBroadcaster = new KernelNextBroadcaster();
+
+// Global proposals broadcaster. Unlike the per-task kernel-next
+// broadcaster, this is a single shared stream: any UI surface that
+// wants "new proposal landed" notifications subscribes to the same
+// channel (B5 roadmap §7.2 wf.hotUpdatePending).
+export const proposalsBroadcaster = new ProposalsBroadcaster();

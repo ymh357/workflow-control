@@ -29,21 +29,42 @@ export default function ProposalsPage() {
   const [rows, setRows] = useState<ProposalRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const refetch = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/kernel/proposals`, { signal });
+      const body = await res.json() as { ok: boolean; proposals: ProposalRow[] };
+      setRows(body.ok ? body.proposals : []);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      setError(err instanceof Error ? err.message : String(err));
+      setRows([]);
+    }
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
-    void (async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/kernel/proposals`, { signal: controller.signal });
-        const body = await res.json() as { ok: boolean; proposals: ProposalRow[] };
-        setRows(body.ok ? body.proposals : []);
-      } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") return;
-        setError(err instanceof Error ? err.message : String(err));
-        setRows([]);
-      }
-    })();
+    void refetch(controller.signal);
     return () => controller.abort();
-  }, []);
+  }, [refetch]);
+
+  // B5 wf.hotUpdatePending: subscribe to the global proposals SSE
+  // stream so newly-created / state-changed proposals refresh the
+  // list without the user having to reload. EventSource handles
+  // auto-reconnect; we just re-fetch on any event.
+  useEffect(() => {
+    if (typeof EventSource === "undefined") return;
+    const es = new EventSource(`${API_BASE}/api/kernel/proposals/stream`);
+    const onEvent = () => { void refetch(); };
+    es.addEventListener("proposal_created", onEvent);
+    es.addEventListener("proposal_approved", onEvent);
+    es.addEventListener("proposal_rejected", onEvent);
+    return () => {
+      es.removeEventListener("proposal_created", onEvent);
+      es.removeEventListener("proposal_approved", onEvent);
+      es.removeEventListener("proposal_rejected", onEvent);
+      es.close();
+    };
+  }, [refetch]);
 
   const mutateStatus = useCallback(async (id: string, endpoint: "approve" | "reject") => {
     const res = await fetch(`${API_BASE}/api/kernel/proposals/${encodeURIComponent(id)}/${endpoint}`, {

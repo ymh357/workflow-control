@@ -17,8 +17,29 @@ import type { Context } from "hono";
 import { z } from "zod";
 import { KernelService, type ProposalStatus } from "../kernel-next/mcp/kernel.js";
 import { getKernelNextDb } from "../lib/kernel-next-db.js";
+import { proposalsBroadcaster } from "../kernel-next/sse/singleton.js";
+import type { ProposalEvent, ProposalsBroadcaster } from "../kernel-next/sse/proposals-broadcaster.js";
 
 export const kernelProposalsRoute = new Hono();
+
+// Test hook: tests swap in a fresh ProposalsBroadcaster per case so
+// global history doesn't leak. Production reads the singleton.
+let activeBroadcaster: ProposalsBroadcaster = proposalsBroadcaster;
+export function __setProposalsBroadcasterForTest(next: ProposalsBroadcaster | undefined): void {
+  activeBroadcaster = next ?? proposalsBroadcaster;
+}
+function publishProposalEvent(
+  type: ProposalEvent["type"],
+  row: { proposalId: string; pipelineName: string; baseVersion: string;
+         proposedVersion: string | null; actor: string; status: "pending" | "approved" | "rejected";
+         createdAt: number },
+): void {
+  activeBroadcaster.publish({
+    type,
+    timestamp: new Date().toISOString(),
+    data: row,
+  });
+}
 
 const STATUS_SET: ReadonlySet<ProposalStatus> = new Set([
   "pending",
@@ -121,7 +142,25 @@ kernelProposalsRoute.post("/kernel/proposals", async (c) => {
     autoApprove: parsed.data.autoApprove,
     prompts: parsed.data.prompts,
   });
-  if (result.ok) return c.json(result, 202);
+  if (result.ok) {
+    // Broadcast "proposal landed" so any open UI learns about it
+    // without polling. autoApprove=true proposals land with status
+    // 'approved'; the type stays proposal_created because it's still
+    // the creation event — approval happened atomically.
+    const row = svc.listProposals({}).find((r) => r.proposalId === result.proposalId);
+    if (row) {
+      publishProposalEvent("proposal_created", {
+        proposalId: row.proposalId,
+        pipelineName: row.pipelineName,
+        baseVersion: row.baseVersion,
+        proposedVersion: row.proposedVersion,
+        actor: row.actor,
+        status: row.status,
+        createdAt: row.createdAt,
+      });
+    }
+    return c.json(result, 202);
+  }
   // Service diagnostics carry the precise failure code. Map to HTTP
   // status the same way migrate does.
   const code = result.diagnostics[0]?.code;
@@ -141,7 +180,21 @@ kernelProposalsRoute.post("/kernel/proposals/:id/approve", (c) => {
   const id = c.req.param("id");
   const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
   const result = svc.approveProposal(id);
-  if (result.ok) return c.json(result);
+  if (result.ok) {
+    const row = svc.listProposals({}).find((r) => r.proposalId === id);
+    if (row) {
+      publishProposalEvent("proposal_approved", {
+        proposalId: row.proposalId,
+        pipelineName: row.pipelineName,
+        baseVersion: row.baseVersion,
+        proposedVersion: row.proposedVersion,
+        actor: row.actor,
+        status: row.status,
+        createdAt: row.createdAt,
+      });
+    }
+    return c.json(result);
+  }
   return c.json(result, statusForDiagnostic(result.diagnostics[0]?.code));
 });
 
@@ -175,7 +228,21 @@ kernelProposalsRoute.post("/kernel/proposals/:id/reject", async (c) => {
 
   const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
   const result = svc.rejectProposal(id, reason);
-  if (result.ok) return c.json(result);
+  if (result.ok) {
+    const row = svc.listProposals({}).find((r) => r.proposalId === id);
+    if (row) {
+      publishProposalEvent("proposal_rejected", {
+        proposalId: row.proposalId,
+        pipelineName: row.pipelineName,
+        baseVersion: row.baseVersion,
+        proposedVersion: row.proposedVersion,
+        actor: row.actor,
+        status: row.status,
+        createdAt: row.createdAt,
+      });
+    }
+    return c.json(result);
+  }
   return c.json(result, statusForDiagnostic(result.diagnostics[0]?.code));
 });
 

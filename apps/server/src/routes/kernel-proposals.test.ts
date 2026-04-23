@@ -9,7 +9,8 @@ import { initKernelNextSchema } from "../kernel-next/ir/sql.js";
 import { KernelService } from "../kernel-next/mcp/kernel.js";
 import { diamondIR } from "../kernel-next/generator-mock/mini-generator.js";
 import { __setKernelNextDbForTest } from "../lib/kernel-next-db.js";
-import { kernelProposalsRoute } from "./kernel-proposals.js";
+import { kernelProposalsRoute, __setProposalsBroadcasterForTest } from "./kernel-proposals.js";
+import { ProposalsBroadcaster, type ProposalEvent } from "../kernel-next/sse/proposals-broadcaster.js";
 
 function buildApp(): Hono {
   const app = new Hono();
@@ -360,5 +361,98 @@ describe("REST /api/kernel/proposals", () => {
     // Route accepts; service returns 202 since prompts override flips
     // proposedHash off baseline.
     expect(res.status).toBe(202);
+  });
+});
+
+describe("REST /api/kernel/proposals — broadcast (B5 wf.hotUpdatePending)", () => {
+  let db: DatabaseSync;
+  let captured: ProposalEvent[];
+  let broadcaster: ProposalsBroadcaster;
+
+  beforeEach(() => {
+    db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    __setKernelNextDbForTest(db);
+    broadcaster = new ProposalsBroadcaster();
+    captured = [];
+    broadcaster.subscribe((e) => captured.push(e));
+    __setProposalsBroadcasterForTest(broadcaster);
+  });
+
+  afterEach(() => {
+    __setProposalsBroadcasterForTest(undefined);
+    __setKernelNextDbForTest(undefined);
+    db.close();
+  });
+
+  it("POST /api/kernel/proposals publishes proposal_created with pipelineName", async () => {
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/proposals", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        currentVersion: submitted.versionHash,
+        patch: { ops: [{ op: "remove_stage", stageName: "D" }] },
+        actor: "ai:broadcast-test",
+      }),
+    }));
+    expect(res.status).toBe(202);
+    const live = captured.filter((e) => e.type === "proposal_created");
+    expect(live).toHaveLength(1);
+    expect(live[0]!.data.pipelineName).toBe(diamondIR().name);
+    expect(live[0]!.data.actor).toBe("ai:broadcast-test");
+    expect(live[0]!.data.status).toBe("pending");
+  });
+
+  it("POST /approve publishes proposal_approved; reject publishes proposal_rejected", async () => {
+    const { proposalId: p1 } = seedProposal(db, "ai:a");
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted2 = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted2.ok) throw new Error("submit2 failed");
+    const p2 = svc.propose({
+      currentVersion: submitted2.versionHash,
+      patch: { ops: [{ op: "remove_stage", stageName: "B" }] },
+      actor: "ai:b",
+    });
+    if (!p2.ok) throw new Error("propose2 failed");
+
+    const app = buildApp();
+    await app.fetch(new Request(`http://t/api/kernel/proposals/${p1}/approve`, { method: "POST" }));
+    await app.fetch(new Request(`http://t/api/kernel/proposals/${p2.proposalId}/reject`, {
+      method: "POST", body: JSON.stringify({ reason: "nope" }),
+      headers: { "content-type": "application/json" },
+    }));
+
+    const approved = captured.filter((e) => e.type === "proposal_approved");
+    const rejected = captured.filter((e) => e.type === "proposal_rejected");
+    expect(approved).toHaveLength(1);
+    expect(approved[0]!.data.proposalId).toBe(p1);
+    expect(approved[0]!.data.status).toBe("approved");
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]!.data.proposalId).toBe(p2.proposalId);
+    expect(rejected[0]!.data.status).toBe("rejected");
+  });
+
+  it("broadcast does NOT fire on failure paths (NO_OP_PROPOSAL)", async () => {
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/proposals", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        currentVersion: submitted.versionHash,
+        patch: { ops: [] },
+        actor: "ai:noop",
+      }),
+    }));
+    expect(res.status).toBe(400);
+    expect(captured).toHaveLength(0);
   });
 });
