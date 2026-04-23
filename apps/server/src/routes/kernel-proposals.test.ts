@@ -203,4 +203,105 @@ describe("REST /api/kernel/proposals", () => {
     const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string; context?: unknown }> };
     expect(body.diagnostics[0]!.code).toBe("INVALID_REQUEST_BODY");
   });
+
+  // Phase 6 audit: POST /proposals (create). Closes the HTTP surface gap
+  // where propose() was only reachable through MCP. Body mirrors the
+  // service signature.
+  it("POST /api/kernel/proposals creates a pending proposal with structural-only patch", async () => {
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+    const app = buildApp();
+    const res = await app.fetch(
+      new Request("http://t/api/kernel/proposals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          currentVersion: submitted.versionHash,
+          patch: { ops: [{ op: "remove_stage", stageName: "D" }] },
+          actor: "ai:test",
+        }),
+      }),
+    );
+    expect(res.status).toBe(202);
+    const body = await res.json() as {
+      ok: boolean; proposalId: string; proposedVersion: string; autoApplied: boolean;
+    };
+    expect(body.ok).toBe(true);
+    expect(typeof body.proposalId).toBe("string");
+    expect(body.proposedVersion).not.toBe(submitted.versionHash);
+    expect(body.autoApplied).toBe(false);
+  });
+
+  it("POST /api/kernel/proposals accepts a prompts override and returns a new version hash", async () => {
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+    const firstAgent = diamondIR().stages.find((s) => s.type === "agent");
+    if (!firstAgent || firstAgent.type !== "agent") throw new Error("no agent stage in fixture");
+    const oldRef = firstAgent.config.promptRef;
+
+    const app = buildApp();
+    const res = await app.fetch(
+      new Request("http://t/api/kernel/proposals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          currentVersion: submitted.versionHash,
+          // No IR patch needed — a pure prompt-content change is
+          // expressed by keeping the IR identical and overriding the
+          // ref's content. propose() still demands a non-empty patch.
+          // Use a no-op config merge that preserves the existing
+          // promptRef (same ref, but the prompts override changes the
+          // content and therefore the pipeline-hash).
+          patch: {
+            ops: [{
+              op: "update_stage_config",
+              stage: firstAgent.name,
+              configPatch: { promptRef: oldRef },
+            }],
+          },
+          actor: "ai:test",
+          prompts: { [oldRef]: "REVISED content" },
+        }),
+      }),
+    );
+    expect(res.status).toBe(202);
+    const body = await res.json() as { ok: boolean; proposedVersion: string };
+    expect(body.ok).toBe(true);
+    expect(body.proposedVersion).not.toBe(submitted.versionHash);
+  });
+
+  it("POST /api/kernel/proposals returns 400 on invalid body", async () => {
+    const app = buildApp();
+    const res = await app.fetch(
+      new Request("http://t/api/kernel/proposals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ missing: "everything" }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.ok).toBe(false);
+    expect(body.diagnostics[0]!.code).toBe("INVALID_REQUEST_BODY");
+  });
+
+  it("POST /api/kernel/proposals surfaces service-side PATCH_APPLY_ERROR for unknown currentVersion", async () => {
+    const app = buildApp();
+    const res = await app.fetch(
+      new Request("http://t/api/kernel/proposals", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          currentVersion: "nonexistent-hash",
+          patch: { ops: [{ op: "remove_stage", stageName: "A" }] },
+          actor: "test",
+        }),
+      }),
+    );
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.diagnostics[0]!.code).toBe("PATCH_APPLY_ERROR");
+  });
 });
