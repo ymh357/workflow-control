@@ -350,6 +350,20 @@ CREATE TABLE IF NOT EXISTS task_finals (
 );
 CREATE INDEX IF NOT EXISTS idx_tf_ended
   ON task_finals(ended_at DESC);
+
+-- Phase 3 P3.3: per-task env variable values supplied at run_pipeline time.
+-- Used to expand $\{VAR} placeholders in stage.config.mcpServers (P3.5).
+-- Lifetime: populated on task creation (P3.4); deleted on task termination (P3.6).
+-- task_id is a free-form key (no canonical tasks table); matches the convention
+-- used by task_finals, task_worktrees, stage_attempts, etc.
+CREATE TABLE IF NOT EXISTS task_env_values (
+  task_id    TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  value      TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, key)
+);
+CREATE INDEX IF NOT EXISTS idx_tev_task ON task_env_values(task_id);
 `;
 
 export function initKernelNextSchema(db: DatabaseSync): void {
