@@ -21,6 +21,7 @@ import { errorResponse, ErrorCode } from "./lib/error-response.js";
 import { mkdirSync } from "node:fs";
 import { writeFile, unlink } from "node:fs/promises";
 import { join } from "node:path";
+import { acquireServerLock, releaseServerLock } from "./kernel-next/runtime/server-lock.js";
 
 // --- Global error handlers: prevent server crash from async/XState errors ---
 process.on("uncaughtException", (err) => {
@@ -50,15 +51,34 @@ if (!passed) {
 }
 
 // --- Data directory validation ---
-{
+const dataDir = (() => {
   const settings = loadSystemSettings();
-  const dataDir = settings.paths?.data_dir || "/tmp/workflow-control-data";
-  if (dataDir.startsWith("/tmp")) {
-    logger.warn({ dataDir }, "data_dir is under /tmp - snapshots may be lost on reboot. Consider setting paths.data_dir in system-settings.yaml");
+  const resolved = settings.paths?.data_dir || "/tmp/workflow-control-data";
+  if (resolved.startsWith("/tmp")) {
+    logger.warn({ dataDir: resolved }, "data_dir is under /tmp - snapshots may be lost on reboot. Consider setting paths.data_dir in system-settings.yaml");
   }
-  try { mkdirSync(join(dataDir, "tasks"), { recursive: true }); }
-  catch (err) { logger.error({ err, dataDir }, "data_dir is not writable"); }
+  try { mkdirSync(join(resolved, "tasks"), { recursive: true }); }
+  catch (err) { logger.error({ err, dataDir: resolved }, "data_dir is not writable"); }
+  return resolved;
+})();
+
+// --- Server instance mutex (PID file) ---
+// Enforces single-server-per-DATA_DIR. DATA_DIR must live on local disk;
+// flock is not used because of NFS unreliability. The lock file holds the
+// server's pid; a subsequent boot that finds a dead pid inside will take
+// over automatically.
+const lockPath = join(dataDir, "kernel-next.lock");
+const lockResult = acquireServerLock(lockPath);
+if (!lockResult.ok) {
+  if (lockResult.reason === "already_held_alive") {
+    logger.error({ pid: lockResult.pid, lockPath }, "Another kernel-next server instance is already running. Exiting.");
+  } else {
+    logger.error({ detail: lockResult.detail, lockPath }, "Could not acquire server lock. Exiting.");
+  }
+  process.exit(1);
 }
+const lockHandle = lockResult.release;
+process.on("exit", () => { releaseServerLock(lockHandle); });
 
 // --- Initialize SQLite database and clean up old data ---
 getDb();
