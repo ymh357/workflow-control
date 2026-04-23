@@ -13,7 +13,7 @@
 // state changes but reactflow's internal store handles pan/zoom on its
 // own (no controlled mode needed here).
 
-import { ReactFlow, Background, Controls, MiniMap, Handle, Position } from "@xyflow/react";
+import { ReactFlow, Background, Controls, MiniMap, Handle, Position, MarkerType } from "@xyflow/react";
 import type { Node, NodeProps } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useMemo } from "react";
@@ -83,7 +83,7 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
 
   return (
     <div
-      className={`min-w-[200px] rounded-lg border-2 ${borderColor} ${bg} px-3 py-2 shadow-sm ${selected ? "ring-2 ring-blue-300" : ""}`}
+      className={`w-[220px] rounded-lg border-2 ${borderColor} ${bg} px-3 py-2 shadow-sm ${selected ? "ring-2 ring-blue-300" : ""}`}
     >
       {/* Handles: reactflow needs explicit input/output handles for edges
           to render correctly. LR layout → left handle = input, right = output. */}
@@ -92,7 +92,7 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
       )}
       <Handle type="source" position={Position.Right} className="!bg-slate-400" />
 
-      <div className="flex flex-wrap items-center gap-1">
+      <div className="flex flex-wrap items-center gap-1 overflow-hidden">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
           {data.stageType}
         </span>
@@ -114,7 +114,7 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
         {stateBadge}
       </div>
 
-      <div className="mt-1 font-mono text-sm font-semibold text-slate-800">
+      <div className="mt-1 truncate font-mono text-sm font-semibold text-slate-800">
         {data.label}
       </div>
       {data.promptRef && (
@@ -182,6 +182,9 @@ export function PipelineGraph({
         fitView
         onNodeClick={(_, n) => onNodeClick?.(n.id)}
         proOptions={{ hideAttribution: true }}
+        defaultEdgeOptions={{
+          markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#94a3b8" },
+        }}
         // Interaction defaults tuned for a read-only inspection view:
         // allow pan/zoom, block node drag + edge editing so the layout
         // dagre computed is stable.
@@ -191,7 +194,20 @@ export function PipelineGraph({
       >
         <Background gap={16} size={1} />
         <Controls position="bottom-right" showInteractive={false} />
-        <MiniMap pannable zoomable />
+        <MiniMap
+          pannable
+          zoomable
+          nodeColor={(n) => {
+            const d = n.data as StageNodeData;
+            if (d.state === "error") return "#ef4444";
+            if (d.state === "executing") return "#3b82f6";
+            if (d.state === "done") return "#22c55e";
+            if (d.stageType === "gate") return "#fef3c7";
+            if (d.stageType === "script") return "#f3e8ff";
+            if (d.stageType === "external") return "#f9fafb";
+            return "#ffffff";
+          }}
+        />
       </ReactFlow>
     </div>
   );

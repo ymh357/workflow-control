@@ -4,25 +4,6 @@ import "@testing-library/jest-dom/vitest";
 import { PipelineGraph } from "./pipeline-graph";
 import type { PipelineIRLike } from "../lib/ir-to-flow";
 
-// jsdom does not implement ResizeObserver (reactflow uses it to track
-// container size). Install a no-op shim before any render().
-class ResizeObserverShim {
-  observe(): void {}
-  unobserve(): void {}
-  disconnect(): void {}
-}
-if (typeof globalThis.ResizeObserver === "undefined") {
-  (globalThis as unknown as { ResizeObserver: typeof ResizeObserverShim }).ResizeObserver = ResizeObserverShim;
-}
-
-// reactflow queries DOMMatrix during layout; jsdom lacks it.
-if (typeof (globalThis as { DOMMatrixReadOnly?: unknown }).DOMMatrixReadOnly === "undefined") {
-  class DOMMatrixShim {
-    m22 = 1;
-    constructor() { /* no-op */ }
-  }
-  (globalThis as unknown as { DOMMatrixReadOnly: typeof DOMMatrixShim }).DOMMatrixReadOnly = DOMMatrixShim;
-}
 
 describe("PipelineGraph", () => {
   it("mounts without crashing for a 1-stage IR", () => {

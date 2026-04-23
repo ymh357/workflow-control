@@ -117,10 +117,9 @@ export interface StageNodeData extends Record<string, unknown> {
   state?: StageState;
 }
 
-// Layout constants. Node dimensions are used both by dagre (for
-// graph-level placement) and the node component (for min-width via
-// Tailwind). Keeping them in one place avoids drift between the two
-// layers that would show up as mis-overlapped nodes.
+// Layout constants. NODE_W/NODE_H are dagre layout hints and must match
+// the rendered node size in pipeline-graph.tsx (w-[220px], ~90px tall).
+// Keeping them here avoids drift that would show mis-overlapped nodes.
 const NODE_W = 220;
 const NODE_H = 90;
 
