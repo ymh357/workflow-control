@@ -62,6 +62,7 @@ const runBodySchema = z.object({
   maxBudgetUsd: z.number().positive().optional(),
   seedValues: z.record(z.string(), z.unknown()).optional(),
   policy: z.unknown().optional(),
+  envValues: z.record(z.string(), z.string()).optional(),
 }).strict();
 
 kernelRunRoute.post("/kernel/tasks/run", async (c) => {
@@ -93,6 +94,7 @@ kernelRunRoute.post("/kernel/tasks/run", async (c) => {
     maxTurns: body.maxTurns,
     maxBudgetUsd: body.maxBudgetUsd,
     tscPath: MONOREPO_TSC_PATH,
+    envValues: body.envValues,
   });
 
   if (res.ok === false) {

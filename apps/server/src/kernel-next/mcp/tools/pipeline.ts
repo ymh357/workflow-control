@@ -75,6 +75,10 @@ export function buildPipelineTools(deps: ToolsDeps): ToolDef[] {
           })
           .optional()
           .describe("Per-task checkpoint config; omit to use defaults (enabled=true, workdir=process.cwd())"),
+        envValues: z
+          .record(z.string(), z.string())
+          .optional()
+          .describe("Environment variable values injected into stage.config.mcpServers at runtime. Stored per-task, deleted on task termination."),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       handler: async (args: any) => {
@@ -96,6 +100,10 @@ export function buildPipelineTools(deps: ToolsDeps): ToolDef[] {
             checkpointConfig:
               args.checkpointConfig && typeof args.checkpointConfig === "object"
                 ? (args.checkpointConfig as import("../../runtime/checkpoint/checkpoint.js").CheckpointConfig)
+                : undefined,
+            envValues:
+              args.envValues && typeof args.envValues === "object" && args.envValues !== null
+                ? (args.envValues as Record<string, string>)
                 : undefined,
             tscPath,
           });

@@ -33,6 +33,7 @@ import { logger } from "../../lib/logger.js";
 import type { CheckpointConfig } from "./checkpoint/checkpoint.js";
 import { allocateWorktree } from "./worktree/allocator.js";
 import { slugifyPipelineName } from "./name-slug.js";
+import { storeTaskEnvValues } from "./task-env-values.js";
 
 export interface StartPipelineRunInput {
   db: DatabaseSync;
@@ -89,6 +90,14 @@ export interface StartPipelineRunInput {
    * SDK-level `process.cwd()` (tests and specific worktree flows).
    */
   workspaceDir?: string | null;
+  /**
+   * P3.4: environment variable values supplied by the caller at task
+   * creation time. Persisted to task_env_values keyed by taskId so the
+   * real executor can expand ${VAR} placeholders in stage.config.mcpServers
+   * (P3.5). Deleted on task termination (P3.6).
+   * Omit or pass {} to skip persistence.
+   */
+  envValues?: Record<string, string>;
 }
 
 // Minimal ExecutionPolicy shape — only policy.default is consumed by
@@ -264,6 +273,15 @@ export async function startPipelineRun(
   // on that escape hatch.
   const taskId = input.taskId
     ?? `${slugifyPipelineName(nameForRegistry) || "task"}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+
+  // --- Persist envValues (P3.4) ---
+  //
+  // storeTaskEnvValues is a no-op when values is empty, so we guard
+  // explicitly to make the intent clear: only write when there is
+  // something to store.
+  if (input.envValues && Object.keys(input.envValues).length > 0) {
+    storeTaskEnvValues(input.db, taskId, input.envValues);
+  }
 
   // --- Resolve workspaceDir (F3, 2026-04-23) ---
   //
