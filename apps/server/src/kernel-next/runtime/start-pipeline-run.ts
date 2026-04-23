@@ -30,6 +30,7 @@ import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import { logger } from "../../lib/logger.js";
 import type { CheckpointConfig } from "./checkpoint/checkpoint.js";
 import { allocateWorktree } from "./worktree/allocator.js";
+import { slugifyPipelineName } from "./name-slug.js";
 
 export interface StartPipelineRunInput {
   db: DatabaseSync;
@@ -156,6 +157,31 @@ export async function startPipelineRun(
     const name = input.name!;
     let hash = getLatestVersionHashByName(input.db, name);
 
+    // P6-5: slug fallback. Callers may pass the slug form (e.g.
+    // "pr-description-generator") even though the IR-declared
+    // pipeline_name is the display name ("PR Description Generator").
+    // Scan every pipeline_name in the DB and match by slugify
+    // equivalence. O(N) in number of versions — negligible at the
+    // fleet sizes this product targets.
+    if (!hash) {
+      const slugInput = slugifyPipelineName(name);
+      if (slugInput.length > 0) {
+        const rows = input.db
+          .prepare(
+            `SELECT version_hash, pipeline_name
+             FROM pipeline_versions
+             ORDER BY created_at DESC`,
+          )
+          .all() as Array<{ version_hash: string; pipeline_name: string }>;
+        for (const r of rows) {
+          if (slugifyPipelineName(r.pipeline_name) === slugInput) {
+            hash = r.version_hash;
+            break;
+          }
+        }
+      }
+    }
+
     // Mock-registry fallback: if the name is a mock entry and no DB row
     // exists yet, seed the IR and retry lookup. This makes diamond*
     // pipelines runnable without a dedicated bootstrap step.
@@ -237,8 +263,12 @@ export async function startPipelineRun(
         maxBudgetUsd,
       });
 
+  // P6-6: synthesize taskId with the slug form of the pipeline name so
+  // it's URL-safe and readable in logs. An explicit caller-supplied
+  // taskId is passed through verbatim — tests and migration flows rely
+  // on that escape hatch.
   const taskId = input.taskId
-    ?? `${nameForRegistry}-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    ?? `${slugifyPipelineName(nameForRegistry) || "task"}-${Date.now()}-${randomUUID().slice(0, 8)}`;
 
   // --- Worktree allocation (Phase 5C) -------------------------------
   //
