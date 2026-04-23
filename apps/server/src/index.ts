@@ -161,7 +161,7 @@ const gateTimeoutTimer = setInterval(() => {
     logger.error({ err }, "gate-timeout-sweeper: sweep failed");
   }
 }, 60_000);
-gateTimeoutTimer.unref?.();
+gateTimeoutTimer.unref();
 
 // --- Middleware & Routes ---
 

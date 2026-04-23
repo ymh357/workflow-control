@@ -17,6 +17,14 @@
 // Designed to be invoked periodically from the server boot path (see
 // apps/server/src/index.ts). One sweep per call — callers schedule the
 // cadence (default 60s).
+//
+// SSE: the sweeper does NOT broadcast a dedicated event when a gate is
+// cancelled. Consistent with the dashboard-is-read-only posture, the
+// dashboard discovers the cancelled state via its next /status poll
+// (web/src/app/kernel-next/[taskId]/page.tsx tick loop). If a realtime
+// "gate cancelled by timeout" event is ever wanted, emit it from inside
+// cancelTask rather than here — this file should stay a thin policy
+// layer over KernelService.
 
 import type { DatabaseSync } from "node:sqlite";
 import { KernelService } from "../mcp/kernel.js";
