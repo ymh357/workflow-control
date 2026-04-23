@@ -450,29 +450,18 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
           }),
         }),
       },
-      // Root-level GATE_ANSWERED: record the routed target(s) on the context
-      // so gate-routed stages can evaluate the authorization guard; AND
-      // mark every OTHER routing-target of the answered gate as skipped,
-      // so the unpicked branches transition to `done` without running.
-      // targetStage may be a single string (single-target route) or a string[]
-      // (multi-target route, e.g. approve → ["A", "B"]). All entries in the
-      // array are authorized; every sibling NOT in the picked set is skipped.
-      // Stage regions also observe GATE_ANSWERED (for routing/gate-resolve
-      // transitions), unaffected by this root-level assign.
-      // Root-level fallback. P6-10: in XState v5, when any descendant
-      // region's on.X transition fires (guard true) and consumes the
-      // event, this root-level on.X is NOT invoked. The gate region's
-      // own GATE_ANSWERED handler always fires (its gateAnsweredIsMe
-      // guard is true on its own answer event) — so this root handler
-      // is dead code on the gate-answer path. It remains as a safety
-      // net for any future event source that bypasses the gate region.
-      //
-      // The authoritative assign that MUST run on every gate answer
-      // now lives on the gate region's executingBody.GATE_ANSWERED
-      // transition (see buildStageRegion / applyGateAnsweredContextAssign).
-      GATE_ANSWERED: {
-        actions: assign(applyGateAnsweredContextAssign(gateRoutingMap)),
-      },
+      // NOTE: we intentionally do NOT declare a root-level
+      // `on.GATE_ANSWERED` handler. XState v5 fires the gate region's
+      // own transition first (gateAnsweredIsMe matches on its own
+      // answer event), which consumes the event — so any root handler
+      // would be dead code. The authoritative
+      // gateAuthorizedTargets / gateSkippedTargets assign runs on the
+      // gate region's transition action; see buildStageRegion /
+      // applyGateAnsweredContextAssign. Leaving a "safety net" root
+      // handler here was misleading and has been removed (P6-10
+      // post-audit). If a future event source bypasses the gate
+      // region, a new test should exercise that path and a fresh
+      // handler can be added with a precise reason.
     },
     states: {
       idle: { on: { START: "running" } },

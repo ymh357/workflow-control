@@ -106,25 +106,43 @@ describe("REST /api/kernel/tasks/:taskId/status", () => {
     expect(body.pending[0]).toMatchObject({ gateId, stageName: "G" });
   });
 
-  it("returns 200 + completed when all attempts succeeded and no gates pending", async () => {
+  it("returns 200 + completed when task_finals says completed (post-audit: authoritative source)", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
     const submit = svc.submit(seedIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-ok", submit.versionHash, "A", "success");
     openAttempt(db, "t-ok", submit.versionHash, "G", "success");
+    db.prepare(
+      `INSERT INTO task_finals (task_id, version_hash, final_state, reason, detail, ended_at)
+       VALUES ('t-ok', ?, 'completed', 'natural', NULL, ?)`,
+    ).run(submit.versionHash, Date.now());
     const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-ok/status"));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, status: "completed", taskId: "t-ok" });
   });
 
-  it("returns 200 + failed when any attempt has error status", async () => {
+  it("returns 200 + orphaned when stage_attempts say error but no task_finals (crashed runner case)", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
     const submit = svc.submit(seedIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-err", submit.versionHash, "A", "error");
     const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-err/status"));
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, status: "failed", taskId: "t-err" });
+    expect(await res.json()).toEqual({ ok: true, status: "orphaned", taskId: "t-err" });
+  });
+
+  it("returns 200 + failed when task_finals says failed (authoritative)", async () => {
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submit = svc.submit(seedIR(), { prompts: { p: "dummy" } });
+    if (!submit.ok) throw new Error("seed submit failed");
+    openAttempt(db, "t-err2", submit.versionHash, "A", "error");
+    db.prepare(
+      `INSERT INTO task_finals (task_id, version_hash, final_state, reason, detail, ended_at)
+       VALUES ('t-err2', ?, 'failed', 'error', 'run ended with failed verdict', ?)`,
+    ).run(submit.versionHash, Date.now());
+    const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-err2/status"));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, status: "failed", taskId: "t-err2" });
   });
 });
 

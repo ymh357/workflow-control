@@ -611,13 +611,33 @@ describe("KernelService — getTaskStatus (A4)", () => {
     }
   });
 
-  it("completed when every stage's latest attempt is success and no pending gates", () => {
+  // Architecture note (Phase 6 audit): getTaskStatus now refuses to
+  // derive 'completed' / 'failed' from stage_attempts alone. These are
+  // terminal verdicts and must come from task_finals, which runner.ts
+  // writes in its finally block. Tests seed task_finals directly to
+  // assert the authoritative path; the stage_attempts-only orphan
+  // case is covered separately below.
+  function seedFinal(
+    db: DatabaseSync,
+    taskId: string,
+    versionHash: string,
+    final_state: "completed" | "failed",
+    reason: "natural" | "timeout" | "interrupted" | "error" | "thrown" = "natural",
+  ): void {
+    db.prepare(
+      `INSERT INTO task_finals (task_id, version_hash, final_state, reason, detail, ended_at)
+       VALUES (?, ?, ?, ?, NULL, ?)`,
+    ).run(taskId, versionHash, final_state, reason, Date.now());
+  }
+
+  it("completed when task_finals says completed (authoritative)", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
       const hash = seedSmallPipeline(svc);
       openAttempt(db, "t1", hash, "A", "success");
       openAttempt(db, "t1", hash, "G", "success");
+      seedFinal(db, "t1", hash, "completed");
       expect(svc.getTaskStatus("t1")).toEqual({
         ok: true, status: "completed", taskId: "t1",
       });
@@ -626,15 +646,50 @@ describe("KernelService — getTaskStatus (A4)", () => {
     }
   });
 
-  it("failed when any stage's latest attempt is error", () => {
+  it("failed when task_finals says failed (authoritative)", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
       const hash = seedSmallPipeline(svc);
       openAttempt(db, "t1", hash, "A", "success");
       openAttempt(db, "t1", hash, "G", "error");
+      seedFinal(db, "t1", hash, "failed", "error");
       expect(svc.getTaskStatus("t1")).toEqual({
         ok: true, status: "failed", taskId: "t1",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("orphaned when stage_attempts exist but no task_finals and nothing is running", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const hash = seedSmallPipeline(svc);
+      // All attempts say success but runner never wrote task_finals —
+      // classic "runner crashed after writing the last success but
+      // before finally". Must NOT report completed.
+      openAttempt(db, "t1", hash, "A", "success");
+      openAttempt(db, "t1", hash, "G", "success");
+      expect(svc.getTaskStatus("t1")).toEqual({
+        ok: true, status: "orphaned", taskId: "t1",
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it("orphaned when all attempts succeeded but task_finals write race'd (runner SIGKILL case)", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const hash = seedSmallPipeline(svc);
+      openAttempt(db, "t1", hash, "A", "success");
+      openAttempt(db, "t1", hash, "G", "error");
+      // Attempts say failed shape but no task_finals. Orphaned, not failed.
+      expect(svc.getTaskStatus("t1")).toEqual({
+        ok: true, status: "orphaned", taskId: "t1",
       });
     } finally {
       db.close();
@@ -658,7 +713,7 @@ describe("KernelService — getTaskStatus (A4)", () => {
     }
   });
 
-  it("answered gates don't keep a task in 'gated' status", () => {
+  it("answered gates don't keep a task in 'gated' status — falls back to orphaned without task_finals", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
@@ -669,17 +724,15 @@ describe("KernelService — getTaskStatus (A4)", () => {
         question: { text: "?", options: ["yes"] },
       });
       svc.answerGate(gateId, "yes");
-      // No more pending — status derives from attempt rows alone.
-      // (A stage remains status='running' only until answerGate; see A1.2a
-      // transactional update.) Here the attempt is 'success' after answer.
+      // Post-audit: no task_finals -> orphaned, not completed.
       const s = svc.getTaskStatus("t1");
-      expect(s.status).toBe("completed");
+      expect(s.status).toBe("orphaned");
     } finally {
       db.close();
     }
   });
 
-  it("latest attempt wins — a retry that succeeds masks an earlier error", () => {
+  it("latest attempt wins — retry that succeeds does NOT fabricate completed without task_finals", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
@@ -687,6 +740,23 @@ describe("KernelService — getTaskStatus (A4)", () => {
       openAttempt(db, "t1", hash, "A", "error", 1);
       openAttempt(db, "t1", hash, "A", "success", 2);
       openAttempt(db, "t1", hash, "G", "success");
+      // Post-audit: latest-per-stage now only disambiguates 'running'
+      // vs 'orphaned'; it cannot synthesize completed.
+      expect(svc.getTaskStatus("t1").status).toBe("orphaned");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("latest attempt wins AND task_finals says completed — real happy-path-after-retry shape", () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const hash = seedSmallPipeline(svc);
+      openAttempt(db, "t1", hash, "A", "error", 1);
+      openAttempt(db, "t1", hash, "A", "success", 2);
+      openAttempt(db, "t1", hash, "G", "success");
+      seedFinal(db, "t1", hash, "completed");
       expect(svc.getTaskStatus("t1").status).toBe("completed");
     } finally {
       db.close();

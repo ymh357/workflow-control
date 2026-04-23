@@ -174,7 +174,7 @@ export type AnswerGateResult =
       diagnostics: Diagnostic[];
     };
 
-export type TaskStatus = "not_found" | "running" | "gated" | "completed" | "failed";
+export type TaskStatus = "not_found" | "running" | "gated" | "completed" | "failed" | "orphaned";
 
 export interface PendingGate {
   gateId: string;
@@ -185,7 +185,7 @@ export interface PendingGate {
 
 export type TaskStatusReport =
   | { ok: true; status: "not_found"; taskId: string }
-  | { ok: true; status: "running" | "completed" | "failed"; taskId: string }
+  | { ok: true; status: "running" | "completed" | "failed" | "orphaned"; taskId: string }
   | { ok: true; status: "gated"; taskId: string; pending: PendingGate[] };
 
 /**
@@ -1157,14 +1157,28 @@ export class KernelService {
    * observation path).
    */
   getTaskStatus(taskId: string): TaskStatusReport {
-    // P6-1 / P6-9: task_finals is the authoritative terminal-state source.
-    // Check it BEFORE the stage_attempts existence check — an empty-shell
-    // IR (no wired stages) completes without producing any stage_attempts
-    // row, which the pre-P6-9 order mis-reported as 'not_found' when the
-    // task had actually run (and recorded a final). Fallbacks in order:
-    //   1. task_finals row exists -> return its final_state
-    //   2. no stage_attempts AND no task_finals -> truly unknown
-    //   3. otherwise derive from stage_attempts latest-per-stage
+    // Architecture: task_finals is the ONLY source of truth for
+    // terminal verdicts. This method never derives 'completed' from
+    // stage_attempts alone — doing so (the pre-audit behavior) made
+    // the endpoint lie when a runner crashed mid-run, because the
+    // stage_attempts it had already written looked "done-ish" to a
+    // latest-per-stage scan.
+    //
+    // Resolution order:
+    //   1. Pending gate(s) -> 'gated' (in-flight decision point).
+    //   2. task_finals row -> return its final_state verbatim. This
+    //      is the only path that produces 'completed' or 'failed'.
+    //   3. No stage_attempts AND no task_finals -> 'not_found'.
+    //   4. Any stage_attempts with latest status='running' ->
+    //      'running' (task is genuinely in-flight).
+    //   5. Otherwise (stage_attempts exist, none running, but no
+    //      task_finals) -> 'orphaned'. Means: something ran, and the
+    //      runner never reached its finally block (process killed,
+    //      unhandled exception outside the try, DB write raced on a
+    //      closed connection, etc.). Callers should treat orphaned
+    //      the same as 'failed' for retry purposes, but the distinct
+    //      status tells ops that a bug / crash happened — not a
+    //      controlled pipeline error.
     const finalRow = this.db.prepare(
       `SELECT final_state FROM task_finals WHERE task_id = ?`,
     ).get(taskId) as { final_state: "completed" | "failed" } | undefined;
@@ -1174,9 +1188,6 @@ export class KernelService {
        WHERE task_id = ?`,
     ).all(taskId) as Array<{ stage_name: string; attempt_idx: number; status: string }>;
 
-    // Gate check fires regardless of row counts so in-flight tasks with
-    // pending gates still surface correctly. listGates uses task_id
-    // directly, not derived from attempts.
     const pendingGates = this.listGates({ taskId, answered: false });
     if (pendingGates.length > 0) {
       return {
@@ -1200,12 +1211,9 @@ export class KernelService {
       return { ok: true, status: "not_found", taskId };
     }
 
-    // Fallback (task still in-flight, or legacy rows predating P6-1):
-    // derive from latest stage_attempts. In-flight detection via
-    // status='running' still works; the only case this fallback can
-    // mis-report is an abnormal exit whose finally block never ran, in
-    // which case the task is genuinely orphaned and will eventually
-    // surface as stuck-running.
+    // stage_attempts exist, no task_finals. Distinguish 'running'
+    // (something genuinely in flight) from 'orphaned' (everything
+    // settled but runner never wrote its verdict).
     const latestByStage = new Map<string, { attempt_idx: number; status: string }>();
     for (const a of attempts) {
       const cur = latestByStage.get(a.stage_name);
@@ -1214,16 +1222,10 @@ export class KernelService {
       }
     }
     const statuses = Array.from(latestByStage.values()).map((v) => v.status);
-    if (statuses.some((s) => s === "error")) {
-      return { ok: true, status: "failed", taskId };
-    }
     if (statuses.some((s) => s === "running")) {
       return { ok: true, status: "running", taskId };
     }
-    // Pre-P6-1 behavior. New runs always write task_finals, so reaching
-    // here after a kernel-next restart means the row was lost (eg. DB
-    // wiped) — report completed as best-effort.
-    return { ok: true, status: "completed", taskId };
+    return { ok: true, status: "orphaned", taskId };
   }
 
   /**
