@@ -86,3 +86,51 @@ describe("GET /api/kernel/pipelines", () => {
     expect(body.pipelines[0]!.latestVersion).toBe(proposed.proposedVersion);
   });
 });
+
+describe("GET /api/kernel/pipelines/:versionHash", () => {
+  let db: DatabaseSync;
+
+  beforeEach(() => {
+    db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    __setKernelNextDbForTest(db);
+  });
+
+  afterEach(() => {
+    __setKernelNextDbForTest(undefined);
+    db.close();
+  });
+
+  it("returns 404 for unknown version", async () => {
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/pipelines/deadbeef"));
+    expect(res.status).toBe(404);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.ok).toBe(false);
+    expect(body.diagnostics[0]!.code).toBe("VERSION_NOT_FOUND");
+  });
+
+  it("returns ir + prompts + parentHash + createdAt for a known version", async () => {
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+
+    const app = buildApp();
+    const res = await app.fetch(
+      new Request(`http://t/api/kernel/pipelines/${encodeURIComponent(submitted.versionHash)}`),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      ok: boolean;
+      ir: { name: string; stages: Array<{ name: string; type: string }> };
+      prompts: Record<string, string>;
+      parentHash: string | null;
+      createdAt: number;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.ir.name).toBe(diamondIR().name);
+    expect(Object.keys(body.prompts).length).toBe(Object.keys(diamondPrompts()).length);
+    expect(body.parentHash).toBeNull();
+    expect(body.createdAt).toBeGreaterThan(0);
+  });
+});

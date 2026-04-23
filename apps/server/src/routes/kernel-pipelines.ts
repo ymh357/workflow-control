@@ -10,6 +10,7 @@
 
 import { Hono } from "hono";
 import { getKernelNextDb } from "../lib/kernel-next-db.js";
+import { getPipelineIR, getPromptsByVersion } from "../kernel-next/ir/sql.js";
 
 export const kernelPipelinesRoute = new Hono();
 
@@ -41,4 +42,34 @@ kernelPipelinesRoute.get("/kernel/pipelines", (c) => {
     latestCreatedAt: r.created_at,
   }));
   return c.json({ ok: true, pipelines });
+});
+
+kernelPipelinesRoute.get("/kernel/pipelines/:versionHash", (c) => {
+  const hash = c.req.param("versionHash");
+  const db = getKernelNextDb();
+  const ir = getPipelineIR(db, hash);
+  if (ir === null) {
+    return c.json({
+      ok: false,
+      diagnostics: [{
+        code: "VERSION_NOT_FOUND",
+        message: `pipeline version '${hash}' not found`,
+        context: { versionHash: hash },
+      }],
+    }, 404);
+  }
+  const prompts = getPromptsByVersion(db, hash);
+  // parent_hash + created_at come from the same row we already know
+  // exists via getPipelineIR. Fetch them here so the UI can show
+  // provenance without a second round-trip.
+  const meta = db.prepare(
+    `SELECT parent_hash, created_at FROM pipeline_versions WHERE version_hash = ?`,
+  ).get(hash) as { parent_hash: string | null; created_at: number } | undefined;
+  return c.json({
+    ok: true,
+    ir,
+    prompts,
+    parentHash: meta?.parent_hash ?? null,
+    createdAt: meta?.created_at ?? 0,
+  });
 });
