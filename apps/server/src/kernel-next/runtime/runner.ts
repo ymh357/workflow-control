@@ -407,7 +407,36 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
         // the correct surface for this rare condition.
       }
     }
-    // 3. Tell compiler to honour initialContext.
+    // 3. Hydrate gate answers committed by a previous runner but not
+    //    yet forwarded to the machine as GATE_ANSWERED. Server crash
+    //    between gate_queue.answer write and dispatcher.send(...) is
+    //    the reason this survival path exists — without it, the
+    //    resumed runner would re-ask a gate the user already answered.
+    const answeredGateRows = opts.db.prepare(
+      `SELECT stage_name, answer FROM gate_queue
+         WHERE task_id = ? AND answer IS NOT NULL AND answered_at IS NOT NULL`,
+    ).all(opts.taskId) as Array<{ stage_name: string; answer: string }>;
+    for (const row of answeredGateRows) {
+      const gateStage = opts.ir.stages.find(
+        (s) => s.name === row.stage_name && s.type === "gate",
+      );
+      if (!gateStage || gateStage.type !== "gate") continue;
+      const target = gateStage.config.routing.routes[row.answer];
+      if (target === undefined) continue;
+      const targets = Array.isArray(target) ? target : [target];
+      for (const t of targets) {
+        if (!persistentGateAuthorized.includes(t)) {
+          persistentGateAuthorized.push(t);
+        }
+      }
+      if (!persistentFinalizedStages.some((f) => f.name === row.stage_name)) {
+        persistentFinalizedStages.push({
+          name: row.stage_name,
+          outcome: "done" as const,
+        });
+      }
+    }
+    // 4. Tell compiler to honour initialContext.
     isRetryRebuild = true;
   }
   // Task 6 — gates that were rejected in the current run. On rebuild,
