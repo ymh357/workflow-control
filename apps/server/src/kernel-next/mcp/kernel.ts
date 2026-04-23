@@ -817,6 +817,156 @@ export class KernelService {
    * in practice — FK prevents orphan attempts), a GATE_ANSWER_INVALID is
    * raised so the error surfaces on the caller.
    */
+  /**
+   * B5 — assemble a gate's full decision payload. The UI calls this
+   * once per pending gate to render upstream-stage context, question
+   * text, and the set of valid answer keys.
+   *
+   * Diagnostics use the same vocabulary as answerGate so the HTTP
+   * route can reuse the existing mapping (GATE_NOT_FOUND → 404,
+   * GATE_ANSWER_INVALID → 500 for corrupted lineage).
+   */
+  getGateContext(gateId: string): GateContextResult {
+    const row = this.db.prepare(
+      `SELECT gate_id, task_id, stage_name, attempt_id, question_json,
+              answer, answered_at, created_at
+       FROM gate_queue WHERE gate_id = ?`,
+    ).get(gateId) as
+      | {
+          gate_id: string;
+          task_id: string;
+          stage_name: string;
+          attempt_id: string;
+          question_json: string;
+          answer: string | null;
+          answered_at: number | null;
+          created_at: number;
+        }
+      | undefined;
+    if (!row) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "GATE_NOT_FOUND",
+          message: `gateId '${gateId}' not found`,
+          context: { gateId },
+        }],
+      };
+    }
+
+    const attemptRow = this.db.prepare(
+      `SELECT version_hash FROM stage_attempts WHERE attempt_id = ?`,
+    ).get(row.attempt_id) as { version_hash: string } | undefined;
+    if (!attemptRow) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "GATE_ANSWER_INVALID",
+          message: `gate '${gateId}' references attempt '${row.attempt_id}' which no longer exists`,
+          context: { gateId, attemptId: row.attempt_id },
+        }],
+      };
+    }
+    const ir = getPipelineIR(this.db, attemptRow.version_hash);
+    if (!ir) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "GATE_ANSWER_INVALID",
+          message: `pipeline version '${attemptRow.version_hash}' not found for gate '${gateId}'`,
+          context: { gateId, versionHash: attemptRow.version_hash },
+        }],
+      };
+    }
+    const stage = ir.stages.find((s) => s.name === row.stage_name);
+    if (!stage || stage.type !== "gate") {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "GATE_ANSWER_INVALID",
+          message: `stage '${row.stage_name}' is not a gate in version '${attemptRow.version_hash}'`,
+          context: { gateId, stageName: row.stage_name },
+        }],
+      };
+    }
+
+    // Answer options = routing keys minus "_default" (which is a
+    // fallback, not a user-selectable answer).
+    const answerOptions = Object.keys(stage.config.routing.routes)
+      .filter((k) => k !== "_default")
+      .sort();
+
+    // Upstream stages: every stage-sourced wire whose target is this
+    // gate. External wires contribute no stage context — seed values
+    // render in the page's existing Seed Inputs block.
+    const upstreamSet = new Set<string>();
+    for (const w of ir.wires) {
+      if (w.to.stage !== row.stage_name) continue;
+      if (w.from.source !== "stage") continue;
+      upstreamSet.add(w.from.stage);
+    }
+
+    // Per upstream, fetch latest successful output per port for the
+    // same task. The per-port subquery scopes by (task_id, stage_name,
+    // port_name, direction='out') so a later superseded attempt's
+    // writes (if any) never clobber the success row of the same
+    // attempt — we additionally require sa.status='success' on the
+    // outer join.
+    const outputsStmt = this.db.prepare(
+      `SELECT pv.port_name,
+              pv.value_json,
+              pv.written_at
+       FROM port_values pv
+       JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
+       WHERE sa.task_id = ?
+         AND sa.stage_name = ?
+         AND sa.status = 'success'
+         AND pv.direction = 'out'
+         AND pv.written_at = (
+           SELECT MAX(pv2.written_at)
+           FROM port_values pv2
+           JOIN stage_attempts sa2 ON sa2.attempt_id = pv2.attempt_id
+           WHERE sa2.task_id = sa.task_id
+             AND sa2.stage_name = sa.stage_name
+             AND pv2.port_name = pv.port_name
+             AND pv2.direction = 'out'
+             AND sa2.status = 'success'
+         )
+       ORDER BY pv.port_name ASC`,
+    );
+
+    const upstreams: GateContext["upstreams"] = [];
+    for (const stageName of Array.from(upstreamSet).sort()) {
+      const rows = outputsStmt.all(row.task_id, stageName) as Array<{
+        port_name: string;
+        value_json: string;
+        written_at: number;
+      }>;
+      const outputs = rows.map((r) => {
+        let value: unknown;
+        try { value = JSON.parse(r.value_json); }
+        catch { value = null; }
+        return { port: r.port_name, value, writtenAt: r.written_at };
+      });
+      upstreams.push({ stage: stageName, outputs });
+    }
+
+    return {
+      ok: true,
+      context: {
+        gateId: row.gate_id,
+        taskId: row.task_id,
+        stageName: row.stage_name,
+        question: JSON.parse(row.question_json),
+        createdAt: row.created_at,
+        answeredAt: row.answered_at,
+        answer: row.answer,
+        answerOptions,
+        upstreams,
+      },
+    };
+  }
+
   answerGate(gateId: string, answer: string): AnswerGateResult {
     const row = this.db.prepare(
       `SELECT gate_id, task_id, stage_name, attempt_id, question_json,
