@@ -1,5 +1,11 @@
 {
   "name": "smoke-test",
+  "externalInputs": [
+    {
+      "name": "task_text",
+      "type": "string"
+    }
+  ],
   "stages": [
     {
       "config": {
@@ -28,7 +34,12 @@
       "config": {
         "promptRef": "system/greet"
       },
-      "inputs": [],
+      "inputs": [
+        {
+          "name": "task_text",
+          "type": "string"
+        }
+      ],
       "name": "greet",
       "outputs": [
         {
@@ -44,6 +55,16 @@
     }
   ],
   "wires": [
+    {
+      "from": {
+        "source": "external",
+        "port": "task_text"
+      },
+      "to": {
+        "port": "task_text",
+        "stage": "greet"
+      }
+    },
     {
       "from": {
         "port": "note",

@@ -107,9 +107,14 @@ describe("canonical IR backward-compat (externalInputs extension)", () => {
     expect(versionHash(diamondIR())).toBe(BASELINE);
   });
 
-  it("preserves smokeTestIR versionHash when externalInputs is absent", async () => {
+  it("smokeTestIR versionHash stays canonical across serialization (re-baselined 2026-04-23 post P6-4)", async () => {
     const { smokeTestIR } = await import("../builtins/smoke-test.js");
-    const BASELINE = "2c989597e54f341296edc37b4612a04736112d21a130595d5d96eb7b48be8e07";
+    // P6-4 fix: smoke-test added externalInputs + wire into
+    // greet.task_text. Baseline updated from the pre-fix value
+    // 2c989597… to the post-fix hash below. If this fails without a
+    // deliberate IR change, canonicalizeIR may have drifted; roll
+    // back the canonical change or update the baseline explicitly.
+    const BASELINE = "bb6511f796ede71a3b131b1eb7ed5d6e913b4963fdf822d8f3c004fcbbd9038e";
     expect(versionHash(smokeTestIR())).toBe(BASELINE);
   });
 

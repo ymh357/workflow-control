@@ -27,11 +27,18 @@ import type { PipelineIR } from "../ir/schema.js";
 export function smokeTestIR(): PipelineIR {
   return {
     name: "smoke-test",
+    externalInputs: [
+      { name: "task_text", type: "string" },
+    ],
     stages: [
       {
         name: "greet",
         type: "agent",
-        inputs: [],
+        // P6-4 fix (2026-04-23): greet now consumes the user's task
+        // text through an external input port. Pre-fix, greet had
+        // inputs: [] and the prompt referenced a task text that was
+        // never wired, so the agent fell back to "unknown" every run.
+        inputs: [{ name: "task_text", type: "string" }],
         outputs: [
           { name: "subject", type: "string" },
           { name: "note", type: "string" },
@@ -56,6 +63,7 @@ export function smokeTestIR(): PipelineIR {
       },
     ],
     wires: [
+      { from: { source: "external", port: "task_text" }, to: { stage: "greet", port: "task_text" } },
       { from: { stage: "greet", port: "subject" }, to: { stage: "echoBack", port: "subject" } },
       { from: { stage: "greet", port: "note" }, to: { stage: "echoBack", port: "note" } },
     ],
