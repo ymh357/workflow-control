@@ -31,17 +31,19 @@
 | 16 | 2026-04-23 | **Propose UI 端到端 dogfood**（browser-native propose 路径）| pr-description-generator propose 新 hash `29016dbb` | `pr-description-generator-1776922394245-15f8c88b` | completed ✅ | ~195s | — | **不再用 curl + 脚本做 iteration**。路径：`GET /api/kernel/pipelines` list → `GET /api/kernel/pipelines/:hash` detail（UI 展示 2 个 prompt ref）→ 改 `system/write-pr` 加一条 "Reference the related GitHub issue number if any (e.g., 'Closes #42')" → `POST /api/kernel/proposals` body `{patch:{ops:[]}, prompts:{...}}`（空 patch + prompts-only 路径，**A+ 架构**直接可用 no workaround）→ 202 新 `proposedVersion=29016dbb`；NO_OP 兜底用空 prompts 试了一次 → 400 `NO_OP_PROPOSAL`。Approve → run → new version 拉新 prompt content（DB `pipeline_prompt_refs.content_hash` 验证）→ task 正常 completed。新规则属 "if any" 类型，本次 diff 无相关 issue → agent 合规跳过（非 bug）。**M4 第 3 个数据点** + **M2 解锁关键基础设施完成** |
 | 17 | 2026-04-23 | **PG 真实 API 验证（tech-research 场景）** | Pipeline Generator → **Research Report Generator** (new hash `7fc2d175`) | `pipeline-generator-1776932730593-3835c6cb` | completed ✅ | ~7.5 min, $0.2983 | — | PG 全 5 stage 成功（analyzing → gate → genSkeleton → genPrompts → persisting）。生成了一个 2-stage `research-report-generator` pipeline（collectSources → generateReport，externalInputs=[topic:string]）。**validator.ok=true / missing=[] / extraneous=[]**。用 `topic="WebAssembly"` 跑 smoke → task completed；collectSources 写出 2676-byte sources 数组；generateReport 产出 6867-byte markdown 报告（含 Executive Summary / Overview / Detailed Findings / Source List），cost $0.0362。**Finding**: PG 未产出 `store_schema` 顶层字段——这是 A3 迁移 gap，当前 PG prompts 没强制要求生成 store_schema。详见本日志末尾 "PG API validation run #17" |
 | 18 | 2026-04-23 | **PG store_schema 升级 — Propose UI iteration + 真实 API 验证** | Pipeline Generator V1（`ecec9778`，通过 `system/gen-skeleton` prompt 提案升级）→ 生成 **Web Research Reporter** (new hash `dfa3b3cc`) | `pipeline-generator-1776935189303-cb23fdc4` | completed ✅ | ~9.1 min（含 ~2 min gate wait）, $0.9360 | — | 彻底消除 run #17 发现的 A3 gap。路径：从 V0 `f5dbdf18`（filesystem seeded）→ 通过 `POST /api/kernel/proposals`（`ops:[]` + 4-prompts map，只替换 `system/gen-skeleton` 加入 "Store schema generation (REQUIRED)" 章节 + 4 self-check 项）→ `proposedVersion=ecec9778`，safeRange=safe/empty → approve → run with `versionHash=ecec9778`。生成的 `Web Research Reporter` IR **包含 `store_schema` 顶层字段**：2 个 entry（`webResearch.sources` + `reportWriter.report`）全部正确，`produced_by` 精确、types 与端口 trim-equal。**Validator.ok=true / 0 diagnostic**；自定 validator（key count == stage×output expected，types match）：**COMPLETE**。**M4 第 4 个数据点**（propose 1 / approve 1 / reject 0 / rollback 0），**A3 gap 真实消除**，同时验证 Propose UI 在 iterative 场景（4 prompts map / 1 替换）可用 |
+| 20 | 2026-04-23 | **persist-tsc bug fix + PG 端到端闭环** | Pipeline Generator V1 `ecec9778` → 生成 **Extract Hostname** (new hash `52d3b767...cacd8440`) | `pipeline-generator-1776948160085-21246215` | completed ✅（full 5 stages + DB registration）| ~2.5 min, ~$0.15 | **Debt L+M: tscPath 未透传** | **Investigate 链**：run #19 side bug 假设是 validator/codegen bug → 写 repro 脚本对 run #19 原 IR 测 `validateTypes`：传 tscPath → ok=true；不传 → fallback "This is not the tsc command you are looking for"。**真因：2 条 PG 入口路径的 MCP 都没收到 tscPath**。Fix `8b5f92d`（resume path: BootResumabilityInput + index.ts 传 `MONOREPO_TSC_PATH`）和 `83daf77`（MCP handler path: `executorFactory` 签名加 tscPath + server.ts handler 传）。Re-dogfood clean DB 发 PG → completed/natural → `persisting.versionHash="52d3b767..."`（real SHA），`pipelineId="extract-hostname"`（real slug），`pipeline_versions` 新行确认入表。**对比 run #19 pre-fix**：`versionHash="FAILED"`，`pipelineId="FAILED"`，DB 无行。M4 第 5 个数据点；AI-generated pipeline → DB registration 链路完整 |
 | 19 | 2026-04-23 | **M-R6 dogfood — SIGKILL mid-analyzing + server 重启验证 SDK session resume** | Pipeline Generator V1 `ecec9778` | `pipeline-generator-1776945303486-743bbcc9` | completed ✅（6 stages，含 pre-kill superseded + post-resume 新 attempt） | ~8.5 min (含 ~20s kill/restart 空窗), $0.4056 total | **M-R5 gap: session_id 只在 writer.close 时 flush**（fix `dec8313`） | 真实 API 跑 PG 到 analyzing running，SDK `system.init` 产出 session_id=`f391e6d6...` 已写 DB，burn ~20s tokens → `SIGKILL` server → 重启 server D → **reconciler 检测 orphan, resumed=1** → runner 拉 session_id 传 `options.resume=f391e6d6` → **SDK 接受 resume，新 attempt session_id 与原 attempt 完全相同** → attempt 完成 cost $0.1182 (19/4133 tokens)，没有重新从 turn 0 开始 → 继续跑完整 pipeline。**M-R1..M-R5 联合验证端到端 work**。**Side bug**（非 resumability 相关）：persist stage 报 WIRE_TYPE_MISMATCH / "tsc not available"，AI-generated pipeline 未最终入 DB 但 task_finals=completed/natural 本身正确。**M-R5 session fix 真实必要**：修前 mid-stage kill 后 session_id=NULL, SDK resume 不可用；修后 session_id 在 init 时 sync flush，kill -9 安全 |
 
 ## 成熟度快照
 
-- **M3 分子/分母**: 12 / 19（run #2,3,4,9,11,12,14,15,16,17,18,19 真 completed；run #1,5,6,7,10,13 API completed 但未全跑 / 内容错；#8 是 B5 API 验证）
-- **真实成功率**: 12/19 = **63%**。架构审计修完后的 runs 全过
-- **post-architecture-audit 子集**: 8/8 = **100%**（runs #11,#12,#14,#15,#16,#17,#18,#19）
-- **M4 热更新 propose / reject / rollback**: **4 / 0 / 0**
+- **M3 分子/分母**: 13 / 20（run #2,3,4,9,11,12,14,15,16,17,18,19,20 真 completed；run #1,5,6,7,10,13 API completed 但未全跑 / 内容错；#8 是 B5 API 验证）
+- **真实成功率**: 13/20 = **65%**。架构审计修完后的 runs 全过
+- **post-architecture-audit 子集**: 9/9 = **100%**（runs #11,#12,#14,#15,#16,#17,#18,#19,#20）
+- **M4 热更新 propose / reject / rollback**: **5 / 0 / 0**（含 run #20 完整 PG→DB 注册链）
 - **Resumability 端到端可用**: ✅ run #19 真实验证 SIGKILL mid-stage 后 SDK session_id 与对话历史跨 server 生命周期保持
-- **覆盖的 builtin + generated**: 4 ✅ （`smoke-test`, `Tech Research Collector`, `Pipeline Generator`, `pr-description-generator`） + 3 AI-generated IR 完整 + 1 pending: `Tech Research Writer`
-- **AI-generated pipeline schema 可用率**: 3 / 4（run #4 空壳；run #11/#17/#18 IR 完整过 validator；run #19 persist 环境故障 ≠ IR 本身问题）
+- **AI-generated pipeline → DB 注册可用**: ✅ run #20 验证 tscPath fix 后 persisting stage 正确写真实 versionHash 并 INSERT pipeline_versions
+- **覆盖的 builtin + generated**: 4 ✅ （`smoke-test`, `Tech Research Collector`, `Pipeline Generator`, `pr-description-generator`） + 4 AI-generated IR 完整（Web Research Reporter / Research Report Generator / Markdown ToC / Extract Hostname） + 1 pending: `Tech Research Writer`
+- **AI-generated pipeline schema + DB 注册可用率**: 4 / 5（run #4 空壳；run #11/#17/#18/#20 IR 完整过 validator + 注册）
 
 ## 结论：B5 / B12 决策（基于实际使用数据）
 
@@ -578,3 +580,54 @@ Persist stage 报 `WIRE_TYPE_MISMATCH` + 推理认为 "tsc not available"，写 
 - **Reconcile 顺带处理 gate attempts**：awaitingConfirm 也被 reconcile 成 superseded，resume 后新 attempt#2 由 M-R3 的 gate_queue hydration 或正常用户 re-answer 解决。本次 run 观察到两个 gate_queue 条目（每个 attempt 一个），需两次 answer。UI 层需知道该挑"最新未 answered 的"。
 - **SIGKILL 后 lock 需手删**（或靠 stale-pid takeover 自动处理）。`process.on("exit")` 在 SIGKILL 下不 fire，这是 POSIX 行为，已在设计中接受（PID-file + liveness check 而非 flock）。
 - **`versionHash=FAILED` persist 路径虽丑，但 task_finals 正确写 completed/natural**——kernel 的"stage 错误 ≠ 任务失败"语义完整（per Phase 6 run #15 架构）。
+
+## persist-tsc bug fix run #20 (2026-04-23)
+
+### 目的
+
+闭环 run #19 的 side bug（"WIRE_TYPE_MISMATCH / tsc not available"）。Investigate → commits `8b5f92d` + `83daf77` → re-dogfood 端到端验证。
+
+### Investigate 结论
+
+根因：两条 PG 入口路径都没把 `MONOREPO_TSC_PATH` 塞进 per-stage MCP：
+
+1. **Resume 路径（index.ts bootResumability）**：`orphan-reconciler.ts` 的 `BootResumabilityInput.startPipelineRun` 签名缺 `tscPath`；index.ts 的 adapter 也没传。Resumed 任务的每个 agent stage 的 MCP 拿到 `tscPath=undefined`。
+2. **MCP `start_pipeline_generator` 路径（server.ts handler）**：该 handler 走 `deps.runner` 分支（非 `startPipelineRun`），其 `deps.executorFactory` 签名缺 `tscPath`；server.ts:1077 构造 `createKernelMcp` 时也没传。
+
+两处丢了 tscPath → `validateTypes` 走 `npx tsc` fallback → 在 /tmp/kernel-next-tsc-XYZ 下 npx 找不到 TypeScript 安装 → 报 "This is not the tsc command you are looking for" → `parseTscOutput` 不识别 → fallback emit 一个 generic `WIRE_TYPE_MISMATCH`。Agent 读 context 推理"基础设施问题" → 写 `versionHash=FAILED`。
+
+### Repro（决定性证据）
+
+临时 script 调 `validateTypes` 对 run #19 的 **完全相同 IR**：
+
+- With `tscPath = apps/server/node_modules/.bin/tsc` → **ok=true**
+- Without tscPath（npx fallback）→ **ok=false**, rawStdout 含 "This is not the tsc command you are looking for"
+
+### Fix 分两个独立 commit
+
+| Commit | 范围 |
+|---|---|
+| `8b5f92d` | `orphan-reconciler.ts` 扩 `BootResumabilityInput`；`index.ts` 传 `MONOREPO_TSC_PATH`；`kernel-run.ts` export 该常量 |
+| `83daf77` | `pg-entry.ts` 扩 `executorFactory` 签名；`server.ts` handler 传 `tscPath` 到 deps 和 inner MCP |
+
+新增 2 个 unit test（resume path + MCP handler path）。tsc 0, **1488 pass / 4 skipped**（从 1486 +2）。
+
+### Re-dogfood
+
+clean DB，发 PG（`"A tiny pipeline that takes a URL string and returns its hostname as a string..."`）。经过 analyzing → awaitingConfirm → approve → genSkeleton → genPrompts → persisting → completed/natural。
+
+**关键验证**（对比 run #19）：
+
+| 字段 | run #19（pre-fix） | run #20（post-fix） |
+|---|---|---|
+| `persisting.versionHash` | `"FAILED"` | `"52d3b767...cacd8440"` (real SHA256) |
+| `persisting.pipelineId` | `"FAILED"` | `"extract-hostname"` (real slug) |
+| `pipeline_versions` 新行 | — | `Extract Hostname` 入表 |
+
+生成的 pipeline `"Extract Hostname"` 真实入 `pipeline_versions`，AI-generated pipeline → DB registration 链路完整工作。
+
+### Lessons
+
+- **Investigation-before-claim 再次救命**：handoff 里写的 "persist tsc bug" 我一开始假设是 validator 或 codegen bug。实际是**上游 tscPath 根本没到**。temporarily 写 repro 脚本（传/不传 tscPath 对同一 IR）直接分离了变量，省去了在 validator/codegen 里挖的时间。
+- **两条路径同一根因**：resume 路径和 MCP handler 路径独立，但都漏了 tscPath。这是**契约型 debt**——`startPipelineRun` 的 `tscPath` 参数设计成 optional，使得每个 caller 可以悄悄漏掉。若 `tscPath` 是 required（或 default-to-resolved），此类 bug 一开始就不会存在。
+- **M4 分子加 1**：run #20 是完整的 propose-less PG-run → DB 注册循环，验证了 AI-generated pipeline 的端到端可用性。
