@@ -21,7 +21,8 @@ export type KernelNextSSEEventType =
   | "stage_rolled_back"  // gate-reject rollback: runner pruned one or more stages back to a prior point
   | "run_final"          // top-level machine reached `completed` or `failed`; carries aggregated diagnostics
   | "diagnostics_emitted" // multi-diagnostic aggregation (runtime stage errors, submit/migrate validation failures)
-  | "rate_limit_backoff"; // Anthropic API rate-limit signal crossed the pause threshold; dashboard shows "throttled by API"
+  | "rate_limit_backoff" // Anthropic API rate-limit signal crossed the pause threshold; dashboard shows "throttled by API"
+  | "task_cost_update";  // P6.1 / D23 — cumulative cost + token totals for the task, emitted at stage boundaries
 
 export type TaskTopLevelState =
   | "idle" | "running" | "completed" | "failed";
@@ -169,6 +170,23 @@ export interface DiagnosticsEmittedData {
   }>;
 }
 
+// P6.1 / D23 — live cost/token totals for the task.
+//
+// Emitted by the runner immediately after each stage_done and once
+// after run_final. The numbers are computed by task-cost-aggregator by
+// summing discrete columns (cost_usd / token_input / token_output) on
+// agent_execution_details rows whose stage_attempts belong to the
+// task. cacheReadTokens is reserved for a future writer extension —
+// the current writer does not persist cache-read token counts, so the
+// field is always 0 today (surfaced in the shape so a later change to
+// the writer does not require a new SSE event type).
+export interface TaskCostUpdateData {
+  cumulativeUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+}
+
 // Narrowed event variants. Broadcaster handles KernelNextSSEEvent
 // generically; typed helpers at the publish site stay inside runner
 // and port-runtime.
@@ -212,6 +230,10 @@ export interface KernelNextRateLimitBackoffEvent extends KernelNextSSEEvent {
   type: "rate_limit_backoff";
   data: RateLimitBackoffData;
 }
+export interface KernelNextTaskCostUpdateEvent extends KernelNextSSEEvent {
+  type: "task_cost_update";
+  data: TaskCostUpdateData;
+}
 
 export type AnyKernelNextSSEEvent =
   | KernelNextTaskStateEvent
@@ -223,4 +245,5 @@ export type AnyKernelNextSSEEvent =
   | KernelNextStageRolledBackEvent
   | KernelNextRunFinalEvent
   | KernelNextDiagnosticsEmittedEvent
-  | KernelNextRateLimitBackoffEvent;
+  | KernelNextRateLimitBackoffEvent
+  | KernelNextTaskCostUpdateEvent;

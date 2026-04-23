@@ -29,6 +29,19 @@ interface DiagnosticsEmittedPayload {
   diagnostics: Diagnostic[];
 }
 
+// P6.1 / D23 — cumulative cost + token totals for the task, emitted
+// by the server after each stage_done and after run_final. Shape
+// mirrors apps/server TaskCostUpdateData; duplicated locally (same
+// reasoning as DiagnosticsEmittedPayload above — no cross-workspace
+// types-only dependency). cacheReadTokens is present for forward-
+// compat but the server writes 0 today.
+interface TaskCostUpdatePayload {
+  cumulativeUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+}
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 type TopLevelState = "idle" | "running" | "completed" | "failed" | "unknown";
@@ -113,6 +126,7 @@ export default function KernelNextTaskPage() {
   const eventCountRef = useRef(0);
   const [pendingGateIds, setPendingGateIds] = useState<string[]>([]);
   const [gateContexts, setGateContexts] = useState<Map<string, GateContextResponse>>(new Map());
+  const [cost, setCost] = useState<TaskCostUpdatePayload | null>(null);
 
   const upsertStage = useCallback((row: StageRow) => {
     setStages((prev) => {
@@ -197,6 +211,12 @@ export default function KernelNextTaskPage() {
         // batches (e.g. runtime stageErrors + later submit/migrate
         // failures). Order is preserved for the Copy JSON output.
         setDiagnostics((prev) => [...prev, ...d.diagnostics]);
+        break;
+      }
+      case "task_cost_update": {
+        // P6.1 / D23 — latest cumulative totals overwrite; server
+        // computes the sum so no client-side reconciliation needed.
+        setCost(event.data as TaskCostUpdatePayload);
         break;
       }
       default:
@@ -401,6 +421,18 @@ export default function KernelNextTaskPage() {
             {topState}
           </span>
         </span>
+        {cost && (
+          <>
+            <span>
+              Cost:{" "}
+              <span className="font-mono">${cost.cumulativeUsd.toFixed(4)}</span>
+            </span>
+            <span>
+              Tokens: {cost.inputTokens.toLocaleString()}&uarr;{" "}
+              / {cost.outputTokens.toLocaleString()}&darr;
+            </span>
+          </>
+        )}
       </div>
 
       {seedRows.length > 0 && (

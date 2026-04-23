@@ -51,6 +51,7 @@ import {
   type StageErrorContext,
 } from "./runner-wire-resolver.js";
 import { deleteTaskEnvValues } from "./task-env-values.js";
+import { computeTaskCost } from "./task-cost-aggregator.js";
 
 export interface RunnerOptions {
   db: DatabaseSync;
@@ -447,6 +448,23 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
     } catch { /* broadcaster failure must not abort the run */ }
   };
   const isoNow = (): string => new Date().toISOString();
+
+  // P6.1 / D23 — emit cumulative cost/token totals for this task.
+  // Called after stage_done and run_final so the dashboard header
+  // updates live. Reads agent_execution_details; safe to call even
+  // when no attempts have opened yet (aggregator returns zeros).
+  const publishTaskCost = (): void => {
+    if (!opts.broadcaster) return;
+    try {
+      const snap = computeTaskCost(opts.db, opts.taskId);
+      publish({
+        type: "task_cost_update",
+        taskId: opts.taskId,
+        timestamp: isoNow(),
+        data: snap,
+      });
+    } catch { /* aggregator failure must not abort the run */ }
+  };
 
   // Timer is run-scoped: a retry does not reset the overall budget.
   // Long pipelines should set timeoutMs explicitly.
@@ -854,6 +872,10 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       stageErrors: stageErrors.map((e) => ({ stage: e.stage, message: e.message })),
     },
   });
+  // P6.1 / D23 — final cost/token snapshot so the dashboard header
+  // reflects any cost accrued during the last attempt (stage_done may
+  // not have fired for that stage if the run terminated in `error`).
+  publishTaskCost();
 
   // P4.4 / D30 — also emit a diagnostics_emitted batch so the
   // dashboard's <DiagnosticsPanel> can group multi-error failures by
@@ -1162,6 +1184,8 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
                 timestamp: isoNow(),
                 data: { stage: stageName },
               });
+              // P6.1 / D23 — live cost/token header update.
+              publishTaskCost();
             } else {
               if (reason === "executor_failed") {
                 const stageErr = stageErrors.find((e) => e.stage === stageName);
