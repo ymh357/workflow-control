@@ -20,7 +20,8 @@ export type KernelNextSSEEventType =
   | "port_written"       // a single port_values row was written on the live PortRuntime
   | "stage_rolled_back"  // gate-reject rollback: runner pruned one or more stages back to a prior point
   | "run_final"          // top-level machine reached `completed` or `failed`; carries aggregated diagnostics
-  | "diagnostics_emitted"; // multi-diagnostic aggregation (runtime stage errors, submit/migrate validation failures)
+  | "diagnostics_emitted" // multi-diagnostic aggregation (runtime stage errors, submit/migrate validation failures)
+  | "rate_limit_backoff"; // Anthropic API rate-limit signal crossed the pause threshold; dashboard shows "throttled by API"
 
 export type TaskTopLevelState =
   | "idle" | "running" | "completed" | "failed";
@@ -128,6 +129,28 @@ export interface RunFinalData {
   stageErrors: Array<{ stage: string; message: string }>;
 }
 
+// P5.3 / D7 — rate-limit backoff signal.
+//
+// Published by the RealStageExecutor when the SDK surfaces a
+// rate_limit_event whose utilization crosses RATE_LIMIT_UTIL_THRESHOLD
+// (0.9). The dashboard uses this to show a "throttled by API" badge on
+// the running stage; the accompanying delayMs is the exponential-backoff
+// suggestion from rate-limit-backoff.rateLimitBackoffMs. Observability
+// only in this tier — the executor does not actively sleep on receipt;
+// the SDK handles real backoff internally. See roadmap D7 note for the
+// follow-up that extends this to active pausing.
+export interface RateLimitBackoffData {
+  stage: string;
+  attemptId: string;
+  delayMs: number;
+  // 1-based count of consecutive signals that crossed the threshold on
+  // this attempt. Resets between attempts (fresh executor, fresh count).
+  signalCount: number;
+  // Latest observed utilization (0..1). Absent when the SDK emits a
+  // rate_limit_event without the utilization field populated.
+  utilization?: number;
+}
+
 // P4.4 / D30 — multi-diagnostic aggregation.
 //
 // Emitted in parallel with `run_final` (when stageErrors is non-empty)
@@ -184,6 +207,10 @@ export interface KernelNextDiagnosticsEmittedEvent extends KernelNextSSEEvent {
   type: "diagnostics_emitted";
   data: DiagnosticsEmittedData;
 }
+export interface KernelNextRateLimitBackoffEvent extends KernelNextSSEEvent {
+  type: "rate_limit_backoff";
+  data: RateLimitBackoffData;
+}
 
 export type AnyKernelNextSSEEvent =
   | KernelNextTaskStateEvent
@@ -194,4 +221,5 @@ export type AnyKernelNextSSEEvent =
   | KernelNextPortWrittenEvent
   | KernelNextStageRolledBackEvent
   | KernelNextRunFinalEvent
-  | KernelNextDiagnosticsEmittedEvent;
+  | KernelNextDiagnosticsEmittedEvent
+  | KernelNextRateLimitBackoffEvent;

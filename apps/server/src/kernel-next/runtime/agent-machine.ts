@@ -18,7 +18,15 @@
 //   COMPACT_ENDED          synthetic — next non-compact message after
 //                          COMPACT_STARTED. Adapter emits it so the state
 //                          machine can leave `compacting` deterministically.
-//   RATE_LIMIT_SIGNAL      from rate_limit_event (no-op, telemetry)
+//   RATE_LIMIT_SIGNAL      from rate_limit_event. Bumps
+//                          context.consecutiveRateLimitSignals whenever
+//                          utilization >= RATE_LIMIT_UTIL_THRESHOLD (0.9)
+//                          so the executor layer can publish a
+//                          `rate_limit_backoff` SSE event with an
+//                          exponential-backoff suggestion. Under the
+//                          threshold (or utilization undefined) the
+//                          counter is reset — the machine does NOT
+//                          transition state on this event.
 //   RESULT_SUCCESS         from result subtype=success
 //   RESULT_ERROR           from any other result subtype
 //   INTERRUPT              kernel-originated (§4.2 rules)
@@ -32,6 +40,9 @@
 // executor reads off `actor.getSnapshot().output` after `actor.stop()`.
 
 import { setup, assign } from "xstate";
+import {
+  RATE_LIMIT_UTIL_THRESHOLD,
+} from "./rate-limit-backoff.js";
 
 /**
  * Input accepted by AgentMachine when created via XState's `input` mechanism
@@ -117,6 +128,19 @@ export interface AgentContext {
    * skipping the promised summary turn.
    */
   summaryTurnUsed: boolean;
+  /**
+   * P5.3 / D7 — count of consecutive RATE_LIMIT_SIGNAL events whose
+   * utilization crossed RATE_LIMIT_UTIL_THRESHOLD. Reset to 0 on any
+   * under-threshold signal (or signal without a utilization field).
+   * The executor reads this after each `send` to decide whether to
+   * publish a `rate_limit_backoff` SSE event and what back-off to
+   * suggest (see rate-limit-backoff.rateLimitBackoffMs).
+   *
+   * The machine itself does not branch on this counter — it is pure
+   * telemetry carried in context so the send-side hook has a single
+   * source of truth.
+   */
+  consecutiveRateLimitSignals: number;
 }
 
 export type AgentEvent =
@@ -217,6 +241,21 @@ export function createAgentMachine() {
       recordInterruptedFromWaiting: assign({
         result: () => ({ kind: "interrupted" as const, from: "waiting_for_claude" as const }),
       }),
+      // P5.3 / D7 — observability counter. Increments when utilization is
+      // >= threshold, resets otherwise. The machine does not transition
+      // on this action; the counter is surfaced via context for the
+      // executor's post-send inspection.
+      updateRateLimitCounter: assign({
+        consecutiveRateLimitSignals: ({ context, event }) => {
+          if (event.type !== "RATE_LIMIT_SIGNAL") return context.consecutiveRateLimitSignals;
+          const util = event.utilization;
+          if (typeof util !== "number") return 0;
+          if (util >= RATE_LIMIT_UTIL_THRESHOLD) {
+            return context.consecutiveRateLimitSignals + 1;
+          }
+          return 0;
+        },
+      }),
     },
   }).createMachine({
     id: "agent",
@@ -232,6 +271,7 @@ export function createAgentMachine() {
       result: null,
       interruptArmed: false,
       summaryTurnUsed: false,
+      consecutiveRateLimitSignals: 0,
     }),
     output: ({ context }): AgentMachineOutput => {
       const base = {
@@ -275,7 +315,9 @@ export function createAgentMachine() {
           },
           // Unexpected in this state (probe showed 4/4 runs start with
           // system/init) — treat as telemetry rather than fault.
-          RATE_LIMIT_SIGNAL: {},
+          // P5.3: bump the consecutive-signal counter regardless of state
+          // so the executor's post-send hook sees it.
+          RATE_LIMIT_SIGNAL: { actions: ["updateRateLimitCounter"] },
           ASSISTANT_TEXT: {},
         },
       },
@@ -294,7 +336,7 @@ export function createAgentMachine() {
         ],
         on: {
           ASSISTANT_TEXT: {}, // no-op, telemetry
-          RATE_LIMIT_SIGNAL: {},
+          RATE_LIMIT_SIGNAL: { actions: ["updateRateLimitCounter"] },
           TOOL_USE_REQUESTED: {
             target: "dispatching_tool",
             actions: ["enqueueToolUse", "markSummaryTurnUsed"],
@@ -342,7 +384,7 @@ export function createAgentMachine() {
             },
           ],
           ASSISTANT_TEXT: {}, // no-op (thinking block interleaved between tool calls)
-          RATE_LIMIT_SIGNAL: {},
+          RATE_LIMIT_SIGNAL: { actions: ["updateRateLimitCounter"] },
           // §4.2: do NOT abort mid-tool. The in-flight tool call itself
           // counts as the agent's summary-turn slot being consumed, so we
           // mark it now. The next bounce through waiting_for_claude's
@@ -384,7 +426,7 @@ export function createAgentMachine() {
             target: "error",
             actions: ["clearCompact", "recordError"],
           },
-          RATE_LIMIT_SIGNAL: {},
+          RATE_LIMIT_SIGNAL: { actions: ["updateRateLimitCounter"] },
           ASSISTANT_TEXT: {},
         },
       },

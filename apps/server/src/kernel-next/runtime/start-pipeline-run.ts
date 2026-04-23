@@ -338,6 +338,9 @@ export async function startPipelineRun(
         maxTurns,
         maxBudgetUsd,
         workspaceDir: resolvedWorkspaceDir,
+        // P5.3 / D7 — forward broadcaster so RealStageExecutor can
+        // publish `rate_limit_backoff` SSE events on SDK throttling.
+        broadcaster: input.broadcaster,
       });
 
   // --- Worktree allocation (Phase 5C) -------------------------------

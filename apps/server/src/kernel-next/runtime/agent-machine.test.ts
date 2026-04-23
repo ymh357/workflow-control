@@ -53,7 +53,7 @@ describe("AgentMachine — happy path", () => {
     expect(out.turns).toBeGreaterThanOrEqual(1);
   });
 
-  it("RATE_LIMIT_SIGNAL is a no-op in every state", () => {
+  it("RATE_LIMIT_SIGNAL does not transition state in any state", () => {
     const a = start();
     a.send({ type: "RATE_LIMIT_SIGNAL", utilization: 0.5 });
     expect(a.getSnapshot().value).toBe("starting");
@@ -63,6 +63,35 @@ describe("AgentMachine — happy path", () => {
     a.send({ type: "TOOL_USE_REQUESTED", id: "t1", name: "x", input: {} });
     a.send({ type: "RATE_LIMIT_SIGNAL" });
     expect(a.getSnapshot().value).toBe("dispatching_tool");
+  });
+
+  it("RATE_LIMIT_SIGNAL bumps consecutive counter on >= 0.9 utilization", () => {
+    const a = start();
+    a.send({ type: "SDK_INIT" });
+    expect(a.getSnapshot().context.consecutiveRateLimitSignals).toBe(0);
+    a.send({ type: "RATE_LIMIT_SIGNAL", utilization: 0.95 });
+    expect(a.getSnapshot().context.consecutiveRateLimitSignals).toBe(1);
+    a.send({ type: "RATE_LIMIT_SIGNAL", utilization: 0.99 });
+    expect(a.getSnapshot().context.consecutiveRateLimitSignals).toBe(2);
+  });
+
+  it("RATE_LIMIT_SIGNAL resets consecutive counter when utilization drops below threshold", () => {
+    const a = start();
+    a.send({ type: "SDK_INIT" });
+    a.send({ type: "RATE_LIMIT_SIGNAL", utilization: 0.95 });
+    a.send({ type: "RATE_LIMIT_SIGNAL", utilization: 0.95 });
+    expect(a.getSnapshot().context.consecutiveRateLimitSignals).toBe(2);
+    a.send({ type: "RATE_LIMIT_SIGNAL", utilization: 0.5 });
+    expect(a.getSnapshot().context.consecutiveRateLimitSignals).toBe(0);
+  });
+
+  it("RATE_LIMIT_SIGNAL with missing utilization resets counter", () => {
+    const a = start();
+    a.send({ type: "SDK_INIT" });
+    a.send({ type: "RATE_LIMIT_SIGNAL", utilization: 0.95 });
+    expect(a.getSnapshot().context.consecutiveRateLimitSignals).toBe(1);
+    a.send({ type: "RATE_LIMIT_SIGNAL" });
+    expect(a.getSnapshot().context.consecutiveRateLimitSignals).toBe(0);
   });
 });
 

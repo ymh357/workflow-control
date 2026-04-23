@@ -60,6 +60,11 @@ import {
   type ExpandedMcpServer,
 } from "./mcp-servers-expander.js";
 import { loadTaskEnvValues } from "./task-env-values.js";
+import {
+  shouldPause,
+  rateLimitBackoffMs,
+} from "./rate-limit-backoff.js";
+import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
 
 export interface RealStageExecutorOptions {
   /**
@@ -122,6 +127,15 @@ export interface RealStageExecutorOptions {
    * owns allocation + mkdir, matching how worktreeSourceRepo is handled.
    */
   workspaceDir?: string;
+  /**
+   * P5.3 / D7 — SSE broadcaster for publishing `rate_limit_backoff`
+   * events when the SDK's rate_limit_event stream crosses the
+   * utilization pause threshold. Optional; when undefined the executor
+   * silently skips publishing (tests, offline harnesses). The executor
+   * never drives state transitions from a rate-limit signal — this
+   * channel is observability-only.
+   */
+  broadcaster?: KernelNextBroadcaster;
 }
 
 // ---- M-R5 session-resume helpers ---------------------------------------
@@ -189,6 +203,7 @@ export class RealStageExecutor implements StageExecutor {
   private readonly promptResolver: PromptResolver;
   private readonly queryFn: typeof query;
   private readonly workspaceDir: string | undefined;
+  private readonly broadcaster: KernelNextBroadcaster | undefined;
 
   constructor(options: RealStageExecutorOptions) {
     this.mcpServerFactory = options.mcpServerFactory;
@@ -200,6 +215,7 @@ export class RealStageExecutor implements StageExecutor {
     this.promptResolver = options.promptResolver ?? new TrivialPromptResolver();
     this.queryFn = options.queryFn ?? query;
     this.workspaceDir = options.workspaceDir;
+    this.broadcaster = options.broadcaster;
   }
 
   async executeStage(args: ExecuteStageArgs): Promise<ExecuteStageResult> {
@@ -453,6 +469,39 @@ export class RealStageExecutor implements StageExecutor {
               writer.completeCompactEvent(new Date().toISOString());
             }
             agentActor.send(ev);
+            // P5.3 / D7 — observe the machine's updated rate-limit
+            // counter AFTER send; publish a `rate_limit_backoff` SSE
+            // event when this signal crossed the pause threshold.
+            // The send is synchronous so the counter reflects this
+            // exact event. Observability-only: the SDK itself handles
+            // the real pacing internally; we surface the suggested
+            // backoff so the dashboard can show "throttled by API".
+            if (ev.type === "RATE_LIMIT_SIGNAL") {
+              const util = ev.utilization;
+              if (typeof util === "number" && shouldPause({ utilization: util })) {
+                const signalCount = agentActor
+                  .getSnapshot().context.consecutiveRateLimitSignals;
+                const delayMs = rateLimitBackoffMs(signalCount);
+                if (this.broadcaster) {
+                  try {
+                    this.broadcaster.publish({
+                      type: "rate_limit_backoff",
+                      taskId,
+                      timestamp: new Date().toISOString(),
+                      data: {
+                        stage: stageName,
+                        attemptId,
+                        delayMs,
+                        signalCount,
+                        utilization: util,
+                      },
+                    });
+                  } catch {
+                    // broadcaster failure must not abort the stream
+                  }
+                }
+              }
+            }
           },
           onSdkMessage: (msg) => {
             // Capture content + metadata that the adapter collapses.
