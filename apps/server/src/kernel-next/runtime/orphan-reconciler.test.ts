@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { initKernelNextSchema } from "../ir/sql.js";
-import { scanOrphanTaskIds, classifyOrphan } from "./orphan-reconciler.js";
+import { scanOrphanTaskIds, classifyOrphan, lookupResumeSessionId } from "./orphan-reconciler.js";
 import { loadBuiltinPipelineIR } from "./load-builtin-pipeline.js";
 import { KernelService } from "../mcp/kernel.js";
 
@@ -107,5 +107,34 @@ describe("classifyOrphan", () => {
 
     const cls = classifyOrphan(db, "t1");
     expect(cls.kind).toBe("terminal");
+  });
+});
+
+describe("lookupResumeSessionId", () => {
+  it("returns the most recent session_id for a given task+stage", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const base = Date.now();
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, version_hash, kind, status, started_at)
+       VALUES ('a1','t1','analyzing',0,'v','regular','superseded',?)`,
+    ).run(base);
+    db.prepare(
+      `INSERT INTO prompt_contents (content_hash, content, created_at) VALUES ('h1','dummy',?)`,
+    ).run(base);
+    db.prepare(
+      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at)
+       VALUES ('a1','p','h1','dummy','claude','sess-123',?, ?)`,
+    ).run(base, base);
+
+    const sid = lookupResumeSessionId(db, "t1", "analyzing");
+    expect(sid).toBe("sess-123");
+  });
+
+  it("returns undefined when no agent session exists for that stage", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const sid = lookupResumeSessionId(db, "t1", "analyzing");
+    expect(sid).toBeUndefined();
   });
 });

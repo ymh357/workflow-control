@@ -76,6 +76,21 @@ export function classifyOrphan(
   return { kind: "resume", versionHash: latest.version_hash, resumeFrom: firstPending };
 }
 
+export function lookupResumeSessionId(
+  db: DatabaseSync,
+  taskId: string,
+  stageName: string,
+): string | undefined {
+  const row = db.prepare(
+    `SELECT aed.session_id FROM agent_execution_details aed
+       JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
+      WHERE sa.task_id = ? AND sa.stage_name = ? AND aed.session_id IS NOT NULL
+      ORDER BY aed.started_at DESC
+      LIMIT 1`,
+  ).get(taskId, stageName) as { session_id: string } | undefined;
+  return row?.session_id ?? undefined;
+}
+
 function isSkippable(ir: PipelineIR, name: string): boolean {
   if (name === "__external__") return true;
   const stage = ir.stages.find((s) => s.name === name);
