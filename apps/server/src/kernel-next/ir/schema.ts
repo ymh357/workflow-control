@@ -85,6 +85,15 @@ export const SubAgentDefSchema = z.object({
   maxTurns: z.number().int().positive().optional(),
 });
 
+export const McpServerDeclSchema = z.object({
+  name: z.string().min(1).max(64).regex(/^[a-zA-Z_][a-zA-Z0-9_-]*$/, "must start with letter or underscore; letters, digits, underscore, dash only"),
+  command: z.string().min(1),
+  args: z.array(z.string()).default([]),
+  env: z.record(z.string(), z.string()).optional(),
+  envKeys: z.array(z.string()).default([]),
+});
+export type McpServerDecl = z.infer<typeof McpServerDeclSchema>;
+
 export const GateRoutingSchema = z.object({
   // Routes: answer value → target stage name(s). Single stage stays a
   // string; multiple stages (used when a human gate gates a parallel
@@ -112,6 +121,12 @@ export const AgentStageSchema = z.object({
   config: z.object({
     promptRef: z.string().min(1),         // resolved by userland prompt assembler
     subAgents: z.array(SubAgentDefSchema).optional(),
+    mcpServers: z.array(McpServerDeclSchema)
+      .optional()
+      .refine(
+        (arr) => !arr || new Set(arr.map((m) => m.name)).size === arr.length,
+        "duplicate mcpServer name within a stage",
+      ),
   }),
   fanout: FanoutSpecSchema.optional(),
 });
