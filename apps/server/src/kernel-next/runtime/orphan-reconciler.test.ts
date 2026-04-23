@@ -62,6 +62,31 @@ describe("classifyOrphan", () => {
     }
   });
 
+  it("honours hot_update_events.rerun_from_stage when newer than latest attempt", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const loaded = loadBuiltinPipelineIR("smoke-test");
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const sub = svc.submit(loaded.ir, { prompts: loaded.prompts });
+    if (!sub.ok) throw new Error("seed failed");
+    const vh = sub.versionHash;
+    const base = Date.now();
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, version_hash, kind, status, started_at)
+       VALUES ('a1','t1','greet',0,?,'regular','success',?)`,
+    ).run(vh, base);
+    db.prepare(
+      `INSERT INTO hot_update_events (event_id, task_id, from_version, to_version, actor, rerun_from_stage, status, started_at, finished_at)
+       VALUES ('e1','t1',?,?,'test','greet','success',?,?)`,
+    ).run(vh, vh, base + 1000, base + 1001);
+
+    const cls = classifyOrphan(db, "t1");
+    expect(cls.kind).toBe("resume");
+    if (cls.kind === "resume") {
+      expect(cls.resumeFrom).toBe("greet");
+    }
+  });
+
   it("returns terminal when every agent stage has a success row", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);

@@ -34,14 +34,31 @@ export function classifyOrphan(
   taskId: string,
 ): OrphanClassification {
   const latest = db.prepare(
-    `SELECT version_hash FROM stage_attempts
+    `SELECT version_hash, started_at FROM stage_attempts
       WHERE task_id = ?
       ORDER BY started_at DESC
       LIMIT 1`,
-  ).get(taskId) as { version_hash: string } | undefined;
+  ).get(taskId) as { version_hash: string; started_at: number } | undefined;
   if (!latest) return { kind: "unresolvable", reason: "no_attempts" };
   const ir = getPipelineIR(db, latest.version_hash);
   if (!ir) return { kind: "unresolvable", reason: "ir_not_found" };
+
+  // Hot-update priority override — if a successful migration is newer
+  // than the latest stage attempt, it knows better than our topological
+  // scan where the next work should pick up. Use its rerun_from_stage.
+  const hu = db.prepare(
+    `SELECT rerun_from_stage, started_at FROM hot_update_events
+       WHERE task_id = ? AND status = 'success'
+       ORDER BY started_at DESC
+       LIMIT 1`,
+  ).get(taskId) as { rerun_from_stage: string | null; started_at: number } | undefined;
+  if (hu && hu.rerun_from_stage && hu.started_at >= latest.started_at) {
+    return {
+      kind: "resume",
+      versionHash: latest.version_hash,
+      resumeFrom: hu.rerun_from_stage,
+    };
+  }
 
   const successStages = new Set(
     (db.prepare(
