@@ -155,8 +155,10 @@ export default function KernelNextTaskPage() {
   const [cost, setCost] = useState<TaskCostUpdatePayload | null>(null);
   const [attempts, setAttempts] = useState<AttemptRow[]>([]);
   const [expandedStage, setExpandedStage] = useState<string | null>(null);
-  // P6.3 / D26 — hot-update audit trail. Fetched once on mount and
-  // refreshed whenever a migrate or rollback SSE event arrives.
+  // P6.3 / D26 — hot-update audit trail. Fetched on mount and when the
+  // task reaches a terminal state (task_state / run_final). There is no
+  // dedicated hot_update SSE event today, so mid-run migrations only
+  // surface in the timeline after the task finishes (or a manual reload).
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
 
   // P6.2 / D24 — fetch per-task stage_attempts history. Called on mount
@@ -175,8 +177,10 @@ export default function KernelNextTaskPage() {
     }
   }, [taskId]);
 
-  // P6.3 / D26 — fetch hot-update audit trail. Called on mount and
-  // whenever a hot-update-related SSE event indicates new activity.
+  // P6.3 / D26 — fetch hot-update audit trail. Called on mount and on
+  // the task's terminal SSE frames (task_state completed/failed or
+  // run_final). No dedicated hot_update SSE event today — see the
+  // auditEntries declaration comment for context.
   const refreshAudit = useCallback(async (): Promise<void> => {
     if (!taskId) return;
     try {
