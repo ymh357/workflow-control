@@ -749,14 +749,22 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
         finalsRow.detail,
         Date.now(),
       );
-      // P3.6: plaintext env tokens must not outlive the task lifetime.
-      deleteTaskEnvValues(opts.db, opts.taskId);
     } catch (err) {
       // task_finals write must never mask the real termination reason.
       // Log-and-swallow: signalTermination still fires, callers fall back
       // to the stage_attempts-derived path (pre-P6-1 behavior).
       // eslint-disable-next-line no-console
       console.error(`[runner] task_finals upsert failed for task=${opts.taskId}:`, err);
+    }
+    // P3.6: plaintext env tokens must not outlive the task lifetime.
+    // Run in its own try/catch so a cleanup failure cannot be swallowed
+    // by the task_finals catch above. Unconditionally executed — even if
+    // task_finals upsert threw, we still want the env row gone.
+    try {
+      deleteTaskEnvValues(opts.db, opts.taskId);
+    } catch (envErr) {
+      // eslint-disable-next-line no-console
+      console.error(`[runner] deleteTaskEnvValues failed for task=${opts.taskId}:`, envErr);
     }
     taskRegistry.signalTermination(opts.taskId, terminationReason);
     taskRegistry.unregister(opts.taskId);
