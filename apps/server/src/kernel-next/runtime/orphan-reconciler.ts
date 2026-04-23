@@ -83,7 +83,16 @@ export interface BootResumabilityInput {
     versionHash: string;
     resumeFrom?: string;
     resumeSessionId?: string;
+    // Monorepo tsc binary forwarded so downstream per-stage MCP servers
+    // thread it into validateTypes. Without this the tmp-dir npx
+    // fallback fails with "This is not the tsc command you are looking
+    // for", parseTscOutput cannot map the error to any wire, and every
+    // resumed pipeline's persist-ish stage sees a bogus
+    // WIRE_TYPE_MISMATCH that the agent treats as non-retryable.
+    tscPath?: string;
   }) => Promise<unknown>;
+  /** Monorepo tsc binary path; forwarded verbatim to startPipelineRun. */
+  tscPath?: string;
 }
 
 export interface BootResumabilityResult {
@@ -136,6 +145,7 @@ export async function bootResumability(
         versionHash: cls.versionHash,
         resumeFrom: cls.resumeFrom,
         resumeSessionId,
+        tscPath: input.tscPath,
       }).catch((err: unknown) => err),
     );
     resumed += 1;

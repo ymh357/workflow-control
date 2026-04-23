@@ -200,6 +200,31 @@ describe("bootResumability", () => {
     expect(final.detail).toBe("recovered_no_finals_row");
   });
 
+  it("forwards tscPath to startPipelineRun for resumed orphans", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const loaded = loadBuiltinPipelineIR("smoke-test");
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const sub = svc.submit(loaded.ir, { prompts: loaded.prompts });
+    if (!sub.ok) throw new Error("seed failed");
+    const vh = sub.versionHash;
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, version_hash, kind, status, started_at)
+       VALUES ('a1','t1','greet',0,?,'regular','running',?)`,
+    ).run(vh, now);
+
+    const dispatched: Array<{ tscPath?: string }> = [];
+    const fakeStart = async (input: { taskId: string; versionHash: string; resumeFrom?: string; resumeSessionId?: string; tscPath?: string }) => {
+      dispatched.push({ tscPath: input.tscPath });
+      return { ok: true as const, taskId: input.taskId, versionHash: input.versionHash };
+    };
+
+    await bootResumability({ db, startPipelineRun: fakeStart, tscPath: "/path/to/tsc" });
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0]!.tscPath).toBe("/path/to/tsc");
+  });
+
   it("writes task_finals(failed) for unresolvable orphans", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);

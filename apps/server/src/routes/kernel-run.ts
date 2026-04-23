@@ -38,7 +38,12 @@ import { logger } from "../lib/logger.js";
 // submit_pipeline returns a bogus WIRE_TYPE_MISMATCH. Passed to
 // startPipelineRun so the per-stage createKernelMcp call threads it
 // into the combined-surface MCP server.
-const MONOREPO_TSC_PATH = (() => {
+// Exported so the resumability boot path (index.ts → bootResumability)
+// can thread the same tsc binary into its resumed startPipelineRun
+// calls. Without that, resumed tasks hit the npx tsc fallback and the
+// PG persisting stage misdiagnoses a structurally-valid IR as
+// WIRE_TYPE_MISMATCH.
+export const MONOREPO_TSC_PATH: string | undefined = (() => {
   const here = dirname(fileURLToPath(import.meta.url));
   // routes/ -> src/ -> server/ -> node_modules/.bin/tsc
   const candidate = join(here, "..", "..", "node_modules", ".bin", "tsc");

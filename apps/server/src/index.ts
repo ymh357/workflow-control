@@ -128,8 +128,10 @@ startPeriodicCleanup();
   const { bootResumability } = await import("./kernel-next/runtime/orphan-reconciler.js");
   const { startPipelineRun } = await import("./kernel-next/runtime/start-pipeline-run.js");
   const { kernelNextBroadcaster } = await import("./kernel-next/sse/singleton.js");
+  const { MONOREPO_TSC_PATH } = await import("./routes/kernel-run.js");
   const res = await bootResumability({
     db: getKernelNextDb(),
+    tscPath: MONOREPO_TSC_PATH,
     startPipelineRun: (inp) => startPipelineRun({
       db: getKernelNextDb(),
       broadcaster: kernelNextBroadcaster,
@@ -137,6 +139,7 @@ startPeriodicCleanup();
       versionHash: inp.versionHash,
       resumeFrom: inp.resumeFrom,
       resumeSessionId: inp.resumeSessionId,
+      tscPath: inp.tscPath,
     }),
   });
   logger.info(res, "resumability: boot scan complete");
