@@ -199,4 +199,16 @@ describe("validator/types (tsc subprocess)", () => {
     if (res.ok) return;
     expect(res.diagnostics.some((d) => d.code === "WIRE_TYPE_MISMATCH")).toBe(true);
   });
+
+  // Contract: even when the caller forgets to pass tscPath, validateTypes
+  // must self-resolve the monorepo tsc and succeed on a valid IR — it
+  // must NOT silently fall back to `npx tsc` (which cannot resolve a
+  // real TypeScript install from /tmp/kernel-next-tsc-XYZ and triggers
+  // the bogus WIRE_TYPE_MISMATCH that caused run #19's persist-stage
+  // failure). Debts L and M were two call sites that individually
+  // forgot; this contract prevents the class of bug.
+  it("self-resolves monorepo tsc when caller omits tscPath (contract tightening)", { timeout: 15_000 }, () => {
+    const res = validateTypes(validIR());
+    expect(res.ok).toBe(true);
+  });
 });

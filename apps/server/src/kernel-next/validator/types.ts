@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import type { PipelineIR, Diagnostic } from "../ir/schema.js";
 import { emitPipelineModule, type WireMapEntry } from "../codegen/emit-ts.js";
 import { renderTsconfigJson } from "../codegen/tsconfig-template.js";
+import { resolveMonorepoTscPath } from "../runtime/monorepo-tsc-path.js";
 
 export interface TypeValidationOptions {
   tscPath?: string;  // overrides `npx tsc`; useful for tests using monorepo binary
@@ -79,9 +80,16 @@ interface TscResult {
 }
 
 function runTsc(dir: string, tscPath?: string): TscResult {
-  // Prefer explicit tscPath, else use `npx tsc` (resolves from monorepo nearby).
-  const cmd = tscPath ?? "npx";
-  const args = tscPath
+  // Contract tightening (post run #19): the `npx tsc` fallback is a
+  // last resort — from the temporary codegen dir it cannot resolve a
+  // real TypeScript install and produces a bogus
+  // "This is not the tsc command you are looking for" message that
+  // parseTscOutput misreads as a WIRE_TYPE_MISMATCH. Before surrendering
+  // to npx, self-resolve the monorepo binary so every caller — even
+  // the ones that forgot to pass tscPath — gets real validation.
+  const effectiveTscPath = tscPath ?? resolveMonorepoTscPath();
+  const cmd = effectiveTscPath ?? "npx";
+  const args = effectiveTscPath
     ? ["--noEmit", "--pretty", "false", "-p", dir]
     : ["tsc", "--noEmit", "--pretty", "false", "-p", dir];
 
