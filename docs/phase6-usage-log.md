@@ -641,3 +641,49 @@ clean DB，发 PG（`"A tiny pipeline that takes a URL string and returns its ho
 - **Investigation-before-claim 再次救命**：handoff 里写的 "persist tsc bug" 我一开始假设是 validator 或 codegen bug。实际是**上游 tscPath 根本没到**。temporarily 写 repro 脚本（传/不传 tscPath 对同一 IR）直接分离了变量，省去了在 validator/codegen 里挖的时间。
 - **两条路径同一根因**：resume 路径和 MCP handler 路径独立，但都漏了 tscPath。这是**契约型 debt**——`startPipelineRun` 的 `tscPath` 参数设计成 optional，使得每个 caller 可以悄悄漏掉。若 `tscPath` 是 required（或 default-to-resolved），此类 bug 一开始就不会存在。
 - **M4 分子加 1**：run #20 是完整的 propose-less PG-run → DB 注册循环，验证了 AI-generated pipeline 的端到端可用性。
+
+---
+
+## Session 5 — Capability Closure Sprint (2026-04-24)
+
+Executed plan `docs/superpowers/plans/2026-04-24-capability-closure.md` end-to-end via
+superpowers:subagent-driven-development. 53 commits on `main` between `e2b9cd3` → `51a92e9`.
+
+### Delivered gaps (22 of 22 in-scope)
+
+| Phase | Gap | Commits | Summary |
+|---|---|---|---|
+| P1 | — | — | **SKIPPED**. P1.3 revealed `debug/` was live MCP infrastructure, not dead code. Full P1 rolled back (`git reset --hard e2b9cd3`). D31/D32/D33/D35 declined from sprint. |
+| P2 | D34 | 8 | God-file refactor: mcp/server.ts 1201→172 LOC, real-executor.ts 1044→767, runner.ts 1736→1418 after extracting fanout (P2.5) + wire-resolver (P2.6). P2.4 skipped (worktree already extracted). |
+| P3 | D1 | 11 | External MCP injection end-to-end: IR schema + canonical + task_env_values DB + run_pipeline envValues + ${VAR} expansion + cleanup on termination + PG prompts + e2e regression. Reserved name guard (`__*__`). |
+| P4 | D4, D8, D9, D30 | 7 | MCP tool completeness: retry_task (reuses rerunFrom) + prune_records + cancel_task (sticky against runner finally) + diagnostics_emitted SSE + DiagnosticsPanel UI. |
+| P5 | D5, D6, D7 | 6 | Runtime reliability: fanout concurrency cap (default 3) + gate timeout sweeper (60s tick) + rate-limit backoff (observability + SSE). |
+| P6 | D23, D24, D26, D27 | 5 | Lightweight dashboard: live cost/token + stage duration + audit timeline + worktree diff viewer. |
+| P7 | D21, D22, D25, D29 | 8 | Heavyweight dashboard: pipeline DAG (reactflow + dagre, quality-first) + proposal side-by-side diff + attempt detail page (tool calls/messages/thinking/status/usage tabs) + live agent output stream. |
+| P8 | D11, D13 | 2 | Deploy + registry: Dockerfile + docker-compose (verified runnable) + registry YAML retirement (5 pipelines deleted, 3 knowledge fragments kept). |
+| P9 | — | — | Final regression: server 1648/tsc clean / web 48/tsc clean. |
+
+### Declined (9 gaps)
+
+D2 / D3 (dashboard write ops → reframed to MCP tools), D10 (fragment system),
+D12 (single-session benchmark), D14 (global cost cap), D15 (whitepaper),
+D28 (i18n), D31-D33 / D35 (code hygiene batch rolled back after P1 incident).
+
+### Out of scope by design (5 gaps)
+
+D16-D20.
+
+### Final metrics
+
+- Server tests: 1499 baseline → 1648 (+149 new tests across sprint)
+- Web tests: 17 baseline → 48 (+31 new tests)
+- tsc: clean on both sides at every commit
+- 22 of 22 in-scope gaps resolved
+- Docker build verified: all 4 targets (deps/builder/server/web) pass; containers boot and serve HTTP 200
+
+### Key lessons
+
+1. **Plan assumptions can be wrong even when grep-verified.** P1.3 planned "delete debug/ as dead code" based on import grep; reality was that debug/ was the implementation layer for 3 MCP tools whose registrations in server.ts my grep caught but I misclassified as incidental. An implementer who trusted the plan destroyed 3 product features before a reset.
+2. **IR schema extensions cascade through 3 layers.** D1 required schema + canonical form + DB table + SDK options + executor call site + PG prompts + pipeline.ir.json + e2e test — 8 steps for one gap. Isolated step design (each with its own test) made each commit independently reviewable.
+3. **Sticky state trumps last-writer-wins.** Cancel_task vs runner.ts finally-block race would have silently reversed user intent; solved by `WHERE task_finals.final_state != 'cancelled'` on the runner's upsert. One SQL line of real semantics improvement.
+4. **Quality-first means reviewer pushback matters.** P7.1 initial commit got Approved-with-concerns: missing arrowheads + node sizing drift. User mandate was explicit on visual quality, so these were treated as blockers. Polish commit made the diff representation actually usable.

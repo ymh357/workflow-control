@@ -142,3 +142,39 @@ Plan originally staged code-hygiene (P1: D31/D32/D33/D35) before structural refa
 - **Out of scope by design (5)**: D16, D17, D18, D19, D20
 
 Total surveyed: 35 gaps + 5 out-of-scope items.
+
+---
+
+## 7. Final status (2026-04-24, post-sprint)
+
+Sprint `2026-04-24-capability-closure.md` executed end-to-end. All 22 in-scope gaps closed across phases P2-P8; P1 (code hygiene) rolled back and declined after `debug/` was discovered to be live MCP infrastructure.
+
+**Closed (22):**
+
+| # | Gap | Resolving commit range |
+|---|---|---|
+| D1 | External MCP injection | `180cdae` → `8c45c6d` (P3, 11 commits) |
+| D4 | cancel_task MCP tool | `e780d53`, `a14be45` |
+| D5 | Fanout concurrency cap | `288ce6b`, `cddd10f` |
+| D6 | Gate timeout sweeper | `6b8e613`, `51c1455` |
+| D7 | Rate-limit back-off | `32aa4bd`, `24f7f1c` |
+| D8 | retry_task MCP tool | `16858ea`, `fbc32fe` |
+| D9 | prune_records MCP tool | `45e094e` |
+| D11 | Registry IR-native | `51a92e9` |
+| D13 | Docker deployment | `d695468` |
+| D21 | Pipeline DAG visualisation | `0ab6ee3`, `8fcc669` |
+| D22 | Proposal diff viewer | `7ff3f84`, `609b92a` |
+| D23 | Live cost/token display | `be2459d` |
+| D24 | Stage duration + attempt history | `c3c4666` |
+| D25 | Attempt detail page | `a8dec2f`, `00c14c5` |
+| D26 | Hot-update audit timeline | `b011f8f`, `59d2bd4` |
+| D27 | Worktree diff viewer | `42ca413` |
+| D29 | Live agent output stream | `913ca04` |
+| D30 | Diagnostics aggregation | `86edccf` |
+| D34 | God-file refactor | `c8254f5` → `13e5ba8` (P2, 8 commits) |
+
+**Declined during sprint (9):** D2, D3, D10, D12, D14, D15, D28, D31-33/35.
+
+**Out of scope by design (5):** D16-D20.
+
+**Final state:** server 1648 tests / web 48 tests / tsc clean both sides / Docker build+run verified.
