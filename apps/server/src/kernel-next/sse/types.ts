@@ -19,7 +19,8 @@ export type KernelNextSSEEventType =
   | "stage_retry"        // runner caught RETRY_TO_STAGE: a script failed but retry is in budget, backToStage is being rerun
   | "port_written"       // a single port_values row was written on the live PortRuntime
   | "stage_rolled_back"  // gate-reject rollback: runner pruned one or more stages back to a prior point
-  | "run_final";         // top-level machine reached `completed` or `failed`; carries aggregated diagnostics
+  | "run_final"          // top-level machine reached `completed` or `failed`; carries aggregated diagnostics
+  | "diagnostics_emitted"; // multi-diagnostic aggregation (runtime stage errors, submit/migrate validation failures)
 
 export type TaskTopLevelState =
   | "idle" | "running" | "completed" | "failed";
@@ -127,6 +128,23 @@ export interface RunFinalData {
   stageErrors: Array<{ stage: string; message: string }>;
 }
 
+// P4.4 / D30 — multi-diagnostic aggregation.
+//
+// Emitted in parallel with `run_final` (when stageErrors is non-empty)
+// and, in later tiers, alongside submit/migrate HTTP failures that
+// return >1 diagnostic. The dashboard groups by `code` so users see
+// "STORE_SCHEMA_STAGE_MISSING (3)" collapsed rather than three near-
+// identical error rows. `source` lets the UI attribute the batch to
+// the subsystem that produced it.
+export interface DiagnosticsEmittedData {
+  source: "submit" | "migrate" | "runtime" | "validator";
+  diagnostics: Array<{
+    code: string;
+    message: string;
+    severity?: "error" | "warning";
+  }>;
+}
+
 // Narrowed event variants. Broadcaster handles KernelNextSSEEvent
 // generically; typed helpers at the publish site stay inside runner
 // and port-runtime.
@@ -162,6 +180,10 @@ export interface KernelNextRunFinalEvent extends KernelNextSSEEvent {
   type: "run_final";
   data: RunFinalData;
 }
+export interface KernelNextDiagnosticsEmittedEvent extends KernelNextSSEEvent {
+  type: "diagnostics_emitted";
+  data: DiagnosticsEmittedData;
+}
 
 export type AnyKernelNextSSEEvent =
   | KernelNextTaskStateEvent
@@ -171,4 +193,5 @@ export type AnyKernelNextSSEEvent =
   | KernelNextStageRetryEvent
   | KernelNextPortWrittenEvent
   | KernelNextStageRolledBackEvent
-  | KernelNextRunFinalEvent;
+  | KernelNextRunFinalEvent
+  | KernelNextDiagnosticsEmittedEvent;

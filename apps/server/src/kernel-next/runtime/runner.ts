@@ -321,7 +321,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
   // Stage errors captured from executor results. On retry we drop
   // entries for stages being reset so the final RunResult only
   // contains errors from the terminal attempt.
-  const stageErrors: Array<{ stage: string; message: string }> = [];
+  const stageErrors: Array<{ stage: string; message: string; context?: StageErrorContext }> = [];
 
   // Run-scoped SSE state. `lastTopState` ensures task_state dedupes
   // across rebuilds (a rebuilt actor emits idle→running again; we
@@ -854,6 +854,28 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       stageErrors: stageErrors.map((e) => ({ stage: e.stage, message: e.message })),
     },
   });
+
+  // P4.4 / D30 — also emit a diagnostics_emitted batch so the
+  // dashboard's <DiagnosticsPanel> can group multi-error failures by
+  // code. Fires only when there's something to show. Classification:
+  // presence of `context` (populated with failedWires only on the
+  // NO_ACTIVE_WIRE path) distinguishes topology failures from
+  // executor failures without string-matching messages.
+  if (stageErrors.length > 0) {
+    publish({
+      type: "diagnostics_emitted",
+      taskId: opts.taskId,
+      timestamp: isoNow(),
+      data: {
+        source: "runtime",
+        diagnostics: stageErrors.map((e) => ({
+          code: e.context ? "NO_ACTIVE_WIRE" : "STAGE_ERROR",
+          message: `${e.stage}: ${e.message}`,
+          severity: "error" as const,
+        })),
+      },
+    });
+  }
 
   return {
     finalState,

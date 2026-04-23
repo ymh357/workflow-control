@@ -18,6 +18,16 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { GateCard, type GateContextResponse } from "../../../components/gate-card";
+import { DiagnosticsPanel, type Diagnostic } from "../../../components/diagnostics-panel";
+
+// Payload shape for the `diagnostics_emitted` SSE event. Kept local
+// (rather than imported from server) so the web app does not reach
+// across the workspace boundary for a types-only dependency; the
+// contract is duplicated deliberately.
+interface DiagnosticsEmittedPayload {
+  source: "submit" | "migrate" | "runtime" | "validator";
+  diagnostics: Diagnostic[];
+}
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
@@ -98,6 +108,7 @@ export default function KernelNextTaskPage() {
   const [ports, setPorts] = useState<PortWriteRow[]>([]);
   const [seedPorts, setSeedPorts] = useState<Map<string, SeedPortEntry>>(new Map());
   const [finalResult, setFinalResult] = useState<RunFinalPayload | null>(null);
+  const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
   const [connected, setConnected] = useState(false);
   const eventCountRef = useRef(0);
   const [pendingGateIds, setPendingGateIds] = useState<string[]>([]);
@@ -178,6 +189,14 @@ export default function KernelNextTaskPage() {
       }
       case "run_final": {
         setFinalResult(event.data as RunFinalPayload);
+        break;
+      }
+      case "diagnostics_emitted": {
+        const d = event.data as DiagnosticsEmittedPayload;
+        // Accumulate across events — a single run can emit multiple
+        // batches (e.g. runtime stageErrors + later submit/migrate
+        // failures). Order is preserved for the Copy JSON output.
+        setDiagnostics((prev) => [...prev, ...d.diagnostics]);
         break;
       }
       default:
@@ -437,6 +456,8 @@ export default function KernelNextTaskPage() {
           })}
         </div>
       )}
+
+      <DiagnosticsPanel diagnostics={diagnostics} />
 
       <section className="mb-6">
         <h2 className="mb-2 font-semibold">Stages</h2>
