@@ -60,8 +60,19 @@ export function buildPgTools(deps: ToolsDeps): ToolDef[] {
             },
             executorFactory: ({ versionHash, db: execDb, model, maxTurns, maxBudgetUsd }) =>
               new RealStageExecutor({
+                // "combined" surface: pipeline-generator stages need
+                // both write_port (INTERNAL — emit their own output
+                // ports) and read_port + submit_pipeline (EXTERNAL —
+                // persisting.md calls submit_pipeline; genSkeleton /
+                // genPrompts / persisting may read upstream ports via
+                // read_port when inputs are too large to inline). The
+                // agents running these stages are authored by us (the
+                // pipeline-generator's own prompts), not untrusted
+                // external callers, so the surface-separation invariant
+                // doesn't apply — they are internal in origin and need
+                // the external tools to do their job.
                 mcpServerFactory: (_dispatcher, pr) =>
-                  createMcpServer("internal", pr),
+                  createMcpServer("combined", pr),
                 promptResolver: new DbPromptResolver(execDb, versionHash),
                 model,
                 maxTurns: maxTurns ?? 80,
