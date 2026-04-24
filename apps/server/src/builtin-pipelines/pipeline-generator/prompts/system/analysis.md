@@ -94,6 +94,29 @@ Inline rules you MUST follow, or submit fails:
 
 When in doubt, prefer registry over inline; prefer script over agent for any step that doesn't require reasoning.
 
+### Script error recovery
+
+A script stage can fail at run time for reasons submit-time validation can't catch: the upstream agent wrote malformed input, an HTTP endpoint returned an unexpected shape, a third-party service is degraded. The kernel does NOT automatically retry failed scripts or "fix" their code — that's a pipeline-design concern, not a runtime primitive. You decide the recovery policy. Three patterns:
+
+1. **`retry` spec on the script's `config`** (quick transient failure):
+   ```json
+   "config": { "source": "inline", "moduleSource": "...", "sampleInputs": {...}, "retry": { "maxRetries": 2, "backToStage": "fetchFigma" } }
+   ```
+   Runner re-invokes the stage up to `maxRetries` times with the same inputs. Use for flakiness (rate limits, network blips). Do NOT use for bugs — a deterministic script failing with given inputs will fail 3 times too.
+
+2. **Review gate after the script** (when the script might return a business-logic failure that needs human/agent review):
+   - Declare an extra output port on the script, e.g. `errors: string[]` (empty when everything went fine, populated when the script wants human attention).
+   - Add a gate stage reading that port. gateRouting: `{ approve: <downstream>, reject: <upstream_agent> }`. The gate's question text should describe what a reject means.
+   - Wire `<gateStage>.__gate_feedback__` back to the upstream agent's `rejectionFeedback` input (see §Gate feedback wiring in gen-skeleton.md). When the reviewer rejects with a comment, the upstream agent regenerates its output with that correction in hand, which the script re-processes.
+   - This is the right pattern when the script does a sensitive transform whose output a human might want to vet before proceeding.
+
+3. **Let the failure propagate** (simple pipelines):
+   - For short pipelines where a script failure means the whole task failed and should be retried from scratch, do nothing special. The kernel marks `task_finals.final_state='failed'`; the caller (main Claude or the user) reads the failure detail and decides whether to call `retry_task` with a different `fromStage`.
+
+Pick the lightest pattern that covers your pipeline's real failure modes. A 2-stage pipeline almost never needs pattern 2; a 10-stage pipeline that costs $5 per run probably wants pattern 2 around any high-risk script.
+
+Do NOT wrap every script in its own review gate — that defeats the "scripts are cheap, fast, deterministic" proposition. Gates are for *decisions*; retry spec is for *flakiness*; unrecovered failure is for *unambiguous bugs that need a code fix anyway*.
+
 ## Your task
 
 1. Read `taskDescription` to understand the user's goal.
@@ -134,6 +157,7 @@ When in doubt, prefer registry over inline; prefer script over agent for any ste
    - `scriptModuleId` (for `type: "script"` AND `scriptSource: "registry"` only): the builtin moduleId. MUST be one of the allowed list in §Script stages — otherwise submit fails with SCRIPT_MODULE_NOT_REGISTERED.
    - `moduleSource` (for `type: "script"` AND `scriptSource: "inline"` only): the full TypeScript implementation. Must `export default` a value of the ambient `ScriptModule` interface. See §Script stages for import whitelist + other constraints. Bounded at 64KB; go agent if you need more.
    - `sampleInputs` (for `type: "script"` AND `scriptSource: "inline"` only): a concrete `Record<string, unknown>` matching every declared input port. The kernel runs your inline script against these at submit time and checks the return value against declared `writes` port names. Make the sample data *realistic* — if the script consumes a Figma API response, write a minimal but real-shape response, not `{}`. Trivial sample data that happens to satisfy TypeScript (e.g. `inputs.data as any`) passes the contract test but doesn't exercise your code; you'll ship a broken script that only fails at run time.
+   - `retry` (optional, `type: "script"` only): `{ maxRetries: number (1..10); backToStage: string }`. Applies to transient failures — the runner re-invokes the stage up to maxRetries times before propagating the error. `backToStage` names the stage to re-enter from on final failure (typically the script stage itself or an immediate upstream that recomputes inputs). See §Script error recovery for when to set this vs. a review gate vs. no recovery.
 4. **For each sub-pipeline needed**, produce one `SubPipelineContract`:
    - `name`: the exact name the main IR's agent will use in `run_pipeline(name=...)`
    - `purpose`: 1-2 sentences
