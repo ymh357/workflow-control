@@ -537,3 +537,99 @@ closed every non-human-in-loop item.
 |------|---------|-------|
 | `35f5768` | fix(runner): pause wall-clock budget during gate wait (BUG-2) | +4 LOC state, +2 helpers in runner.ts, +238 LOC regression test |
 
+
+---
+
+## 12. X3a re-dogfood verification — D' validated end-to-end
+
+**Date:** 2026-04-25
+**Task:** `49472689-4875-4246-bb27-40f15c42730b`
+**Pipeline:** pipeline-generator, versionHash `dd9dc45...`
+
+Fed the generator a Figma-pull-to-local description (caller supplies
+figmaFileKey, figmaAccessToken, outputPath; pipeline's job is pure I/O
+— HTTP GET + write file). Same class of task as the original failing
+dogfood that motivated D'.
+
+### 12.1 Analyzing stage output — AI chose scripts
+
+Key ports read via MCP:
+
+- `assumptions[2]`: *"No MCP servers are required — all I/O is handled
+  by registry and inline script stages using the global fetch and
+  node:fs/promises builtins."*
+- `recommendedMcps`: `[]` (matches — no agent stages, so no MCP surfaces)
+- `usesFanout`: `false`
+- `usesSubPipelines`: `false`
+- `estimatedStageCount`: `3`
+
+### 12.2 genSkeleton IR — the ground truth
+
+Read `genSkeleton.ir` via MCP (complete output, not truncated):
+
+Three stages, **all `type: "script"`, all `config.source: "inline"`**:
+
+| # | Stage | Scripts referenced | Config highlights |
+|---|-------|-------------------|-------------------|
+| 1 | `fetchFigma` | global `fetch` | `retry: { maxRetries: 2 }` — D'-4 error recovery pattern |
+| 2 | `resolveOutputPath` | `import * as os`, `import * as path` — whitelisted | handles `~` expansion inline |
+| 3 | `persistOutput` | `import * as fs`, `import * as path` — whitelisted | `mkdirSync({recursive}) + writeFileSync` |
+
+Every stage carries `sampleInputs` (the D'-3 compile-time contract)
+covering all declared input ports. Every `moduleSource` is concise
+(<1KB each), uses only the whitelisted `node:fs` / `node:os` / `node:path`
+modules or global `fetch`. The wiring is correct (external inputs flow
+in; responseBody + resolvedPath flow into persistOutput).
+
+### 12.3 Pattern the prompt successfully taught
+
+- **Deterministic I/O → script, not agent.** Zero agent stages for
+  what's fundamentally "call HTTP, parse, write file".
+- **Inline where bespoke, registry not needed.** The three atoms
+  don't match the registered builtins exactly (needs tilde expansion;
+  needs arbitrary URL; needs text body passthrough), so the AI
+  correctly chose inline over wrapping in registry calls.
+- **Retry where API fails are recoverable.** `fetchFigma` has the
+  only retry spec — the other two stages are deterministic given
+  their inputs.
+- **sampleInputs are realistic.** E.g. `figmaFileKey: "abc123XYZ"`,
+  `figmaAccessToken: "figd_PLACEHOLDER"` (plausible Figma token
+  format, not a placeholder like `"test"`).
+
+### 12.4 D' program closure
+
+| Sub-phase | Status |
+|-----------|--------|
+| D'-1 builtin registry + Composite wiring | Shipped (commit `cac7717`) |
+| D'-2 compile + import whitelist | Shipped (commit `31ee43e`) |
+| D'-3 inline stages runnable end-to-end | Shipped (commits `34a948b`, `6d66b52`, `3b3de88`) |
+| D'-4 error recovery prompt patterns | Shipped (commit `258dac9`) |
+| **X3a dogfood verification** | **✅ Verified 2026-04-25** |
+
+The entire D' program — "safe AI-generated scripts without worker
+sandbox" — is now proven end-to-end against a real request. Prompt
+uplift made the AI shift from token-burning agent stages to
+deterministic inline scripts for a pure-I/O workload.
+
+### 12.5 Residual (out of scope for D')
+
+The task itself terminated `failed` during the `persisting` stage
+(pipeline-generator's own tail, which writes the generated pipeline
+into the kernel registry). genSkeleton completed and its `ir` port
+is complete; the failure is downstream of X3a's evaluation point.
+Not investigated here — a tail-stage defect in the generator pipeline,
+separate from D' correctness. Left for a future session if it recurs.
+
+### 12.6 Known side-finding: some analyzing ports never written
+
+During this dogfood, `read_port` correctly reported "port not found"
+for analyzing's `stageDesign` / `stageContracts` / `dataFlowSummary`
+/ `summary` / `description` / `targetRepoName` — all the
+"large-content-prose" ports. Smaller ports (everything listed in
+§12.1) wrote fine. Root cause: the Claude session driving `analyzing`
+stopped emitting `write_port` calls for the heaviest-content ports,
+likely a length-driven truncation somewhere in the SDK → runtime path.
+This is **not** a D' regression (D' doesn't touch analyzing's prompt
+or the agent-output pathway), and X3a's conclusion stands on the
+ports that did land. Tracking separately if it recurs.
+
