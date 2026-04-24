@@ -730,3 +730,88 @@ D' program: all four sub-phases shipped. X3a dogfood: twice verified
 (§12 + §13). BUG-1, BUG-2: both closed. R1: fixed + live verified.
 No known open items from this sprint.
 
+
+---
+
+## 14. Session 3 follow-ups — observations, not fixes
+
+Three exploratory items from §1 "next session menu":
+3a submit latency, 3b tsx watch + running task, 3c orphan recovery.
+All three closed to ship-quality without code changes.
+
+### 14.1 3a — submit latency measurement
+
+Ran an ad-hoc script (`apps/server/scripts/measure-submit-latency.ts`,
+since deleted) against the generated figma-file-fetch IR (4 stages,
+2 inline + 2 registry) and against a minimal 1-trivial-inline pipeline.
+
+| Scenario | median submit | observation |
+|----------|---------------|-------------|
+| warmup (first-ever submit in process) | ~4.4s | tsc Program bootstrap dominates |
+| figma-file-fetch full IR (2 inline) | ~1.5–1.8s | n=5, high variance (1.2–4.4s) |
+| single trivial inline | ~2.0–2.5s | n=5, variance overlaps with full IR |
+
+**Interpretation.** handoff §7 item 2 earlier estimated "100ms
+compile + 50ms contract per inline stage" (so a 5-inline pipeline would
+add ~750ms). That estimate was **wrong**. The real floor is per-submit,
+not per-stage: each `ts.createProgram()` + CompilerHost setup costs
+~1.5s regardless of stage count. Adding more inline stages has low
+marginal cost (<200ms each for small scripts).
+
+**Recommendation.** Do not add a compile cache. Rationale:
+- 1.5-2s per submit is acceptable against the AI-generation timeframe
+  (generator itself takes 1-3 minutes per attempt).
+- The real optimisation — a long-lived tsc Program shared across
+  submit calls with swapped virtual files — costs cross-request state
+  and complexity that isn't currently justified.
+- No user-facing latency complaint has been reported.
+
+Premature optimisation; close the item and revisit only if submit
+throughput becomes a bottleneck under real load.
+
+### 14.2 3b — tsx watch + running task
+
+Delegated to a research sub-agent (not a code change). Findings:
+
+- `src/index.ts:131–155` runs `bootResumability()` on every server
+  start, which recursively calls `reconcileRunningAttempts()` to flip
+  dangling `status='running'` → `'superseded'` and writes
+  `agent_execution_details.termination_reason='interrupted'`
+  (`graceful-shutdown.ts:12–35`).
+- Orphan task status `"orphaned"` (`kernel.ts:1490`) is recoverable,
+  not terminal. The user calls `retry_task` and gets a same-version
+  rerun proposal with `resumeFrom=<errored-stage>`
+  (`kernel.ts:1607–1706`).
+- Partial port writes from a killed attempt are filtered out of
+  resume hydration by an INNER JOIN on `status='success'`
+  (`runner.ts:365–395`).
+- SIGKILL leaves `status='error'` rows untouched by design (they are
+  the evidence of what failed). No zombie-cleanup path needed because
+  `retry_task` operates on exactly those rows.
+- SSE ring buffer is process-local; on restart clients get no replay
+  in the new process. Documented behaviour — SQLite lineage is the
+  authoritative history, SSE is only live notification.
+
+**Conclusion.** No gap to close. The restart story is already
+complete. Documenting for future reference so the question doesn't
+get re-asked.
+
+### 14.3 3c — orphan recovery from mid-attempt kill
+
+Subsumed by 3b. `retry_task` is the full recovery path. No separate
+fix needed.
+
+### 14.4 Session closure
+
+Everything on the residuals list is closed:
+- BUG-1 gate skippability — commit `7d831fd`
+- BUG-2 wall-clock during gate — commit `35f5768`
+- BUG-3 / R2 — misdiagnosis, retracted
+- D' program end-to-end — verified in §12 and §13
+- R1 pg.ts surface — commit `2126b41`, live-verified in §13.3
+- 3a submit latency — measured, no action
+- 3b watch restart — investigated, no action
+- 3c orphan recovery — no action (subsumed by retry_task)
+
+Branch `main`, working tree clean, 549+ commits ahead of origin.
+
