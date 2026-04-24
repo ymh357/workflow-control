@@ -96,7 +96,7 @@ export class InlineScriptStageExecutor implements StageExecutor {
         return { attemptId, attemptIdx, status: "error", error: message };
       }
       try {
-        mod = await importJsModule(compiled.js);
+        mod = importJsModule(compiled.js);
       } catch (err) {
         const message = `Inline script import failed for stage '${stageName}': ${err instanceof Error ? err.message : String(err)}`;
         writer.close({
@@ -145,20 +145,31 @@ export class InlineScriptStageExecutor implements StageExecutor {
 }
 
 /**
- * Import the emitted JS source via a data: URL. Node's ESM loader
- * resolves data: URLs in-memory — no filesystem touch, no tempdir
- * cleanup. The script's import specifiers (already whitelisted at
- * submit time) are resolved by node's standard loader against the
- * server's node_modules, which is what we want: node: builtins come
- * from the runtime, the script itself has no private module graph.
+ * Evaluate the compiled CommonJS source by wrapping it in a Function
+ * body that receives a synthetic `module` / `exports` / `require`.
+ * `require` is restricted to the same node stdlib whitelist enforced
+ * at submit time — a belt-and-braces second check in case IR
+ * serialization somehow bypassed the submit-time scanner.
  *
- * Returns the default export coerced to ScriptModule. Caller handles
- * the case where the module doesn't conform (run throws on invocation).
+ * No filesystem touch, no tempdir cleanup, no interaction with
+ * vitest's dynamic-import rewriter (we never call `import()`).
  */
-async function importJsModule(js: string): Promise<ScriptModule> {
-  const url = `data:text/javascript;base64,${Buffer.from(js, "utf8").toString("base64")}`;
-  const ns = (await import(/* @vite-ignore */ url)) as { default?: ScriptModule };
-  const mod = ns.default;
+function importJsModule(js: string): ScriptModule {
+  const moduleObj: { exports: { default?: ScriptModule } } = { exports: {} };
+  const restrictedRequire = (id: string) => {
+    if (!RUNTIME_REQUIRE_ALLOWLIST.has(id)) {
+      throw new Error(
+        `inline script attempted to require '${id}' at runtime; ` +
+          `whitelist violation (only node: stdlib subset allowed)`,
+      );
+    }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require(id);
+  };
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  const factory = new Function("module", "exports", "require", js);
+  factory(moduleObj, moduleObj.exports, restrictedRequire);
+  const mod = moduleObj.exports.default;
   if (!mod || typeof mod !== "object" || typeof mod.run !== "function") {
     throw new Error(
       "inline script does not export a default value with a run() method",
@@ -166,3 +177,15 @@ async function importJsModule(js: string): Promise<ScriptModule> {
   }
   return mod;
 }
+
+const RUNTIME_REQUIRE_ALLOWLIST: ReadonlySet<string> = new Set([
+  "node:fs/promises",
+  "node:path",
+  "node:crypto",
+  "node:url",
+  "node:buffer",
+  "node:os",
+  "node:util",
+  "node:stream/promises",
+  "node:zlib",
+]);

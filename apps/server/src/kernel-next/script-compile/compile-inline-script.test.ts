@@ -14,8 +14,8 @@ describe("compileInlineScript", () => {
     const r = compileInlineScript(source);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      // The emitted JS is ESNext module form — export default survives.
-      expect(r.js).toContain("export default");
+      // CommonJS output: default export lands on `exports.default`.
+      expect(r.js).toMatch(/exports\.default\s*=/);
       expect(r.js).toContain("run");
     }
   });

@@ -52,7 +52,10 @@ interface AgentStage extends StageCommon {
 
 interface ScriptStage extends StageCommon {
   type: "script";
-  config: { moduleId: string };
+  // D'-3: two shapes, distinguished by `source`.
+  config:
+    | { source: "registry"; moduleId: string }
+    | { source: "inline"; moduleSource: string; sampleInputs: Record<string, unknown> };
   fanout?: { input: string };
 }
 
@@ -90,7 +93,9 @@ For each entry in `design.stageContracts`:
 
 3. **Emit the right stage variant**:
    - `contract.type === "agent"` → `AgentStage` with `config.promptRef = contract.name`.
-   - `contract.type === "script"` → `ScriptStage` with `config.moduleId = contract.name` (userland must implement it; flag this in warnings if no such script exists).
+   - `contract.type === "script"` → `ScriptStage`. Forward the form the analysis stage chose:
+     - If the contract's `scriptSource === "registry"` (or the contract field is absent — back-compat): emit `config: { source: "registry", moduleId: "<builtin-id>" }`. The moduleId comes from analysis (`contract.scriptModuleId` or equivalent); copy verbatim. Do not default to `contract.name` — registry lookups fail if the name isn't in the kernel's builtin set (see analysis.md §Script stages for the allowed list).
+     - If `scriptSource === "inline"`: emit `config: { source: "inline", moduleSource: <contract.moduleSource>, sampleInputs: <contract.sampleInputs> }`. Copy both verbatim. The TS source and sample data survive submit-time compile + contract test; do not paraphrase, minify, or "improve" the code.
    - `contract.type === "gate"` → `GateStage` with `config.question.text` inferred from `contract.purpose` and `config.routing.routes` directly from `contract.gateRouting`. Also populate `config.question.options`: for each routing key, emit `{ value: <key>, description: <human-readable explanation of what this answer means> }`. External callers (main Claude) relay these to the user — a key like `reject_feedback` with no description forces the caller to translate the raw identifier on the fly. Keys whose meaning is universally obvious in context (approve / reject / retry / skip) may omit description. Keys with non-obvious names (`regenerate_with_different_sources`, `escalate_to_senior_review`) MUST carry a description.
 
 4. **Add fanout** if present: `fanout: { input: contract.fanout.input }`.

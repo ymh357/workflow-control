@@ -26,6 +26,7 @@ import { createKernelMcp } from "../mcp/server.js";
 import { runPipeline } from "./runner.js";
 import { RealStageExecutor } from "./real-executor.js";
 import { ScriptStageExecutor } from "./script-executor.js";
+import { InlineScriptStageExecutor } from "./inline-script-executor.js";
 import { CompositeStageExecutor } from "./composite-executor.js";
 import { TrivialScriptModuleResolver } from "./script-module-resolver.js";
 import { BUILTIN_SCRIPT_MODULES } from "../builtin-scripts/index.js";
@@ -389,6 +390,7 @@ export async function startPipelineRun(
             modules: { ...BUILTIN_SCRIPT_MODULES },
           }),
         }),
+        inlineScript: new InlineScriptStageExecutor(),
       });
 
   // --- Worktree allocation (Phase 5C) -------------------------------

@@ -136,7 +136,7 @@ async function checkOne(
   // Import the compiled module.
   let mod: ScriptModule;
   try {
-    mod = await importJsModule(compiled.js);
+    mod = importJsModule(compiled.js);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return [{
@@ -200,10 +200,38 @@ async function checkOne(
   return diagnostics;
 }
 
-async function importJsModule(js: string): Promise<ScriptModule> {
-  const url = `data:text/javascript;base64,${Buffer.from(js, "utf8").toString("base64")}`;
-  const ns = (await import(/* @vite-ignore */ url)) as { default?: ScriptModule };
-  const mod = ns.default;
+// Evaluate compiled CommonJS source via Function wrapper — same
+// mechanism as runtime/inline-script-executor.ts so both paths see
+// identical behaviour. `require` is restricted to the node stdlib
+// whitelist.
+const RUNTIME_REQUIRE_ALLOWLIST: ReadonlySet<string> = new Set([
+  "node:fs/promises",
+  "node:path",
+  "node:crypto",
+  "node:url",
+  "node:buffer",
+  "node:os",
+  "node:util",
+  "node:stream/promises",
+  "node:zlib",
+]);
+
+function importJsModule(js: string): ScriptModule {
+  const moduleObj: { exports: { default?: ScriptModule } } = { exports: {} };
+  const restrictedRequire = (id: string) => {
+    if (!RUNTIME_REQUIRE_ALLOWLIST.has(id)) {
+      throw new Error(
+        `inline script attempted to require '${id}' at runtime; ` +
+          `whitelist violation (only node: stdlib subset allowed)`,
+      );
+    }
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require(id);
+  };
+  // eslint-disable-next-line @typescript-eslint/no-implied-eval
+  const factory = new Function("module", "exports", "require", js);
+  factory(moduleObj, moduleObj.exports, restrictedRequire);
+  const mod = moduleObj.exports.default;
   if (!mod || typeof mod !== "object" || typeof mod.run !== "function") {
     throw new Error("inline script does not export a default value with run()");
   }

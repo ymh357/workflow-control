@@ -80,8 +80,12 @@ export function compileInlineScript(source: string): CompileResult {
 
   const compilerOptions: ts.CompilerOptions = {
     target: ts.ScriptTarget.ES2022,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
+    // CommonJS output so we can new Function(source) and feed it a
+    // synthetic module/exports/require trio — avoids node's dynamic-
+    // import semantics (which vitest's module transformer rewrites)
+    // and gives the runtime full control over what `require` resolves.
+    module: ts.ModuleKind.CommonJS,
+    moduleResolution: ts.ModuleResolutionKind.Node10,
     strict: true,
     esModuleInterop: true,
     skipLibCheck: true,
