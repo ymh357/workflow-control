@@ -21,7 +21,23 @@
 import type { PipelineIR } from "../ir/schema.js";
 import type { Diagnostic, ValidationResult } from "../ir/schema.js";
 
-export function validateStructural(ir: PipelineIR): ValidationResult {
+export interface StructuralValidationOptions {
+  /**
+   * D'-1: the set of script module IDs the runtime will be able to
+   * resolve. When provided, any ScriptStage whose config.moduleId is
+   * absent from this set fails validation with
+   * SCRIPT_MODULE_NOT_REGISTERED. Omit to skip the check (e.g. for
+   * validate_pipeline dry runs, or D'-3+ inline-source scripts that
+   * carry their implementation in config.moduleSource rather than
+   * resolving a name).
+   */
+  allowedScriptModuleIds?: ReadonlySet<string>;
+}
+
+export function validateStructural(
+  ir: PipelineIR,
+  options: StructuralValidationOptions = {},
+): ValidationResult {
   const diagnostics: Diagnostic[] = [];
 
   // --- Stage name uniqueness ---
@@ -191,6 +207,29 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
             `Stage '${s.name}' declares fanout on input '${fanout.input}', ` +
             `but no such input port is declared.`,
           context: { stage: s.name, fanoutInput: fanout.input },
+        });
+      }
+    }
+
+    // D'-1: script stage moduleId must resolve against the runtime's
+    // builtin registry. Caller supplies the allowed set (keeps the
+    // validator free of a direct import on builtin-scripts/). When the
+    // option is absent, the check is skipped — useful for dry-run
+    // validate_pipeline calls that don't intend to run the pipeline.
+    if (s.type === "script" && options.allowedScriptModuleIds !== undefined) {
+      const moduleId = s.config.moduleId;
+      if (!options.allowedScriptModuleIds.has(moduleId)) {
+        diagnostics.push({
+          code: "SCRIPT_MODULE_NOT_REGISTERED",
+          message:
+            `Script stage '${s.name}' references moduleId '${moduleId}', ` +
+            `which is not registered in the kernel's builtin script registry. ` +
+            `Registered modules: ${[...options.allowedScriptModuleIds].sort().join(", ") || "(none)"}.`,
+          context: {
+            stage: s.name,
+            moduleId,
+            registered: [...options.allowedScriptModuleIds].sort(),
+          },
         });
       }
     }

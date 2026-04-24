@@ -32,6 +32,14 @@ export interface ScriptModuleContext {
   attemptId: string;
   attemptIdx: number;
   moduleId: string;
+  /**
+   * Per-task environment values supplied at run_pipeline time
+   * (see task_env_values / loadTaskEnvValues). Read-only snapshot;
+   * mutations here don't persist. Empty object when the caller didn't
+   * provide envValues. Scripts typically consult this for API tokens
+   * the pipeline author declared on externalInputs but can't hard-code.
+   */
+  env: Readonly<Record<string, string>>;
 }
 
 export interface ScriptModuleResolver {

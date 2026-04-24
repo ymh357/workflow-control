@@ -337,3 +337,69 @@ describe("structural validator — externalInputs", () => {
     if (!r.ok) expect(r.diagnostics.some((d) => d.code === "RESERVED_STAGE_NAME")).toBe(true);
   });
 });
+
+describe("structural validator — script moduleId resolution (D'-1)", () => {
+  function baseWithScript(moduleId: string): PipelineIR {
+    return {
+      name: "t",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "raw", type: "string" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "B",
+          type: "script",
+          inputs: [{ name: "raw", type: "string" }],
+          outputs: [{ name: "value", type: "unknown" }],
+          config: { moduleId },
+        },
+      ],
+      wires: [{ from: { stage: "A", port: "raw" }, to: { stage: "B", port: "raw" } }],
+    };
+  }
+
+  it("accepts a ScriptStage whose moduleId is in the allowed set", () => {
+    const r = validateStructural(baseWithScript("json_parse"), {
+      allowedScriptModuleIds: new Set(["json_parse", "json_stringify"]),
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects a ScriptStage whose moduleId is missing from the allowed set", () => {
+    const r = validateStructural(baseWithScript("hallucinated"), {
+      allowedScriptModuleIds: new Set(["json_parse", "json_stringify"]),
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      const d = r.diagnostics.find((x) => x.code === "SCRIPT_MODULE_NOT_REGISTERED");
+      expect(d).toBeDefined();
+      expect(d!.message).toContain("hallucinated");
+      expect(d!.message).toContain("json_parse");
+      expect((d!.context as { stage: string }).stage).toBe("B");
+    }
+  });
+
+  it("skips the registry check when allowedScriptModuleIds is omitted", () => {
+    // Dry-run semantics: validate_pipeline called without the option
+    // doesn't enforce registry membership (used by hot-update preview
+    // paths that don't care whether the module resolves).
+    const r = validateStructural(baseWithScript("hallucinated"));
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects with an explicit empty registry (every moduleId unknown)", () => {
+    const r = validateStructural(baseWithScript("json_parse"), {
+      allowedScriptModuleIds: new Set(),
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(
+        r.diagnostics.some((d) => d.code === "SCRIPT_MODULE_NOT_REGISTERED"),
+      ).toBe(true);
+    }
+  });
+});

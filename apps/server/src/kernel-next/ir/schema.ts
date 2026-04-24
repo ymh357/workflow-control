@@ -402,6 +402,14 @@ export const DiagnosticSchema = z.object({
     "UNKNOWN_STAGE",
     // Phase 4 P4.3 (D4) — cancel_task MCP tool diagnostics.
     "TASK_ALREADY_TERMINAL",
+    // D'-1 — script stage moduleId resolution at submit time.
+    // Emitted when a ScriptStage.config.moduleId is not registered in
+    // the kernel's builtin script registry (see builtin-scripts/index.ts).
+    // AI-generated pipelines in D'-1 can only reference builtin modules;
+    // D'-3 will add inline-source scripts as a second ScriptStage config
+    // variant and this diagnostic will continue to apply to the moduleId
+    // branch.
+    "SCRIPT_MODULE_NOT_REGISTERED",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

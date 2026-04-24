@@ -25,6 +25,10 @@ import { KernelService } from "../mcp/kernel.js";
 import { createKernelMcp } from "../mcp/server.js";
 import { runPipeline } from "./runner.js";
 import { RealStageExecutor } from "./real-executor.js";
+import { ScriptStageExecutor } from "./script-executor.js";
+import { CompositeStageExecutor } from "./composite-executor.js";
+import { TrivialScriptModuleResolver } from "./script-module-resolver.js";
+import { BUILTIN_SCRIPT_MODULES } from "../builtin-scripts/index.js";
 import { findMissingMcpRemoteAuth } from "./mcp-remote-preflight.js";
 import { DbPromptResolver } from "./db-prompt-resolver.js";
 import { MOCK_HANDLER_REGISTRY } from "./mock-handler-registry.js";
@@ -356,23 +360,35 @@ export async function startPipelineRun(
   const db = input.db;
   const tscPath = input.tscPath;
   const useMockHandlers = mockEntry !== undefined && Object.keys(mockEntry.handlers).length > 0;
+  // D'-1: production runner uses CompositeStageExecutor so pipelines can
+  // mix agent and script stages. The script delegate uses the builtin
+  // script registry (http_fetch, write_file, …); submit-time validation
+  // guarantees every ScriptStage.config.moduleId resolves against this
+  // registry before a task reaches the runner.
   const executor = useMockHandlers
     ? undefined
-    : new RealStageExecutor({
-        mcpServerFactory: (_dispatcher, portRuntime) =>
-          createKernelMcp(db, {
-            surface: "combined",
-            portRuntime,
-            tscPath,
+    : new CompositeStageExecutor({
+        agent: new RealStageExecutor({
+          mcpServerFactory: (_dispatcher, portRuntime) =>
+            createKernelMcp(db, {
+              surface: "combined",
+              portRuntime,
+              tscPath,
+            }),
+          promptResolver: new DbPromptResolver(db, versionHash),
+          model,
+          maxTurns,
+          maxBudgetUsd,
+          workspaceDir: resolvedWorkspaceDir,
+          // P5.3 / D7 — forward broadcaster so RealStageExecutor can
+          // publish `rate_limit_backoff` SSE events on SDK throttling.
+          broadcaster: input.broadcaster,
+        }),
+        script: new ScriptStageExecutor({
+          resolver: new TrivialScriptModuleResolver({
+            modules: { ...BUILTIN_SCRIPT_MODULES },
           }),
-        promptResolver: new DbPromptResolver(db, versionHash),
-        model,
-        maxTurns,
-        maxBudgetUsd,
-        workspaceDir: resolvedWorkspaceDir,
-        // P5.3 / D7 — forward broadcaster so RealStageExecutor can
-        // publish `rate_limit_backoff` SSE events on SDK throttling.
-        broadcaster: input.broadcaster,
+        }),
       });
 
   // --- Worktree allocation (Phase 5C) -------------------------------

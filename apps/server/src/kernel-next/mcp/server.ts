@@ -21,6 +21,7 @@ import { buildPgTools } from "./tools/pg.js";
 import { buildDebugTools } from "./tools/debug.js";
 import { buildHotUpdateTools } from "./tools/hot-update.js";
 import { buildAdminTools } from "./tools/admin.js";
+import { BUILTIN_SCRIPT_IDS } from "../builtin-scripts/index.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
 
@@ -132,7 +133,16 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
 export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}) {
-  const kernel = new KernelService(db, options);
+  // D'-1: default allowedScriptModuleIds to the kernel's builtin registry
+  // so any ScriptStage.config.moduleId that can't be resolved at run time
+  // is caught at submit time with SCRIPT_MODULE_NOT_REGISTERED. Callers
+  // that want to bypass the check (currently only tests that don't
+  // exercise script stages) must explicitly pass an empty set.
+  const effective: KernelMcpOptions =
+    options.allowedScriptModuleIds === undefined
+      ? { ...options, allowedScriptModuleIds: BUILTIN_SCRIPT_IDS }
+      : options;
+  const kernel = new KernelService(db, effective);
   const maxBytesDefault = options.defaultMaxBytes ?? MAX_VALUE_BYTES_DEFAULT;
   // Debt #2 retire — default is 'external' (AI-facing authoring + read
   // surface only). 'combined' remains opt-in for in-process callers that

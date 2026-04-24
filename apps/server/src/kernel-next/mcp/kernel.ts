@@ -273,6 +273,16 @@ export interface KernelServiceOptions {
    * default applies.
    */
   migrationInterruptWaitMsOverride?: number;
+  /**
+   * D'-1 — the set of script module IDs the runtime will be able to
+   * resolve when executing ScriptStages in any pipeline submitted through
+   * this KernelService. Production callers should pass the kernel's
+   * builtin registry here so ScriptStage.config.moduleId references that
+   * can't be resolved at run time are caught at submit time instead
+   * (SCRIPT_MODULE_NOT_REGISTERED diagnostic). Leave undefined for dry
+   * runs or tests that don't exercise the script-registry path.
+   */
+  allowedScriptModuleIds?: ReadonlySet<string>;
 }
 
 export class KernelService {
@@ -297,7 +307,9 @@ export class KernelService {
     }
     const pipeline = parsed.data;
 
-    const structural = validateStructural(pipeline);
+    const structural = validateStructural(pipeline, {
+      allowedScriptModuleIds: this.opts.allowedScriptModuleIds,
+    });
     if (!structural.ok) {
       return { ok: false, diagnostics: structural.diagnostics };
     }

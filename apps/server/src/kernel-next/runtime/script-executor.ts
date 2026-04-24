@@ -22,6 +22,7 @@ import type {
 } from "./executor.js";
 import type { ScriptModuleResolver } from "./script-module-resolver.js";
 import { openScriptExecutionRecordWriter } from "./script-execution-record-writer.js";
+import { loadTaskEnvValues } from "./task-env-values.js";
 
 export interface ScriptStageExecutorOptions {
   resolver: ScriptModuleResolver;
@@ -91,11 +92,15 @@ export class ScriptStageExecutor implements StageExecutor {
       return { attemptId, attemptIdx, status: "error", error: message };
     }
 
-    // 4. Invoke; catch and record errors.
+    // 4. Invoke; catch and record errors. Pass task env values so builtin
+    //    scripts (http_fetch, http_request) can resolve ${VAR} tokens the
+    //    caller supplied at run_pipeline time without the script having to
+    //    reach into process.env directly.
+    const env = loadTaskEnvValues(portRuntime.getDb(), taskId);
     let outputs: Record<string, unknown>;
     try {
       outputs = await mod.run(inputs, {
-        taskId, stageName, attemptId, attemptIdx, moduleId,
+        taskId, stageName, attemptId, attemptIdx, moduleId, env,
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
