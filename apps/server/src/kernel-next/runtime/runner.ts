@@ -468,13 +468,38 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
 
   // Timer is run-scoped: a retry does not reset the overall budget.
   // Long pipelines should set timeoutMs explicitly.
+  //
+  // BUG-2 fix: gate wait is human think time, not pipeline execution
+  // time. The budget below tracks *active* (non-gate-waiting) time only.
+  // When one or more gates enter `executing` the timer is cleared; when
+  // every gate in flight has been answered the timer is rearmed with
+  // the remaining budget. Snapshot loop below maintains gateInFlight.
   let timedOut = false;
-  const timer = setTimeout(() => {
+  let remainingBudgetMs = timeoutMs;
+  let activeSinceMs = Date.now();
+  let gateInFlight = 0;
+  let activeTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
     timedOut = true;
     // Attempt in flight will observe via currentActor.stop() when the
     // outer loop unwinds; we surface as a thrown error on the outer
     // runPipeline promise.
-  }, timeoutMs);
+  }, remainingBudgetMs);
+  const pauseBudget = (): void => {
+    if (activeTimer !== null) {
+      clearTimeout(activeTimer);
+      activeTimer = null;
+      remainingBudgetMs -= Date.now() - activeSinceMs;
+      if (remainingBudgetMs < 0) remainingBudgetMs = 0;
+    }
+  };
+  const resumeBudget = (): void => {
+    if (activeTimer === null && !timedOut) {
+      activeSinceMs = Date.now();
+      activeTimer = setTimeout(() => {
+        timedOut = true;
+      }, remainingBudgetMs);
+    }
+  };
 
   // Task 1.8 — seed phase (externalInputs). Run once (regardless of
   // retries) so lineage and SSE observe the external seeds exactly
@@ -485,7 +510,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
     const seedValues = opts.seedValues ?? {};
     for (const port of externalInputs) {
       if (!(port.name in seedValues)) {
-        clearTimeout(timer);
+        if (activeTimer !== null) clearTimeout(activeTimer);
         taskRegistry.signalTermination(opts.taskId, {
           kind: "error",
           detail: `SEED_VALUES_MISSING_KEY: ${port.name}`,
@@ -725,7 +750,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
     if (checkpointInFlight.size > 0) {
       await Promise.allSettled([...checkpointInFlight]);
     }
-    clearTimeout(timer);
+    if (activeTimer !== null) clearTimeout(activeTimer);
     if (currentActor) {
       try { currentActor.stop(); } catch { /* ignore */ }
     }
@@ -1194,6 +1219,28 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
           // Let the outer .finally handle actor.stop / unregister.
           rejectAttempt(new Error(`runPipeline timeout after ${timeoutMs}ms`));
           return;
+        }
+
+        // BUG-2: track whether any gate stage is currently paused for a
+        // human answer. Toggling between "no gates waiting" and "at least
+        // one gate waiting" pauses/resumes the timeout budget so that
+        // human think time never counts toward timeoutMs.
+        {
+          const runningMap = (snapshot.value as { running?: Record<string, string> }).running;
+          let currentGateCount = 0;
+          if (runningMap) {
+            for (const [stageName, substate] of Object.entries(runningMap)) {
+              if (substate !== "executing") continue;
+              const def = opts.ir.stages.find((s) => s.name === stageName);
+              if (def?.type === "gate") currentGateCount += 1;
+            }
+          }
+          if (currentGateCount > 0 && gateInFlight === 0) {
+            pauseBudget();
+          } else if (currentGateCount === 0 && gateInFlight > 0) {
+            resumeBudget();
+          }
+          gateInFlight = currentGateCount;
         }
 
         const topValue = snapshot.value;
