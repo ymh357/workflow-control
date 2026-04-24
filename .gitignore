@@ -33,9 +33,10 @@ apps/server/src/pipelines/
 apps/server/src/prompts/
 apps/server/src/system-prompts/
 
-# Claude Code runtime artifacts (worktrees, reports) — settings and agents are tracked
+# Claude Code runtime artifacts (worktrees, reports, scheduled-task lock) — settings and agents are tracked
 .claude/worktrees/
 .claude/full-review-report.md
+.claude/scheduled_tasks.lock
 
 # Per-app local Claude settings (user-specific hooks, not shared)
 apps/*/.claude/
