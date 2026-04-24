@@ -177,13 +177,16 @@ export function buildHotUpdateTools(deps: ToolsDeps): ToolDef[] {
       description:
         "Stage 5E — aggregate queries over hot_update_events. Returns " +
         "total/success/failed/rolled_back counts, byPipelineName breakdown, " +
-        "byActor counts, and topChurnPipelines ranking. All filters optional.",
+        "byActor counts, and topChurnPipelines ranking. All filters optional. " +
+        "retry_task rows are included by default; set excludeRetries=true to " +
+        "get proposal-only churn numbers.",
       inputSchema: {
         taskId: z.string().optional(),
         pipelineName: z.string().optional(),
         sinceMs: z.number().int().optional(),
         untilMs: z.number().int().optional(),
         actor: z.string().optional(),
+        excludeRetries: z.boolean().optional(),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       handler: async (args: any) => {
@@ -196,6 +199,7 @@ export function buildHotUpdateTools(deps: ToolsDeps): ToolDef[] {
               sinceMs: typeof args.sinceMs === "number" ? args.sinceMs : undefined,
               untilMs: typeof args.untilMs === "number" ? args.untilMs : undefined,
               actor: typeof args.actor === "string" ? args.actor : undefined,
+              excludeRetries: args.excludeRetries === true,
             }),
           });
         } catch (err) {

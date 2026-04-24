@@ -162,4 +162,39 @@ describe("computeHotUpdateStats", () => {
     expect(r.byActor).toEqual({ user: 1 });
     db.close();
   });
+
+  it("excludeRetries filters out rows whose proposal is marked retry-v1", () => {
+    const db = makeDb();
+    seedVersion(db, "vA", "pipeA");
+    // seed a "retry" proposal (diagnostic_json contains __kind:retry-v1)
+    db.prepare(
+      `INSERT INTO pipeline_proposals
+         (proposal_id, base_version, proposed_version, actor, status, diagnostic_json, created_at, rerun_from, migrate_running)
+       VALUES ('p-retry', 'vA', 'vA', 'mcp-retry', 'approved', ?, ?, NULL, NULL)`,
+    ).run(JSON.stringify({ __kind: "retry-v1" }), Date.now());
+    // and a normal (non-retry) proposal
+    db.prepare(
+      `INSERT INTO pipeline_proposals
+         (proposal_id, base_version, proposed_version, actor, status, diagnostic_json, created_at, rerun_from, migrate_running)
+       VALUES ('p-normal', 'vA', 'vA', 'user', 'approved', ?, ?, NULL, NULL)`,
+    ).run(JSON.stringify({ __kind: "proposal-success-v1" }), Date.now());
+    // two hot_update_events — one per proposal
+    db.prepare(
+      `INSERT INTO hot_update_events
+         (event_id, task_id, from_version, to_version, actor, proposal_id,
+          rerun_from_stage, status, started_at, finished_at, diagnostic_json)
+       VALUES ('e-retry','t1','vA','vA','mcp-retry','p-retry', NULL,'success',100,110,NULL),
+              ('e-normal','t1','vA','vA','user','p-normal',NULL,'success',200,210,NULL)`,
+    ).run();
+
+    // default (excludeRetries=false) counts both
+    const all = computeHotUpdateStats(db, {});
+    expect(all.totalMigrations).toBe(2);
+
+    // excludeRetries=true drops the retry row
+    const filtered = computeHotUpdateStats(db, { excludeRetries: true });
+    expect(filtered.totalMigrations).toBe(1);
+    expect(filtered.byActor).toEqual({ user: 1 });
+    db.close();
+  });
 });

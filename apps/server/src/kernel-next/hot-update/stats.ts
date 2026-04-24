@@ -9,6 +9,12 @@ export interface StatsInput {
   sinceMs?: number;
   untilMs?: number;
   actor?: string;
+  // P4.1 follow-up: retry_task synthesises a same-version proposal then
+  // delegates through executeMigration, so each retry writes a row in
+  // hot_update_events. Setting this flag excludes those rows so churn
+  // statistics stay proposal-focused. Default false preserves backward
+  // compat with callers that intentionally want retries counted.
+  excludeRetries?: boolean;
 }
 
 export interface PipelineBreakdown {
@@ -65,12 +71,18 @@ export function computeHotUpdateStats(
     where.push("hue.actor = ?");
     params.push(input.actor);
   }
+  if (input.excludeRetries === true) {
+    // retry_task marks its synthetic proposal with
+    // diagnostic_json.__kind = "retry-v1"; filter those out.
+    where.push(`(pp.diagnostic_json IS NULL OR pp.diagnostic_json NOT LIKE '%"__kind":"retry-v1"%')`);
+  }
 
   const whereSql = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
   const sql = `
     SELECT hue.status AS status, hue.actor AS actor, pv.pipeline_name AS pipeline_name
     FROM hot_update_events hue
     LEFT JOIN pipeline_versions pv ON pv.version_hash = hue.to_version
+    LEFT JOIN pipeline_proposals pp ON pp.proposal_id = hue.proposal_id
     ${whereSql}
   `;
   const rows = db.prepare(sql).all(...params) as Array<{
