@@ -18,7 +18,13 @@ export function buildPortsTools(deps: ToolsDeps): ToolDef[] {
       description:
         "Read the latest value for a port, optionally scoped to a taskId " +
         "and attempt index. Truncates to maxBytes (default 64KB) and " +
-        "returns { truncated: true, preview, totalBytes } when larger.",
+        "returns { truncated: true, preview, totalBytes } when larger. " +
+        "On miss (no row in port_values), returns { ok:false, error:'port not found' } " +
+        "plus an optional `reason` when a taskId is supplied: " +
+        "'port_not_declared' (stage or port name wrong for this pipeline version), " +
+        "'no_attempt_yet' (stage hasn't been dispatched for this task), " +
+        "or 'no_write_yet' (stage attempt exists but the agent hasn't written " +
+        "that port — wait for the stage to finish or poll).",
       inputSchema: {
         taskId: z.string().optional(),
         stage: z.string(),
@@ -37,7 +43,14 @@ export function buildPortsTools(deps: ToolsDeps): ToolDef[] {
 
           const row = readPortSpecific(db, stage, port, taskId, attempt);
           if (!row) {
-            return jsonResponse({ ok: false, error: "port not found" });
+            const reason = taskId
+              ? classifyMissingPort(db, taskId, stage, port)
+              : undefined;
+            return jsonResponse(
+              reason !== undefined
+                ? { ok: false, error: "port not found", reason }
+                : { ok: false, error: "port not found" },
+            );
           }
           const encoded = JSON.stringify(row.value);
           const bytes = Buffer.byteLength(encoded, "utf8");
@@ -233,4 +246,72 @@ function readPortSpecific(
     attemptId: r.attempt_id,
     writtenAt: r.written_at,
   };
+}
+
+type MissingPortReason = "port_not_declared" | "no_attempt_yet" | "no_write_yet";
+
+/**
+ * Distinguish the three failure modes a read_port miss can hide so that a
+ * caller polling for live data stops conflating "you typed the port name
+ * wrong" with "the stage hasn't written it yet". Returns undefined when the
+ * task has no stage_attempts + no pipeline_versions to check (unresolvable);
+ * the caller keeps the bare "port not found" error in that case.
+ *
+ * Implementation cost is two indexed SELECTs: one against stage_attempts to
+ * pick a version, one against pipeline_versions to parse the IR. Both are
+ * on-path for write_port already, so the cost profile is understood.
+ */
+function classifyMissingPort(
+  db: DatabaseSync,
+  taskId: string,
+  stage: string,
+  port: string,
+): MissingPortReason | undefined {
+  const attemptRow = db.prepare(
+    `SELECT version_hash FROM stage_attempts
+     WHERE task_id = ? AND stage_name = ?
+     ORDER BY started_at DESC LIMIT 1`,
+  ).get(taskId, stage) as { version_hash: string } | undefined;
+
+  if (!attemptRow) {
+    // No attempt for this stage. Could still be a typo, but without a
+    // version_hash we can't check IR declaration. Pick the latest version
+    // any attempt on this task ran under — if the task has *no* attempts
+    // at all we genuinely can't classify and return undefined.
+    const anyAttemptRow = db.prepare(
+      `SELECT version_hash FROM stage_attempts
+       WHERE task_id = ?
+       ORDER BY started_at DESC LIMIT 1`,
+    ).get(taskId) as { version_hash: string } | undefined;
+    if (!anyAttemptRow) return undefined;
+    const declared = isPortDeclared(db, anyAttemptRow.version_hash, stage, port);
+    if (declared === false) return "port_not_declared";
+    // declared === true: stage exists in the IR but hasn't started yet.
+    // declared === undefined: version row missing (unexpected but possible) — fall through to no_attempt_yet.
+    return "no_attempt_yet";
+  }
+
+  const declared = isPortDeclared(db, attemptRow.version_hash, stage, port);
+  if (declared === false) return "port_not_declared";
+  return "no_write_yet";
+}
+
+function isPortDeclared(
+  db: DatabaseSync,
+  versionHash: string,
+  stage: string,
+  port: string,
+): boolean | undefined {
+  const versionRow = db.prepare(
+    `SELECT ir_json FROM pipeline_versions WHERE version_hash = ?`,
+  ).get(versionHash) as { ir_json: string } | undefined;
+  if (!versionRow) return undefined;
+  try {
+    const ir = JSON.parse(versionRow.ir_json) as PipelineIR;
+    const stageDef = ir.stages.find((s) => s.name === stage);
+    if (!stageDef) return false;
+    return stageDef.outputs.some((p) => p.name === port);
+  } catch {
+    return undefined;
+  }
 }

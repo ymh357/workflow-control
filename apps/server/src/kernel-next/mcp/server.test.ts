@@ -221,6 +221,110 @@ describe("kernel-next MCP server", () => {
     db2.close();
   });
 
+  it("read_port miss classifies reason when taskId is supplied", { timeout: 30_000 }, async () => {
+    const db2 = new DatabaseSync(":memory:");
+    initKernelNextSchema(db2);
+    const mcp = createKernelMcp(db2, { tscPath: TSC_PATH, skipTypeCheck: true });
+    const t = getTools(mcp);
+
+    const ir = diamondIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db2, ir, { versionHash: hash, tsSource: "" });
+
+    const handlers: StageHandlerMap = {
+      A: () => ({ x: 1 }),
+      B: (i) => ({ y: `B:${i.x}` }),
+      C: (i) => ({ z: `C:${i.x}` }),
+      D: (i) => ({ final: `${i.b}|${i.c}` }),
+    };
+    await runPipeline({ db: db2, ir, taskId: "miss1", versionHash: hash, handlers });
+
+    // (a) port_not_declared: stage exists, port name is wrong.
+    const wrong = await t.get("read_port")!.handler({
+      taskId: "miss1", stage: "D", port: "nonexistent",
+    });
+    const wrongPayload = parsePayload(wrong) as { ok: false; reason?: string };
+    expect(wrongPayload.ok).toBe(false);
+    expect(wrongPayload.reason).toBe("port_not_declared");
+
+    // (b) port_not_declared: stage name is wrong (no such stage in this IR).
+    const wrongStage = await t.get("read_port")!.handler({
+      taskId: "miss1", stage: "Z", port: "final",
+    });
+    const wrongStagePayload = parsePayload(wrongStage) as { ok: false; reason?: string };
+    expect(wrongStagePayload.ok).toBe(false);
+    expect(wrongStagePayload.reason).toBe("port_not_declared");
+
+    // (c) no reason when taskId is omitted — backward compat path.
+    const noTask = await t.get("read_port")!.handler({
+      stage: "Q", port: "unknown",
+    });
+    const noTaskPayload = parsePayload(noTask) as { ok: false; reason?: string };
+    expect(noTaskPayload.ok).toBe(false);
+    expect(noTaskPayload.reason).toBeUndefined();
+
+    db2.close();
+  });
+
+  it("read_port miss reports no_attempt_yet when the stage is declared but hasn't started", { timeout: 20_000 }, async () => {
+    // Seed a task with an attempt on stage A only; query stage D (which is
+    // declared on the same IR but whose attempt hasn't been created yet).
+    // Classifier must report no_attempt_yet, not port_not_declared.
+    const db2 = new DatabaseSync(":memory:");
+    initKernelNextSchema(db2);
+    const mcp = createKernelMcp(db2, { tscPath: TSC_PATH, skipTypeCheck: true });
+    const t = getTools(mcp);
+
+    const ir = diamondIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db2, ir, { versionHash: hash, tsSource: "" });
+
+    db2.prepare(
+      `INSERT INTO stage_attempts
+         (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status, kind)
+       VALUES ('att-A-1', 'miss3', ?, 'A', 1, ?, 'running', 'regular')`,
+    ).run(hash, Date.now());
+
+    const miss = await t.get("read_port")!.handler({
+      taskId: "miss3", stage: "D", port: "final",
+    });
+    const payload = parsePayload(miss) as { ok: false; reason?: string };
+    expect(payload.ok).toBe(false);
+    expect(payload.reason).toBe("no_attempt_yet");
+
+    db2.close();
+  });
+
+  it("read_port miss reports no_write_yet when the stage attempt exists but the port row doesn't", { timeout: 20_000 }, async () => {
+    // Hand-seed a stage_attempts row for stage D without writing port_values.
+    // This simulates "stage is running, agent hasn't emitted the port yet"
+    // without coupling to the XState runner's async scheduling. We assert the
+    // classifier branches correctly on declared-but-unwritten ports.
+    const db2 = new DatabaseSync(":memory:");
+    initKernelNextSchema(db2);
+    const mcp = createKernelMcp(db2, { tscPath: TSC_PATH, skipTypeCheck: true });
+    const t = getTools(mcp);
+
+    const ir = diamondIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db2, ir, { versionHash: hash, tsSource: "" });
+
+    db2.prepare(
+      `INSERT INTO stage_attempts
+         (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status, kind)
+       VALUES ('att-D-1', 'miss2', ?, 'D', 1, ?, 'running', 'regular')`,
+    ).run(hash, Date.now());
+
+    const miss = await t.get("read_port")!.handler({
+      taskId: "miss2", stage: "D", port: "final",
+    });
+    const payload = parsePayload(miss) as { ok: false; reason?: string };
+    expect(payload.ok).toBe(false);
+    expect(payload.reason).toBe("no_write_yet");
+
+    db2.close();
+  });
+
   it("propose_pipeline_change creates a pending proposal", { timeout: 20_000 }, async () => {
     const db2 = new DatabaseSync(":memory:");
     initKernelNextSchema(db2);
