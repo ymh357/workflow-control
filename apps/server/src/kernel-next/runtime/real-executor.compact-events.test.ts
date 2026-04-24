@@ -33,18 +33,18 @@ function oneStageIR(): PipelineIR {
   };
 }
 
-function setupHarness(): {
+async function setupHarness(): Promise<{
   db: DatabaseSync;
   ir: PipelineIR;
   versionHash: string;
   portRuntime: PortRuntime;
   makeExecutor: (queryFn: unknown) => RealStageExecutor;
   writePortForCurrentAttempt: (value: unknown) => void;
-} {
+}> {
   const db = makeDb();
   const ir = oneStageIR();
   const svc = new KernelService(db, { skipTypeCheck: true });
-  const submitRes = svc.submit(ir, { prompts: { "p-prompt": "prompt body" } });
+  const submitRes = await svc.submit(ir, { prompts: { "p-prompt": "prompt body" } });
   if (!submitRes.ok) throw new Error("submit failed: " + JSON.stringify(submitRes.diagnostics));
   const portRuntime = new PortRuntime(db, { send: () => { /* inert */ } });
   const writePortForCurrentAttempt = (value: unknown) => {
@@ -124,7 +124,7 @@ function makeCompactStream(opts: {
 
 describe("RealStageExecutor compact events", () => {
   it("records an auto-compact with startedAt + endedAt when stream resumes", async () => {
-    const h = setupHarness();
+    const h = await setupHarness();
     const executor = h.makeExecutor((_args: unknown) => makeCompactStream({
       trigger: "auto", preTokens: 45_000,
       writePorts: () => h.writePortForCurrentAttempt(1),
@@ -158,7 +158,7 @@ describe("RealStageExecutor compact events", () => {
     // only arises when the stream is truncated by error/interrupt before
     // any follow-up message; that path is covered in the writer unit
     // tests. Here we assert the manual trigger is captured as-is.
-    const h = setupHarness();
+    const h = await setupHarness();
     const executor = h.makeExecutor((_args: unknown) => makeCompactStream({
       trigger: "manual", preTokens: 1234,
       writePorts: () => h.writePortForCurrentAttempt(2),
@@ -183,7 +183,7 @@ describe("RealStageExecutor compact events", () => {
   });
 
   it("no compact events → empty JSON array", async () => {
-    const h = setupHarness();
+    const h = await setupHarness();
     async function* noCompact() {
       yield { type: "system", subtype: "init", uuid: "u0", session_id: "s" };
       yield {

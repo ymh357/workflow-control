@@ -53,7 +53,7 @@ describe("Stage 5E end-to-end: autoApprove → migrate → stats", () => {
   it("idle task: autoApprove safe, migrate succeeds, stats reports 1 success", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
 
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent")!;
@@ -95,7 +95,7 @@ describe("Stage 5E end-to-end: autoApprove → migrate → stats", () => {
   it("forward then rollback: stats reports 2 success + 1 rolled_back", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const v1 = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const v1 = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!v1.ok) throw new Error("submit failed");
 
     for (const s of diamondIR().stages) {
@@ -150,7 +150,7 @@ describe("Stage 5E end-to-end: autoApprove → migrate → stats", () => {
       skipTypeCheck: true,
       migrationInterruptWaitMsOverride: 50,
     });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent")!;
     seedAttempt(db, "t-e2e-3", submitted.versionHash, firstAgent.name, "running");

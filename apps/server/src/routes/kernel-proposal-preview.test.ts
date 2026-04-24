@@ -23,13 +23,13 @@ function diamondPrompts(): Record<string, string> {
   return out;
 }
 
-function seedRemoveStageProposal(db: DatabaseSync): {
+async function seedRemoveStageProposal(db: DatabaseSync): Promise<{
   proposalId: string;
   baseVersion: string;
   proposedVersion: string;
-} {
+}> {
   const svc = new KernelService(db, { skipTypeCheck: true });
-  const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+  const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
   if (!submitted.ok) throw new Error("setup submit failed");
   const proposed = svc.propose({
     currentVersion: submitted.versionHash,
@@ -49,13 +49,13 @@ function seedRemoveStageProposal(db: DatabaseSync): {
 describe("POST /api/kernel/proposals/:id/preview", () => {
   let db: DatabaseSync;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     __setKernelNextDbForTest(db);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     __setKernelNextDbForTest(undefined);
     db.close();
   });
@@ -72,7 +72,7 @@ describe("POST /api/kernel/proposals/:id/preview", () => {
   });
 
   it("returns baseIr + projectedIr for a pending proposal", async () => {
-    const { proposalId, baseVersion, proposedVersion } = seedRemoveStageProposal(db);
+    const { proposalId, baseVersion, proposedVersion } = await seedRemoveStageProposal(db);
     const app = buildApp();
     const res = await app.fetch(
       new Request(`http://t/api/kernel/proposals/${proposalId}/preview`, { method: "POST" }),
@@ -98,7 +98,7 @@ describe("POST /api/kernel/proposals/:id/preview", () => {
   });
 
   it("is a DRY run — does not insert new rows into pipeline_versions or pipeline_proposals", async () => {
-    const { proposalId } = seedRemoveStageProposal(db);
+    const { proposalId } = await seedRemoveStageProposal(db);
     const countVersions = () =>
       (db.prepare("SELECT COUNT(*) AS n FROM pipeline_versions").get() as { n: number }).n;
     const countProposals = () =>
@@ -120,7 +120,7 @@ describe("POST /api/kernel/proposals/:id/preview", () => {
   });
 
   it("returns correct status for approved proposal", async () => {
-    const { proposalId } = seedRemoveStageProposal(db);
+    const { proposalId } = await seedRemoveStageProposal(db);
     const svc = new KernelService(db, { skipTypeCheck: true });
     const approved = svc.approveProposal(proposalId);
     if (!approved.ok) throw new Error("setup approve failed");

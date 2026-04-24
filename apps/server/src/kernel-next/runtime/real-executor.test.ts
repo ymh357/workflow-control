@@ -552,7 +552,7 @@ describe("RealStageExecutor sidecar integration", () => {
       wires: [],
     };
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitRes = svc.submit(ir, { prompts: { p1prompt: "hello world" } });
+    const submitRes = await svc.submit(ir, { prompts: { p1prompt: "hello world" } });
     expect(submitRes.ok).toBe(true);
     if (!submitRes.ok) return;
 

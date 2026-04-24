@@ -71,7 +71,7 @@ describe("executeMigration — B17 fanout preservation", () => {
   it("successful fanout_element attempts are preserved; aggregate + regular are superseded", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
 
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent")!;
@@ -136,7 +136,7 @@ describe("executeMigration — B17 fanout preservation", () => {
     // untouched on the reverse path too — no accidental status flip.
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent")!;
     const stageName = firstAgent.name;

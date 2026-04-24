@@ -73,11 +73,11 @@ function parsePayload(resp: { content: Array<{ type: string; text: string }> }):
 }
 
 describe("kernel-next MCP server", () => {
-  beforeAll(() => {
+  beforeAll(async () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("combined surface exposes 30 tools with expected names", () => {
+  it("combined surface exposes 30 tools with expected names", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
@@ -537,7 +537,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
   // could affect port state is via MCP tools, and write_port simply
   // isn't in the descriptor list — the SDK can't route a tool_use
   // whose name doesn't match any declared tool.
-  it("external surface does NOT expose write_port", () => {
+  it("external surface does NOT expose write_port", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "external" });
@@ -546,7 +546,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     db.close();
   });
 
-  it("external surface exposes exactly the externally-safe tools", () => {
+  it("external surface exposes exactly the externally-safe tools", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "external" });
@@ -585,7 +585,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     db.close();
   });
 
-  it("internal surface exposes ONLY write_port (no external tools leak)", () => {
+  it("internal surface exposes ONLY write_port (no external tools leak)", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "internal" });
@@ -594,7 +594,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     db.close();
   });
 
-  it("server name reflects the surface (external/internal/combined)", () => {
+  it("server name reflects the surface (external/internal/combined)", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const ext = createKernelMcp(db, { tscPath: TSC_PATH, surface: "external" }) as { name: string };
@@ -606,7 +606,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     db.close();
   });
 
-  it("combined surface still includes every tool (backwards compat)", () => {
+  it("combined surface still includes every tool (backwards compat)", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
@@ -639,7 +639,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     db.close();
   });
 
-  it("default surface (no explicit argument) is 'external'", () => {
+  it("default surface (no explicit argument) is 'external'", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
@@ -651,7 +651,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     db.close();
   });
 
-  it("external surface includes start_pipeline_generator and wait_pipeline_result", () => {
+  it("external surface includes start_pipeline_generator and wait_pipeline_result", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "external" });
@@ -661,7 +661,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     db.close();
   });
 
-  it("internal surface does NOT include pg-entry tools", () => {
+  it("internal surface does NOT include pg-entry tools", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "internal" });
@@ -673,7 +673,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
 });
 
 describe("run_pipeline tool surface", () => {
-  it("is in EXTERNAL surface", () => {
+  it("is in EXTERNAL surface", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "external" });
@@ -682,7 +682,7 @@ describe("run_pipeline tool surface", () => {
     db.close();
   });
 
-  it("is NOT in INTERNAL surface", () => {
+  it("is NOT in INTERNAL surface", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "internal" });
@@ -797,7 +797,7 @@ describe("write_port rejects __external__ sentinel", () => {
 // Task 4: answer_gate handler dispatches GATE_REJECTED for rollback answers
 // and GATE_ANSWERED for forward answers — branching on AnswerGateResult.kind.
 describe("answer_gate MCP handler — reject dispatch", () => {
-  afterEach(() => {
+  afterEach(async () => {
     taskRegistry.__clearForTest();
   });
 
@@ -806,7 +806,7 @@ describe("answer_gate MCP handler — reject dispatch", () => {
   // and a wire A.out -> G.i, making A a transitive upstream of G
   // (so "reject" is a rollback answer and kernel returns kind="rejected").
   // Returns { db, gateId } — gateId is assigned by createGate.
-  function setupRejectReadyDb(taskId: string): { db: DatabaseSync; gateId: string } {
+  async function setupRejectReadyDb(taskId: string): Promise<{ db: DatabaseSync; gateId: string }> {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
 
@@ -843,7 +843,7 @@ describe("answer_gate MCP handler — reject dispatch", () => {
         { from: { stage: "A", port: "out" }, to: { stage: "G", port: "i" } },
       ],
     };
-    const submit = svc.submit(ir, { prompts: { p: "dummy" } });
+    const submit = await svc.submit(ir, { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("submit failed");
 
     // Open a running stage_attempt for G so createGate has an FK to reference.
@@ -867,7 +867,7 @@ describe("answer_gate MCP handler — reject dispatch", () => {
 
   it("dispatches GATE_REJECTED when kernel returns kind='rejected'", async () => {
     const taskId = "t-mcp-reject-1";
-    const { db, gateId } = setupRejectReadyDb(taskId);
+    const { db, gateId } = await setupRejectReadyDb(taskId);
 
     const captured: unknown[] = [];
     taskRegistry.register(taskId, { send: (ev: unknown) => captured.push(ev) } as never);
@@ -898,7 +898,7 @@ describe("answer_gate MCP handler — reject dispatch", () => {
 
   it("dispatches GATE_ANSWERED when kernel returns kind='answered'", async () => {
     const taskId = "t-mcp-reject-2";
-    const { db, gateId } = setupRejectReadyDb(taskId);
+    const { db, gateId } = await setupRejectReadyDb(taskId);
 
     const captured: unknown[] = [];
     taskRegistry.register(taskId, { send: (ev: unknown) => captured.push(ev) } as never);

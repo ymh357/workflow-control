@@ -222,7 +222,7 @@ export async function startPipelineRun(
     if (!hash && MOCK_HANDLER_REGISTRY[name]) {
       const entry = MOCK_HANDLER_REGISTRY[name]!;
       const svc = new KernelService(input.db, { skipTypeCheck: true });
-      const seedRes = svc.submit(entry.ir, { prompts: buildMockSeedPrompts(entry.ir) });
+      const seedRes = await svc.submit(entry.ir, { prompts: buildMockSeedPrompts(entry.ir) });
       if (!seedRes.ok) {
         return {
           ok: false,

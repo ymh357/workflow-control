@@ -38,7 +38,7 @@ function oneStageIR(): PipelineIR {
   };
 }
 
-function setupHarness(): {
+async function setupHarness(): Promise<{
   db: DatabaseSync;
   ir: PipelineIR;
   versionHash: string;
@@ -48,11 +48,11 @@ function setupHarness(): {
     broadcaster?: KernelNextBroadcaster,
   ) => RealStageExecutor;
   writePortForCurrentAttempt: (value: unknown) => void;
-} {
+}> {
   const db = makeDb();
   const ir = oneStageIR();
   const svc = new KernelService(db, { skipTypeCheck: true });
-  const submitRes = svc.submit(ir, { prompts: { "p-prompt": "prompt body" } });
+  const submitRes = await svc.submit(ir, { prompts: { "p-prompt": "prompt body" } });
   if (!submitRes.ok) throw new Error("submit failed: " + JSON.stringify(submitRes.diagnostics));
   const portRuntime = new PortRuntime(db, { send: () => { /* inert */ } });
   const writePortForCurrentAttempt = (value: unknown) => {
@@ -139,7 +139,7 @@ function makeRateLimitStream(
 
 describe("RealStageExecutor: rate_limit_backoff SSE publishing", () => {
   it("publishes rate_limit_backoff when utilization >= 0.9", async () => {
-    const h = setupHarness();
+    const h = await setupHarness();
     const { broadcaster, publishes } = makeMockBroadcaster();
 
     const executor = h.makeExecutor(
@@ -171,7 +171,7 @@ describe("RealStageExecutor: rate_limit_backoff SSE publishing", () => {
   });
 
   it("does NOT publish when utilization < 0.9", async () => {
-    const h = setupHarness();
+    const h = await setupHarness();
     const { broadcaster, publishes } = makeMockBroadcaster();
 
     const executor = h.makeExecutor(
@@ -193,7 +193,7 @@ describe("RealStageExecutor: rate_limit_backoff SSE publishing", () => {
   });
 
   it("increments signalCount on consecutive high-util signals", async () => {
-    const h = setupHarness();
+    const h = await setupHarness();
     const { broadcaster, publishes } = makeMockBroadcaster();
 
     const executor = h.makeExecutor(

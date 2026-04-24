@@ -47,7 +47,7 @@ function minimalIR(name: string): PipelineIR {
 }
 
 describe("slugifyPipelineName", () => {
-  it("lowercases + replaces non-alphanumerics with dashes + trims", () => {
+  it("lowercases + replaces non-alphanumerics with dashes + trims", async () => {
     expect(slugifyPipelineName("PR Description Generator")).toBe("pr-description-generator");
     expect(slugifyPipelineName("Pipeline Generator")).toBe("pipeline-generator");
     expect(slugifyPipelineName("smoke-test")).toBe("smoke-test");
@@ -56,12 +56,12 @@ describe("slugifyPipelineName", () => {
     expect(slugifyPipelineName("multi   spaces")).toBe("multi-spaces");
   });
 
-  it("idempotent: slug of slug is the same slug", () => {
+  it("idempotent: slug of slug is the same slug", async () => {
     const once = slugifyPipelineName("Pipeline Generator");
     expect(slugifyPipelineName(once)).toBe(once);
   });
 
-  it("empty / non-alphanumeric-only input returns empty string", () => {
+  it("empty / non-alphanumeric-only input returns empty string", async () => {
     expect(slugifyPipelineName("")).toBe("");
     expect(slugifyPipelineName("   ")).toBe("");
     expect(slugifyPipelineName("!!!???")).toBe("");
@@ -73,7 +73,7 @@ describe("startPipelineRun name resolution (P6-5)", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const sub = svc.submit(minimalIR("PR Description Generator"), {
+      const sub = await svc.submit(minimalIR("PR Description Generator"), {
         prompts: { p: "dummy" },
       });
       if (!sub.ok) throw new Error("submit failed");
@@ -101,7 +101,7 @@ describe("startPipelineRun name resolution (P6-5)", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const sub = svc.submit(minimalIR("Tech Research Collector"), {
+      const sub = await svc.submit(minimalIR("Tech Research Collector"), {
         prompts: { p: "dummy" },
       });
       if (!sub.ok) throw new Error("submit failed");
@@ -127,7 +127,7 @@ describe("startPipelineRun taskId synthesis (P6-6)", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const sub = svc.submit(minimalIR("PR Description Generator"), {
+      const sub = await svc.submit(minimalIR("PR Description Generator"), {
         prompts: { p: "dummy" },
       });
       if (!sub.ok) throw new Error("submit failed");
@@ -154,7 +154,7 @@ describe("startPipelineRun taskId synthesis (P6-6)", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const sub = svc.submit(minimalIR("Smoke"), {
+      const sub = await svc.submit(minimalIR("Smoke"), {
         prompts: { p: "dummy" },
       });
       if (!sub.ok) throw new Error("submit failed");

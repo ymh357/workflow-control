@@ -55,7 +55,7 @@ describe("executeMigration — idle task (no runner registered)", () => {
   it("skips INTERRUPT, supersedes wire-reachable stages, resumes via startRunner", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
 
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent")!;
@@ -119,7 +119,7 @@ describe("executeMigration — INTERRUPT timeout", () => {
   it("times out when registered runner never signals termination", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent")!;
     seedAttempt(db, "t-to", submitted.versionHash, firstAgent.name, "running");
@@ -184,7 +184,7 @@ describe("executeMigration — resume failure reverts supersede", () => {
   it("reverse-supersede when startPipelineRun throws", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent")!;
     seedAttempt(db, "t-rf", submitted.versionHash, firstAgent.name, "success");
@@ -251,7 +251,7 @@ describe("executeMigration — B13 parallel sibling not superseded", () => {
   it("only supersedes stages wire-reachable from rerunFrom, preserving sibling branch", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
 
     // Seed success attempts for all four diamond stages
@@ -333,7 +333,7 @@ describe("executeMigration — concurrent lock", () => {
   it("second executeMigration on same task returns MIGRATION_IN_PROGRESS", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent")!;
     seedAttempt(db, "t-cc", submitted.versionHash, firstAgent.name, "success");
@@ -401,7 +401,7 @@ describe("executeMigration — B9 migration_hint", () => {
   it("writes migration_hints row with diff + note after supersede", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
 
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent")!;
@@ -475,7 +475,7 @@ describe("executeMigration — B9 migration_hint", () => {
   it("writes hint with null diff when no checkpoint existed", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent")!;
     seedAttempt(db, "t-nc", submitted.versionHash, firstAgent.name, "success");

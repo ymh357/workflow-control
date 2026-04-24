@@ -106,7 +106,7 @@ describe("B10 e2e: graceful summary turn across migration INTERRUPT", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submitted = svc.submit(singleStageIR(), { prompts: { "p-s": "prompt" } });
+      const submitted = await svc.submit(singleStageIR(), { prompts: { "p-s": "prompt" } });
       if (!submitted.ok) throw new Error("submit: " + JSON.stringify(submitted.diagnostics));
       const v1 = submitted.versionHash;
       const taskId = "t-b10";

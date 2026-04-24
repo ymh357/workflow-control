@@ -39,7 +39,7 @@ export function buildPipelineTools(deps: ToolsDeps): ToolDef[] {
             args.prompts && typeof args.prompts === "object"
               ? (args.prompts as Record<string, string>)
               : undefined;
-          const result = kernel.submit(args.ir, {
+          const result = await kernel.submit(args.ir, {
             parentHash: typeof args.parentHash === "string" ? args.parentHash : undefined,
             prompts,
           });

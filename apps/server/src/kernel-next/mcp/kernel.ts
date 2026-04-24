@@ -41,6 +41,7 @@ import {
   __resetOrchestratorLocksForTest,
 } from "../hot-update/migration-orchestrator.js";
 import { executeRollback } from "../hot-update/rollback.js";
+import { checkInlineScriptContracts } from "../script-compile/contract-check.js";
 import {
   computeHotUpdateStats,
   type StatsInput,
@@ -334,11 +335,17 @@ export class KernelService {
     return { ok: true, diagnostics: [] };
   }
 
-  /** Validate and, if ok, persist a new pipeline version with its prompts. */
-  submit(
+  /**
+   * Validate and, if ok, persist a new pipeline version with its prompts.
+   *
+   * Async because the D'-3 inline-script contract test (Layer 3) runs
+   * the script in-process with sampleInputs and awaits its return. All
+   * callers must await.
+   */
+  async submit(
     ir: unknown,
     options: { parentHash?: string; prompts?: Record<string, string> } = {},
-  ): SubmitResult {
+  ): Promise<SubmitResult> {
     const result = this.validate(ir);
     if (!result.ok) return { ok: false, diagnostics: result.diagnostics };
 
@@ -388,6 +395,22 @@ export class KernelService {
       }
     }
     if (diagnostics.length > 0) return { ok: false, diagnostics };
+
+    // D'-3 Layer 1+2+3: for every inline-source ScriptStage, compile the
+    // TS, reject off-whitelist imports, run with sampleInputs, verify
+    // output shape. Deterministic — no network, no randomness — so a
+    // pipeline that passes here stays passing on retry. Skipped when
+    // the pipeline has no inline scripts (common case) so this doesn't
+    // add latency to registry-only pipelines.
+    const hasInlineScript = pipeline.stages.some(
+      (s) => s.type === "script" && s.config.source === "inline",
+    );
+    if (hasInlineScript) {
+      const contractDiags = await checkInlineScriptContracts(pipeline);
+      if (contractDiags.length > 0) {
+        return { ok: false, diagnostics: contractDiags };
+      }
+    }
 
     const hash = pipelineVersionHash({ ir: pipeline, prompts });
 

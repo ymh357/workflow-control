@@ -474,6 +474,16 @@ export const DiagnosticSchema = z.object({
     // variant and this diagnostic will continue to apply to the moduleId
     // branch.
     "SCRIPT_MODULE_NOT_REGISTERED",
+    // D'-3 — inline script safety layers (submit-time Layer 1+2+3).
+    "SCRIPT_COMPILE_ERROR",                 // Layer 1 — tsc failed
+    "SCRIPT_IMPORT_NOT_WHITELISTED",        // Layer 2 — off-whitelist import
+    "SCRIPT_DYNAMIC_IMPORT_FORBIDDEN",      // Layer 2 — dynamic import() / require()
+    "SCRIPT_SAMPLE_INPUT_MISSING",          // Layer 3 — no sample for declared input port
+    "SCRIPT_SAMPLE_INPUT_UNEXPECTED",       // Layer 3 — sample key ∉ declared inputs
+    "SCRIPT_IMPORT_ERROR",                  // Layer 3 — emitted JS failed to import
+    "SCRIPT_CONTRACT_THROW",                // Layer 3 — script threw on sampleInputs
+    "SCRIPT_CONTRACT_BAD_RETURN",           // Layer 3 — run() returned non-object
+    "SCRIPT_CONTRACT_MISSING_OUTPUT",       // Layer 3 — declared output port missing in return
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

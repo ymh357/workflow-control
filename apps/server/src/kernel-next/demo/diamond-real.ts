@@ -74,7 +74,7 @@ export async function runOnce(opts: RunOnceOptions): Promise<RunOnceResult> {
   try {
     const gen = generatePipeline({ task: "diamond" });
     const service = new KernelService(db, { tscPath: opts.tscPath });
-    const submit = service.submit(gen.ir);
+    const submit = await service.submit(gen.ir);
     if (!submit.ok) {
       const msg = submit.diagnostics
         .map((d) => `${d.code}: ${d.message}`)

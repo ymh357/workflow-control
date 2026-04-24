@@ -42,12 +42,12 @@ function ir(promptRefs: Record<string, string>): PipelineIR {
 }
 
 describe("P6-11 audit: propose() persists prompts on the proposed version", () => {
-  it("carries base prompts forward when the caller doesn't supply any", () => {
+  it("carries base prompts forward when the caller doesn't supply any", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
       const baseRefs = { "a-prompt": "hello from A", "b-prompt": "hello from B" };
-      const submit = svc.submit(ir(baseRefs), { prompts: baseRefs });
+      const submit = await svc.submit(ir(baseRefs), { prompts: baseRefs });
       if (!submit.ok) throw new Error("submit failed");
 
       // Propose a structural-only change (add then remove no-op on config
@@ -119,12 +119,12 @@ describe("P6-11 audit: propose() persists prompts on the proposed version", () =
     }
   });
 
-  it("rejects proposals that introduce a new promptRef without matching content", () => {
+  it("rejects proposals that introduce a new promptRef without matching content", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
       const baseRefs = { "a-prompt": "hello from A", "b-prompt": "hello from B" };
-      const submit = svc.submit(ir(baseRefs), { prompts: baseRefs });
+      const submit = await svc.submit(ir(baseRefs), { prompts: baseRefs });
       if (!submit.ok) throw new Error("submit failed");
 
       const propose = svc.propose({
@@ -154,12 +154,12 @@ describe("P6-11 audit: propose() persists prompts on the proposed version", () =
     }
   });
 
-  it("prompts param overrides base content when provided", () => {
+  it("prompts param overrides base content when provided", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
       const baseRefs = { "a-prompt": "OLD content A", "b-prompt": "OLD content B" };
-      const submit = svc.submit(ir(baseRefs), { prompts: baseRefs });
+      const submit = await svc.submit(ir(baseRefs), { prompts: baseRefs });
       if (!submit.ok) throw new Error("submit failed");
 
       const propose = svc.propose({

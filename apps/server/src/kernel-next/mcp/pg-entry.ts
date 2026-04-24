@@ -105,7 +105,7 @@ export async function handleStartPipelineGenerator(
   let vh: string;
   try {
     const svc = new KernelService(deps.db, { skipTypeCheck: true });
-    const submitRes = svc.submit(loaded.ir, { prompts: loaded.prompts });
+    const submitRes = await svc.submit(loaded.ir, { prompts: loaded.prompts });
     if (!submitRes.ok) {
       return {
         ok: false,

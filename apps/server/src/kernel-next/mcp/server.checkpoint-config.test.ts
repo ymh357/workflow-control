@@ -42,7 +42,7 @@ function promptsForIR(ir: PipelineIR): Record<string, string> {
 }
 
 describe("run_pipeline MCP tool — checkpointConfig", () => {
-  it("inputSchema exposes checkpointConfig at the top level", () => {
+  it("inputSchema exposes checkpointConfig at the top level", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { surface: "external", skipTypeCheck: true });
@@ -57,7 +57,7 @@ describe("run_pipeline MCP tool — checkpointConfig", () => {
     initKernelNextSchema(db);
     const svc = new KernelService(db, { skipTypeCheck: true });
     const ir = diamondIR();
-    const submit = svc.submit(ir, { prompts: promptsForIR(ir) });
+    const submit = await svc.submit(ir, { prompts: promptsForIR(ir) });
     expect(submit.ok).toBe(true);
     if (!submit.ok) return;
 

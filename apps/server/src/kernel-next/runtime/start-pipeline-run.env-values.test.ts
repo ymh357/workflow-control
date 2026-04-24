@@ -45,7 +45,7 @@ describe("startPipelineRun: envValues persistence", () => {
   it("persists envValues to task_env_values when provided", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
     const ir = minimalIR("env-test");
-    const submitResult = svc.submit(ir, { prompts: { p: "test" } });
+    const submitResult = await svc.submit(ir, { prompts: { p: "test" } });
     if (!submitResult.ok) throw new Error(`submit failed: ${JSON.stringify(submitResult.diagnostics)}`);
 
     const result = await startPipelineRun({
@@ -66,7 +66,7 @@ describe("startPipelineRun: envValues persistence", () => {
   it("does not write to task_env_values when envValues omitted", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
     const ir = minimalIR("no-env");
-    const submitResult = svc.submit(ir, { prompts: { p: "test" } });
+    const submitResult = await svc.submit(ir, { prompts: { p: "test" } });
     if (!submitResult.ok) throw new Error(`submit failed`);
 
     const result = await startPipelineRun({
@@ -85,7 +85,7 @@ describe("startPipelineRun: envValues persistence", () => {
   it("does not write when envValues is an empty object", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
     const ir = minimalIR("empty-env");
-    const submitResult = svc.submit(ir, { prompts: { p: "test" } });
+    const submitResult = await svc.submit(ir, { prompts: { p: "test" } });
     if (!submitResult.ok) throw new Error(`submit failed`);
 
     const result = await startPipelineRun({

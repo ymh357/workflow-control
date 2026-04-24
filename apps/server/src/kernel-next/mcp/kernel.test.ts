@@ -27,14 +27,14 @@ function makeDb(): DatabaseSync {
 }
 
 describe("KernelService", () => {
-  it("validate accepts a clean diamond IR", () => {
+  it("validate accepts a clean diamond IR", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
     expect(svc.validate(diamondIR())).toEqual({ ok: true, diagnostics: [] });
     db.close();
   });
 
-  it("validate rejects with ZOD_PARSE_ERROR on malformed input", () => {
+  it("validate rejects with ZOD_PARSE_ERROR on malformed input", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
     const r = svc.validate({ name: "bad", stages: "not-an-array" });
@@ -43,7 +43,7 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("validate rejects with structural error (duplicate stage)", () => {
+  it("validate rejects with structural error (duplicate stage)", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
     const bad = diamondIR();
@@ -54,7 +54,7 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("validate rejects with STORE_SCHEMA_TYPE_MISMATCH when drift is introduced", () => {
+  it("validate rejects with STORE_SCHEMA_TYPE_MISMATCH when drift is introduced", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
     const ir = diamondIR();
@@ -77,7 +77,7 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("validate accepts store_schema that matches the stage outputs", () => {
+  it("validate accepts store_schema that matches the stage outputs", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
     const ir = diamondIR();
@@ -95,11 +95,11 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("submit persists a valid IR", () => {
+  it("submit persists a valid IR", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
     const prompts = diamondPrompts();
-    const r = svc.submit(diamondIR(), { prompts });
+    const r = await svc.submit(diamondIR(), { prompts });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     // Pipeline-level hash (IR + prompts), not the IR-only hash. The
@@ -111,12 +111,12 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("submit is idempotent (same IR returns same hash without re-insert)", () => {
+  it("submit is idempotent (same IR returns same hash without re-insert)", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
     const prompts = diamondPrompts();
-    const r1 = svc.submit(diamondIR(), { prompts });
-    const r2 = svc.submit(diamondIR(), { prompts });
+    const r1 = await svc.submit(diamondIR(), { prompts });
+    const r2 = await svc.submit(diamondIR(), { prompts });
     expect(r1.ok && r2.ok).toBe(true);
     if (!r1.ok || !r2.ok) return;
     expect(r1.versionHash).toBe(r2.versionHash);
@@ -125,7 +125,7 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("propose rejects unknown currentVersion", () => {
+  it("propose rejects unknown currentVersion", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
     const r = svc.propose({
@@ -139,10 +139,10 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("propose applies patch, persists new version, and records pending proposal", () => {
+  it("propose applies patch, persists new version, and records pending proposal", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup failed");
 
     // Remove stage D (the leaf) — valid structural patch.
@@ -173,10 +173,10 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("approveProposal flips pending → approved", () => {
+  it("approveProposal flips pending → approved", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup failed");
     const proposed = svc.propose({
       currentVersion: submitted.versionHash,
@@ -198,10 +198,10 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("rejectProposal flips pending → rejected and persists reason", () => {
+  it("rejectProposal flips pending → rejected and persists reason", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup failed");
     const proposed = svc.propose({
       currentVersion: submitted.versionHash,
@@ -223,7 +223,7 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("approveProposal rejects unknown proposalId", () => {
+  it("approveProposal rejects unknown proposalId", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
     const r = svc.approveProposal("nonexistent");
@@ -233,10 +233,10 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("approveProposal rejects an already-resolved proposal", () => {
+  it("approveProposal rejects an already-resolved proposal", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup failed");
     const proposed = svc.propose({
       currentVersion: submitted.versionHash,
@@ -258,10 +258,10 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("listProposals returns newest-first and filters by status", () => {
+  it("listProposals returns newest-first and filters by status", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup failed");
     const p1 = svc.propose({
       currentVersion: submitted.versionHash,
@@ -287,10 +287,10 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("propose fails validation when patch produces structurally invalid IR", () => {
+  it("propose fails validation when patch produces structurally invalid IR", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup failed");
 
     // Remove A; this makes all wires from A cascade-deleted, but B/C still
@@ -307,10 +307,10 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("propose(empty patch, with prompts override) succeeds; proposedVersion differs from base", () => {
+  it("propose(empty patch, with prompts override) succeeds; proposedVersion differs from base", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup submit failed");
 
     const firstPromptRef = Object.keys(diamondPrompts())[0]!;
@@ -326,10 +326,10 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("propose(empty patch, empty prompts) returns NO_OP_PROPOSAL", () => {
+  it("propose(empty patch, empty prompts) returns NO_OP_PROPOSAL", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup submit failed");
 
     const r = svc.propose({
@@ -343,10 +343,10 @@ describe("KernelService", () => {
     db.close();
   });
 
-  it("propose(idempotent patch, empty prompts) returns NO_OP_PROPOSAL", () => {
+  it("propose(idempotent patch, empty prompts) returns NO_OP_PROPOSAL", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup submit failed");
 
     // Find an agent stage and re-assign its promptRef to itself
@@ -371,7 +371,7 @@ describe("KernelService", () => {
 // exercise the three query/answer paths including GATE_NOT_FOUND,
 // GATE_ALREADY_ANSWERED, and GATE_ANSWER_INVALID diagnostics.
 describe("KernelService — gate lifecycle (A1.2a)", () => {
-  function seedGatePipeline(svc: KernelService) {
+  async function seedGatePipeline(svc: KernelService) {
     const ir = {
       name: "t",
       stages: [
@@ -389,7 +389,7 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
       ],
       wires: [{ from: { stage: "A", port: "x" }, to: { stage: "G", port: "x" } }],
     };
-    const submit = svc.submit(ir, { prompts: { p: "dummy" } });
+    const submit = await svc.submit(ir, { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("submit failed");
     return { ir, versionHash: submit.versionHash };
   }
@@ -404,11 +404,11 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
     return attemptId;
   }
 
-  it("createGate inserts a row; listGates returns it; answerGate resolves to the target", () => {
+  it("createGate inserts a row; listGates returns it; answerGate resolves to the target", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const { versionHash } = seedGatePipeline(svc);
+      const { versionHash } = await seedGatePipeline(svc);
       const attemptId = openAttempt(db, "task-1", versionHash, "G");
 
       const { gateId } = svc.createGate({
@@ -450,7 +450,7 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
     }
   });
 
-  it("answerGate with _default fallback routing", () => {
+  it("answerGate with _default fallback routing", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
@@ -475,7 +475,7 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
           { from: { source: "external" as const, port: "sig" }, to: { stage: "G", port: "__gate_signal" } },
         ],
       };
-      const submit = svc.submit(ir, { prompts: { p: "dummy" } });
+      const submit = await svc.submit(ir, { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
       const attemptId = openAttempt(db, "t1", submit.versionHash, "G");
       const { gateId } = svc.createGate({
@@ -491,7 +491,7 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
     }
   });
 
-  it("answerGate rejects unknown gateId", () => {
+  it("answerGate rejects unknown gateId", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
@@ -505,11 +505,11 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
     }
   });
 
-  it("answerGate is idempotent: second call yields GATE_ALREADY_ANSWERED", () => {
+  it("answerGate is idempotent: second call yields GATE_ALREADY_ANSWERED", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const { versionHash } = seedGatePipeline(svc);
+      const { versionHash } = await seedGatePipeline(svc);
       const attemptId = openAttempt(db, "t1", versionHash, "G");
       const { gateId } = svc.createGate({
         taskId: "t1", stageName: "G", attemptId,
@@ -527,11 +527,11 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
     }
   });
 
-  it("answerGate rejects an answer not in the routing table", () => {
+  it("answerGate rejects an answer not in the routing table", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const { versionHash } = seedGatePipeline(svc);
+      const { versionHash } = await seedGatePipeline(svc);
       const attemptId = openAttempt(db, "t1", versionHash, "G");
       const { gateId } = svc.createGate({
         taskId: "t1", stageName: "G", attemptId,
@@ -548,11 +548,11 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
     }
   });
 
-  it("listGates filters by taskId correctly", () => {
+  it("listGates filters by taskId correctly", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const { versionHash } = seedGatePipeline(svc);
+      const { versionHash } = await seedGatePipeline(svc);
       const a1 = openAttempt(db, "task-A", versionHash, "G");
       const a2 = openAttempt(db, "task-B", versionHash, "G");
       const g1 = svc.createGate({ taskId: "task-A", stageName: "G", attemptId: a1, question: { text: "?" } });
@@ -568,7 +568,7 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
 });
 
 describe("KernelService — getTaskStatus (A4)", () => {
-  function seedSmallPipeline(svc: KernelService): string {
+  async function seedSmallPipeline(svc: KernelService): Promise<string> {
     const ir = {
       name: "mini",
       stages: [
@@ -586,7 +586,7 @@ describe("KernelService — getTaskStatus (A4)", () => {
       ],
       wires: [{ from: { stage: "A", port: "x" }, to: { stage: "G", port: "x" } }],
     };
-    const submit = svc.submit(ir, { prompts: { p: "dummy" } });
+    const submit = await svc.submit(ir, { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("submit failed");
     return submit.versionHash;
   }
@@ -617,7 +617,7 @@ describe("KernelService — getTaskStatus (A4)", () => {
     return attemptId;
   }
 
-  it("not_found when no stage_attempts exist", () => {
+  it("not_found when no stage_attempts exist", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
@@ -629,11 +629,11 @@ describe("KernelService — getTaskStatus (A4)", () => {
     }
   });
 
-  it("gated when any pending gate_queue row exists, with pending list", () => {
+  it("gated when any pending gate_queue row exists, with pending list", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const hash = seedSmallPipeline(svc);
+      const hash = await seedSmallPipeline(svc);
       openAttempt(db, "t1", hash, "A", "success");
       const gAttempt = openAttempt(db, "t1", hash, "G", "running");
       const { gateId } = svc.createGate({
@@ -654,11 +654,11 @@ describe("KernelService — getTaskStatus (A4)", () => {
     }
   });
 
-  it("running when at least one attempt is running and no pending gates", () => {
+  it("running when at least one attempt is running and no pending gates", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const hash = seedSmallPipeline(svc);
+      const hash = await seedSmallPipeline(svc);
       openAttempt(db, "t1", hash, "A", "running");
       expect(svc.getTaskStatus("t1")).toEqual({
         ok: true, status: "running", taskId: "t1",
@@ -687,11 +687,11 @@ describe("KernelService — getTaskStatus (A4)", () => {
     ).run(taskId, versionHash, final_state, reason, Date.now());
   }
 
-  it("completed when task_finals says completed (authoritative)", () => {
+  it("completed when task_finals says completed (authoritative)", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const hash = seedSmallPipeline(svc);
+      const hash = await seedSmallPipeline(svc);
       openAttempt(db, "t1", hash, "A", "success");
       openAttempt(db, "t1", hash, "G", "success");
       seedFinal(db, "t1", hash, "completed");
@@ -703,11 +703,11 @@ describe("KernelService — getTaskStatus (A4)", () => {
     }
   });
 
-  it("failed when task_finals says failed (authoritative)", () => {
+  it("failed when task_finals says failed (authoritative)", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const hash = seedSmallPipeline(svc);
+      const hash = await seedSmallPipeline(svc);
       openAttempt(db, "t1", hash, "A", "success");
       openAttempt(db, "t1", hash, "G", "error");
       seedFinal(db, "t1", hash, "failed", "error");
@@ -719,11 +719,11 @@ describe("KernelService — getTaskStatus (A4)", () => {
     }
   });
 
-  it("orphaned when stage_attempts exist but no task_finals and nothing is running", () => {
+  it("orphaned when stage_attempts exist but no task_finals and nothing is running", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const hash = seedSmallPipeline(svc);
+      const hash = await seedSmallPipeline(svc);
       // All attempts say success but runner never wrote task_finals —
       // classic "runner crashed after writing the last success but
       // before finally". Must NOT report completed.
@@ -737,11 +737,11 @@ describe("KernelService — getTaskStatus (A4)", () => {
     }
   });
 
-  it("orphaned when all attempts succeeded but task_finals write race'd (runner SIGKILL case)", () => {
+  it("orphaned when all attempts succeeded but task_finals write race'd (runner SIGKILL case)", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const hash = seedSmallPipeline(svc);
+      const hash = await seedSmallPipeline(svc);
       openAttempt(db, "t1", hash, "A", "success");
       openAttempt(db, "t1", hash, "G", "error");
       // Attempts say failed shape but no task_finals. Orphaned, not failed.
@@ -753,11 +753,11 @@ describe("KernelService — getTaskStatus (A4)", () => {
     }
   });
 
-  it("'gated' trumps 'running' — gate-stage attempt stays running while gated", () => {
+  it("'gated' trumps 'running' — gate-stage attempt stays running while gated", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const hash = seedSmallPipeline(svc);
+      const hash = await seedSmallPipeline(svc);
       const att = openAttempt(db, "t1", hash, "G", "running");
       svc.createGate({
         taskId: "t1", stageName: "G", attemptId: att,
@@ -770,11 +770,11 @@ describe("KernelService — getTaskStatus (A4)", () => {
     }
   });
 
-  it("answered gates don't keep a task in 'gated' status — falls back to orphaned without task_finals", () => {
+  it("answered gates don't keep a task in 'gated' status — falls back to orphaned without task_finals", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const hash = seedSmallPipeline(svc);
+      const hash = await seedSmallPipeline(svc);
       const att = openAttempt(db, "t1", hash, "G", "success");
       const { gateId } = svc.createGate({
         taskId: "t1", stageName: "G", attemptId: att,
@@ -789,11 +789,11 @@ describe("KernelService — getTaskStatus (A4)", () => {
     }
   });
 
-  it("latest attempt wins — retry that succeeds does NOT fabricate completed without task_finals", () => {
+  it("latest attempt wins — retry that succeeds does NOT fabricate completed without task_finals", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const hash = seedSmallPipeline(svc);
+      const hash = await seedSmallPipeline(svc);
       openAttempt(db, "t1", hash, "A", "error", 1);
       openAttempt(db, "t1", hash, "A", "success", 2);
       openAttempt(db, "t1", hash, "G", "success");
@@ -805,11 +805,11 @@ describe("KernelService — getTaskStatus (A4)", () => {
     }
   });
 
-  it("latest attempt wins AND task_finals says completed — real happy-path-after-retry shape", () => {
+  it("latest attempt wins AND task_finals says completed — real happy-path-after-retry shape", async () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const hash = seedSmallPipeline(svc);
+      const hash = await seedSmallPipeline(svc);
       openAttempt(db, "t1", hash, "A", "error", 1);
       openAttempt(db, "t1", hash, "A", "success", 2);
       openAttempt(db, "t1", hash, "G", "success");
@@ -878,7 +878,7 @@ describe("KernelService.answerGate — reject rollback kind", () => {
     return { db, gateId };
   }
 
-  it("returns kind='rejected' with affectedStages when reject target is upstream", () => {
+  it("returns kind='rejected' with affectedStages when reject target is upstream", async () => {
     const { db, gateId } = setupRejectReadyDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
@@ -896,7 +896,7 @@ describe("KernelService.answerGate — reject rollback kind", () => {
     }
   });
 
-  it("returns kind='answered' for approve (non-rollback)", () => {
+  it("returns kind='answered' for approve (non-rollback)", async () => {
     const { db, gateId } = setupRejectReadyDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
@@ -925,12 +925,12 @@ function agentOnlyIR(): PipelineIR {
 }
 
 describe("KernelService.submit with prompts", () => {
-  it("accepts { ir, prompts } and records pipeline_prompt_refs", () => {
+  it("accepts { ir, prompts } and records pipeline_prompt_refs", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const svc = new KernelService(db, { skipTypeCheck: true });
     const ir = agentOnlyIR();
-    const res = svc.submit(ir, { prompts: { a: "HELLO" } });
+    const res = await svc.submit(ir, { prompts: { a: "HELLO" } });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const rows = db
@@ -939,7 +939,7 @@ describe("KernelService.submit with prompts", () => {
     expect(rows.length).toBe(1);
   });
 
-  it("dedups content across two submits with the same prompt text", () => {
+  it("dedups content across two submits with the same prompt text", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const svc = new KernelService(db, { skipTypeCheck: true });
@@ -951,41 +951,41 @@ describe("KernelService.submit with prompts", () => {
     expect(contentRows.length).toBe(1);
   });
 
-  it("is idempotent on repeat submit of same { ir, prompts }", () => {
+  it("is idempotent on repeat submit of same { ir, prompts }", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const svc = new KernelService(db, { skipTypeCheck: true });
     const ir = agentOnlyIR();
-    const r1 = svc.submit(ir, { prompts: { a: "X" } });
-    const r2 = svc.submit(ir, { prompts: { a: "X" } });
+    const r1 = await svc.submit(ir, { prompts: { a: "X" } });
+    const r2 = await svc.submit(ir, { prompts: { a: "X" } });
     expect(r1.ok && r2.ok && r1.versionHash === r2.versionHash).toBe(true);
   });
 
-  it("emits PROMPT_REF_MISSING when an AgentStage promptRef is not in prompts", () => {
+  it("emits PROMPT_REF_MISSING when an AgentStage promptRef is not in prompts", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const res = svc.submit(agentOnlyIR(), { prompts: {} });
+    const res = await svc.submit(agentOnlyIR(), { prompts: {} });
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.diagnostics.some((d) => d.code === "PROMPT_REF_MISSING")).toBe(true);
   });
 
-  it("emits PROMPT_REF_UNUSED when prompts contains keys no AgentStage references", () => {
+  it("emits PROMPT_REF_UNUSED when prompts contains keys no AgentStage references", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const res = svc.submit(agentOnlyIR(), { prompts: { a: "X", orphan: "Y" } });
+    const res = await svc.submit(agentOnlyIR(), { prompts: { a: "X", orphan: "Y" } });
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.diagnostics.some((d) => d.code === "PROMPT_REF_UNUSED")).toBe(true);
   });
 
-  it("emits PROMPT_CONTENT_EMPTY on whitespace-only prompt content", () => {
+  it("emits PROMPT_CONTENT_EMPTY on whitespace-only prompt content", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const res = svc.submit(agentOnlyIR(), { prompts: { a: "   \n  " } });
+    const res = await svc.submit(agentOnlyIR(), { prompts: { a: "   \n  " } });
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.diagnostics.some((d) => d.code === "PROMPT_CONTENT_EMPTY")).toBe(true);
@@ -993,21 +993,21 @@ describe("KernelService.submit with prompts", () => {
 
   // Allow 'system/*' fragments (referenced by userland prompt assembly,
   // not directly by AgentStage.promptRef)
-  it("allows 'system/*' prompts even if no AgentStage references them directly", () => {
+  it("allows 'system/*' prompts even if no AgentStage references them directly", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const res = svc.submit(agentOnlyIR(), {
+    const res = await svc.submit(agentOnlyIR(), {
       prompts: { a: "X", "system/fragment": "INVARIANT CONTENT" },
     });
     expect(res.ok).toBe(true);
   });
 
-  it("allows 'global-constraints' prompt even if no AgentStage references it (legacy claude_md.global)", () => {
+  it("allows 'global-constraints' prompt even if no AgentStage references it (legacy claude_md.global)", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const res = svc.submit(agentOnlyIR(), {
+    const res = await svc.submit(agentOnlyIR(), {
       prompts: { a: "X", "global-constraints": "RULES" },
     });
     expect(res.ok).toBe(true);
@@ -1021,11 +1021,11 @@ describe("KernelService.submit with prompts", () => {
 // ---------------------------------------------------------------------------
 
 describe("KernelService — Stage 5A autoApprove", () => {
-  it("autoApprove=true on promptOnly patch → status='approved' in same tx", () => {
+  it("autoApprove=true on promptOnly patch → status='approved' in same tx", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
     const prompts = diamondPrompts();
-    const submitted = svc.submit(diamondIR(), { prompts });
+    const submitted = await svc.submit(diamondIR(), { prompts });
     if (!submitted.ok) throw new Error("submit failed");
 
     // Pick the first agent stage so we can swap its promptRef.
@@ -1053,10 +1053,10 @@ describe("KernelService — Stage 5A autoApprove", () => {
     db.close();
   });
 
-  it("autoApprove=true on structural patch → status='pending' (not applied)", () => {
+  it("autoApprove=true on structural patch → status='pending' (not applied)", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
     // remove_stage on a leaf of the diamond = structural
     const leaf = diamondIR().stages[diamondIR().stages.length - 1]!;
@@ -1084,10 +1084,10 @@ describe("KernelService — Stage 5A autoApprove", () => {
     db.close();
   });
 
-  it("diagnostic_json on success stores __kind=proposal-success-v1 + diff + impact + safeRange", () => {
+  it("diagnostic_json on success stores __kind=proposal-success-v1 + diff + impact + safeRange", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent");
     if (!firstAgent || firstAgent.type !== "agent") throw new Error("no agent stage");
@@ -1114,10 +1114,10 @@ describe("KernelService — Stage 5A autoApprove", () => {
 });
 
 describe("KernelService — Stage 5A dryRunProposal", () => {
-  it("returns diff+impact+safeRange without DB writes", () => {
+  it("returns diff+impact+safeRange without DB writes", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent");
     if (!firstAgent || firstAgent.type !== "agent") throw new Error("no agent stage");
@@ -1166,7 +1166,7 @@ describe("KernelService — Stage 5B rollbackHotUpdate delegator", () => {
 });
 
 describe("KernelService — Stage 5A updateRegistryPipeline", () => {
-  it("valid IR overwrites registry file + inserts pipeline_versions row", () => {
+  it("valid IR overwrites registry file + inserts pipeline_versions row", async () => {
     const nodeFs = require("node:fs") as typeof import("node:fs");
     const nodeOs = require("node:os") as typeof import("node:os");
     const nodePath = require("node:path") as typeof import("node:path");
@@ -1197,7 +1197,7 @@ describe("KernelService — Stage 5A updateRegistryPipeline", () => {
     }
   });
 
-  it("nonexistent pipelineName directory → REGISTRY_PIPELINE_NOT_FOUND", () => {
+  it("nonexistent pipelineName directory → REGISTRY_PIPELINE_NOT_FOUND", async () => {
     const nodeFs = require("node:fs") as typeof import("node:fs");
     const nodeOs = require("node:os") as typeof import("node:os");
     const nodePath = require("node:path") as typeof import("node:path");
@@ -1313,12 +1313,12 @@ describe("KernelService.getGateContext — B5", () => {
     return attemptId;
   }
 
-  it("returns question + answerOptions (minus _default) + upstream outputs", () => {
+  it("returns question + answerOptions (minus _default) + upstream outputs", async () => {
     const db = new DatabaseSync(":memory:");
     try {
       initKernelNextSchema(db);
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submit = svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
+      const submit = await svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed: " + JSON.stringify(submit.diagnostics));
 
       seedUpstreamOutputs(db, "t1", submit.versionHash);
@@ -1350,7 +1350,7 @@ describe("KernelService.getGateContext — B5", () => {
     }
   });
 
-  it("unknown gate -> GATE_NOT_FOUND", () => {
+  it("unknown gate -> GATE_NOT_FOUND", async () => {
     const db = new DatabaseSync(":memory:");
     try {
       initKernelNextSchema(db);
@@ -1364,12 +1364,12 @@ describe("KernelService.getGateContext — B5", () => {
     }
   });
 
-  it("already-answered gate still returns 200 with answer and answeredAt populated", () => {
+  it("already-answered gate still returns 200 with answer and answeredAt populated", async () => {
     const db = new DatabaseSync(":memory:");
     try {
       initKernelNextSchema(db);
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submit = svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
+      const submit = await svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
       seedUpstreamOutputs(db, "t2", submit.versionHash);
       const gateAttempt = openGateAttempt(db, "t2", submit.versionHash);
@@ -1390,7 +1390,7 @@ describe("KernelService.getGateContext — B5", () => {
     }
   });
 
-  it("gate with zero stage upstream (pure external-feed) returns upstreams=[]", () => {
+  it("gate with zero stage upstream (pure external-feed) returns upstreams=[]", async () => {
     const db = new DatabaseSync(":memory:");
     try {
       initKernelNextSchema(db);
@@ -1416,7 +1416,7 @@ describe("KernelService.getGateContext — B5", () => {
             to: { stage: "G", port: "__gate_signal" } },
         ],
       };
-      const submit = svc.submit(ir, { prompts: { p: "dummy" } });
+      const submit = await svc.submit(ir, { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
       const gateAttempt = openGateAttempt(db, "t3", submit.versionHash);
       const { gateId } = svc.createGate({
@@ -1434,12 +1434,12 @@ describe("KernelService.getGateContext — B5", () => {
     }
   });
 
-  it("superseded attempts are ignored; only success attempts' latest port values surface", () => {
+  it("superseded attempts are ignored; only success attempts' latest port values surface", async () => {
     const db = new DatabaseSync(":memory:");
     try {
       initKernelNextSchema(db);
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submit = svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
+      const submit = await svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
 
       // 1) Superseded attempt with an early "wrong" value.
@@ -1489,12 +1489,12 @@ describe("KernelService.getGateContext — B5", () => {
     }
   });
 
-  it("corrupted value_json surfaces as value=null without throwing", () => {
+  it("corrupted value_json surfaces as value=null without throwing", async () => {
     const db = new DatabaseSync(":memory:");
     try {
       initKernelNextSchema(db);
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submit = svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
+      const submit = await svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
 
       const attemptId = "a-" + Math.random().toString(36).slice(2, 10);
@@ -1536,12 +1536,12 @@ describe("KernelService.getGateContext — B5", () => {
   // aggregate. Defensive CASE ordering over sa.kind keeps fanout_aggregate
   // winning deterministically — mirrors the lineage / readLatestPort
   // fixes from commit f552b79.
-  it("upstream fanout stage: returns the aggregate T[] value, not a preserved fanout_element scalar", () => {
+  it("upstream fanout stage: returns the aggregate T[] value, not a preserved fanout_element scalar", async () => {
     const db = new DatabaseSync(":memory:");
     try {
       initKernelNextSchema(db);
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submit = svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
+      const submit = await svc.submit(gateCtxIR(), { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
 
       // Seed one preserved fanout_element success row with a scalar

@@ -56,13 +56,13 @@ function openAttempt(
 describe("REST /api/kernel/tasks/:taskId/status", () => {
   let db: DatabaseSync;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     __setKernelNextDbForTest(db);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     __setKernelNextDbForTest(undefined);
     db.close();
   });
@@ -76,7 +76,7 @@ describe("REST /api/kernel/tasks/:taskId/status", () => {
 
   it("returns 200 + running when an attempt is running", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(seedIR(), { prompts: { p: "dummy" } });
+    const submit = await svc.submit(seedIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-run", submit.versionHash, "A", "running");
     const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-run/status"));
@@ -86,7 +86,7 @@ describe("REST /api/kernel/tasks/:taskId/status", () => {
 
   it("returns 200 + gated with pending[] when a gate is open", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(seedIR(), { prompts: { p: "dummy" } });
+    const submit = await svc.submit(seedIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-gt", submit.versionHash, "A", "success");
     const gAtt = openAttempt(db, "t-gt", submit.versionHash, "G", "running");
@@ -108,7 +108,7 @@ describe("REST /api/kernel/tasks/:taskId/status", () => {
 
   it("returns 200 + completed when task_finals says completed (post-audit: authoritative source)", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(seedIR(), { prompts: { p: "dummy" } });
+    const submit = await svc.submit(seedIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-ok", submit.versionHash, "A", "success");
     openAttempt(db, "t-ok", submit.versionHash, "G", "success");
@@ -123,7 +123,7 @@ describe("REST /api/kernel/tasks/:taskId/status", () => {
 
   it("returns 200 + orphaned when stage_attempts say error but no task_finals (crashed runner case)", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(seedIR(), { prompts: { p: "dummy" } });
+    const submit = await svc.submit(seedIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-err", submit.versionHash, "A", "error");
     const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-err/status"));
@@ -133,7 +133,7 @@ describe("REST /api/kernel/tasks/:taskId/status", () => {
 
   it("returns 200 + failed when task_finals says failed (authoritative)", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(seedIR(), { prompts: { p: "dummy" } });
+    const submit = await svc.submit(seedIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-err2", submit.versionHash, "A", "error");
     db.prepare(
@@ -165,26 +165,26 @@ function linearIR(): PipelineIR {
 describe("REST POST /api/kernel/tasks/:taskId/migrate", () => {
   let db: DatabaseSync;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     __setKernelNextDbForTest(db);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     __setKernelNextDbForTest(undefined);
     db.close();
   });
 
   // Helper: seed v1 + approved proposal with rerunFrom + task opt-in list,
   // then return the ids needed to exercise the migrate endpoint.
-  function seedApprovedProposal(opts: {
+  async function seedApprovedProposal(opts: {
     taskId: string;
     migrateList: "all" | "none" | string[];
     rerunFrom?: string;
-  }): { v1: string; proposalId: string; proposedVersion: string } {
+  }): Promise<{ v1: string; proposalId: string; proposedVersion: string }> {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(linearIR(), { prompts: { p: "dummy" } });
+    const submit = await svc.submit(linearIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     const v1 = submit.versionHash;
     openAttempt(db, opts.taskId, v1, "A", "success");
@@ -206,7 +206,7 @@ describe("REST POST /api/kernel/tasks/:taskId/migrate", () => {
   }
 
   it("returns 200 + migration result on the happy path", async () => {
-    const { proposalId, proposedVersion, v1 } = seedApprovedProposal({
+    const { proposalId, proposedVersion, v1 } = await seedApprovedProposal({
       taskId: "t-mig1", migrateList: ["t-mig1"], rerunFrom: "B",
     });
     const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-mig1/migrate", {
@@ -242,7 +242,7 @@ describe("REST POST /api/kernel/tasks/:taskId/migrate", () => {
   it("returns 409 when the proposal is not approved yet (still pending)", async () => {
     // Build a pending proposal manually without approveProposal.
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(linearIR(), { prompts: { p: "dummy" } });
+    const submit = await svc.submit(linearIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-p", submit.versionHash, "A", "success");
     const prop = svc.propose({
@@ -267,7 +267,7 @@ describe("REST POST /api/kernel/tasks/:taskId/migrate", () => {
   it("returns 409 when the task is not in the proposal's migrateRunningTasks list", async () => {
     // Approve a proposal whose migrate list is ['other-task'], then try
     // to migrate t-outsider against it.
-    const { proposalId } = seedApprovedProposal({
+    const { proposalId } = await seedApprovedProposal({
       taskId: "t-other", migrateList: ["t-other"], rerunFrom: "B",
     });
     // Give t-outsider an attempt so its error path isn't the "no attempts" one.
@@ -314,13 +314,13 @@ describe("REST POST /api/kernel/tasks/:taskId/migrate", () => {
 describe("REST POST /api/kernel/tasks/:taskId/rollback", () => {
   let db: DatabaseSync;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     __setKernelNextDbForTest(db);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     __setKernelNextDbForTest(undefined);
     db.close();
   });
@@ -353,7 +353,7 @@ describe("REST POST /api/kernel/tasks/:taskId/rollback", () => {
     // Seed a task that has an attempt but no hot_update_events — rollback
     // should fail with VERSION_NOT_IN_HISTORY.
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submit = svc.submit(linearIR(), { prompts: { p: "dummy" } });
+    const submit = await svc.submit(linearIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
     openAttempt(db, "t-rb-nohist", submit.versionHash, "A", "success");
     const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-rb-nohist/rollback", {

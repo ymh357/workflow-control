@@ -46,7 +46,7 @@ describe("GET /api/kernel/pipelines", () => {
 
   it("returns pipelines with their latest version", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup submit failed");
 
     const app = buildApp();
@@ -64,7 +64,7 @@ describe("GET /api/kernel/pipelines", () => {
 
   it("returns the newest version when multiple versions exist for one pipeline", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const first = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const first = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!first.ok) throw new Error("submit 1 failed");
 
     const firstPromptRef = Object.keys(diamondPrompts())[0]!;
@@ -112,7 +112,7 @@ describe("GET /api/kernel/pipelines/:versionHash", () => {
 
   it("returns ir + prompts + parentHash + createdAt for a known version", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup submit failed");
 
     const app = buildApp();

@@ -65,7 +65,7 @@ describe("executeRollback", () => {
   it("identical current and target IR → ROLLBACK_EMPTY_DIFF", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
 
     seedAttempt(db, "t-eq", submitted.versionHash, "A", "success");
@@ -93,7 +93,7 @@ describe("executeRollback", () => {
   it("forward then rollback: task resumes from divergence stage", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const v1 = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const v1 = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!v1.ok) throw new Error("submit v1 failed");
 
     // Seed lineage on v1 (all diamond stages complete)

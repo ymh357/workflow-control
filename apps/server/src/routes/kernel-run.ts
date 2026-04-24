@@ -112,12 +112,12 @@ kernelRunRoute.post("/kernel/tasks/run", async (c) => {
 // runtime registry — SQLite is the only lookup path for real pipelines.
 // Mock pipelines (diamond family) are seeded on-demand by
 // startPipelineRun via MOCK_HANDLER_REGISTRY.
-function seedBuiltinPipelineByName(pipelineDir: string): void {
+async function seedBuiltinPipelineByName(pipelineDir: string): Promise<void> {
   try {
     const loaded = loadBuiltinPipelineIR(pipelineDir);
     const db = getKernelNextDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const res = svc.submit(loaded.ir, { prompts: loaded.prompts });
+    const res = await svc.submit(loaded.ir, { prompts: loaded.prompts });
     if (!res.ok) {
       throw new Error(
         `seedBuiltinPipelineByName('${pipelineDir}'): submit failed: ${res.diagnostics.map((d) => `${d.code}: ${d.message ?? ""}`).join("; ")}`,
@@ -132,8 +132,8 @@ function seedBuiltinPipelineByName(pipelineDir: string): void {
   }
 }
 
-seedBuiltinPipelineByName("smoke-test");
-seedBuiltinPipelineByName("tech-research-collector");
-seedBuiltinPipelineByName("tech-research-writer");
-seedBuiltinPipelineByName("pipeline-generator");
-seedBuiltinPipelineByName("pr-description-generator");
+void seedBuiltinPipelineByName("smoke-test");
+void seedBuiltinPipelineByName("tech-research-collector");
+void seedBuiltinPipelineByName("tech-research-writer");
+void seedBuiltinPipelineByName("pipeline-generator");
+void seedBuiltinPipelineByName("pr-description-generator");

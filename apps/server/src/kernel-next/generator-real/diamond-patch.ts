@@ -157,7 +157,7 @@ async function runOnce(
   try {
     // Seed baseline diamond from mock generator.
     const svc = new KernelService(db, { tscPath });
-    const submit = svc.submit(diamondIR());
+    const submit = await svc.submit(diamondIR());
     if (!submit.ok) throw new Error("failed to seed baseline diamond");
     const baseVersion = submit.versionHash;
 

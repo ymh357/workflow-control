@@ -58,7 +58,7 @@ describe("rollback real-resume e2e (no startRunnerOverride)", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+      const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
       if (!submitted.ok) throw new Error("submit: " + JSON.stringify(submitted.diagnostics));
       const v1 = submitted.versionHash;
 

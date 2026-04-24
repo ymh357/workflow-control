@@ -64,7 +64,7 @@ describe("run_pipeline MCP tool integration", () => {
     initKernelNextSchema(db);
     const svc = new KernelService(db, { skipTypeCheck: true });
     const ir = diamondIR();
-    const submit = svc.submit(ir, { prompts: promptsForIR(ir) });
+    const submit = await svc.submit(ir, { prompts: promptsForIR(ir) });
     expect(submit.ok).toBe(true);
     if (!submit.ok) return;
 

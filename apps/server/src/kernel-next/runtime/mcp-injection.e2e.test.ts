@@ -71,7 +71,7 @@ describe("D1 external MCP injection: end-to-end", () => {
   it("envValues flow from run_pipeline through task_env_values into expanded MCP server and SDK options", async () => {
     const ir = irWithGithubMcp("mcp-e2e");
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitResult = svc.submit(ir, { prompts: { p: "test" } });
+    const submitResult = await svc.submit(ir, { prompts: { p: "test" } });
     if (!submitResult.ok) {
       throw new Error(`submit failed: ${JSON.stringify(submitResult.diagnostics)}`);
     }
@@ -123,7 +123,7 @@ describe("D1 external MCP injection: end-to-end", () => {
     expect(opts.mcpServers!.github).toEqual(expanded.github);
   });
 
-  it("missing envValue causes expansion to throw McpEnvExpansionError with MCP_ENV_MISSING semantics", () => {
+  it("missing envValue causes expansion to throw McpEnvExpansionError with MCP_ENV_MISSING semantics", async () => {
     const decls: McpServerDecl[] = [
       {
         name: "github",
@@ -166,7 +166,7 @@ describe("D1 external MCP injection: end-to-end", () => {
     } as PipelineIR;
 
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitResult = svc.submit(ir, { prompts: { p: "test" } });
+    const submitResult = await svc.submit(ir, { prompts: { p: "test" } });
     if (!submitResult.ok) {
       throw new Error(`submit failed: ${JSON.stringify(submitResult.diagnostics)}`);
     }
@@ -190,7 +190,7 @@ describe("D1 external MCP injection: end-to-end", () => {
     expect(agentStage.config.mcpServers).toBeUndefined();
   });
 
-  it("multiple MCPs in one stage expand independently and all merge into SDK options", () => {
+  it("multiple MCPs in one stage expand independently and all merge into SDK options", async () => {
     const decls: McpServerDecl[] = [
       {
         name: "github",

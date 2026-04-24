@@ -11,6 +11,7 @@
 export type ScriptTerminationReason =
   | "natural_completion"
   | "error"
+  | "compile_error"
   | "module_not_found"
   | "superseded";
 

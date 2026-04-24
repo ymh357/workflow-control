@@ -84,7 +84,7 @@ describe("B17 full E2E: fanout run → migrate → re-run skips preserved indice
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submitted = svc.submit(fanoutIR(), { prompts: fanoutPromptsV1() });
+      const submitted = await svc.submit(fanoutIR(), { prompts: fanoutPromptsV1() });
       if (!submitted.ok) throw new Error("submit failed: " + JSON.stringify(submitted.diagnostics));
       const v1 = submitted.versionHash;
       const taskId = "t-e2e-1";
@@ -188,7 +188,7 @@ describe("B17 full E2E: fanout run → migrate → re-run skips preserved indice
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submitted = svc.submit(fanoutIR(), { prompts: fanoutPromptsV1() });
+      const submitted = await svc.submit(fanoutIR(), { prompts: fanoutPromptsV1() });
       if (!submitted.ok) throw new Error("submit failed: " + JSON.stringify(submitted.diagnostics));
       const v1 = submitted.versionHash;
       const taskId = "t-e2e-2";

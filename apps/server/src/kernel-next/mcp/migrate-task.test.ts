@@ -99,7 +99,7 @@ describe("A8: propose rerunFrom + migrateRunningTasks persistence", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submit = svc.submit(linearIR(), { prompts: { p: "dummy" } });
+      const submit = await svc.submit(linearIR(), { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
 
       // Patch: change B's config.promptRef (triggers new version).
@@ -133,7 +133,7 @@ describe("A8: propose rerunFrom + migrateRunningTasks persistence", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submit = svc.submit(linearIR(), { prompts: { p: "dummy" } });
+      const submit = await svc.submit(linearIR(), { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
       const result = svc.propose({
         currentVersion: submit.versionHash,
@@ -153,7 +153,7 @@ describe("A8: propose rerunFrom + migrateRunningTasks persistence", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submit = svc.submit(linearIR(), { prompts: { p: "dummy" } });
+      const submit = await svc.submit(linearIR(), { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
       svc.propose({
         currentVersion: submit.versionHash,
@@ -174,7 +174,7 @@ describe("A8: migrateTask opt-in guard", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submit = svc.submit(linearIR(), { prompts: { p: "dummy" } });
+      const submit = await svc.submit(linearIR(), { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
       seedAttempts(db, "t1", submit.versionHash, [{ name: "A", status: "success" }]);
 
@@ -215,7 +215,7 @@ describe("A8: migrateTask opt-in guard", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submit = svc.submit(linearIR(), { prompts: { p: "dummy" } });
+      const submit = await svc.submit(linearIR(), { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
       const prop = svc.propose({
         currentVersion: submit.versionHash,
@@ -243,7 +243,7 @@ describe("A8: migrateTask happy path", () => {
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submit = svc.submit(linearIR(), { prompts: { p: "dummy" } });
+      const submit = await svc.submit(linearIR(), { prompts: { p: "dummy" } });
       if (!submit.ok) throw new Error("submit failed");
       seedAttempts(db, "t-any", submit.versionHash, [{ name: "A", status: "success" }]);
 

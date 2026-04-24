@@ -109,7 +109,7 @@ describe("B9 full — executeMigration resets owned worktree to before_sha", () 
     try {
       await initRepo(repo);
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+      const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
       if (!submitted.ok) throw new Error("submit: " + JSON.stringify(submitted.diagnostics));
       const v1 = submitted.versionHash;
       const taskId = "t-b9";
@@ -194,7 +194,7 @@ describe("B9 full — executeMigration resets owned worktree to before_sha", () 
     try {
       await initRepo(repo);
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+      const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
       if (!submitted.ok) throw new Error("submit failed");
       const v1 = submitted.versionHash;
       const taskId = "t-no-ownership";
@@ -252,7 +252,7 @@ describe("B9 full — executeMigration resets owned worktree to before_sha", () 
     const db = makeDb();
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+      const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
       if (!submitted.ok) throw new Error("submit failed");
       const v1 = submitted.versionHash;
       const taskId = "t-unavail";
@@ -303,7 +303,7 @@ describe("B9 full — executeMigration resets owned worktree to before_sha", () 
     try {
       await initRepo(repo);
       const svc = new KernelService(db, { skipTypeCheck: true });
-      const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+      const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
       if (!submitted.ok) throw new Error("submit failed");
       const v1 = submitted.versionHash;
       const taskId = "t-null-sha";

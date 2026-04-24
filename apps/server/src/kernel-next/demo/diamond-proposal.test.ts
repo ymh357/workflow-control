@@ -68,7 +68,7 @@ describe("P2.4 end-to-end proposal acceptance", () => {
     const app = buildApp();
 
     // --- 1. Submit baseline pipeline V1 ---
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     expect(submitted.ok).toBe(true);
     if (!submitted.ok) return;
     const versionV1 = submitted.versionHash;
@@ -196,7 +196,7 @@ describe("P2.4 end-to-end proposal acceptance", () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
     const app = buildApp();
 
-    const v1 = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const v1 = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!v1.ok) throw new Error("submit failed");
     const proposed = svc.propose({
       currentVersion: v1.versionHash,

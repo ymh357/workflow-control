@@ -66,7 +66,7 @@ export async function runDemo(options: { skipTypeCheck?: boolean; tscPath?: stri
     for (const s of gen.ir.stages) {
       if (s.type === "agent" && s.config.promptRef) demoPrompts[s.config.promptRef] = "dummy";
     }
-    const submit = kernel.submit(gen.ir, { prompts: demoPrompts });
+    const submit = await kernel.submit(gen.ir, { prompts: demoPrompts });
     log({
       step: "1. submit_pipeline",
       ok:

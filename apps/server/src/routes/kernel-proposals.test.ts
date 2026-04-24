@@ -26,9 +26,9 @@ function diamondPrompts(): Record<string, string> {
   return out;
 }
 
-function seedProposal(db: DatabaseSync, actor = "ai:test"): { proposalId: string; baseVersion: string } {
+async function seedProposal(db: DatabaseSync, actor = "ai:test"): Promise<{ proposalId: string; baseVersion: string }> {
   const svc = new KernelService(db, { skipTypeCheck: true });
-  const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+  const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
   if (!submitted.ok) throw new Error("setup submit failed");
   const proposed = svc.propose({
     currentVersion: submitted.versionHash,
@@ -42,13 +42,13 @@ function seedProposal(db: DatabaseSync, actor = "ai:test"): { proposalId: string
 describe("REST /api/kernel/proposals", () => {
   let db: DatabaseSync;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     __setKernelNextDbForTest(db);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     __setKernelNextDbForTest(undefined);
     db.close();
   });
@@ -61,11 +61,11 @@ describe("REST /api/kernel/proposals", () => {
   });
 
   it("GET /api/kernel/proposals returns newest-first, filters by status", async () => {
-    const { proposalId: p1 } = seedProposal(db, "ai:a");
+    const { proposalId: p1 } = await seedProposal(db, "ai:a");
 
     // Second proposal with a different patch to avoid version-hash collision.
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
     const p2 = svc.propose({
       currentVersion: submitted.versionHash,
@@ -105,7 +105,7 @@ describe("REST /api/kernel/proposals", () => {
   });
 
   it("POST approve flips pending -> approved", async () => {
-    const { proposalId } = seedProposal(db);
+    const { proposalId } = await seedProposal(db);
     const app = buildApp();
     const res = await app.fetch(
       new Request(`http://t/api/kernel/proposals/${proposalId}/approve`, { method: "POST" }),
@@ -126,7 +126,7 @@ describe("REST /api/kernel/proposals", () => {
   });
 
   it("POST approve returns 409 when proposal already resolved", async () => {
-    const { proposalId } = seedProposal(db);
+    const { proposalId } = await seedProposal(db);
     new KernelService(db, { skipTypeCheck: true }).rejectProposal(proposalId);
 
     const app = buildApp();
@@ -139,7 +139,7 @@ describe("REST /api/kernel/proposals", () => {
   });
 
   it("POST reject persists reason from body", async () => {
-    const { proposalId } = seedProposal(db);
+    const { proposalId } = await seedProposal(db);
     const app = buildApp();
     const res = await app.fetch(
       new Request(`http://t/api/kernel/proposals/${proposalId}/reject`, {
@@ -159,7 +159,7 @@ describe("REST /api/kernel/proposals", () => {
   });
 
   it("POST reject accepts empty body (no reason)", async () => {
-    const { proposalId } = seedProposal(db);
+    const { proposalId } = await seedProposal(db);
     const app = buildApp();
     const res = await app.fetch(
       new Request(`http://t/api/kernel/proposals/${proposalId}/reject`, { method: "POST" }),
@@ -175,7 +175,7 @@ describe("REST /api/kernel/proposals", () => {
   });
 
   it("POST reject rejects malformed JSON body with 400 and INVALID_JSON_BODY diagnostic", async () => {
-    const { proposalId } = seedProposal(db);
+    const { proposalId } = await seedProposal(db);
     const app = buildApp();
     const res = await app.fetch(
       new Request(`http://t/api/kernel/proposals/${proposalId}/reject`, {
@@ -191,7 +191,7 @@ describe("REST /api/kernel/proposals", () => {
   });
 
   it("POST reject rejects unknown fields with 400 and INVALID_REQUEST_BODY diagnostic", async () => {
-    const { proposalId } = seedProposal(db);
+    const { proposalId } = await seedProposal(db);
     const app = buildApp();
     const res = await app.fetch(
       new Request(`http://t/api/kernel/proposals/${proposalId}/reject`, {
@@ -210,7 +210,7 @@ describe("REST /api/kernel/proposals", () => {
   // service signature.
   it("POST /api/kernel/proposals creates a pending proposal with structural-only patch", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup submit failed");
     const app = buildApp();
     const res = await app.fetch(
@@ -236,7 +236,7 @@ describe("REST /api/kernel/proposals", () => {
 
   it("POST /api/kernel/proposals accepts a prompts override and returns a new version hash", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup submit failed");
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent");
     if (!firstAgent || firstAgent.type !== "agent") throw new Error("no agent stage in fixture");
@@ -307,7 +307,7 @@ describe("REST /api/kernel/proposals", () => {
   });
 
   it("GET /api/kernel/proposals enriches rows with pipelineName", async () => {
-    seedProposal(db, "ai:test-enrich");
+    await seedProposal(db, "ai:test-enrich");
 
     const app = buildApp();
     const res = await app.fetch(new Request("http://t/api/kernel/proposals"));
@@ -322,7 +322,7 @@ describe("REST /api/kernel/proposals", () => {
 
   it("POST /api/kernel/proposals returns 400 NO_OP_PROPOSAL for empty patch + empty prompts", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup submit failed");
 
     const app = buildApp();
@@ -343,7 +343,7 @@ describe("REST /api/kernel/proposals", () => {
 
   it("POST /api/kernel/proposals accepts ops:[] at the route layer (service layer's NO_OP check is the gatekeeper)", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup submit failed");
 
     const firstPromptRef = Object.keys(diamondPrompts())[0]!;
@@ -369,7 +369,7 @@ describe("REST /api/kernel/proposals — broadcast (B5 wf.hotUpdatePending)", ()
   let captured: ProposalEvent[];
   let broadcaster: ProposalsBroadcaster;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     __setKernelNextDbForTest(db);
@@ -379,7 +379,7 @@ describe("REST /api/kernel/proposals — broadcast (B5 wf.hotUpdatePending)", ()
     __setProposalsBroadcasterForTest(broadcaster);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     __setProposalsBroadcasterForTest(undefined);
     __setKernelNextDbForTest(undefined);
     db.close();
@@ -387,7 +387,7 @@ describe("REST /api/kernel/proposals — broadcast (B5 wf.hotUpdatePending)", ()
 
   it("POST /api/kernel/proposals publishes proposal_created with pipelineName", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup submit failed");
 
     const app = buildApp();
@@ -409,9 +409,9 @@ describe("REST /api/kernel/proposals — broadcast (B5 wf.hotUpdatePending)", ()
   });
 
   it("POST /approve publishes proposal_approved; reject publishes proposal_rejected", async () => {
-    const { proposalId: p1 } = seedProposal(db, "ai:a");
+    const { proposalId: p1 } = await seedProposal(db, "ai:a");
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted2 = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted2 = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted2.ok) throw new Error("submit2 failed");
     const p2 = svc.propose({
       currentVersion: submitted2.versionHash,
@@ -439,7 +439,7 @@ describe("REST /api/kernel/proposals — broadcast (B5 wf.hotUpdatePending)", ()
 
   it("broadcast does NOT fire on failure paths (NO_OP_PROPOSAL)", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("setup submit failed");
 
     const app = buildApp();

@@ -6,7 +6,7 @@ import { loadBuiltinPipelineIR } from "./load-builtin-pipeline.js";
 import { KernelService } from "../mcp/kernel.js";
 
 describe("scanOrphanTaskIds", () => {
-  it("returns task ids with attempts but no task_finals row", () => {
+  it("returns task ids with attempts but no task_finals row", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const now = Date.now();
@@ -27,7 +27,7 @@ describe("scanOrphanTaskIds", () => {
     expect(orphans).toEqual(["t1"]);
   });
 
-  it("returns empty array when every task has task_finals", () => {
+  it("returns empty array when every task has task_finals", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const orphans = scanOrphanTaskIds(db);
@@ -36,12 +36,12 @@ describe("scanOrphanTaskIds", () => {
 });
 
 describe("classifyOrphan", () => {
-  it("returns resume with firstPending when there's a non-success stage", () => {
+  it("returns resume with firstPending when there's a non-success stage", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const loaded = loadBuiltinPipelineIR("smoke-test");
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const sub = svc.submit(loaded.ir, { prompts: loaded.prompts });
+    const sub = await svc.submit(loaded.ir, { prompts: loaded.prompts });
     if (!sub.ok) throw new Error("seed failed");
     const vh = sub.versionHash;
     const now = Date.now();
@@ -62,12 +62,12 @@ describe("classifyOrphan", () => {
     }
   });
 
-  it("honours hot_update_events.rerun_from_stage when newer than latest attempt", () => {
+  it("honours hot_update_events.rerun_from_stage when newer than latest attempt", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const loaded = loadBuiltinPipelineIR("smoke-test");
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const sub = svc.submit(loaded.ir, { prompts: loaded.prompts });
+    const sub = await svc.submit(loaded.ir, { prompts: loaded.prompts });
     if (!sub.ok) throw new Error("seed failed");
     const vh = sub.versionHash;
     const base = Date.now();
@@ -87,12 +87,12 @@ describe("classifyOrphan", () => {
     }
   });
 
-  it("returns terminal when every agent stage has a success row", () => {
+  it("returns terminal when every agent stage has a success row", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const loaded = loadBuiltinPipelineIR("smoke-test");
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const sub = svc.submit(loaded.ir, { prompts: loaded.prompts });
+    const sub = await svc.submit(loaded.ir, { prompts: loaded.prompts });
     if (!sub.ok) throw new Error("seed failed");
     const vh = sub.versionHash;
     const now = Date.now();
@@ -111,7 +111,7 @@ describe("classifyOrphan", () => {
 });
 
 describe("lookupResumeSessionId", () => {
-  it("returns the most recent session_id for a given task+stage", () => {
+  it("returns the most recent session_id for a given task+stage", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const base = Date.now();
@@ -131,7 +131,7 @@ describe("lookupResumeSessionId", () => {
     expect(sid).toBe("sess-123");
   });
 
-  it("returns undefined when no agent session exists for that stage", () => {
+  it("returns undefined when no agent session exists for that stage", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const sid = lookupResumeSessionId(db, "t1", "analyzing");
@@ -145,7 +145,7 @@ describe("bootResumability", () => {
     initKernelNextSchema(db);
     const loaded = loadBuiltinPipelineIR("smoke-test");
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const sub = svc.submit(loaded.ir, { prompts: loaded.prompts });
+    const sub = await svc.submit(loaded.ir, { prompts: loaded.prompts });
     if (!sub.ok) throw new Error("seed failed");
     const vh = sub.versionHash;
     const now = Date.now();
@@ -173,7 +173,7 @@ describe("bootResumability", () => {
     initKernelNextSchema(db);
     const loaded = loadBuiltinPipelineIR("smoke-test");
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const sub = svc.submit(loaded.ir, { prompts: loaded.prompts });
+    const sub = await svc.submit(loaded.ir, { prompts: loaded.prompts });
     if (!sub.ok) throw new Error("seed failed");
     const vh = sub.versionHash;
     const now = Date.now();
@@ -205,7 +205,7 @@ describe("bootResumability", () => {
     initKernelNextSchema(db);
     const loaded = loadBuiltinPipelineIR("smoke-test");
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const sub = svc.submit(loaded.ir, { prompts: loaded.prompts });
+    const sub = await svc.submit(loaded.ir, { prompts: loaded.prompts });
     if (!sub.ok) throw new Error("seed failed");
     const vh = sub.versionHash;
     const now = Date.now();
@@ -312,7 +312,7 @@ function parseGateIR() {
 }
 
 describe("classifyOrphan — gate regression (BUG-1)", () => {
-  it("does NOT classify an unanswered gate+downstream as terminal", () => {
+  it("does NOT classify an unanswered gate+downstream as terminal", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const ir = parseGateIR();
@@ -339,7 +339,7 @@ describe("classifyOrphan — gate regression (BUG-1)", () => {
     });
   });
 
-  it("treats an answered gate as skippable (existing behavior)", () => {
+  it("treats an answered gate as skippable (existing behavior)", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const ir = parseGateIR();

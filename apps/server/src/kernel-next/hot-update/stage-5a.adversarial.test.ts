@@ -29,15 +29,15 @@ describe("Stage 5A adversarial — dry-run idempotence", () => {
   let svc: KernelService;
   let baseVersion: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = makeDb();
     svc = new KernelService(db, { skipTypeCheck: true });
-    const submitted = svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
     if (!submitted.ok) throw new Error("submit failed");
     baseVersion = submitted.versionHash;
   });
 
-  it("100 dry-runs produce zero DB writes", () => {
+  it("100 dry-runs produce zero DB writes", async () => {
     const beforeProposals = (db.prepare(
       `SELECT COUNT(*) AS n FROM pipeline_proposals`,
     ).get() as { n: number }).n;
@@ -69,7 +69,7 @@ describe("Stage 5A adversarial — dry-run idempotence", () => {
     expect(afterVersions).toBe(beforeVersions);
   });
 
-  it("dry-run on mismatched currentVersion returns CONFLICT without diff", () => {
+  it("dry-run on mismatched currentVersion returns CONFLICT without diff", async () => {
     const r = svc.dryRunProposal({
       currentVersion: "wrong-hash-doesnt-exist",
       patch: {
@@ -85,7 +85,7 @@ describe("Stage 5A adversarial — dry-run idempotence", () => {
     expect(r.diagnostics.some((d) => d.code === "CONFLICT")).toBe(true);
   });
 
-  it("two autoApprove proposals on same baseVersion — both succeed (no DB uniqueness constraint)", () => {
+  it("two autoApprove proposals on same baseVersion — both succeed (no DB uniqueness constraint)", async () => {
     // Documents current behaviour: kernel-next has no UNIQUE constraint on
     // pipeline_proposals.base_version, so two concurrent autoApprove calls
     // against the same base both succeed. Stage 5B migration will enforce
@@ -129,7 +129,7 @@ describe("Stage 5A adversarial — dry-run idempotence", () => {
     expect(rows.every((r) => r.status === "approved")).toBe(true);
   });
 
-  it("autoApprove on invalid patch (duplicate stage) → PATCH_APPLY_ERROR, no pending row created", () => {
+  it("autoApprove on invalid patch (duplicate stage) → PATCH_APPLY_ERROR, no pending row created", async () => {
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent");
     if (!firstAgent || firstAgent.type !== "agent") throw new Error("no agent stage");
     const beforeCount = (db.prepare(`SELECT COUNT(*) AS n FROM pipeline_proposals`).get() as { n: number }).n;
@@ -156,7 +156,7 @@ describe("Stage 5A adversarial — dry-run idempotence", () => {
     expect(afterCount).toBe(beforeCount);
   });
 
-  it("dry-run on same patch returns byte-stable proposedVersion (hash deterministic)", () => {
+  it("dry-run on same patch returns byte-stable proposedVersion (hash deterministic)", async () => {
     const firstAgent = diamondIR().stages.find((s) => s.type === "agent");
     if (!firstAgent || firstAgent.type !== "agent") throw new Error("no agent stage");
     const patch: IRPatch = {

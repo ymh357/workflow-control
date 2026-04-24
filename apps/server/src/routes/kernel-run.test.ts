@@ -15,7 +15,7 @@ describe("POST /api/kernel/tasks/run", () => {
   let app: Hono;
   let db: DatabaseSync;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     app = new Hono();
     app.route("/api", kernelRunRoute);
     db = new DatabaseSync(":memory:");
@@ -28,12 +28,12 @@ describe("POST /api/kernel/tasks/run", () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
     for (const dir of ["smoke-test", "tech-research-collector", "tech-research-writer", "pipeline-generator"]) {
       const loaded = loadBuiltinPipelineIR(dir);
-      const r = svc.submit(loaded.ir, { prompts: loaded.prompts });
+      const r = await svc.submit(loaded.ir, { prompts: loaded.prompts });
       if (!r.ok) throw new Error(`test seed '${dir}': ${r.diagnostics.map((d) => d.code).join(",")}`);
     }
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     try { db.close(); } catch { /* already closed */ }
     __setKernelNextDbForTest(undefined);
   });
@@ -274,7 +274,7 @@ describe("POST /api/kernel/tasks/run", () => {
     // verify startPipelineRun resolves it.
     const svc = new KernelService(db, { skipTypeCheck: true });
     const ir = diamondIR();
-    const submit = svc.submit(ir, {
+    const submit = await svc.submit(ir, {
       prompts: Object.fromEntries(
         ir.stages
           .filter((s) => s.type === "agent")
@@ -308,7 +308,7 @@ describe("POST /api/kernel/tasks/run", () => {
 });
 
 describe("seedBuiltinPipelineByName populates pipeline_prompt_refs on module load", () => {
-  it("at least one row exists for every registered builtin pipeline", () => {
+  it("at least one row exists for every registered builtin pipeline", async () => {
     const db = getKernelNextDb();
     // Registry-key -> builtin-pipelines/<dir> name (both happen to match
     // for all current legacy entries). pipeline_versions.pipeline_name

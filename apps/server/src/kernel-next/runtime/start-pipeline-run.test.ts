@@ -72,7 +72,7 @@ describe("startPipelineRun input resolution", () => {
     initKernelNextSchema(db);
     const svc = new KernelService(db, { skipTypeCheck: true });
     const ir = diamondIR();
-    const r = svc.submit(ir, { prompts: promptsForIR(ir) });
+    const r = await svc.submit(ir, { prompts: promptsForIR(ir) });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     const res = await startPipelineRun({

@@ -44,12 +44,12 @@ function gateIR(): PipelineIR {
   };
 }
 
-function seedGateRow(
+async function seedGateRow(
   db: DatabaseSync,
   svc: KernelService,
   taskId: string,
-): { gateId: string } {
-  const submit = svc.submit(gateIR(), { prompts: { p: "dummy" } });
+): Promise<{ gateId: string }> {
+  const submit = await svc.submit(gateIR(), { prompts: { p: "dummy" } });
   if (!submit.ok) throw new Error("seed submit failed");
   const attemptId = "a-" + Math.random().toString(36).slice(2, 10);
   db.prepare(
@@ -68,13 +68,13 @@ function seedGateRow(
 describe("REST /api/kernel/gates", () => {
   let db: DatabaseSync;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     __setKernelNextDbForTest(db);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     __setKernelNextDbForTest(undefined);
     db.close();
   });
@@ -87,8 +87,8 @@ describe("REST /api/kernel/gates", () => {
 
   it("GET /api/kernel/gates lists pending gates, filterable by task and answered", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const { gateId: g1 } = seedGateRow(db, svc, "task-A");
-    const { gateId: g2 } = seedGateRow(db, svc, "task-B");
+    const { gateId: g1 } = await seedGateRow(db, svc, "task-A");
+    const { gateId: g2 } = await seedGateRow(db, svc, "task-B");
     svc.answerGate(g1, "yes");
 
     const app = buildApp();
@@ -120,7 +120,7 @@ describe("REST /api/kernel/gates", () => {
 
   it("POST /api/kernel/gates/:id/answer resolves an open gate", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const { gateId } = seedGateRow(db, svc, "task-1");
+    const { gateId } = await seedGateRow(db, svc, "task-1");
 
     const res = await buildApp().fetch(
       new Request(`http://t/api/kernel/gates/${gateId}/answer`, {
@@ -149,7 +149,7 @@ describe("REST /api/kernel/gates", () => {
 
   it("POST returns 409 GATE_ALREADY_ANSWERED on double-answer", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const { gateId } = seedGateRow(db, svc, "task-1");
+    const { gateId } = await seedGateRow(db, svc, "task-1");
     svc.answerGate(gateId, "yes");
 
     const res = await buildApp().fetch(
@@ -166,7 +166,7 @@ describe("REST /api/kernel/gates", () => {
 
   it("POST returns 422 GATE_ANSWER_INVALID for answer outside the routing table", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const { gateId } = seedGateRow(db, svc, "task-1");
+    const { gateId } = await seedGateRow(db, svc, "task-1");
 
     const res = await buildApp().fetch(
       new Request(`http://t/api/kernel/gates/${gateId}/answer`, {
@@ -182,7 +182,7 @@ describe("REST /api/kernel/gates", () => {
 
   it("POST requires a body (empty is INVALID_REQUEST_BODY 400)", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const { gateId } = seedGateRow(db, svc, "task-1");
+    const { gateId } = await seedGateRow(db, svc, "task-1");
 
     const res = await buildApp().fetch(
       new Request(`http://t/api/kernel/gates/${gateId}/answer`, { method: "POST" }),
@@ -194,7 +194,7 @@ describe("REST /api/kernel/gates", () => {
 
   it("POST rejects invalid JSON body with 400 INVALID_JSON_BODY", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const { gateId } = seedGateRow(db, svc, "task-1");
+    const { gateId } = await seedGateRow(db, svc, "task-1");
 
     const res = await buildApp().fetch(
       new Request(`http://t/api/kernel/gates/${gateId}/answer`, {
@@ -210,7 +210,7 @@ describe("REST /api/kernel/gates", () => {
 
   it("POST rejects missing answer field with 400 INVALID_REQUEST_BODY", async () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
-    const { gateId } = seedGateRow(db, svc, "task-1");
+    const { gateId } = await seedGateRow(db, svc, "task-1");
 
     const res = await buildApp().fetch(
       new Request(`http://t/api/kernel/gates/${gateId}/answer`, {
@@ -229,7 +229,7 @@ describe("REST /api/kernel/gates", () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
 
     // Seed upstream A (success attempt writing x=7).
-    const sub = svc.submit(gateIR(), { prompts: { p: "dummy" } });
+    const sub = await svc.submit(gateIR(), { prompts: { p: "dummy" } });
     if (!sub.ok) throw new Error("seed submit failed");
     const aAttempt = "a-" + Math.random().toString(36).slice(2, 10);
     db.prepare(
@@ -295,9 +295,9 @@ describe("REST /api/kernel/gates", () => {
 //   { approve: "B", reject: "A" }
 // with a wire A.out -> G.i, making "reject" a rollback answer (kernel
 // returns kind="rejected"). Mirrors setupRejectReadyDb() in server.test.ts.
-function seedRejectableGate(
+async function seedRejectableGate(
   db: DatabaseSync,
-): { gateId: string; taskId: string } {
+): Promise<{ gateId: string; taskId: string }> {
   const taskId = "http-reject-" + Math.random().toString(36).slice(2, 10);
   const svc = new KernelService(db, { skipTypeCheck: true });
 
@@ -334,7 +334,7 @@ function seedRejectableGate(
     ],
   };
 
-  const submit = svc.submit(ir, { prompts: { p: "dummy" } });
+  const submit = await svc.submit(ir, { prompts: { p: "dummy" } });
   if (!submit.ok) throw new Error("seedRejectableGate: submit failed");
 
   const attemptId = "attempt-g-" + taskId;
@@ -357,20 +357,20 @@ function seedRejectableGate(
 describe("REST /api/kernel/gates — GATE_REJECTED dispatch", () => {
   let db: DatabaseSync;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     __setKernelNextDbForTest(db);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     taskRegistry.__clearForTest();
     __setKernelNextDbForTest(undefined);
     db.close();
   });
 
   it("POST /api/kernel/gates/:id/answer dispatches GATE_REJECTED for rollback answers", async () => {
-    const { gateId, taskId } = seedRejectableGate(db);
+    const { gateId, taskId } = await seedRejectableGate(db);
 
     const captured: unknown[] = [];
     taskRegistry.register(taskId, { send: (ev: unknown) => captured.push(ev) } as never);
@@ -397,7 +397,7 @@ describe("REST /api/kernel/gates — GATE_REJECTED dispatch", () => {
   });
 
   it("POST /api/kernel/gates/:id/answer dispatches GATE_ANSWERED for approve", async () => {
-    const { gateId, taskId } = seedRejectableGate(db);
+    const { gateId, taskId } = await seedRejectableGate(db);
 
     const captured: unknown[] = [];
     taskRegistry.register(taskId, { send: (ev: unknown) => captured.push(ev) } as never);
