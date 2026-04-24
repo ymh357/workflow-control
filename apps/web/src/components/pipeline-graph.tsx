@@ -176,6 +176,8 @@ export function PipelineGraph({
 
   return (
     <div
+      role="img"
+      aria-label={`Pipeline DAG: ${ir.name} (${ir.stages.length} stages)`}
       style={{ width: "100%", height }}
       className="rounded border border-gray-200 bg-slate-50"
     >
