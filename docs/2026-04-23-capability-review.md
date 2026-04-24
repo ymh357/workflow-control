@@ -178,3 +178,55 @@ Sprint `2026-04-24-capability-closure.md` executed end-to-end. All 22 in-scope g
 **Out of scope by design (5):** D16-D20.
 
 **Final state:** server 1648 tests / web 48 tests / tsc clean both sides / Docker build+run verified.
+
+---
+
+## 8. Post-sprint follow-ups (2026-04-24 autonomous polish pass)
+
+After sprint closure (`ed4796f`), an autonomous polish pass cleaned up
+reviewer-noted Minor / Suggestion items that were explicitly deferred
+during the main sprint. 14 commits, all behavior-preserving or
+additive. Server 1651 / web 52 tests at HEAD. tsc clean both sides.
+
+### Dashboard polish
+
+| Commit | Gap | Change |
+|---|---|---|
+| `1d3ca2a` | D29 | `liveOutputs` per-stage buffer capped at 50K chars with elision marker (tail-biased); prevents unbounded DOM growth on long runs |
+| `7e01db2` | D25 | JsonPanel summary rows show item-hint label (`#1 write_port` / `#1 text` / `#1 running`) so debug navigation doesn't require expanding every entry |
+| `597c844` | D26 | Audit timeline shows migration duration badge when `finished_at` is present |
+| `03409c3` | D21 | Executing stage overrides gate/script bg with blue-50 so pulsing border doesn't clash with amber/purple type bg |
+| `3e24e16` | D21 | `role="img"` + `aria-label` on graph container for screen-reader accessibility |
+| `b4592a6` | D27 | DiffViewer empty-diff message is status-aware (capturing / not_a_repo / disabled / diff_too_large / before_failed / after_failed / captured). Server route returns `status` field |
+
+### Server polish
+
+| Commit | Gap | Change |
+|---|---|---|
+| `c637c18` | D5 | Fanout error message `element[i] of N` instead of `element i/N` (avoids "progress fraction" misread) |
+| `e419227` | D8 | `query_hot_update_stats` accepts `excludeRetries` flag — filters synthetic retry-v1 proposals so proposal-churn analytics stay proposal-focused |
+| `5948287` | D34 | `createMcpServer` back-ref in `mcp/server.ts` now propagates ALL options (maxBytes / writePortDispatcher / PG params) to nested servers instead of only surface/portRuntime/tscPath |
+| `9dbb4d3` | D34 | `BuildSdkBaseOptionsArgs.subAgents` uses explicit `SubAgentDef[]` instead of `AgentStage["config"]["subAgents"]` derivation |
+| `21ad2e4` | D5 | Test: worker-pool drain-but-no-new contract on element error (pins NOT-all-N invariant when cap < element count) |
+
+### Hygiene & docs
+
+| Commit | Gap | Change |
+|---|---|---|
+| `d556259` | D5/D6 | `docs/kernel-next-terminal-design.md §Appendix C` — fanout cap + gate timeout open questions marked resolved with links to implementation |
+| `89afd01` | D11 | Untrack `registry/packages/` + `registry/index.json` (already listed in `.gitignore` as generated). `pnpm registry:build` regenerates 38 packages from `apps/server/config/` sources |
+| `8221f1a` | — | `.gitignore` ignore `.claude/scheduled_tasks.lock` runtime artifact |
+
+### Remaining declined items
+
+- **P4.2 Minor 3** (dryRun child-row projection) — requires reworking count helpers; out of scope for polish
+- **P4.1 Minor 2** (orphan synthetic proposals on migration failure) — consistent with `executeRollback` pattern; flag for future audit-cleanup work
+- **P4.1 Minor 3** (retry_task running-task INTERRUPT test) — covered by existing cancel_task tests that exercise same taskRegistry path
+- **P3.6 reviewer Minor 2** (prepare-in-loop in sweeper) — stays < 5 iterations per sweep at single-user scale
+- **P7.1 Suggestion 8** (animate edges out of `__external__` on run start) — out-edges from executing targets already animated
+
+### Final sprint + polish metrics
+
+- Sprint commits: 54 (`e2b9cd3` → `ed4796f`)
+- Polish commits: 14 (`1d3ca2a` → `21ad2e4`)
+- Total: 68 commits closing 22 gaps + 14 reviewer-flagged Minors/Suggestions
