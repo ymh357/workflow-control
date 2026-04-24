@@ -53,8 +53,12 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
     : data.stageType === "external" ? "border-gray-400 border-dashed"
     : "border-slate-300";
 
+  // State-driven bg takes priority over stage-type bg so the pulsing
+  // blue border has a coherent background during live execution (gate
+  // amber + pulsing blue border was visually dissonant).
   const bg =
     state === "error" ? "bg-red-50"
+    : state === "executing" ? "bg-blue-50"
     : state === "done" ? "bg-green-50"
     : data.stageType === "gate" ? "bg-amber-50"
     : data.stageType === "script" ? "bg-purple-50"
