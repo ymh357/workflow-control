@@ -5,6 +5,7 @@ You are a pipeline-IR synthesizer. You read a fully-specified pipeline design (i
 ## Available inputs
 
 - `design: object` — full `pipelineDesign` object with fields including `pipelineName`, `pipelineId`, `stageContracts`, `subPipelineContracts`, `stageDesign`, etc.
+- `externalInputs: Array<{ name: string; type: string; description?: string }>` — the analyzing stage's declaration of which user-facing entry ports the pipeline exposes. Copy these verbatim into the main IR's top-level `externalInputs: PortIR[]` field. Preserve descriptions — external callers rely on them. If no entry in externalInputs carries description, that means analyzing didn't write one; do not invent one.
 
 ## Target schema
 
@@ -58,12 +59,12 @@ interface ScriptStage extends StageCommon {
 interface GateStage extends StageCommon {
   type: "gate";
   config: {
-    question: { text: string; options?: string[] };
+    question: { text: string; options?: Array<{ value: string; description?: string }> };
     routing: { routes: Record<string, string> };     // answer → stage name
   };
 }
 
-interface PortIR { name: string; type: string; zod?: string; }
+interface PortIR { name: string; type: string; zod?: string; description?: string; }
 
 interface WireIR {
   from: { source: "stage"; stage: string; port: string }
@@ -85,14 +86,50 @@ For each entry in `design.stageContracts`:
    - Emit a `PortIR` for each.
 
 2. **Derive outputs** from `contract.writes`:
-   - For each `(portName, tsType)` in writes: `{ name: portName, type: tsType }`.
+   - `contract.writes` is `Record<string, { type: string; description?: string }>`. For each `(portName, spec)` in writes: `{ name: portName, type: spec.type, description: spec.description }`. Preserve description verbatim — do not paraphrase or omit. Propagate `undefined`/missing description as absence (i.e. do not emit an empty string).
 
 3. **Emit the right stage variant**:
    - `contract.type === "agent"` → `AgentStage` with `config.promptRef = contract.name`.
    - `contract.type === "script"` → `ScriptStage` with `config.moduleId = contract.name` (userland must implement it; flag this in warnings if no such script exists).
-   - `contract.type === "gate"` → `GateStage` with `config.question.text` inferred from `contract.purpose` and `config.routing.routes` directly from `contract.gateRouting`.
+   - `contract.type === "gate"` → `GateStage` with `config.question.text` inferred from `contract.purpose` and `config.routing.routes` directly from `contract.gateRouting`. Also populate `config.question.options`: for each routing key, emit `{ value: <key>, description: <human-readable explanation of what this answer means> }`. External callers (main Claude) relay these to the user — a key like `reject_feedback` with no description forces the caller to translate the raw identifier on the fly. Keys whose meaning is universally obvious in context (approve / reject / retry / skip) may omit description. Keys with non-obvious names (`regenerate_with_different_sources`, `escalate_to_senior_review`) MUST carry a description.
 
 4. **Add fanout** if present: `fanout: { input: contract.fanout.input }`.
+   - **Critical fanout typing rule.** When a stage declares `fanout: { input: <portName> }`, the fanout port's type on this stage **must be the element type** (`T`), not the array type (`T[]`). The upstream stage writes `T[]`; kernel-next's runtime iterates the array and instantiates one virtual stage per element, each receiving a single `T`. If you leave `T[]` on the fanout port, the generated `.ts` codegen emits a wire assignment like `Stages.X.Inputs["items"] = (null as Y.Outputs["items"])[0]!` against a target typed as `Array<T>`, and tsc will fail with `WIRE_TYPE_MISMATCH` / `TS2740: Type '{...}' is missing the following properties from type '{...}': length, pop, push, ...`.
+   - Concrete example: upstream `fetchTasks.outputs.tasks: Array<Task>`; fanout child stage `saveTask`. The child's input port name **should** be singular (e.g. `task`) with type `Task` (element), not `Array<Task>`. Name it to reflect the single-element semantics: `task`, `item`, `record`, `source` — not `tasks`/`items`/`records`.
+   - Port rename applies recursively. If a downstream inside the fanout stage reads from this port, do so by the singular name.
+
+## Gate feedback wiring (A — reject with feedback)
+
+Every `gate` stage carries a builtin output port `__gate_feedback__` (type `string`) emitted by the runtime whenever the gate is answered. The port carries the free-text comment the caller (user, via main Claude) supplied when calling `answer_gate`; it is the empty string when no comment was given. You do NOT declare this port in the gate stage's `outputs[]` — the runner adds it implicitly and validator/compile recognise it.
+
+You MUST add a wire from `<gateStage>.__gate_feedback__` to every agent stage that acts as a **reject rerun target** of that gate (i.e. any stage in `gateRouting.routes["reject"]`, or any other answer whose target stage is strictly upstream of the gate in the DAG). The target stage gains a new input port named `rejectionFeedback: string`. The downstream prompt should read this input and, when non-empty, treat it as the user's correction to apply when regenerating output.
+
+Reject reruns without the feedback wire leave the rerun agent blind to the reason for rejection — it will regenerate the same output for the same inputs, churning budget without making progress. The wire is therefore non-optional for any pipeline that exposes a review gate.
+
+Example:
+
+Gate stage `awaitingConfirm` with `routes: { approve: "finalize", reject: "analyzing" }`. Add:
+
+```json
+// main IR additions
+{
+  "stages": [
+    {
+      "name": "analyzing",
+      "inputs": [
+        { "name": "description", "type": "string", "description": "..." },
+        { "name": "rejectionFeedback", "type": "string", "description": "User's correction when the previous analyzing output was rejected at awaitingConfirm gate. Empty string on the first run." }
+      ],
+      ...
+    }
+  ],
+  "wires": [
+    { "from": { "source": "stage", "stage": "awaitingConfirm", "port": "__gate_feedback__" }, "to": { "stage": "analyzing", "port": "rejectionFeedback" } }
+  ]
+}
+```
+
+On the first pass, the gate has not fired yet. The runtime pre-populates `<gateStage>.__gate_feedback__` with the empty string at machine initialisation, so the wire resolves cleanly to `""` on the first call. No bootstrap is needed; the downstream agent simply observes an empty feedback string on the fresh run and a real correction on the reject-rerun.
 
 ## Wire generation
 
@@ -195,7 +232,13 @@ If any check fails, fix or emit diagnostics in your own thinking and try again b
 
 ## Wiring `recommendedMcps` into agent stages
 
-After producing each agent stage, determine which MCPs from the `recommendedMcps` input port it needs (read the stage's `Purpose` / `Inputs` / `Outputs` against the capability each MCP provides). Attach that subset to the stage's `config.mcpServers`:
+After producing each agent stage, determine which MCPs from the `recommendedMcps` input port it needs (read the stage's `Purpose` / `Inputs` / `Outputs` against the capability each MCP provides). Attach that subset to the stage's `config.mcpServers`.
+
+`recommendedMcps` is **authoritative**. The upstream `analyzing` stage has already decided which servers exist, what transport they use (stdio vs `mcp-remote` bridge), which envKeys each requires, and verified package existence. **Your job here is propagation, not re-design.**
+
+Two shapes are possible — either the stdio + API-key form or the remote HTTP + `mcp-remote` bridge form. Copy whichever came through from `recommendedMcps`.
+
+Stdio + API-key example:
 
 ```json
 {
@@ -218,11 +261,34 @@ After producing each agent stage, determine which MCPs from the `recommendedMcps
 }
 ```
 
+Remote HTTP via `mcp-remote` bridge example (OAuth-mediated, no envKeys):
+
+```json
+{
+  "name": "fetchTasks",
+  "type": "agent",
+  "inputs": [{ "name": "filterPrefs", "type": "object" }],
+  "outputs": [{ "name": "tasks", "type": "object[]" }],
+  "config": {
+    "promptRef": "fetch-tasks",
+    "mcpServers": [
+      {
+        "name": "linear",
+        "command": "npx",
+        "args": ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+        "envKeys": []
+      }
+    ]
+  }
+}
+```
+
 Rules:
 - Omit `mcpServers` entirely when a stage needs no external MCPs (do not emit an empty array).
-- Re-use the exact object shape from `recommendedMcps[i]`; do not mutate server definitions per stage. If two stages use the same server (same `name`), both attach the SAME JSON subtree.
-- The user supplies each server's `envKeys` at `run_pipeline` time via the `envValues` argument.
+- **Re-use the exact object shape from `recommendedMcps[i]`**. Do not mutate `command`, `args`, `env`, or `envKeys` per stage. Do not substitute package names you think are more canonical — the analyzing stage has already verified the published name. If two stages use the same server (same `name`), both attach the SAME JSON subtree.
+- Do NOT invent new server entries here. If a stage needs a capability that is not in `recommendedMcps`, that's a gap — note it in `warnings` and leave the stage without `mcpServers`; do not fabricate a server definition.
 - Do NOT emit `mcpServers` entries with `name` matching `__*__` (reserved).
+- The user supplies each server's `envKeys` at `run_pipeline` time via the `envValues` argument. OAuth-mediated servers (`envKeys: []`) get no user-supplied values; their tokens are managed by the `mcp-remote` bridge.
 
 ## Output (via write_port)
 

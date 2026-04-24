@@ -559,10 +559,22 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
         // Port values: drop every key whose `stageName` prefix is affected.
         // Seeds live under `__external__.<port>` which is never added to
         // affectedStages, so they survive the prune intact.
+        // A (gate feedback): the rejected gate's `__gate_feedback__` port
+        // is the one value we intentionally preserve — it carries the
+        // user's correction to the regenerating upstream agent. The gate
+        // stage is listed in affectedStages (the reject-rollback prunes
+        // the gate itself so it can re-open a fresh question), but its
+        // feedback port semantically belongs to the *answered* attempt,
+        // not the upcoming fresh one. Dropping it would discard the one
+        // signal the rerun needs.
         persistentPortValues = Object.fromEntries(
           Object.entries(contextAtRollback.portValues).filter(([key]) => {
-            const [stageName] = key.split(".");
-            return !affected.has(stageName ?? "");
+            const [stageName, portName] = key.split(".");
+            if (!affected.has(stageName ?? "")) return true;
+            if (portName === "__gate_feedback__" && stageName === fromGate) {
+              return true;
+            }
+            return false;
           }),
         );
         // finalizedStages: drop entries for every affected stage so they
@@ -737,8 +749,30 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       terminationReason = { kind: "interrupted" };
       finalsRow = { state: "failed", reason: "interrupted", detail: null };
     } else if (finalOutcome?.verdict === "completed") {
-      terminationReason = { kind: "natural" };
-      finalsRow = { state: "completed", reason: "natural", detail: null };
+      // XState `parallel` regions fire onDone when every child reaches a
+      // final state — both `done` and `error` finals qualify. So a run
+      // where every stage region finalised, but at least one finalised
+      // via `error`, still yields snapshot.value === "completed" and
+      // verdict === "completed". Before P6-1 the runner's own return
+      // value (see the L858 `finalState` computation) handled this by
+      // also inspecting stageErrors, but the task_finals upsert here
+      // trusted verdict alone — producing completed/natural rows for
+      // runs that the top-level return value and the dashboard both
+      // correctly reported as failed. Bug surfaced during Linear MCP
+      // dogfood (2026-04-25): MCP_STARTUP check marked the only stage
+      // as `error`, yet task_finals read `completed/natural`. Treat any
+      // outstanding stageErrors as authoritative.
+      if (stageErrors.length > 0) {
+        const firstErr = stageErrors[0]!;
+        const detail = stageErrors.length === 1
+          ? `stage '${firstErr.stage}': ${firstErr.message}`
+          : `${stageErrors.length} stage error(s); first: '${firstErr.stage}': ${firstErr.message}`;
+        terminationReason = { kind: "error", detail };
+        finalsRow = { state: "failed", reason: "error", detail };
+      } else {
+        terminationReason = { kind: "natural" };
+        finalsRow = { state: "completed", reason: "natural", detail: null };
+      }
     } else if (finalOutcome?.verdict === "failed") {
       terminationReason = { kind: "error", detail: "run ended with failed verdict" };
       finalsRow = { state: "failed", reason: "error", detail: "run ended with failed verdict" };
@@ -956,8 +990,22 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
 
       const versionHash = input.versionHash || opts.versionHash;
       const ac = new AbortController();
+      // Track whether an external INTERRUPT was the reason this callback
+      // is being torn down. XState stops the invoked actor automatically
+      // when the parent region transitions to `done` (which happens via
+      // the `always: allOutboundPresent` guard the moment the final
+      // write_port lands), and that stop triggers the cleanup returned
+      // below. If we unconditionally abort there, a naturally-completing
+      // executor gets interpreted as user-interrupted — the AgentMachine
+      // records `interrupted`, the stage is marked error, and the task
+      // status falsely shows failure despite correct outputs. Only abort
+      // on an actual INTERRUPT event.
+      let externalInterrupt = false;
       receive((ev) => {
-        if (ev.type === "INTERRUPT") ac.abort();
+        if (ev.type === "INTERRUPT") {
+          externalInterrupt = true;
+          ac.abort();
+        }
       });
 
       let executorDone = false;
@@ -998,8 +1046,16 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
         }
       })();
 
+
       return () => {
-        if (!executorDone && !ac.signal.aborted) ac.abort();
+        // Only abort on genuine external INTERRUPT. Cleanup fires on every
+        // actor stop — including the common natural-completion path where
+        // the region's `allOutboundPresent` always-guard has already
+        // transitioned to `done`. Aborting then would turn success into
+        // `interrupted` (see externalInterrupt declaration above).
+        if (!executorDone && !ac.signal.aborted && externalInterrupt) {
+          ac.abort();
+        }
       };
     });
 
@@ -1281,7 +1337,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
                 // checkpoint row is ever inserted.
                 suppressHooks: true,
               });
-              kernel.createGate({
+              const { gateId } = kernel.createGate({
                 taskId: opts.taskId,
                 stageName,
                 attemptId,
@@ -1294,6 +1350,39 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
                   taskId: opts.taskId,
                   timestamp: isoNow(),
                   data: { stage: stageName, attemptId },
+                });
+                // Separate gate_opened event so external MCP callers
+                // (wait_for_task_event) can distinguish "pipeline paused
+                // for an answer" from a regular stage start without
+                // querying the gate_queue table. answerOptions carries
+                // each routing key paired with the GateQuestion.options
+                // description (P3.7) — routes are authoritative for what
+                // the runner will accept, so the list is anchored on
+                // Object.keys(routes) and descriptions are pulled from
+                // question.options when the author supplied them.
+                const optionDescByValue = new Map<string, string>();
+                for (const opt of gateStage.config.question.options ?? []) {
+                  if (opt.description !== undefined) {
+                    optionDescByValue.set(opt.value, opt.description);
+                  }
+                }
+                publish({
+                  type: "gate_opened",
+                  taskId: opts.taskId,
+                  timestamp: isoNow(),
+                  data: {
+                    gateId,
+                    stage: stageName,
+                    questionText: gateStage.config.question.text,
+                    answerOptions: Object.keys(gateStage.config.routing.routes).map(
+                      (value) => {
+                        const description = optionDescByValue.get(value);
+                        return description !== undefined
+                          ? { value, description }
+                          : { value };
+                      },
+                    ),
+                  },
                 });
               }
               continue;

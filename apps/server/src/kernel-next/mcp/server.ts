@@ -100,7 +100,9 @@ type ToolName =
   // Phase 4 P4.2 (D9)
   | "prune_records"
   // Phase 4 P4.3 (D4)
-  | "cancel_task";
+  | "cancel_task"
+  // P1.1 external-driver observation (post-4.5 dogfood)
+  | "wait_for_task_event";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
@@ -124,6 +126,8 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "prune_records",
   // Phase 4 P4.3 (D4)
   "cancel_task",
+  // P1.1 external-driver observation
+  "wait_for_task_event",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 

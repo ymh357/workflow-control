@@ -77,7 +77,7 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("combined surface exposes 28 tools with expected names", () => {
+  it("combined surface exposes 29 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
@@ -109,6 +109,7 @@ describe("kernel-next MCP server", () => {
       "submit_pipeline",
       "update_registry_pipeline",
       "validate_pipeline",
+      "wait_for_task_event",
       "wait_pipeline_result",
       "write_port",
     ]);
@@ -418,6 +419,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
       "submit_pipeline",
       "update_registry_pipeline",
       "validate_pipeline",
+      "wait_for_task_event",
       "wait_pipeline_result",
     ]);
     db.close();
@@ -457,7 +459,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     // Phase 4 P4.1 (D8): +1 tool (retry_task)
     // Phase 4 P4.2 (D9): +1 tool (prune_records)
     // Phase 4 P4.3 (D4): +1 tool (cancel_task)
-    expect(tools.size).toBe(28);
+    // P1.1 external driver: +1 tool (wait_for_task_event)
+    expect(tools.size).toBe(29);
     expect(tools.has("write_port")).toBe(true);
     expect(tools.has("submit_pipeline")).toBe(true);
     expect(tools.has("migrate_task")).toBe(true);
@@ -480,8 +483,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
     const tools = getTools(mcp);
-    // 'external' = EXTERNAL_TOOLS only (27 tools after P4.3 D4; excludes write_port).
-    expect(tools.size).toBe(27);
+    // 'external' = EXTERNAL_TOOLS only (28 tools after P1.1; excludes write_port).
+    expect(tools.size).toBe(28);
     expect(tools.has("write_port")).toBe(false);
     expect(tools.has("submit_pipeline")).toBe(true);
     db.close();
@@ -663,7 +666,7 @@ describe("answer_gate MCP handler — reject dispatch", () => {
           inputs: [{ name: "i", type: "unknown" }],
           outputs: [],
           config: {
-            question: { text: "approve or reject?", options: ["approve", "reject"] },
+            question: { text: "approve or reject?", options: [{ value: "approve" }, { value: "reject" }] },
             routing: { routes: { approve: "B", reject: "A" } },
           },
         },
@@ -695,7 +698,7 @@ describe("answer_gate MCP handler — reject dispatch", () => {
       taskId,
       stageName: "G",
       attemptId,
-      question: { text: "approve or reject?", options: ["approve", "reject"] },
+      question: { text: "approve or reject?", options: [{ value: "approve" }, { value: "reject" }] },
     });
 
     return { db, gateId };
@@ -713,8 +716,14 @@ describe("answer_gate MCP handler — reject dispatch", () => {
       const tool = getTools(mcp).get("answer_gate")!;
       await tool.handler({ gateId, answer: "reject" });
 
-      expect(captured).toHaveLength(1);
-      const ev = captured[0] as Record<string, unknown>;
+      // A (gate feedback): answer_gate dispatches PORT_WRITTEN for
+      // the builtin __gate_feedback__ port before the GATE_* event.
+      expect(captured).toHaveLength(2);
+      const portWritten = captured[0] as Record<string, unknown>;
+      expect(portWritten["type"]).toBe("PORT_WRITTEN");
+      expect(portWritten["key"]).toBe("G.__gate_feedback__");
+      expect(portWritten["value"]).toBe("");
+      const ev = captured[1] as Record<string, unknown>;
       expect(ev["type"]).toBe("GATE_REJECTED");
       expect(ev["gateId"]).toBe(gateId);
       expect(ev["stageName"]).toBe("G");
@@ -738,8 +747,10 @@ describe("answer_gate MCP handler — reject dispatch", () => {
       const tool = getTools(mcp).get("answer_gate")!;
       await tool.handler({ gateId, answer: "approve" });
 
-      expect(captured).toHaveLength(1);
-      const ev = captured[0] as Record<string, unknown>;
+      expect(captured).toHaveLength(2);
+      const portWritten = captured[0] as Record<string, unknown>;
+      expect(portWritten["type"]).toBe("PORT_WRITTEN");
+      const ev = captured[1] as Record<string, unknown>;
       expect(ev["type"]).toBe("GATE_ANSWERED");
     } finally {
       db.close();

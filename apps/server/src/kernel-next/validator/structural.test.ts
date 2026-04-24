@@ -227,13 +227,13 @@ describe("structural validator", () => {
         { name: "G1", type: "gate",
           inputs: [{ name: "x", type: "number" }], outputs: [],
           config: {
-            question: { text: "?", options: ["a", "b"] },
+            question: { text: "?", options: [{ value: "a" }, { value: "b" }] },
             routing: { routes: { a: "SHARED", b: "OTHER" } },
           } },
         { name: "G2", type: "gate",
           inputs: [{ name: "x", type: "number" }], outputs: [],
           config: {
-            question: { text: "?", options: ["c", "d"] },
+            question: { text: "?", options: [{ value: "c" }, { value: "d" }] },
             routing: { routes: { c: "SHARED", d: "ELSE" } },
           } },
         { name: "SHARED", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
@@ -267,7 +267,7 @@ describe("structural validator", () => {
         { name: "G", type: "gate",
           inputs: [{ name: "__gate_signal", type: "unknown" }], outputs: [],
           config: {
-            question: { text: "?", options: ["yes", "confirm", "no"] },
+            question: { text: "?", options: [{ value: "yes" }, { value: "confirm" }, { value: "no" }] },
             routing: { routes: { yes: "OK", confirm: "OK", no: "CANCEL" } },
           } },
         { name: "OK", type: "agent", inputs: [{ name: "ack", type: "unknown" }], outputs: [], config: { promptRef: "p" } },

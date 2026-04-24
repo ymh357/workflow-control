@@ -524,6 +524,45 @@ export class RealStageExecutor implements StageExecutor {
                 // up what sid to pass to options.resume.
                 writer.updateSessionId(sid);
               }
+              // Bug-3 (dogfood): validate that every declared external
+              // MCP server surfaced at least one tool. If the SDK spawned
+              // the MCP subprocess but it died during initialization (bad
+              // URL for mcp-remote, OAuth prompt without TTY, wrong
+              // package name, etc.), the SDK silently ships zero tools
+              // for that server. Without this check the agent runs with
+              // an incomplete toolset, confabulates completion, and the
+              // stage ends success=true with no real work done. Surface
+              // a hard error instead so the caller sees exactly which
+              // MCP never came up. Thrown errors propagate via
+              // stream-pump → real-executor catch.
+              if (externalMcpServers && Object.keys(externalMcpServers).length > 0) {
+                const toolsList = (msg as { tools?: unknown }).tools;
+                const advertised = Array.isArray(toolsList)
+                  ? (toolsList as unknown[]).filter((t): t is string => typeof t === "string")
+                  : [];
+                const missing: string[] = [];
+                for (const declaredName of Object.keys(externalMcpServers)) {
+                  // SDK prefixes MCP tools as `mcp__<serverName>__<tool>`
+                  // (Claude Agent SDK convention; our kernel MCP shows
+                  // up as `mcp____kernel_next____*`, double underscore
+                  // around an empty hyphen-group because our name has
+                  // leading/trailing underscores — but external servers
+                  // use the single-underscore form around the name).
+                  const prefix = `mcp__${declaredName}__`;
+                  const found = advertised.some((t) => t.startsWith(prefix));
+                  if (!found) missing.push(declaredName);
+                }
+                if (missing.length > 0) {
+                  throw new Error(
+                    `MCP_STARTUP_FAILED: declared external MCP server(s) ${missing
+                      .map((n) => `'${n}'`)
+                      .join(", ")} did not advertise any tools at session init. ` +
+                      `Likely causes: wrong URL for mcp-remote, npm package not found, ` +
+                      `OAuth flow failed, or server crashed during handshake. ` +
+                      `Re-run with verified MCP config or check the SDK stderr stream.`,
+                  );
+                }
+              }
             }
             if (msg.type === "assistant") {
               const blocks = msg.message?.content ?? [];

@@ -27,7 +27,7 @@ function seedIR(): PipelineIR {
         inputs: [{ name: "x", type: "number" }],
         outputs: [],
         config: {
-          question: { text: "go?", options: ["yes"] },
+          question: { text: "go?", options: [{ value: "yes" }] },
           routing: { routes: { yes: "A" } },
         },
       },
@@ -92,7 +92,7 @@ describe("REST /api/kernel/tasks/:taskId/status", () => {
     const gAtt = openAttempt(db, "t-gt", submit.versionHash, "G", "running");
     const { gateId } = svc.createGate({
       taskId: "t-gt", stageName: "G", attemptId: gAtt,
-      question: { text: "go?", options: ["yes"] },
+      question: { text: "go?", options: [{ value: "yes" }] },
     });
 
     const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-gt/status"));

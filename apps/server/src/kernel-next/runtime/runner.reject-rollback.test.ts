@@ -34,7 +34,7 @@ function rollbackIR(): PipelineIR {
         inputs: [{ name: "i", type: "unknown" }],
         outputs: [],
         config: {
-          question: { text: "approve or reject?", options: ["approve", "reject"] },
+          question: { text: "approve or reject?", options: [{ value: "approve" }, { value: "reject" }] },
           routing: { routes: { approve: "B", reject: "A" } },
         },
       },
@@ -215,7 +215,7 @@ describe("runner — gate reject rollback", () => {
           inputs: [{ name: "i", type: "unknown" }],
           outputs: [],
           config: {
-            question: { text: "approve or reject?", options: ["approve", "reject"] },
+            question: { text: "approve or reject?", options: [{ value: "approve" }, { value: "reject" }] },
             routing: { routes: { approve: "B", reject: "A" } },
           },
         },

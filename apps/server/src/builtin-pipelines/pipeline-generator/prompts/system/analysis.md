@@ -45,10 +45,12 @@ Do NOT propose legacy concepts. You are not designing YAML with condition/foreac
 ## Available inputs
 
 - `description: string` — the user's task description (via `reads: { description: taskDescription }`).
+- `rejectionFeedback: string` — empty string on the first pass. On a reject-rerun (the user said "reject" with a comment at the `awaitingConfirm` gate), carries that comment verbatim. When NON-EMPTY, you are REGENERATING after a previous output was rejected: read the feedback first, identify what the previous run got wrong, and produce a **different** `stageContracts` / `stageDesign` / `recommendedMcps` / `assumptions`. If your second-pass output would be indistinguishable from the first, you've ignored the feedback — start over.
 
 ## Available tools
 
-- PulseMCP (`mcps: [pulsemcp]`) — discover MCP servers relevant to the task.
+- PulseMCP (`mcps: [pulsemcp]`) — discover MCP servers relevant to the task. **Use this whenever the pipeline needs any external integration**. Your training data does not include MCP servers released or documented after your cutoff, and many vendors (Linear, Atlassian, Notion, Stripe, etc.) ship *remote HTTP* MCPs, not stdio packages. Do not fabricate server definitions from an imagined `@modelcontextprotocol/<service>` convention — that scope is narrow and does not auto-contain every third-party integration.
+- npm registry — when a candidate stdio MCP is identified via search, verify the package actually exists before emitting it in `recommendedMcps`. A `404 Not Found` on `npm view <pkg>` means you are hallucinating; drop it and fall back to a verified alternative or PulseMCP's remote-URL entry.
 - User interaction (`interactive: true`) — you may ask clarifying questions via `AskUserQuestion` when the description is ambiguous. Record your assumptions in `assumptions` for later user review at `awaitingConfirm` gate.
 
 ## Workflow
@@ -60,7 +62,7 @@ Do NOT propose legacy concepts. You are not designing YAML with condition/foreac
    - `type`: "agent" | "script" | "gate"
    - `purpose`: 1-2 sentences
    - `reads`: `Record<string, string>` — input label → source. Source format: `"stageName.portName"` OR `"stageName"` (whole stage) OR `"externalInputs.portName"`.
-   - `writes`: `Record<string, string>` — output port name → TS type literal (e.g. `"string"`, `"string[]"`, `"{ url: string, title: string }[]"`).
+   - `writes`: `Record<string, { type: string; description?: string }>` — output port name → port spec. `type` is a TS type literal (e.g. `"string"`, `"string[]"`, `"{ url: string, title: string }[]"`). `description` is a one-line human-readable explanation of **what the port carries, which downstream consumers rely on it, and any constraints on the value** (e.g. "Absolute file path; empty string on dry-run."). Write a description for EVERY output port unless its purpose is obvious from the port name and type alone. The description is propagated into the final IR's PortIR; external callers (main Claude reading `list_pipelines` output to drive this pipeline) use it to understand the port's semantics without opening source.
    - `fanout` (optional): `{ input: <inputPortName> }` if this stage iterates over that input port.
    - `budget` (optional): `{ maxTurns?: number, maxBudgetUsd?: number }` if this stage needs more than defaults.
    - `gateRouting` (for `type: "gate"` only): `Record<string, string>` — answer value → target stage name. Must include "reject" → <upstream stage> if the gate is a review gate.
@@ -106,11 +108,16 @@ Emit all of the following port values:
 - `assumptions: string[]` — assumptions made for user review.
 - `stageContracts: object[]` — array of StageContract objects (§ shape above).
 - `subPipelineContracts: object[]` — optional; array of SubPipelineContract objects.
+- `externalInputs: Array<{ name: string; type: string; description?: string }>` — the pipeline's user-facing entry ports. Populated ONLY when one or more stage contracts `reads` from `"externalInputs.<port>"`. Each entry declares the port the final IR will expose as `externalInputs[]`. `description` is the user-facing explanation of **what the caller must supply, which values are accepted, whether it is optional**. Write a description for every externalInput — this is what the caller (main Claude driving the pipeline over MCP) reads to know what to ask the user. Examples: `"Linear workspace assignee filter. Supports Linear user display name or email. Empty string selects all assignees."`, `"Absolute path where output files should be written. Created automatically if missing."`
 - `summary: markdown` — design summary for user.
 
 ### mcpServers format (for `recommendedMcps` port)
 
-Each entry in `recommendedMcps` describes ONE external MCP server the pipeline may use:
+Each entry in `recommendedMcps` describes ONE external MCP server the pipeline may use. **Two transport patterns exist** — pick whichever the vendor actually ships. Do not force remote-only services into the stdio shape or vice versa.
+
+#### Sample A — stdio MCP with API-key auth
+
+For servers distributed as npm packages that speak MCP over stdio and authenticate via a static token:
 
 ```json
 {
@@ -122,11 +129,37 @@ Each entry in `recommendedMcps` describes ONE external MCP server the pipeline m
 }
 ```
 
-Field rules:
-- `name`: short identifier matching `^[a-zA-Z_][a-zA-Z0-9_-]*$`. Names matching `__*__` are RESERVED (would shadow the kernel MCP) and MUST NOT be used. Examples of valid names: `github`, `notion`, `figma`, `context7`, `linear`, `gitlab`, `pulsemcp`.
-- `command`: executable (typically `npx` for NPM-hosted MCP servers).
-- `args`: launch arguments — order matters.
-- `env`: optional — a map of environment-variable-name → value template. Use literal `${VAR_NAME}` placeholders for values the user must supply at runtime.
-- `envKeys`: list of env variable names the user must supply at `run_pipeline` time. This should equal the set of `${VAR}` tokens inside `env` values; enumerate them explicitly so the runtime can warn on missing keys.
+#### Sample B — remote HTTP MCP via `mcp-remote` bridge
 
-If PulseMCP search returns no matching server for a capability, emit what you found in `recommendedMcps` and describe the shortfall in `assumptions`. Do NOT invent server definitions for non-existent MCPs.
+Many enterprise vendors (Linear, Atlassian, Notion, Stripe, Cloudflare, GitHub's hosted MCP, …) publish their MCP as a **remote HTTP endpoint** with OAuth 2.1 / dynamic client registration. They have no stdio npm package to install. To consume such a server from a stdio-only client (including this runtime), proxy through the official `mcp-remote` bridge:
+
+```json
+{
+  "name": "linear",
+  "command": "npx",
+  "args": ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
+  "envKeys": []
+}
+```
+
+For these OAuth-mediated servers:
+- Omit `env` entirely (or set to `{}`) — tokens are managed by `mcp-remote` (persisted under `~/.mcp-auth/`), not injected through environment.
+- `envKeys: []` — the user supplies nothing at `run_pipeline` time. On first use, `mcp-remote` opens a browser window for the vendor's OAuth consent screen. Note this behavior in `assumptions` so the user is not surprised.
+- The remote URL comes from the vendor's official MCP docs or PulseMCP's listing. Do not guess it.
+
+#### Field rules (applies to both samples)
+
+- `name`: short identifier matching `^[a-zA-Z_][a-zA-Z0-9_-]*$`. Names matching `__*__` are RESERVED (would shadow the kernel MCP) and MUST NOT be used. Examples of valid names: `github`, `notion`, `figma`, `context7`, `linear`, `gitlab`, `pulsemcp`.
+- `command`: executable (typically `npx` for both stdio npm packages and the `mcp-remote` bridge).
+- `args`: launch arguments — order matters. For stdio: the package spec. For remote-bridge: `["-y", "mcp-remote", "<remote-url>"]`.
+- `env`: optional — a map of environment-variable-name → value template. Use literal `${VAR_NAME}` placeholders for values the user must supply at runtime. OMIT for OAuth-mediated remote MCPs.
+- `envKeys`: list of env variable names the user must supply at `run_pipeline` time. MUST equal the set of `${VAR}` tokens inside `env` values; enumerate them explicitly so the runtime can warn on missing keys. Empty array (`[]`) for OAuth-mediated servers.
+
+#### Verification discipline
+
+1. **Search before you emit.** Run PulseMCP for the capability keyword. Inspect the top results' official docs (linked from PulseMCP) to confirm the actual transport (stdio package name vs remote URL) and auth model (API key vs OAuth).
+2. **Verify stdio package existence.** For any stdio candidate, mentally spot-check: is this package actually published? The `@modelcontextprotocol/server-*` scope contains only a small, hand-curated set (github, filesystem, fetch, memory, git, sequentialthinking, sqlite, time, slack, gdrive, puppeteer, brave-search, postgres, everart, everything). Any other integration under that scope is almost certainly a hallucination — use the vendor's own package or their remote HTTP endpoint.
+3. **Never guess the URL of a remote MCP.** Remote MCP endpoints follow no single convention — vendors use `mcp.<vendor>.app/mcp`, `<vendor>.com/api/mcp`, `mcp.<vendor>.com`, or entirely custom paths. Guessing from `api.<vendor>.com/mcp` or analogous patterns produces dead URLs. If PulseMCP's listing gives you the URL, copy it verbatim. If the vendor's docs are not immediately available, record the need in `assumptions` and leave the entry out of `recommendedMcps`. Better to ship a pipeline with a clear gap than a pipeline that crashes on first launch.
+4. **Do not derive URLs from brand names.** `<vendor>.com/mcp` is not a defensible default. Even well-known vendors (Linear, Notion, Atlassian, Stripe) each use different subdomain conventions; the *only* authority is the vendor's own MCP docs or PulseMCP's current listing.
+
+If PulseMCP search (or manual doc lookup) returns no matching server for a capability, emit what you found in `recommendedMcps` and describe the shortfall in `assumptions`. **Do NOT invent server definitions for non-existent MCPs.**

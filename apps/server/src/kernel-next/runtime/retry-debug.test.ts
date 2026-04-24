@@ -111,7 +111,7 @@ describe("retry debug", () => {
           { name: "G", type: "gate",
             inputs: [{ name: "x", type: "number" }], outputs: [],
             config: {
-              question: { text: "go?", options: ["yes"] },
+              question: { text: "go?", options: [{ value: "yes" }] },
               routing: { routes: { yes: "A" } },
             } },
           { name: "A", type: "agent", inputs: [],

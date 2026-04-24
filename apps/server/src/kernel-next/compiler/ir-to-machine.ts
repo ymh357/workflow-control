@@ -258,13 +258,24 @@ function buildInitialPortValues(
   ir: PipelineIR,
   seedValues: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
-  if (!seedValues || !ir.externalInputs || ir.externalInputs.length === 0) {
-    return {};
-  }
   const out: Record<string, unknown> = {};
-  for (const port of ir.externalInputs) {
-    if (port.name in seedValues) {
-      out[`__external__.${port.name}`] = seedValues[port.name];
+  // A (gate feedback): pre-populate every gate's `__gate_feedback__`
+  // builtin output with the empty string so downstream wires reading
+  // it can resolve on the pipeline's first pass (before any gate has
+  // fired). The gate's own answerGate call later overwrites this slot
+  // via PORT_WRITTEN; on reject-rollback runner's prune preserves the
+  // populated value so the rerun upstream reads the user's correction
+  // (see runner.ts rollback filter).
+  for (const stage of ir.stages) {
+    if (stage.type === "gate") {
+      out[`${stage.name}.__gate_feedback__`] = "";
+    }
+  }
+  if (seedValues && ir.externalInputs && ir.externalInputs.length > 0) {
+    for (const port of ir.externalInputs) {
+      if (port.name in seedValues) {
+        out[`__external__.${port.name}`] = seedValues[port.name];
+      }
     }
   }
   return out;

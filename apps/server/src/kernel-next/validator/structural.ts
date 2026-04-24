@@ -98,6 +98,13 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
   // Also build a lookup index for wire validation.
   type PortKey = `${string}.${string}.${"in" | "out"}`;
   const portIndex = new Map<PortKey, { type: string }>();
+  // Track stage type so the wire-validation phase can recognise the
+  // kernel-emitted `__gate_feedback__` output on gate stages without
+  // requiring every pipeline author to declare it.
+  const stageTypeByName = new Map<string, "agent" | "script" | "gate">();
+  for (const s of ir.stages) {
+    stageTypeByName.set(s.name, s.type);
+  }
 
   for (const s of ir.stages) {
     const seenIn = new Set<string>();
@@ -230,7 +237,18 @@ export function validateStructural(ir: PipelineIR): ValidationResult {
       const fromExistsAsIn  = portIndex.has(fromInKey);
       const fromStageExists = stageNames.has(w.from.stage);
 
-      if (!fromExistsAsOut && !fromExistsAsIn) {
+      // A (gate feedback): `__gate_feedback__` is a builtin output on
+      // every gate stage. Authors don't declare it — the runner writes
+      // it when answer_gate is called. Treat any wire reading it from
+      // a gate stage as if the port were declared.
+      const isGateFeedbackSource =
+        w.from.port === "__gate_feedback__" &&
+        stageTypeByName.get(w.from.stage) === "gate";
+
+      if (isGateFeedbackSource) {
+        // Recognised — fall through to target validation without
+        // emitting WIRE_SOURCE_* diagnostics.
+      } else if (!fromExistsAsOut && !fromExistsAsIn) {
         diagnostics.push({
           code: "WIRE_SOURCE_PORT_MISSING",
           message: fromStageExists

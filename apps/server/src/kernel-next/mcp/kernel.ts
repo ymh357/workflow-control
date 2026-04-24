@@ -29,6 +29,7 @@ import {
 } from "../ir/sql.js";
 import { applyPatch, PatchApplyError } from "./patch.js";
 import { taskRegistry } from "../runtime/task-registry.js";
+import { kernelNextBroadcaster } from "../sse/singleton.js";
 import { deleteTaskEnvValues } from "../runtime/task-env-values.js";
 import { compileIRToMachine } from "../compiler/ir-to-machine.js";
 import { dryRunProposal as runDryRun } from "../hot-update/dry-run.js";
@@ -177,7 +178,7 @@ export interface GateRow {
   taskId: string;
   stageName: string;
   attemptId: string;
-  question: { text: string; options?: string[] };
+  question: { text: string; options?: Array<{ value: string; description?: string }> };
   answer: string | null;
   answeredAt: number | null;
   createdAt: number;
@@ -213,7 +214,7 @@ export type TaskStatus = "not_found" | "running" | "gated" | "completed" | "fail
 export interface PendingGate {
   gateId: string;
   stageName: string;
-  question: { text: string; options?: string[] };
+  question: { text: string; options?: Array<{ value: string; description?: string }> };
   createdAt: number;
 }
 
@@ -234,11 +235,16 @@ export interface GateContext {
   gateId: string;
   taskId: string;
   stageName: string;
-  question: { text: string; options?: string[] };
+  question: { text: string; options?: Array<{ value: string; description?: string }> };
   createdAt: number;
   answeredAt: number | null;
   answer: string | null;
-  answerOptions: string[];
+  // P3.7 — enriched from plain string[] to object form so dashboards
+  // and external MCP callers can show the human-readable meaning of
+  // each answer when the author supplied it via
+  // GateStage.config.question.options[].description. Values still map
+  // 1:1 to GateStage.config.routing.routes keys.
+  answerOptions: Array<{ value: string; description?: string }>;
   upstreams: Array<{
     stage: string;
     outputs: Array<{
@@ -880,7 +886,7 @@ export class KernelService {
     taskId: string;
     stageName: string;
     attemptId: string;
-    question: { text: string; options?: string[] };
+    question: { text: string; options?: Array<{ value: string; description?: string }> };
   }): { gateId: string } {
     const gateId = randomUUID();
     this.db.prepare(
@@ -937,7 +943,7 @@ export class KernelService {
       taskId: r.task_id,
       stageName: r.stage_name,
       attemptId: r.attempt_id,
-      question: JSON.parse(r.question_json) as { text: string; options?: string[] },
+      question: JSON.parse(r.question_json) as { text: string; options?: Array<{ value: string; description?: string }> },
       answer: r.answer,
       answeredAt: r.answered_at,
       createdAt: r.created_at,
@@ -1031,10 +1037,21 @@ export class KernelService {
     }
 
     // Answer options = routing keys minus "_default" (which is a
-    // fallback, not a user-selectable answer).
+    // fallback, not a user-selectable answer). Pair each key with its
+    // description from question.options when available (P3.7).
+    const optionDescByValue = new Map<string, string>();
+    for (const opt of stage.config.question.options ?? []) {
+      if (opt.description !== undefined) {
+        optionDescByValue.set(opt.value, opt.description);
+      }
+    }
     const answerOptions = Object.keys(stage.config.routing.routes)
       .filter((k) => k !== "_default")
-      .sort();
+      .sort()
+      .map((value) => {
+        const description = optionDescByValue.get(value);
+        return description !== undefined ? { value, description } : { value };
+      });
 
     // Upstream stages: every stage-sourced wire whose target is this
     // gate. External wires contribute no stage context — seed values
@@ -1121,7 +1138,7 @@ export class KernelService {
     };
   }
 
-  answerGate(gateId: string, answer: string): AnswerGateResult {
+  answerGate(gateId: string, answer: string, comment?: string): AnswerGateResult {
     const row = this.db.prepare(
       `SELECT gate_id, task_id, stage_name, attempt_id, question_json,
               answered_at
@@ -1249,6 +1266,29 @@ export class KernelService {
           `UPDATE stage_attempts SET ended_at = ?, status = 'success'
            WHERE attempt_id = ?`,
         ).run(now, row.attempt_id);
+
+        // A (gate feedback): write the builtin `__gate_feedback__`
+        // output port so downstream stages can read the user's comment
+        // in the reject-rollback rerun (or any branch). Empty string
+        // when no comment was supplied — downstream consumers can
+        // distinguish "author didn't say why" from the "approve with
+        // commentary" case. This is the ONLY builtin port the runner
+        // auto-emits; all other ports are author-declared. The
+        // in-memory PORT_WRITTEN dispatch happens after COMMIT below
+        // so the machine's context.portValues stays consistent with
+        // persisted DB state (writer-dispatcher ordering invariant,
+        // see port-runtime.ts L129-130).
+        this.db.prepare(
+          `INSERT INTO port_values
+             (value_id, attempt_id, stage_name, port_name, direction, value_json, written_at)
+           VALUES (?, ?, ?, '__gate_feedback__', 'out', ?, ?)`,
+        ).run(
+          randomUUID(),
+          row.attempt_id,
+          row.stage_name,
+          JSON.stringify(comment ?? ""),
+          now,
+        );
       }
       this.db.exec("COMMIT");
     } catch (err) {
@@ -1265,6 +1305,39 @@ export class KernelService {
         }],
       };
     }
+
+    // A (gate feedback): dispatch PORT_WRITTEN to the live runner so
+    // the in-memory context.portValues matches what we just persisted
+    // to the DB. Reject path still needs this: the runner's rollback
+    // prune preserves `<fromGate>.__gate_feedback__` so the upstream
+    // rerun can read the user's correction. Approve path needs it so
+    // a downstream wire consuming the feedback sees it immediately
+    // rather than waiting for a subsequent machine reload.
+    const dispatcher = taskRegistry.get(row.task_id);
+    if (dispatcher) {
+      dispatcher.send({
+        type: "PORT_WRITTEN",
+        key: `${row.stage_name}.__gate_feedback__`,
+        value: comment ?? "",
+      });
+    }
+    // W5 — also publish a `port_written` broadcaster event so the
+    // dashboard's live feed surfaces the feedback write alongside
+    // normal author-declared ports. Swallow errors the same way the
+    // runner's portRuntime hook does — broadcaster failures must not
+    // abort gate answering.
+    try {
+      kernelNextBroadcaster.publish({
+        type: "port_written",
+        taskId: row.task_id,
+        timestamp: new Date().toISOString(),
+        data: {
+          stage: row.stage_name,
+          port: "__gate_feedback__",
+          valuePreview: JSON.stringify(comment ?? "").slice(0, 200),
+        },
+      });
+    } catch { /* observability-only */ }
 
     if (isReject) {
       return {

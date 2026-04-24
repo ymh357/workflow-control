@@ -8,6 +8,13 @@ import { queryLineage, diffRuns } from "../lineage.js";
 import { compareRuns } from "../compare-runs.js";
 import type { ToolDef, ToolsDeps } from "../tool-types.js";
 import { jsonResponse, errorResponse } from "../tool-helpers.js";
+import { kernelNextBroadcaster } from "../../sse/singleton.js";
+import type {
+  AnyKernelNextSSEEvent,
+  GateOpenedData,
+  RunFinalData,
+  StageErrorData,
+} from "../../sse/types.js";
 
 export function buildTaskTools(deps: ToolsDeps): ToolDef[] {
   const { db, kernel } = deps;
@@ -165,6 +172,132 @@ export function buildTaskTools(deps: ToolsDeps): ToolDef[] {
         } catch (err) {
           return errorResponse(err instanceof Error ? err.message : String(err));
         }
+      },
+    },
+    {
+      name: "wait_for_task_event",
+      description:
+        "Block until the task emits one of the requested events or the " +
+        "timeout elapses. Designed for external callers (main Claude) " +
+        "driving a pipeline over MCP: one tool call waits for the next " +
+        "decision point (gate_opened, stage_error, or task terminal) " +
+        "and returns a compact payload so the caller never pulls the " +
+        "full SSE stream into its context window. Polling get_task_status " +
+        "still works; this tool exists so you don't have to.\n\n" +
+        "Events vocabulary:\n" +
+        "  - 'gate_opened': pipeline paused on a gate; payload carries gateId + questionText + answerOptions.\n" +
+        "  - 'terminal': task reached 'completed' or 'failed' (run_final).\n" +
+        "  - 'stage_error': any stage reached error final; useful when you want intermediate failures surfaced before terminal.\n\n" +
+        "Pass 'sinceSeq' to resume after a previously-consumed event — the " +
+        "broadcaster replays history > sinceSeq so short gaps between " +
+        "successive waits don't drop events. Omit sinceSeq for the first " +
+        "wait. The returned event includes its 'seq'; feed that back in " +
+        "the next call. Timeout resolves as { ok:true, event:null } so " +
+        "the caller can decide whether to retry or abort.",
+      inputSchema: {
+        taskId: z.string().min(1),
+        events: z.array(z.enum(["gate_opened", "terminal", "stage_error"]))
+          .min(1)
+          .describe("Event kinds that satisfy the wait."),
+        sinceSeq: z.number().int().nonnegative().optional().describe(
+          "Skip events with seq ≤ this value. Use the 'seq' field of the " +
+          "previous returned event to avoid re-consuming it.",
+        ),
+        timeoutMs: z.number().int().positive().max(30 * 60 * 1000).optional()
+          .describe("Max wait in milliseconds. Default 300000 (5 min). Max 30 min."),
+      },
+      handler: async (args: Record<string, unknown>) => {
+        const taskId = typeof args.taskId === "string" ? args.taskId : undefined;
+        if (!taskId) return errorResponse("taskId is required");
+        const rawEvents = Array.isArray(args.events) ? args.events : [];
+        const wanted = new Set<string>(
+          rawEvents.filter((e): e is string => typeof e === "string"),
+        );
+        if (wanted.size === 0) {
+          return errorResponse("events must be a non-empty array");
+        }
+        const sinceSeq = typeof args.sinceSeq === "number"
+          ? args.sinceSeq
+          : -1;
+        const timeoutMs = typeof args.timeoutMs === "number"
+          ? args.timeoutMs
+          : 5 * 60 * 1000;
+
+        // Map caller vocabulary → broadcaster event types. 'terminal'
+        // aliases the run_final event; other names pass through.
+        const matches = (ev: AnyKernelNextSSEEvent): boolean => {
+          if (wanted.has("gate_opened") && ev.type === "gate_opened") return true;
+          if (wanted.has("stage_error") && ev.type === "stage_error") return true;
+          if (wanted.has("terminal") && ev.type === "run_final") return true;
+          return false;
+        };
+
+        // Shape a caller-friendly payload — do not leak internal fields.
+        const shape = (ev: AnyKernelNextSSEEvent) => {
+          if (ev.type === "gate_opened") {
+            const d = ev.data as GateOpenedData;
+            return {
+              event: "gate_opened",
+              seq: ev.seq,
+              timestamp: ev.timestamp,
+              gateId: d.gateId,
+              stage: d.stage,
+              questionText: d.questionText,
+              answerOptions: d.answerOptions,
+            };
+          }
+          if (ev.type === "run_final") {
+            const d = ev.data as RunFinalData;
+            return {
+              event: "terminal",
+              seq: ev.seq,
+              timestamp: ev.timestamp,
+              finalState: d.finalState,
+              stageErrors: d.stageErrors,
+            };
+          }
+          if (ev.type === "stage_error") {
+            const d = ev.data as StageErrorData;
+            return {
+              event: "stage_error",
+              seq: ev.seq,
+              timestamp: ev.timestamp,
+              stage: d.stage,
+              reason: d.reason,
+              message: d.message,
+            };
+          }
+          return { event: ev.type, seq: ev.seq, timestamp: ev.timestamp };
+        };
+
+        return new Promise<ReturnType<typeof jsonResponse>>((resolve) => {
+          let settled = false;
+          let unsubscribe: (() => void) | null = null;
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            if (unsubscribe) unsubscribe();
+            resolve(jsonResponse({ ok: true, event: null, timedOut: true }));
+          }, timeoutMs);
+
+          unsubscribe = kernelNextBroadcaster.subscribe(
+            taskId,
+            (ev) => {
+              if (settled) return;
+              if ((ev.seq ?? 0) <= sinceSeq) return;
+              if (!matches(ev as AnyKernelNextSSEEvent)) return;
+              settled = true;
+              clearTimeout(timer);
+              if (unsubscribe) unsubscribe();
+              resolve(jsonResponse({
+                ok: true,
+                event: shape(ev as AnyKernelNextSSEEvent),
+                timedOut: false,
+              }));
+            },
+            { fromSeq: sinceSeq >= 0 ? sinceSeq : 0 },
+          );
+        });
       },
     },
     {

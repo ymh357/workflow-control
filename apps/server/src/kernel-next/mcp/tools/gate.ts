@@ -41,15 +41,29 @@ export function buildGateTools(deps: ToolsDeps): ToolDef[] {
         "task is still running in this process) and returns the resolved " +
         "targetStage. If the task's runner is not registered (process " +
         "restart, task already completed), the gate answer is persisted " +
-        "but no machine event is dispatched.",
+        "but no machine event is dispatched.\n\n" +
+        "Optional `comment` is a free-text feedback string. On ANY answer " +
+        "(approve, reject, or custom routing) the runner writes the " +
+        "comment to the gate's builtin `__gate_feedback__` output port. " +
+        "Downstream stages can read it via the standard wire mechanism — " +
+        "in a reject-rollback this is how the user's correction reaches " +
+        "the upstream regenerating agent. Empty string is persisted when " +
+        "comment is omitted, so downstream consumers see a determinate " +
+        "value either way.",
       inputSchema: {
         gateId: z.string(),
         answer: z.string().min(1).max(4096),
+        comment: z.string().max(16_384).optional().describe(
+          "Free-text feedback relayed to downstream stages via the gate's " +
+          "builtin __gate_feedback__ port. Primary use case: reject with a " +
+          "correction so the upstream agent can regenerate with guidance.",
+        ),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       handler: async (args: any) => {
         try {
-          const result = kernel.answerGate(String(args.gateId), String(args.answer));
+          const comment = typeof args.comment === "string" ? args.comment : undefined;
+          const result = kernel.answerGate(String(args.gateId), String(args.answer), comment);
           if (result.ok) {
             const dispatcher = taskRegistry.get(result.taskId);
             if (result.kind === "rejected") {

@@ -23,7 +23,8 @@ export type KernelNextSSEEventType =
   | "diagnostics_emitted" // multi-diagnostic aggregation (runtime stage errors, submit/migrate validation failures)
   | "rate_limit_backoff" // Anthropic API rate-limit signal crossed the pause threshold; dashboard shows "throttled by API"
   | "task_cost_update"   // P6.1 / D23 — cumulative cost + token totals for the task, emitted at stage boundaries
-  | "agent_message_delta"; // P7.4 / D29 — throttled assistant text deltas streamed out of the SDK per executing stage
+  | "agent_message_delta" // P7.4 / D29 — throttled assistant text deltas streamed out of the SDK per executing stage
+  | "gate_opened";       // a gate stage paused the pipeline awaiting an answer; carries gateId + question text + routing keys
 
 export type TaskTopLevelState =
   | "idle" | "running" | "completed" | "failed";
@@ -207,6 +208,22 @@ export interface AgentMessageDeltaData {
   role: "assistant" | "other";
 }
 
+// Gate paused pipeline — the only signal an external MCP caller needs
+// to interrupt its `wait_for_task_event` loop and relay the question
+// back to the user. Broadcaster-side mirror of the gate_queue row.
+//
+// answerOptions carries the routing keys the pipeline declared, optionally
+// paired with `description` from `GateStage.config.question.options`
+// (P3.7). When description is present the caller (typically main Claude)
+// can present the option verbatim; when absent, the caller should fall
+// back to the key itself.
+export interface GateOpenedData {
+  gateId: string;
+  stage: string;
+  questionText: string;
+  answerOptions: Array<{ value: string; description?: string }>;
+}
+
 // Narrowed event variants. Broadcaster handles KernelNextSSEEvent
 // generically; typed helpers at the publish site stay inside runner
 // and port-runtime.
@@ -258,6 +275,10 @@ export interface KernelNextAgentMessageDeltaEvent extends KernelNextSSEEvent {
   type: "agent_message_delta";
   data: AgentMessageDeltaData;
 }
+export interface KernelNextGateOpenedEvent extends KernelNextSSEEvent {
+  type: "gate_opened";
+  data: GateOpenedData;
+}
 
 export type AnyKernelNextSSEEvent =
   | KernelNextTaskStateEvent
@@ -271,4 +292,5 @@ export type AnyKernelNextSSEEvent =
   | KernelNextDiagnosticsEmittedEvent
   | KernelNextRateLimitBackoffEvent
   | KernelNextTaskCostUpdateEvent
-  | KernelNextAgentMessageDeltaEvent;
+  | KernelNextAgentMessageDeltaEvent
+  | KernelNextGateOpenedEvent;

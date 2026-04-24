@@ -319,7 +319,7 @@ describe("A1.1: CompositeStageExecutor routes mixed agent + script pipeline", ()
             inputs: [{ name: "x", type: "number" }],
             outputs: [],
             config: {
-              question: { text: "continue?", options: ["yes"] },
+              question: { text: "continue?", options: [{ value: "yes" }] },
               // routing points at AFTER — a dedicated "post-gate" stage
               // with no inbound wires. It activates iff gate answer ==
               // "yes" (and has no inbound to wait for).
@@ -479,7 +479,7 @@ describe("A3.2: gate routing exclusivity", () => {
             inputs: [{ name: "x", type: "number" }],
             outputs: [],
             config: {
-              question: { text: "go?", options: ["yes"] },
+              question: { text: "go?", options: [{ value: "yes" }] },
               routing: { routes: { yes: "TGT" } },
             },
           },
@@ -573,7 +573,7 @@ describe("A4: multi-target gate routing", () => {
             inputs: [{ name: "x", type: "number" }],
             outputs: [],
             config: {
-              question: { text: "approve or reject?", options: ["approve", "reject"] },
+              question: { text: "approve or reject?", options: [{ value: "approve" }, { value: "reject" }] },
               routing: { routes: { approve: ["A_STAGE", "B_STAGE"], reject: "C_STAGE" } },
             },
           },

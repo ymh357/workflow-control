@@ -25,6 +25,7 @@ import { KernelService } from "../mcp/kernel.js";
 import { createKernelMcp } from "../mcp/server.js";
 import { runPipeline } from "./runner.js";
 import { RealStageExecutor } from "./real-executor.js";
+import { findMissingMcpRemoteAuth } from "./mcp-remote-preflight.js";
 import { DbPromptResolver } from "./db-prompt-resolver.js";
 import { MOCK_HANDLER_REGISTRY } from "./mock-handler-registry.js";
 import type { StageHandlerMap } from "./mock-executor.js";
@@ -121,7 +122,8 @@ export type StartPipelineRunResult =
         | "MISSING_INPUT"
         | "UNKNOWN_PIPELINE"
         | "UNKNOWN_VERSION_HASH"
-        | "AMBIGUOUS_INPUT";
+        | "AMBIGUOUS_INPUT"
+        | "OAUTH_NOT_CONFIGURED";
       message: string;
       context?: Record<string, unknown>;
     };
@@ -253,6 +255,36 @@ export async function startPipelineRun(
   const nameForRegistry = input.name ?? ir.name;
   const mockEntry = MOCK_HANDLER_REGISTRY[nameForRegistry];
   const handlers: StageHandlerMap = mockEntry ? mockEntry.handlers : {};
+
+  // --- P2.1: pre-flight OAuth token check for mcp-remote bridges ---
+  //
+  // Mock-handler pipelines never spawn the real SDK agent, so their
+  // mcpServers declarations are inert — skip. For real-executor runs,
+  // catch a common authoring mistake early: user declares `linear`
+  // but has not yet completed the one-time `npx -y mcp-remote <url>`
+  // bootstrap in a TTY. Without this check the task spins up, the
+  // SDK spawns mcp-remote, mcp-remote silently waits for a consent
+  // browser flow that will never come, and ~8s later our own MCP
+  // startup check reports "linear did not advertise any tools".
+  // Same outcome but slower and less specific.
+  if (!mockEntry) {
+    const missing = findMissingMcpRemoteAuth(ir.stages);
+    if (missing.length > 0) {
+      return {
+        ok: false,
+        code: "OAUTH_NOT_CONFIGURED",
+        message:
+          `pipeline declares ${missing.length} OAuth-mediated MCP server(s) ` +
+          `without a cached token: ${missing.map((m) => `'${m.serverName}' (${m.url}) used by stage '${m.stage}'`).join("; ")}. ` +
+          `Bootstrap each once in a TTY:\n` +
+          missing.map((m) => `  npx -y mcp-remote ${m.url}`).join("\n") +
+          `\nthen retry run_pipeline.`,
+        context: {
+          missing,
+        },
+      };
+    }
+  }
 
   // --- Merge policy ---
   const model = input.model

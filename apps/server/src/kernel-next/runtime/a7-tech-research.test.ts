@@ -98,7 +98,7 @@ function techResearchIR(): PipelineIR {
         ],
         outputs: [],
         config: {
-          question: { text: "ready to summarise?", options: ["yes", "no"] },
+          question: { text: "ready to summarise?", options: [{ value: "yes" }, { value: "no" }] },
           routing: { routes: { yes: "SUMMARY", no: "REVIEW" } },
         },
       },

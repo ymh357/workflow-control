@@ -35,7 +35,7 @@ function gateIR(): PipelineIR {
         inputs: [{ name: "x", type: "number" }],
         outputs: [],
         config: {
-          question: { text: "continue?", options: ["yes", "no"] },
+          question: { text: "continue?", options: [{ value: "yes" }, { value: "no" }] },
           routing: { routes: { yes: "A", no: "A" } },
         },
       },
@@ -61,7 +61,7 @@ function seedGateRow(
     taskId,
     stageName: "G",
     attemptId,
-    question: { text: "continue?", options: ["yes", "no"] },
+    question: { text: "continue?", options: [{ value: "yes" }, { value: "no" }] },
   });
 }
 
@@ -255,7 +255,7 @@ describe("REST /api/kernel/gates", () => {
     ).run(gAttempt, sub.versionHash);
     const { gateId } = svc.createGate({
       taskId: "t-ctx", stageName: "G", attemptId: gAttempt,
-      question: { text: "continue?", options: ["yes", "no"] },
+      question: { text: "continue?", options: [{ value: "yes" }, { value: "no" }] },
     });
 
     const res = await app.fetch(
@@ -265,12 +265,12 @@ describe("REST /api/kernel/gates", () => {
     const body = await res.json() as {
       ok: boolean;
       gateId: string;
-      answerOptions: string[];
+      answerOptions: Array<{ value: string; description?: string }>;
       upstreams: Array<{ stage: string; outputs: Array<{ port: string; value: unknown }> }>;
     };
     expect(body.ok).toBe(true);
     expect(body.gateId).toBe(gateId);
-    expect(body.answerOptions.sort()).toEqual(["no", "yes"]);
+    expect(body.answerOptions.map((a) => a.value).sort()).toEqual(["no", "yes"]);
     expect(body.upstreams).toHaveLength(1);
     expect(body.upstreams[0]!.stage).toBe("A");
     expect(body.upstreams[0]!.outputs[0]!.value).toBe(7);
@@ -317,7 +317,7 @@ function seedRejectableGate(
         inputs: [{ name: "i", type: "unknown" }],
         outputs: [],
         config: {
-          question: { text: "approve or reject?", options: ["approve", "reject"] },
+          question: { text: "approve or reject?", options: [{ value: "approve" }, { value: "reject" }] },
           routing: { routes: { approve: "B", reject: "A" } },
         },
       },
@@ -348,7 +348,7 @@ function seedRejectableGate(
     taskId,
     stageName: "G",
     attemptId,
-    question: { text: "approve or reject?", options: ["approve", "reject"] },
+    question: { text: "approve or reject?", options: [{ value: "approve" }, { value: "reject" }] },
   });
 
   return { gateId, taskId };
@@ -383,8 +383,14 @@ describe("REST /api/kernel/gates — GATE_REJECTED dispatch", () => {
       }),
     );
     expect(res.status).toBe(200);
-    expect(captured).toHaveLength(1);
-    const ev = captured[0] as Record<string, unknown>;
+    // A (gate feedback): answer_gate now dispatches PORT_WRITTEN first
+    // (for the builtin __gate_feedback__ port) then the GATE_* event.
+    expect(captured).toHaveLength(2);
+    const portWritten = captured[0] as Record<string, unknown>;
+    expect(portWritten["type"]).toBe("PORT_WRITTEN");
+    expect(portWritten["key"]).toBe("G.__gate_feedback__");
+    expect(portWritten["value"]).toBe("");
+    const ev = captured[1] as Record<string, unknown>;
     expect(ev["type"]).toBe("GATE_REJECTED");
     expect(ev["targetStage"]).toBe("A");
     expect(new Set(ev["affectedStages"] as string[])).toEqual(new Set(["A", "G"]));
@@ -404,8 +410,10 @@ describe("REST /api/kernel/gates — GATE_REJECTED dispatch", () => {
       }),
     );
     expect(res.status).toBe(200);
-    expect(captured).toHaveLength(1);
-    const ev = captured[0] as Record<string, unknown>;
+    expect(captured).toHaveLength(2);
+    const portWritten = captured[0] as Record<string, unknown>;
+    expect(portWritten["type"]).toBe("PORT_WRITTEN");
+    const ev = captured[1] as Record<string, unknown>;
     expect(ev["type"]).toBe("GATE_ANSWERED");
   });
 });

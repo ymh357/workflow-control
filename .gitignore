@@ -57,6 +57,9 @@ apps/server/kernel-next.db-*
 apps/server/workflow.db
 apps/server/workflow.db-*
 
+# Dogfood sandbox (local Linear-task pipeline generation; not source)
+/.dogfood/
+
 # Scratch images / screenshots
 /*.png
 

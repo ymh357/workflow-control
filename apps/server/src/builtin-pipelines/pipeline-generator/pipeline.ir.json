@@ -15,6 +15,11 @@
         {
           "name": "description",
           "type": "unknown"
+        },
+        {
+          "name": "rejectionFeedback",
+          "type": "string",
+          "description": "User free-text correction supplied at the awaitingConfirm gate via answer_gate({answer:\"reject\", comment:<this>}). Empty string on the first pass before the gate has fired; populated on reject-rerun. The analyzing agent must read this and, when non-empty, adjust its design accordingly."
         }
       ],
       "name": "analyzing",
@@ -82,6 +87,10 @@
         {
           "name": "usesSubPipelines",
           "type": "boolean"
+        },
+        {
+          "name": "externalInputs",
+          "type": "Array<{ name: string; type: string; description?: string }>"
         }
       ],
       "type": "agent"
@@ -197,6 +206,10 @@
         {
           "name": "usesSubPipelines",
           "type": "boolean"
+        },
+        {
+          "name": "externalInputs",
+          "type": "Array<{ name: string; type: string; description?: string }>"
         }
       ],
       "name": "genPrompts",
@@ -280,6 +293,10 @@
         {
           "name": "usesSubPipelines",
           "type": "boolean"
+        },
+        {
+          "name": "externalInputs",
+          "type": "Array<{ name: string; type: string; description?: string }>"
         }
       ],
       "name": "genSkeleton",
@@ -379,6 +396,10 @@
         {
           "name": "usesSubPipelines",
           "type": "boolean"
+        },
+        {
+          "name": "externalInputs",
+          "type": "Array<{ name: string; type: string; description?: string }>"
         }
       ],
       "name": "persisting",
@@ -963,6 +984,50 @@
         "port": "usesSubPipelines",
         "stage": "persisting"
       }
+    },
+    {
+      "from": {
+        "source": "stage",
+        "stage": "analyzing",
+        "port": "externalInputs"
+      },
+      "to": {
+        "stage": "genSkeleton",
+        "port": "externalInputs"
+      }
+    },
+    {
+      "from": {
+        "source": "stage",
+        "stage": "analyzing",
+        "port": "externalInputs"
+      },
+      "to": {
+        "stage": "genPrompts",
+        "port": "externalInputs"
+      }
+    },
+    {
+      "from": {
+        "source": "stage",
+        "stage": "analyzing",
+        "port": "externalInputs"
+      },
+      "to": {
+        "stage": "persisting",
+        "port": "externalInputs"
+      }
+    },
+    {
+      "from": {
+        "source": "stage",
+        "stage": "awaitingConfirm",
+        "port": "__gate_feedback__"
+      },
+      "to": {
+        "stage": "analyzing",
+        "port": "rejectionFeedback"
+      }
     }
   ],
   "store_schema": {
@@ -1156,6 +1221,14 @@
       "produced_by": {
         "stage": "persisting",
         "port": "versionHash"
+      }
+    },
+    "analyzing.externalInputs": {
+      "type": "Array<{ name: string; type: string; description?: string }>",
+      "description": "Pipeline external entry ports as declared by the analyzing stage. Each entry carries name, TS type, and optional human-readable description consumed by external callers to understand what to ask the user.",
+      "produced_by": {
+        "stage": "analyzing",
+        "port": "externalInputs"
       }
     }
   }

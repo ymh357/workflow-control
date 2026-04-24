@@ -180,7 +180,16 @@ export function canonicalizeIR(ir: PipelineIR): CanonicalValue {
     ir.externalInputs && ir.externalInputs.length > 0
       ? [...ir.externalInputs]
           .sort((a, b) => codepointCompare(a.name, b.name))
-          .map((p) => sortKeys({ name: p.name, type: p.type, zod: p.zod }))
+          .map((p) => sortKeys({
+            name: p.name,
+            type: p.type,
+            zod: p.zod,
+            // Optional description participates in the hash — changing
+            // port semantics is a real pipeline change, not metadata.
+            // Absent description stays absent via sortKeys' undefined
+            // stripping (preserves hash stability for pre-P3.6 IRs).
+            description: p.description,
+          }))
       : undefined;
 
   return sortKeys({

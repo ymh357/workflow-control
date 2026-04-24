@@ -21,6 +21,10 @@ export const kernelGatesRoute = new Hono();
 
 const answerBodySchema = z.object({
   answer: z.string().min(1).max(4096),
+  // A: free-text feedback routed through the gate's builtin
+  // __gate_feedback__ output port. Optional; persisted as empty
+  // string when omitted.
+  comment: z.string().max(16_384).optional(),
 }).strict();
 
 function badRequest(
@@ -98,7 +102,7 @@ kernelGatesRoute.post("/kernel/gates/:id/answer", async (c) => {
   }
 
   const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
-  const result = svc.answerGate(id, parsed.data.answer);
+  const result = svc.answerGate(id, parsed.data.answer, parsed.data.comment);
   if (result.ok) {
     // Dispatch to the live runner if present. If not (task already completed
     // or process restarted), the persisted answer will be picked up by any

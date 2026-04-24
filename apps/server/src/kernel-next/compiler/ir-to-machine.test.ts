@@ -54,7 +54,7 @@ describe("compileIRToMachine — gate routing (A1.2b.1)", () => {
         inputs: [{ name: "x", type: "number" }],
         outputs: [],
         config: {
-          question: { text: "continue?", options: ["yes", "no"] },
+          question: { text: "continue?", options: [{ value: "yes" }, { value: "no" }] },
           routing: { routes: { yes: "TGT_YES", no: "TGT_NO" } },
         },
       },
@@ -251,7 +251,7 @@ describe("compileIRToMachine — gate routing upstream exclusion", () => {
           inputs: [{ name: "signal", type: "boolean" }],
           outputs: [],
           config: {
-            question: { text: "approve?", options: ["approve", "reject"] },
+            question: { text: "approve?", options: [{ value: "approve" }, { value: "reject" }] },
             // reject target points back at UP — rollback semantics.
             routing: { routes: { approve: "FWD", reject: "UP" } },
           },
@@ -303,7 +303,7 @@ describe("compileIRToMachine — gate routing upstream exclusion", () => {
           inputs: [{ name: "x", type: "number" }],
           outputs: [],
           config: {
-            question: { text: "ok?", options: ["yes"] },
+            question: { text: "ok?", options: [{ value: "yes" }] },
             routing: { routes: { yes: "TGT" } },
           },
         },

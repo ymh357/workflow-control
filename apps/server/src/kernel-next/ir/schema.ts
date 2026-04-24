@@ -42,6 +42,13 @@ export const PortIRSchema = z.object({
   name: identifier,
   type: z.string().min(1),       // TS type source; deep check deferred to tsc
   zod: z.string().optional(),    // optional zod expression for runtime shape
+  // Human-readable semantic description of what this port carries,
+  // what values it accepts, and whether it is optional. Consumed by
+  // external callers (main Claude) driving a pipeline over MCP: they
+  // read externalInputs + their descriptions to know what to ask the
+  // user. Persisted through canonicalisation so it's part of
+  // version_hash (changing port semantics = new version).
+  description: z.string().optional(),
 });
 
 // --- Fanout / gate supporting shapes ---
@@ -55,9 +62,22 @@ export const FanoutSpecSchema = z.object({
   concurrency: z.number().int().positive().max(20).optional(),
 });
 
+// Answer option for a gate. `value` is the exact string the runner
+// will route on (must match a key in GateRouting.routes).
+// `description` is the human-readable explanation of what this answer
+// means — shown to the user when the caller (main Claude) relays the
+// gate question. P3.7: promoted from bare string[] so gates with
+// multiple reject-class or branch-class answers can be presented in
+// natural language without the caller having to hand-translate the
+// raw routing keys.
+export const GateAnswerOptionSchema = z.object({
+  value: z.string().min(1),
+  description: z.string().optional(),
+});
+
 export const GateQuestionSchema = z.object({
   text: z.string().min(1),
-  options: z.array(z.string().min(1)).optional(),
+  options: z.array(GateAnswerOptionSchema).optional(),
 });
 
 // Script retry spec: when a script stage fails (executor returns

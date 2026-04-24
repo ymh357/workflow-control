@@ -19,6 +19,9 @@ import { kernelAuditRoute } from "./routes/kernel-audit.js";
 import { kernelDiffRoute } from "./routes/kernel-diff.js";
 import { kernelNextStreamRoute } from "./routes/kernel-next-stream.js";
 import { kernelRunRoute } from "./routes/kernel-run.js";
+import { kernelMcpRoute } from "./routes/kernel-mcp.js";
+import { kernelTaskListRoute } from "./routes/kernel-task-list.js";
+import { kernelTaskPortsRoute } from "./routes/kernel-task-ports.js";
 import { runPreflight, printPreflightResults } from "./lib/preflight.js";
 import { logger } from "./lib/logger.js";
 import { loadSystemSettings } from "./lib/config-loader.js";
@@ -220,6 +223,9 @@ app.route("/api", kernelAuditRoute);
 app.route("/api", kernelDiffRoute);
 app.route("/api", kernelNextStreamRoute);
 app.route("/api", kernelRunRoute);
+app.route("/api", kernelMcpRoute);
+app.route("/api", kernelTaskListRoute);
+app.route("/api", kernelTaskPortsRoute);
 
 const port = Number(process.env.PORT ?? 3001);
 

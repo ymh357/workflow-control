@@ -187,7 +187,11 @@ function topologicalStageOrder(ir: PipelineIR): string[] {
     inDegree.set(s.name, 0);
     adj.set(s.name, []);
   }
-  for (const w of ir.wires) {
+  // Tolerate legacy IR rows missing `wires` entirely — the earliest
+  // kernel-next drafts stored it omitted. Topological order reduces
+  // to "any linear sequence of declared stages" in that case, which
+  // is good enough for orphan classification.
+  for (const w of ir.wires ?? []) {
     if (!("stage" in w.from)) continue;
     const from = w.from.stage;
     const to = w.to.stage;

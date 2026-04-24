@@ -382,7 +382,7 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
           inputs: [{ name: "x", type: "number" }],
           outputs: [],
           config: {
-            question: { text: "continue?", options: ["yes", "no"] },
+            question: { text: "continue?", options: [{ value: "yes" }, { value: "no" }] },
             routing: { routes: { yes: "A", no: "A" } },
           },
         },
@@ -415,14 +415,14 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
         taskId: "task-1",
         stageName: "G",
         attemptId,
-        question: { text: "continue?", options: ["yes", "no"] },
+        question: { text: "continue?", options: [{ value: "yes" }, { value: "no" }] },
       });
 
       // Listable, unanswered.
       const pending = svc.listGates({ taskId: "task-1", answered: false });
       expect(pending.map((g) => g.gateId)).toEqual([gateId]);
       expect(pending[0]!.answer).toBeNull();
-      expect(pending[0]!.question).toEqual({ text: "continue?", options: ["yes", "no"] });
+      expect(pending[0]!.question).toEqual({ text: "continue?", options: [{ value: "yes" }, { value: "no" }] });
 
       const result = svc.answerGate(gateId, "yes");
       // Both routes (yes/no) target "A" which is upstream of G —
@@ -513,7 +513,7 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
       const attemptId = openAttempt(db, "t1", versionHash, "G");
       const { gateId } = svc.createGate({
         taskId: "t1", stageName: "G", attemptId,
-        question: { text: "continue?", options: ["yes", "no"] },
+        question: { text: "continue?", options: [{ value: "yes" }, { value: "no" }] },
       });
       const first = svc.answerGate(gateId, "yes");
       expect(first.ok).toBe(true);
@@ -535,7 +535,7 @@ describe("KernelService — gate lifecycle (A1.2a)", () => {
       const attemptId = openAttempt(db, "t1", versionHash, "G");
       const { gateId } = svc.createGate({
         taskId: "t1", stageName: "G", attemptId,
-        question: { text: "continue?", options: ["yes", "no"] },
+        question: { text: "continue?", options: [{ value: "yes" }, { value: "no" }] },
       });
       const r = svc.answerGate(gateId, "maybe");
       expect(r.ok).toBe(false);
@@ -579,7 +579,7 @@ describe("KernelService — getTaskStatus (A4)", () => {
           inputs: [{ name: "x", type: "number" }],
           outputs: [],
           config: {
-            question: { text: "continue?", options: ["yes"] },
+            question: { text: "continue?", options: [{ value: "yes" }] },
             routing: { routes: { yes: "A" } },
           },
         },
@@ -638,7 +638,7 @@ describe("KernelService — getTaskStatus (A4)", () => {
       const gAttempt = openAttempt(db, "t1", hash, "G", "running");
       const { gateId } = svc.createGate({
         taskId: "t1", stageName: "G", attemptId: gAttempt,
-        question: { text: "continue?", options: ["yes"] },
+        question: { text: "continue?", options: [{ value: "yes" }] },
       });
       const s = svc.getTaskStatus("t1");
       if (s.status !== "gated") throw new Error(`unexpected status ${s.status}`);
@@ -647,7 +647,7 @@ describe("KernelService — getTaskStatus (A4)", () => {
       expect(s.pending[0]).toMatchObject({
         gateId,
         stageName: "G",
-        question: { text: "continue?", options: ["yes"] },
+        question: { text: "continue?", options: [{ value: "yes" }] },
       });
     } finally {
       db.close();
@@ -778,7 +778,7 @@ describe("KernelService — getTaskStatus (A4)", () => {
       const att = openAttempt(db, "t1", hash, "G", "success");
       const { gateId } = svc.createGate({
         taskId: "t1", stageName: "G", attemptId: att,
-        question: { text: "?", options: ["yes"] },
+        question: { text: "?", options: [{ value: "yes" }] },
       });
       svc.answerGate(gateId, "yes");
       // Post-audit: no task_finals -> orphaned, not completed.
@@ -1247,7 +1247,7 @@ describe("KernelService.getGateContext — B5", () => {
           inputs: [{ name: "__gate_signal", type: "unknown" as const }],
           outputs: [],
           config: {
-            question: { text: "Continue?", options: ["approve", "reject"] },
+            question: { text: "Continue?", options: [{ value: "approve" }, { value: "reject" }] },
             routing: {
               routes: { approve: "done", reject: "A", _default: "done" },
             },
@@ -1325,7 +1325,7 @@ describe("KernelService.getGateContext — B5", () => {
       const gateAttempt = openGateAttempt(db, "t1", submit.versionHash);
       const { gateId } = svc.createGate({
         taskId: "t1", stageName: "G", attemptId: gateAttempt,
-        question: { text: "Continue?", options: ["approve", "reject"] },
+        question: { text: "Continue?", options: [{ value: "approve" }, { value: "reject" }] },
       });
 
       const r = svc.getGateContext(gateId);
@@ -1335,10 +1335,10 @@ describe("KernelService.getGateContext — B5", () => {
       expect(ctx.gateId).toBe(gateId);
       expect(ctx.taskId).toBe("t1");
       expect(ctx.stageName).toBe("G");
-      expect(ctx.question).toEqual({ text: "Continue?", options: ["approve", "reject"] });
+      expect(ctx.question).toEqual({ text: "Continue?", options: [{ value: "approve" }, { value: "reject" }] });
       expect(ctx.answer).toBeNull();
       expect(ctx.answeredAt).toBeNull();
-      expect(ctx.answerOptions.sort()).toEqual(["approve", "reject"]);
+      expect(ctx.answerOptions).toEqual([{ value: "approve" }, { value: "reject" }]);
       expect(ctx.upstreams).toHaveLength(1);
       expect(ctx.upstreams[0]!.stage).toBe("A");
       expect(ctx.upstreams[0]!.outputs.map((o) => o.port)).toEqual(["items", "summary", "x"]);
@@ -1375,7 +1375,7 @@ describe("KernelService.getGateContext — B5", () => {
       const gateAttempt = openGateAttempt(db, "t2", submit.versionHash);
       const { gateId } = svc.createGate({
         taskId: "t2", stageName: "G", attemptId: gateAttempt,
-        question: { text: "Continue?", options: ["approve", "reject"] },
+        question: { text: "Continue?", options: [{ value: "approve" }, { value: "reject" }] },
       });
       const ans = svc.answerGate(gateId, "approve");
       expect(ans.ok).toBe(true);
@@ -1428,7 +1428,7 @@ describe("KernelService.getGateContext — B5", () => {
       expect(r.ok).toBe(true);
       if (!r.ok) return;
       expect(r.context.upstreams).toEqual([]);
-      expect(r.context.answerOptions).toEqual(["approve"]);
+      expect(r.context.answerOptions).toEqual([{ value: "approve" }]);
     } finally {
       db.close();
     }
@@ -1475,7 +1475,7 @@ describe("KernelService.getGateContext — B5", () => {
       const gateAttempt = openGateAttempt(db, "t4", submit.versionHash);
       const { gateId } = svc.createGate({
         taskId: "t4", stageName: "G", attemptId: gateAttempt,
-        question: { text: "Continue?", options: ["approve", "reject"] },
+        question: { text: "Continue?", options: [{ value: "approve" }, { value: "reject" }] },
       });
 
       const r = svc.getGateContext(gateId);
@@ -1581,7 +1581,7 @@ describe("KernelService.getGateContext — B5", () => {
       const gateAttempt = openGateAttempt(db, "tf", submit.versionHash);
       const { gateId } = svc.createGate({
         taskId: "tf", stageName: "G", attemptId: gateAttempt,
-        question: { text: "Continue?", options: ["approve", "reject"] },
+        question: { text: "Continue?", options: [{ value: "approve" }, { value: "reject" }] },
       });
 
       const r = svc.getGateContext(gateId);

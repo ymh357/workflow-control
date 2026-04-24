@@ -32,6 +32,16 @@ export function buildDag(ir: PipelineIR): DagInfo | { cycle: string[] } {
     // create no upstream dependency for scheduling purposes.
     if (w.from.source === "external") continue;
     if (w.from.stage === w.to.stage) continue; // self-wire is a cycle, caught below
+    // A (gate feedback): wires carrying `__gate_feedback__` are the one
+    // sanctioned back-edge in the otherwise-strict DAG. The source gate
+    // stage is structurally downstream of the target (which is being
+    // regenerated after a reject), but the wire exists solely to ferry
+    // the rejection comment on the *next* pass. Including it in topo
+    // sort produces a spurious cycle for any pipeline with a reject
+    // loop. Runtime uses initial portValues (empty string) on the
+    // first pass and PORT_WRITTEN on subsequent gate answers, so no
+    // scheduling dependency is required.
+    if (w.from.port === "__gate_feedback__") continue;
     upstream.get(w.to.stage)!.add(w.from.stage);
     downstream.get(w.from.stage)!.add(w.to.stage);
   }
