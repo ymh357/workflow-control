@@ -204,6 +204,54 @@ export default function KernelNextTaskPage() {
     }
   }, [taskId]);
 
+  // Hydrate historical port writes + seed inputs. SSE only ships events
+  // produced after the client connects; re-opening a completed task
+  // leaves the "Recent port writes" and "Seed Inputs" blocks empty
+  // despite the data sitting in port_values. Called once on mount.
+  const hydrateHistoricalPorts = useCallback(async (): Promise<void> => {
+    if (!taskId) return;
+    try {
+      const r = await fetch(`${API_BASE}/api/kernel/tasks/${encodeURIComponent(taskId)}/ports`);
+      if (!r.ok) return;
+      const body = await r.json() as {
+        ok: boolean;
+        ports: Array<{
+          stage: string;
+          port: string;
+          direction: "in" | "out";
+          valuePreview: string;
+          truncated: boolean;
+          writtenAt: number;
+        }>;
+      };
+      if (!body.ok) return;
+      const recent: PortWriteRow[] = [];
+      const seeds: Map<string, SeedPortEntry> = new Map();
+      for (const p of body.ports) {
+        if (p.direction !== "out") continue;
+        if (p.stage === EXTERNAL_STAGE) {
+          seeds.set(p.port, {
+            value: p.valuePreview,
+            timestamp: new Date(p.writtenAt).toISOString(),
+          });
+        } else {
+          recent.push({
+            stage: p.stage,
+            port: p.port,
+            preview: p.valuePreview,
+            at: new Date(p.writtenAt).toISOString(),
+          });
+        }
+      }
+      // Keep the same "last 20" semantics as appendPort so the UI's
+      // rolling feed doesn't suddenly show 500 rows for long tasks.
+      setPorts(recent.slice(-20));
+      setSeedPorts(seeds);
+    } catch {
+      /* ignore — user can reload to retry */
+    }
+  }, [taskId]);
+
   // P6.3 / D26 — fetch hot-update audit trail. Called on mount and on
   // the task's terminal SSE frames (task_state completed/failed or
   // run_final). No dedicated hot_update SSE event today — see the
@@ -425,6 +473,31 @@ export default function KernelNextTaskPage() {
   // visible even when the task has already finished.
   useEffect(() => { void refreshAudit(); }, [refreshAudit]);
 
+  // Hydrate port writes once on mount so historical tasks aren't blank.
+  useEffect(() => { void hydrateHistoricalPorts(); }, [hydrateHistoricalPorts]);
+
+  // Derive stage rows from historical attempts for tasks that are not
+  // streaming lifecycle events (completed / failed tasks opened after
+  // the fact). The live SSE path still calls upsertStage directly and
+  // wins over this mirror for in-flight state because the stages state
+  // already carries the latest-per-stage value after the loop below.
+  useEffect(() => {
+    if (attempts.length === 0) return;
+    const latest = new Map<string, AttemptRow>();
+    for (const a of attempts) {
+      if (a.stage_name === EXTERNAL_STAGE) continue;
+      const cur = latest.get(a.stage_name);
+      if (!cur || a.started_at > cur.started_at) latest.set(a.stage_name, a);
+    }
+    for (const [stageName, a] of latest) {
+      const state: StageRow["state"] =
+        a.status === "success" ? "done"
+        : a.status === "error" ? "error"
+        : "executing";
+      upsertStage({ stage: stageName, state, attemptId: a.attempt_id });
+    }
+  }, [attempts, upsertStage]);
+
   // P7.1 / D21 — fetch the task's PipelineIR once on mount. Silent on
   // failure (404 for legacy tasks with no stage_attempts, 5xx for
   // transient) — the graph simply stays hidden.
@@ -606,22 +679,23 @@ export default function KernelNextTaskPage() {
     return () => controller.abort();
   }, [pendingGateIds, gateContexts]);
 
-  const answerGate = useCallback(async (gateId: string, answer: string): Promise<{ ok: true } | { ok: false; error: string }> => {
+  const answerGate = useCallback(async (gateId: string, answer: string, comment: string): Promise<{ ok: true } | { ok: false; error: string }> => {
     try {
+      const body = comment.length > 0 ? { answer, comment } : { answer };
       const res = await fetch(
         `${API_BASE}/api/kernel/gates/${encodeURIComponent(gateId)}/answer`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ answer }),
+          body: JSON.stringify(body),
         },
       );
-      const body = await res.json() as {
+      const respBody = await res.json() as {
         ok: boolean;
         diagnostics?: Array<{ message: string; code: string }>;
       };
-      if (!res.ok || !body.ok) {
-        return { ok: false, error: body.diagnostics?.[0]?.message ?? `HTTP ${res.status}` };
+      if (!res.ok || !respBody.ok) {
+        return { ok: false, error: respBody.diagnostics?.[0]?.message ?? `HTTP ${res.status}` };
       }
       return { ok: true };
     } catch (err) {
@@ -648,60 +722,69 @@ export default function KernelNextTaskPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl p-6 font-mono text-sm">
-      <h1 className="mb-4 text-xl font-bold">
-        kernel-next task: <span className="text-blue-600">{taskId ?? "—"}</span>
-      </h1>
-
-      <div className="mb-4 flex items-center gap-4">
-        <span>
-          Connection:{" "}
-          <span className={connected ? "text-green-600" : "text-red-600"}>
-            {connected ? "open" : "closed"}
+    <div className="space-y-6">
+      <header className="space-y-2">
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight">Task</h1>
+          <code className="rounded bg-zinc-900 px-2 py-1 font-mono text-sm text-sky-300">
+            {taskId ?? "—"}
+          </code>
+        </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-400">
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              className={`inline-block h-1.5 w-1.5 rounded-full ${connected ? "bg-emerald-500 animate-pulse" : "bg-zinc-600"}`}
+            />
+            stream {connected ? "open" : "closed"}
           </span>
-        </span>
-        <span>Events received: {eventCountRef.current}</span>
-        <span>
-          State:{" "}
-          <span className={topState === "failed" ? "text-red-600" : topState === "completed" ? "text-green-600" : "text-gray-700"}>
-            {topState}
+          <span>·</span>
+          <span>{eventCountRef.current} events</span>
+          <span>·</span>
+          <span>
+            state:{" "}
+            <span className={
+              topState === "failed" ? "text-red-400"
+              : topState === "completed" ? "text-emerald-400"
+              : topState === "running" ? "text-blue-400"
+              : "text-zinc-400"
+            }>
+              {topState}
+            </span>
           </span>
-        </span>
-        {cost && (
-          <>
-            <span>
-              Cost:{" "}
-              <span className="font-mono">${cost.cumulativeUsd.toFixed(4)}</span>
-            </span>
-            <span>
-              Tokens: {cost.inputTokens.toLocaleString()}&uarr;{" "}
-              / {cost.outputTokens.toLocaleString()}&darr;
-            </span>
-          </>
-        )}
-      </div>
+          {cost && (
+            <>
+              <span>·</span>
+              <span className="font-mono tabular-nums">${cost.cumulativeUsd.toFixed(4)}</span>
+              <span>·</span>
+              <span className="font-mono tabular-nums text-zinc-500">
+                {cost.inputTokens.toLocaleString()} in / {cost.outputTokens.toLocaleString()} out
+              </span>
+            </>
+          )}
+        </div>
+      </header>
 
       {seedRows.length > 0 && (
         <section className="mb-6">
-          <h2 className="mb-2 font-semibold">
+          <h2 className="text-base font-semibold mb-2">
             Seed Inputs ({seedRows.length})
           </h2>
-          <table className="w-full border-collapse border border-gray-300">
-            <thead className="bg-gray-100">
+          <table className="w-full border-collapse border border-zinc-800">
+            <thead className="bg-zinc-900/70">
               <tr>
-                <th className="border border-gray-300 px-2 py-1 text-left">Port</th>
-                <th className="border border-gray-300 px-2 py-1 text-left">Value</th>
-                <th className="border border-gray-300 px-2 py-1 text-left">Written at</th>
+                <th className="border border-zinc-800 px-2 py-1 text-left w-48">Port</th>
+                <th className="border border-zinc-800 px-2 py-1 text-left">Value</th>
+                <th className="border border-zinc-800 px-2 py-1 text-left w-28">Written at</th>
               </tr>
             </thead>
             <tbody>
               {seedRows.map(([port, { value, timestamp }]) => (
-                <tr key={port}>
-                  <td className="border border-gray-300 px-2 py-1 font-semibold">{port}</td>
-                  <td className="border border-gray-300 px-2 py-1 break-all text-gray-700">
-                    <code>{value}</code>
+                <tr key={port} className="align-top">
+                  <td className="border border-zinc-800 px-2 py-1 font-mono text-sm text-zinc-200">{port}</td>
+                  <td className="border border-zinc-800 px-2 py-1">
+                    <SeedValueCell value={value} />
                   </td>
-                  <td className="border border-gray-300 px-2 py-1 text-xs text-gray-500">
+                  <td className="border border-zinc-800 px-2 py-1 text-xs text-zinc-500 whitespace-nowrap">
                     {new Date(timestamp).toLocaleTimeString()}
                   </td>
                 </tr>
@@ -717,8 +800,8 @@ export default function KernelNextTaskPage() {
             const ctx = gateContexts.get(gid);
             if (!ctx) {
               return (
-                <section key={gid} className="mb-2 rounded border border-amber-400 bg-amber-50 p-3">
-                  <p className="text-sm text-amber-900">
+                <section key={gid} className="mb-2 rounded border border-amber-500/50 bg-amber-500/10 p-3">
+                  <p className="text-sm text-amber-200">
                     Gate <code>{gid}</code> pending — loading context…
                   </p>
                 </section>
@@ -728,7 +811,7 @@ export default function KernelNextTaskPage() {
               <GateCard
                 key={gid}
                 context={ctx}
-                onAnswer={(ans) => answerGate(gid, ans)}
+                onAnswer={(ans, comment) => answerGate(gid, ans, comment)}
               />
             );
           })}
@@ -741,24 +824,26 @@ export default function KernelNextTaskPage() {
 
       {ir && (
         <section className="mb-6">
-          <h2 className="mb-2 font-semibold">Pipeline DAG</h2>
-          <PipelineGraph ir={ir} stageStates={stageStates} />
+          <h2 className="text-base font-semibold mb-2">Pipeline DAG</h2>
+          <div className="rounded-lg border border-zinc-800 overflow-hidden">
+            <PipelineGraph ir={ir} stageStates={stageStates} height={560} />
+          </div>
         </section>
       )}
 
       {liveOutputs.size > 0 && (
         <section className="mb-6">
-          <h2 className="mb-2 font-semibold">Live output</h2>
+          <h2 className="text-base font-semibold mb-2">Live output</h2>
           {Array.from(liveOutputs.entries()).map(([stage, text]) => (
             <details
               key={stage}
               open
-              className="mb-2 rounded border border-blue-200 bg-blue-50 p-2"
+              className="mb-2 rounded border border-sky-500/40 bg-sky-500/10 p-2"
             >
-              <summary className="cursor-pointer text-xs font-semibold text-blue-900">
+              <summary className="cursor-pointer text-xs font-semibold text-sky-200">
                 {stage}
               </summary>
-              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-xs text-gray-800">
+              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-xs text-zinc-200">
                 {text}
               </pre>
             </details>
@@ -767,19 +852,19 @@ export default function KernelNextTaskPage() {
       )}
 
       <section className="mb-6">
-        <h2 className="mb-2 font-semibold">Stages</h2>
+        <h2 className="text-base font-semibold mb-2">Stages</h2>
         {stageRows.length === 0 ? (
-          <p className="text-gray-500">no stages yet</p>
+          <p className="text-zinc-500">no stages yet</p>
         ) : (
-          <table className="w-full border-collapse border border-gray-300">
-            <thead className="bg-gray-100">
+          <table className="w-full border-collapse border border-zinc-800">
+            <thead className="bg-zinc-900/70">
               <tr>
-                <th className="border border-gray-300 px-2 py-1 text-left">Stage</th>
-                <th className="border border-gray-300 px-2 py-1 text-left">State</th>
-                <th className="border border-gray-300 px-2 py-1 text-left">Attempt</th>
-                <th className="border border-gray-300 px-2 py-1 text-left">Duration</th>
-                <th className="border border-gray-300 px-2 py-1 text-left">History</th>
-                <th className="border border-gray-300 px-2 py-1 text-left">Error</th>
+                <th className="border border-zinc-800 px-2 py-1 text-left">Stage</th>
+                <th className="border border-zinc-800 px-2 py-1 text-left">State</th>
+                <th className="border border-zinc-800 px-2 py-1 text-left">Attempt</th>
+                <th className="border border-zinc-800 px-2 py-1 text-left">Duration</th>
+                <th className="border border-zinc-800 px-2 py-1 text-left">History</th>
+                <th className="border border-zinc-800 px-2 py-1 text-left">Error</th>
               </tr>
             </thead>
             <tbody>
@@ -791,36 +876,36 @@ export default function KernelNextTaskPage() {
                 return (
                   <React.Fragment key={row.stage}>
                     <tr>
-                      <td className="border border-gray-300 px-2 py-1">{row.stage}</td>
+                      <td className="border border-zinc-800 px-2 py-1">{row.stage}</td>
                       <td
-                        className={`border border-gray-300 px-2 py-1 ${
+                        className={`border border-zinc-800 px-2 py-1 ${
                           row.state === "error" ? "text-red-600" :
                           row.state === "done" ? "text-green-600" : "text-blue-600"
                         }`}
                       >
                         {row.state}
                       </td>
-                      <td className="border border-gray-300 px-2 py-1 text-xs text-gray-600">
+                      <td className="border border-zinc-800 px-2 py-1 text-xs text-zinc-400">
                         {row.attemptId ?? "—"}
                       </td>
-                      <td className="border border-gray-300 px-2 py-1 text-xs text-gray-700">
+                      <td className="border border-zinc-800 px-2 py-1 text-xs text-zinc-300">
                         {formatDuration(latest?.duration_ms ?? null)}
                       </td>
-                      <td className="border border-gray-300 px-2 py-1 text-xs">
+                      <td className="border border-zinc-800 px-2 py-1 text-xs">
                         {canExpand ? (
                           <button
                             type="button"
                             onClick={() => setExpandedStage(isExpanded ? null : row.stage)}
-                            className="text-blue-600 hover:underline"
+                            className="text-sky-400 hover:text-sky-300 hover:underline"
                             aria-expanded={isExpanded}
                           >
                             {isExpanded ? "hide" : "show"} ({stageAttempts.length})
                           </button>
                         ) : (
-                          <span className="text-gray-400">—</span>
+                          <span className="text-zinc-600">—</span>
                         )}
                       </td>
-                      <td className="border border-gray-300 px-2 py-1 text-xs text-red-600">
+                      <td className="border border-zinc-800 px-2 py-1 text-xs text-red-400">
                         {row.state === "error" && (
                           <ErrorReasonBadge reason={row.errorReason} />
                         )}
@@ -831,10 +916,10 @@ export default function KernelNextTaskPage() {
                       <tr>
                         <td
                           colSpan={6}
-                          className="border border-gray-300 bg-gray-50 px-2 py-2"
+                          className="border border-zinc-800 bg-zinc-900/50 px-2 py-2"
                         >
                           <table className="w-full border-collapse text-xs">
-                            <thead className="text-left text-gray-600">
+                            <thead className="text-left text-zinc-400">
                               <tr>
                                 <th className="px-2 py-1">#</th>
                                 <th className="px-2 py-1">attempt_id</th>
@@ -849,11 +934,11 @@ export default function KernelNextTaskPage() {
                               {stageAttempts.map((a) => (
                                 <React.Fragment key={a.attempt_id}>
                                   <tr>
-                                    <td className="px-2 py-1 text-gray-600">{a.attempt_idx}</td>
-                                    <td className="px-2 py-1 font-mono text-gray-700">
+                                    <td className="px-2 py-1 text-zinc-400">{a.attempt_idx}</td>
+                                    <td className="px-2 py-1 font-mono text-zinc-300">
                                       <Link
                                         href={`/kernel-next/attempts/${encodeURIComponent(a.attempt_id)}`}
-                                        className="text-blue-600 hover:underline"
+                                        className="text-sky-400 hover:text-sky-300 hover:underline"
                                         title={a.attempt_id}
                                       >
                                         {a.attempt_id.slice(0, 8)}
@@ -861,26 +946,26 @@ export default function KernelNextTaskPage() {
                                     </td>
                                     <td
                                       className={`px-2 py-1 ${
-                                        a.status === "error" ? "text-red-600" :
-                                        a.status === "success" ? "text-green-600" :
-                                        a.status === "running" ? "text-blue-600" : "text-gray-500"
+                                        a.status === "error" ? "text-red-400" :
+                                        a.status === "success" ? "text-emerald-400" :
+                                        a.status === "running" ? "text-sky-400" : "text-zinc-500"
                                       }`}
                                     >
                                       {a.status}
                                     </td>
-                                    <td className="px-2 py-1 text-gray-600">
+                                    <td className="px-2 py-1 text-zinc-400">
                                       {new Date(a.started_at).toLocaleTimeString()}
                                     </td>
-                                    <td className="px-2 py-1 text-gray-600">
+                                    <td className="px-2 py-1 text-zinc-400">
                                       {a.ended_at !== null ? new Date(a.ended_at).toLocaleTimeString() : "—"}
                                     </td>
-                                    <td className="px-2 py-1 text-gray-700">
+                                    <td className="px-2 py-1 text-zinc-300">
                                       {formatDuration(a.duration_ms)}
                                     </td>
                                     <td className="px-2 py-1">
                                       {a.attempt_id in attemptDiffs ? (
                                         attemptDiffs[a.attempt_id] === null ? (
-                                          <span className="text-gray-400">Loading…</span>
+                                          <span className="text-zinc-500">Loading…</span>
                                         ) : (
                                           <button
                                             type="button"
@@ -935,35 +1020,63 @@ export default function KernelNextTaskPage() {
       </section>
 
       <section className="mb-6">
-        <h2 className="mb-2 font-semibold">Recent port writes (last 20)</h2>
+        <h2 className="text-base font-semibold mb-2">
+          Recent port writes
+          <span className="ml-2 text-xs font-normal text-zinc-500">
+            last {ports.length === 0 ? 20 : ports.length}
+          </span>
+        </h2>
         {ports.length === 0 ? (
-          <p className="text-gray-500">no port writes yet</p>
+          <p className="text-sm text-zinc-500">no port writes yet</p>
         ) : (
-          <ul className="divide-y divide-gray-200 border border-gray-300">
-            {ports.map((p, idx) => (
-              <li key={`${p.at}-${idx}`} className="px-2 py-1">
-                <span className="text-gray-500">{new Date(p.at).toLocaleTimeString()}</span>{" "}
-                <span className="font-semibold">{p.stage}.{p.port}</span>{" "}
-                <span className="text-gray-700">= {p.preview}</span>
-              </li>
-            ))}
+          <ul className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
+            {ports.map((p, idx) => {
+              const compact = p.preview.length > 120
+                ? `${p.preview.slice(0, 120).replace(/\s+/g, " ")}…`
+                : p.preview.replace(/\s+/g, " ");
+              return (
+                <li key={`${p.at}-${idx}`} className="px-3 py-1.5 text-xs">
+                  <div className="flex items-baseline gap-2">
+                    <span className="shrink-0 tabular-nums text-zinc-600">
+                      {new Date(p.at).toLocaleTimeString()}
+                    </span>
+                    <span className="shrink-0 font-mono text-zinc-300">
+                      {p.stage}.<span className="text-zinc-100">{p.port}</span>
+                    </span>
+                    <span className="truncate font-mono text-zinc-500">
+                      = {compact}
+                    </span>
+                    {p.preview.length > 120 && (
+                      <details className="ml-auto shrink-0 text-zinc-400">
+                        <summary className="cursor-pointer select-none text-zinc-500 hover:text-zinc-300">
+                          full
+                        </summary>
+                        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200">
+                          {p.preview}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
 
       {finalResult && (
-        <section className="mb-6 rounded border border-gray-400 bg-gray-50 p-3">
-          <h2 className="mb-2 font-semibold">Run final</h2>
-          <p>
+        <section className="mb-6 rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
+          <h2 className="text-base font-semibold mb-2">Run final</h2>
+          <p className="text-sm">
             finalState:{" "}
-            <span className={finalResult.finalState === "failed" ? "text-red-600" : "text-green-600"}>
+            <span className={finalResult.finalState === "failed" ? "text-red-400 font-semibold" : "text-emerald-400 font-semibold"}>
               {finalResult.finalState}
             </span>
           </p>
           {finalResult.stageErrors.length > 0 && (
             <>
               <p className="mt-2 font-semibold">Stage errors:</p>
-              <ul className="list-disc pl-5 text-red-700">
+              <ul className="list-disc pl-5 text-red-300">
                 {finalResult.stageErrors.map((e, idx) => (
                   <li key={idx}>
                     <span className="font-semibold">{e.stage}</span>: {e.message}
@@ -977,3 +1090,32 @@ export default function KernelNextTaskPage() {
     </div>
   );
 }
+
+// Renders a seed-input value with a 400-char preview cap. Long values
+// (task descriptions, multi-line JSON) collapse behind a "show full"
+// toggle so one big seed input doesn't push the rest of the page off
+// the viewport.
+const SEED_PREVIEW_LIMIT = 400;
+
+function SeedValueCell({ value }: { value: string }): React.JSX.Element {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = value.length > SEED_PREVIEW_LIMIT;
+  const shown = expanded || !isLong ? value : value.slice(0, SEED_PREVIEW_LIMIT) + " …";
+  return (
+    <div>
+      <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-zinc-300">
+        {shown}
+      </pre>
+      {isLong && (
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 text-xs text-sky-400 hover:text-sky-300 hover:underline"
+        >
+          {expanded ? "show less" : `show full (${value.length.toLocaleString()} chars)`}
+        </button>
+      )}
+    </div>
+  );
+}
+

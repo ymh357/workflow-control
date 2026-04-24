@@ -100,53 +100,53 @@ export default function AttemptDetailsPage(): React.JSX.Element {
   );
 
   if (!attemptId) {
-    return <p className="p-6 font-mono">Missing attempt id.</p>;
+    return <p className="p-6 font-mono text-zinc-400">Missing attempt id.</p>;
   }
   if (error) {
-    return <p className="p-6 font-mono text-red-600">Error: {error}</p>;
+    return <p className="p-6 font-mono text-red-400">Error: {error}</p>;
   }
   if (!details) {
-    return <p className="p-6 font-mono text-gray-600">Loading…</p>;
+    return <p className="p-6 font-mono text-zinc-500">Loading…</p>;
   }
 
   return (
-    <div className="mx-auto max-w-5xl p-6 font-mono text-sm">
-      <h1 className="mb-2 text-xl font-bold">
-        Attempt <code>{attemptId.slice(0, 8)}</code>
+    <div className="font-mono text-sm">
+      <h1 className="mb-2 text-xl font-semibold tracking-tight text-zinc-100">
+        Attempt <code className="text-zinc-200">{attemptId.slice(0, 8)}</code>
       </h1>
       {details.sessionId && (
-        <p className="mb-1 text-xs text-gray-600">
-          Session: <code>{details.sessionId}</code>
+        <p className="mb-1 text-xs text-zinc-500">
+          Session: <code className="text-zinc-300">{details.sessionId}</code>
         </p>
       )}
       {details.model && (
-        <p className="mb-4 text-xs text-gray-600">
-          Model: <code>{details.model}</code>
+        <p className="mb-4 text-xs text-zinc-500">
+          Model: <code className="text-zinc-300">{details.model}</code>
         </p>
       )}
 
       {/* Usage summary */}
-      <div className="mb-4 flex flex-wrap gap-4 text-xs">
+      <div className="mb-4 flex flex-wrap gap-4 text-xs text-zinc-300">
         <span>
-          Cost: <strong>${(details.costUsd ?? 0).toFixed(4)}</strong>
+          Cost: <strong className="text-zinc-100">${(details.costUsd ?? 0).toFixed(4)}</strong>
         </span>
         <span>
           Input tokens:{" "}
-          <strong>{(details.inputTokens ?? 0).toLocaleString()}</strong>
+          <strong className="text-zinc-100">{(details.inputTokens ?? 0).toLocaleString()}</strong>
         </span>
         <span>
           Output tokens:{" "}
-          <strong>{(details.outputTokens ?? 0).toLocaleString()}</strong>
+          <strong className="text-zinc-100">{(details.outputTokens ?? 0).toLocaleString()}</strong>
         </span>
         {details.durationMs !== null && (
           <span>
-            Duration: <strong>{details.durationMs}ms</strong>
+            Duration: <strong className="text-zinc-100">{details.durationMs}ms</strong>
           </span>
         )}
       </div>
 
       {/* Tab bar */}
-      <div role="tablist" className="mb-3 flex flex-wrap gap-1 border-b border-gray-300">
+      <div role="tablist" className="mb-3 flex flex-wrap gap-1 border-b border-zinc-800">
         {(
           [
             ["tool-calls", `Tool Calls (${details.toolCalls.length})`],
@@ -162,10 +162,10 @@ export default function AttemptDetailsPage(): React.JSX.Element {
             role="tab"
             aria-selected={tab === key}
             onClick={() => setTab(key)}
-            className={`rounded-t border-b-2 px-3 py-1 text-xs ${
+            className={`rounded-t border-b-2 px-3 py-1 text-xs transition-colors ${
               tab === key
-                ? "border-blue-500 bg-white font-semibold"
-                : "border-transparent text-gray-600 hover:text-gray-900"
+                ? "border-sky-500 bg-zinc-900 font-semibold text-zinc-100"
+                : "border-transparent text-zinc-500 hover:text-zinc-200"
             }`}
           >
             {label}
@@ -191,7 +191,7 @@ export default function AttemptDetailsPage(): React.JSX.Element {
         />
       )}
       {tab === "usage" && (
-        <pre className="overflow-auto rounded bg-gray-50 p-3 text-xs">
+        <pre className="overflow-auto rounded border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-200">
           {JSON.stringify(
             {
               cost_usd: details.costUsd,
@@ -241,7 +241,7 @@ function JsonPanel({
   emptyLabel: string;
 }): React.JSX.Element {
   if (items.length === 0) {
-    return <p className="text-sm text-gray-500">{emptyLabel}</p>;
+    return <p className="text-sm text-zinc-500">{emptyLabel}</p>;
   }
   return (
     <ol className="space-y-2">
@@ -250,13 +250,13 @@ function JsonPanel({
         return (
         <li
           key={i}
-          className="rounded border border-gray-200 bg-white p-2"
+          className="rounded border border-zinc-800 bg-zinc-900/40 p-2"
         >
           <details>
-            <summary className="cursor-pointer text-xs text-gray-700">
-              #{i + 1}{hint ? <span className="ml-1 font-mono text-gray-500">{hint}</span> : null}
+            <summary className="cursor-pointer text-xs text-zinc-300 hover:text-zinc-100">
+              #{i + 1}{hint ? <span className="ml-1 font-mono text-zinc-500">{hint}</span> : null}
             </summary>
-            <pre className="mt-2 overflow-auto text-xs">
+            <pre className="mt-2 overflow-auto text-xs text-zinc-200">
               {JSON.stringify(item, null, 2)}
             </pre>
           </details>
@@ -277,39 +277,39 @@ function StatusPanel({
   terminationReason: string | null;
 }): React.JSX.Element {
   if (history.length === 0 && compactEvents.length === 0) {
-    return <p className="text-sm text-gray-500">No status history</p>;
+    return <p className="text-sm text-zinc-500">No status history</p>;
   }
   return (
     <div className="space-y-3">
       {history.length > 0 && (
         <div>
-          <h3 className="mb-1 text-xs font-semibold text-gray-700">
+          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-400">
             Stage attempt
           </h3>
           <ul className="space-y-1">
             {history.map((h, i) => (
               <li
                 key={i}
-                className="rounded border border-gray-200 bg-white px-2 py-1 text-xs"
+                className="rounded border border-zinc-800 bg-zinc-900/40 px-2 py-1 text-xs"
               >
                 <span
                   className={
                     h.status === "error"
-                      ? "text-red-600"
+                      ? "text-red-400"
                       : h.status === "success"
-                        ? "text-green-600"
+                        ? "text-emerald-400"
                         : h.status === "running"
-                          ? "text-blue-600"
-                          : "text-gray-600"
+                          ? "text-sky-400"
+                          : "text-zinc-400"
                   }
                 >
                   {h.status}
                 </span>{" "}
-                <span className="text-gray-600">
+                <span className="text-zinc-500">
                   {new Date(h.startedAt).toLocaleString()}
                 </span>
                 {h.endedAt !== null && (
-                  <span className="text-gray-600">
+                  <span className="text-zinc-500">
                     {" "}
                     → {new Date(h.endedAt).toLocaleString()}
                   </span>
@@ -318,15 +318,15 @@ function StatusPanel({
             ))}
           </ul>
           {terminationReason && (
-            <p className="mt-1 text-xs text-gray-600">
-              Termination reason: <code>{terminationReason}</code>
+            <p className="mt-1 text-xs text-zinc-500">
+              Termination reason: <code className="text-zinc-300">{terminationReason}</code>
             </p>
           )}
         </div>
       )}
       {compactEvents.length > 0 && (
         <div>
-          <h3 className="mb-1 text-xs font-semibold text-gray-700">
+          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-400">
             Context compactions ({compactEvents.length})
           </h3>
           <JsonPanel

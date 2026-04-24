@@ -25,7 +25,12 @@ export default function PipelineEditorPage() {
   const params = useParams();
   const router = useRouter();
   const nameRaw = params?.name;
-  const pipelineName = Array.isArray(nameRaw) ? nameRaw[0]! : (nameRaw as string | undefined);
+  const rawSegment = Array.isArray(nameRaw) ? nameRaw[0]! : (nameRaw as string | undefined);
+  // Next.js's useParams() returns the URL segment verbatim — spaces in a
+  // pipeline name (e.g. "Export Linear Tasks") arrive here as
+  // "Export%20Linear%20Tasks" and won't match the decoded name returned
+  // by the /api/kernel/pipelines list route.
+  const pipelineName = rawSegment ? decodeURIComponent(rawSegment) : undefined;
 
   const [detail, setDetail] = useState<PipelineDetail | null>(null);
   const [actor, setActor] = useState<string>("");
@@ -109,28 +114,89 @@ export default function PipelineEditorPage() {
     }
   }, [detail, actor, router]);
 
-  if (!pipelineName) return <p className="p-6 font-mono">Missing pipeline name.</p>;
-  if (error) return <p className="p-6 font-mono text-red-600">Error: {error}</p>;
-  if (!detail) return <p className="p-6 font-mono text-gray-600">Loading…</p>;
+  if (!pipelineName) return <p className="text-sm text-zinc-400">Missing pipeline name.</p>;
+  if (error) {
+    return (
+      <div className="rounded border border-red-500/50 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        Error: {error}
+      </div>
+    );
+  }
+  if (!detail) return <p className="text-sm text-zinc-500">Loading…</p>;
+
+  const externalInputs = detail.ir?.externalInputs ?? [];
+  const stageCount = detail.ir?.stages?.length ?? 0;
 
   return (
-    <div className="mx-auto max-w-4xl p-6 font-mono text-sm">
-      <h1 className="mb-2 text-xl font-bold">{detail.name}</h1>
-      <p className="mb-4 text-xs text-gray-600">
-        base version: <code>{detail.latestVersion}</code>
-      </p>
-      {detail.ir && (
-        <section className="mb-6">
-          <h2 className="mb-2 font-semibold">Pipeline structure</h2>
-          <PipelineGraph ir={detail.ir} />
+    <div className="space-y-6">
+      <header className="space-y-1">
+        <div className="flex items-baseline gap-3">
+          <h1 className="text-2xl font-semibold tracking-tight">{detail.name}</h1>
+          <span className="text-sm text-zinc-500">{stageCount} stages</span>
+        </div>
+        <p className="text-xs text-zinc-500">
+          base version:{" "}
+          <code className="rounded bg-zinc-900 px-1.5 py-0.5 font-mono text-zinc-300">
+            {detail.latestVersion}
+          </code>
+        </p>
+      </header>
+
+      {externalInputs.length > 0 && (
+        <section className="space-y-2">
+          <div className="flex items-baseline gap-3">
+            <h2 className="text-base font-semibold">External inputs</h2>
+            <p className="text-xs text-zinc-500">
+              Supplied to <code className="font-mono text-zinc-400">run_pipeline</code> via{" "}
+              <code className="font-mono text-zinc-400">seedValues</code>.
+            </p>
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-zinc-800">
+            <table className="w-full border-collapse text-sm">
+              <thead className="bg-zinc-900/70 text-xs uppercase tracking-wide text-zinc-400">
+                <tr>
+                  <th className="px-3 py-2 text-left font-semibold">Name</th>
+                  <th className="px-3 py-2 text-left font-semibold">Type</th>
+                  <th className="px-3 py-2 text-left font-semibold">Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                {externalInputs.map((p) => (
+                  <tr key={p.name} className="border-t border-zinc-800">
+                    <td className="px-3 py-2 font-mono text-zinc-100">{p.name}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-zinc-400">{p.type}</td>
+                    <td className="px-3 py-2 text-zinc-300">
+                      {p.description || <span className="italic text-zinc-600">no description</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
-      <PromptsEditor
-        originalPrompts={detail.prompts}
-        actor={actor}
-        onActorChange={setActor}
-        onSubmit={handleSubmit}
-      />
+
+      {detail.ir && (
+        <section className="space-y-2">
+          <h2 className="text-base font-semibold">Pipeline structure</h2>
+          <div className="rounded-lg border border-zinc-800 overflow-hidden">
+            <PipelineGraph ir={detail.ir} height={560} />
+          </div>
+        </section>
+      )}
+
+      <section className="space-y-2">
+        <h2 className="text-base font-semibold">Prompts</h2>
+        <p className="text-xs text-zinc-500">
+          Edit agent stage prompts. Submit creates a proposal; approve/reject on the proposals page.
+        </p>
+        <PromptsEditor
+          originalPrompts={detail.prompts}
+          actor={actor}
+          onActorChange={setActor}
+          onSubmit={handleSubmit}
+        />
+      </section>
     </div>
   );
 }

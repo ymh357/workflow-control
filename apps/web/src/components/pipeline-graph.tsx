@@ -47,23 +47,25 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
   const state = data.state;
 
   const borderColor =
-    state === "error" ? "border-red-500"
+    state === "error" ? "border-red-500/70"
     : state === "executing" ? "border-blue-500 animate-pulse"
-    : state === "done" ? "border-green-500"
-    : data.stageType === "external" ? "border-gray-400 border-dashed"
-    : "border-slate-300";
+    : state === "done" ? "border-emerald-500/70"
+    : data.stageType === "external" ? "border-zinc-600 border-dashed"
+    : data.stageType === "gate" ? "border-amber-500/50"
+    : data.stageType === "script" ? "border-purple-500/50"
+    : "border-zinc-600";
 
   // State-driven bg takes priority over stage-type bg so the pulsing
   // blue border has a coherent background during live execution (gate
   // amber + pulsing blue border was visually dissonant).
   const bg =
-    state === "error" ? "bg-red-50"
-    : state === "executing" ? "bg-blue-50"
-    : state === "done" ? "bg-green-50"
-    : data.stageType === "gate" ? "bg-amber-50"
-    : data.stageType === "script" ? "bg-purple-50"
-    : data.stageType === "external" ? "bg-gray-50"
-    : "bg-white";
+    state === "error" ? "bg-red-950/50"
+    : state === "executing" ? "bg-blue-950/50"
+    : state === "done" ? "bg-emerald-950/40"
+    : data.stageType === "gate" ? "bg-amber-950/30"
+    : data.stageType === "script" ? "bg-purple-950/30"
+    : data.stageType === "external" ? "bg-zinc-900/50"
+    : "bg-zinc-900";
 
   // State badge — only rendered when a live state is present. Keeps
   // the static /pipelines/[name] view uncluttered.
@@ -92,12 +94,12 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
       {/* Handles: reactflow needs explicit input/output handles for edges
           to render correctly. LR layout → left handle = input, right = output. */}
       {data.stageType !== "external" && (
-        <Handle type="target" position={Position.Left} className="!bg-slate-400" />
+        <Handle type="target" position={Position.Left} className="!bg-zinc-500" />
       )}
-      <Handle type="source" position={Position.Right} className="!bg-slate-400" />
+      <Handle type="source" position={Position.Right} className="!bg-zinc-500" />
 
       <div className="flex flex-wrap items-center gap-1 overflow-hidden">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
           {data.stageType}
         </span>
         {data.fanout && (
@@ -118,12 +120,12 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
         {stateBadge}
       </div>
 
-      <div className="mt-1 truncate font-mono text-sm font-semibold text-slate-800">
+      <div className="mt-1 truncate font-mono text-sm font-semibold text-zinc-100">
         {data.label}
       </div>
       {data.promptRef && (
         <div
-          className="mt-0.5 truncate font-mono text-[10px] text-slate-400"
+          className="mt-0.5 truncate font-mono text-[10px] text-zinc-500"
           title={data.promptRef}
         >
           {data.promptRef}
@@ -131,10 +133,53 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
       )}
       {data.moduleId && (
         <div
-          className="mt-0.5 truncate font-mono text-[10px] text-slate-400"
+          className="mt-0.5 truncate font-mono text-[10px] text-zinc-500"
           title={data.moduleId}
         >
           {data.moduleId}
+        </div>
+      )}
+      {((data.inputs && data.inputs.length > 0) ||
+        (data.outputs && data.outputs.length > 0)) && (
+        <div className="mt-1 space-y-0.5 text-[9px] leading-tight">
+          {data.inputs && data.inputs.length > 0 && (
+            <div>
+              <span className="font-semibold uppercase tracking-wide text-zinc-500">in: </span>
+              <span className="text-zinc-300">
+                {data.inputs.map((p, i) => (
+                  <span
+                    key={p.name}
+                    className="whitespace-nowrap"
+                    title={p.description ? `${p.name}: ${p.type}\n\n${p.description}` : `${p.name}: ${p.type}`}
+                  >
+                    {i > 0 && <span className="text-zinc-600">, </span>}
+                    <span className={p.description ? "underline decoration-dotted" : ""}>
+                      {p.name}
+                    </span>
+                  </span>
+                ))}
+              </span>
+            </div>
+          )}
+          {data.outputs && data.outputs.length > 0 && (
+            <div>
+              <span className="font-semibold uppercase tracking-wide text-zinc-500">out: </span>
+              <span className="text-zinc-300">
+                {data.outputs.map((p, i) => (
+                  <span
+                    key={p.name}
+                    className="whitespace-nowrap"
+                    title={p.description ? `${p.name}: ${p.type}\n\n${p.description}` : `${p.name}: ${p.type}`}
+                  >
+                    {i > 0 && <span className="text-zinc-600">, </span>}
+                    <span className={p.description ? "underline decoration-dotted" : ""}>
+                      {p.name}
+                    </span>
+                  </span>
+                ))}
+              </span>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -179,17 +224,19 @@ export function PipelineGraph({
       role="img"
       aria-label={`Pipeline DAG: ${ir.name} (${ir.stages.length} stages)`}
       style={{ width: "100%", height }}
-      className="rounded border border-gray-200 bg-slate-50"
+      className="bg-zinc-950"
     >
       <ReactFlow
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
         fitView
+        colorMode="dark"
         onNodeClick={(_, n) => onNodeClick?.(n.id)}
         proOptions={{ hideAttribution: true }}
         defaultEdgeOptions={{
-          markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#94a3b8" },
+          markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#71717a" },
+          style: { stroke: "#52525b" },
         }}
         // Interaction defaults tuned for a read-only inspection view:
         // allow pan/zoom, block node drag + edge editing so the layout
@@ -198,20 +245,23 @@ export function PipelineGraph({
         nodesConnectable={false}
         elementsSelectable
       >
-        <Background gap={16} size={1} />
+        <Background gap={16} size={1} color="#27272a" />
         <Controls position="bottom-right" showInteractive={false} />
         <MiniMap
           pannable
           zoomable
+          bgColor="#0a0a0a"
+          maskColor="rgba(0,0,0,0.6)"
+          nodeStrokeColor="#52525b"
           nodeColor={(n) => {
             const d = n.data as StageNodeData;
-            if (d.state === "error") return "#ef4444";
-            if (d.state === "executing") return "#3b82f6";
-            if (d.state === "done") return "#22c55e";
-            if (d.stageType === "gate") return "#fef3c7";
-            if (d.stageType === "script") return "#f3e8ff";
-            if (d.stageType === "external") return "#f9fafb";
-            return "#ffffff";
+            if (d.state === "error") return "#7f1d1d";
+            if (d.state === "executing") return "#1e3a8a";
+            if (d.state === "done") return "#14532d";
+            if (d.stageType === "gate") return "#451a03";
+            if (d.stageType === "script") return "#3b0764";
+            if (d.stageType === "external") return "#27272a";
+            return "#18181b";
           }}
         />
       </ReactFlow>

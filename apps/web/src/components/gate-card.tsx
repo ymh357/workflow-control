@@ -7,15 +7,24 @@
 
 import { useState } from "react";
 
+export interface GateAnswerOption {
+  value: string;
+  description?: string;
+}
+
 export interface GateContextResponse {
   gateId: string;
   taskId: string;
   stageName: string;
-  question: { text: string; options?: string[] };
+  // P3.7 question.options promoted to { value, description? }.
+  question: { text: string; options?: GateAnswerOption[] };
   createdAt: number;
   answeredAt: number | null;
   answer: string | null;
-  answerOptions: string[];
+  // P3.7 answerOptions promoted from plain string[] to object form —
+  // each entry pairs a routing key with an optional description from
+  // the author's GateStage.config.question.options.
+  answerOptions: GateAnswerOption[];
   upstreams: Array<{
     stage: string;
     outputs: Array<{
@@ -29,7 +38,11 @@ export interface GateContextResponse {
 interface Props {
   context: GateContextResponse;
   // Returns { ok: true } on HTTP success, { ok: false, error } otherwise.
-  onAnswer: (answer: string) => Promise<{ ok: true } | { ok: false; error: string }>;
+  // Now accepts an optional comment — persisted via the gate's builtin
+  // __gate_feedback__ output port (A). Empty string is sent when the
+  // caller leaves the textarea blank so downstream consumers see a
+  // determinate value either way.
+  onAnswer: (answer: string, comment: string) => Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
 // Truncate long string / JSON values to keep the card scrollable.
@@ -52,21 +65,21 @@ function PortRow({ port, value, writtenAt }: { port: string; value: unknown; wri
     ? { text: typeof value === "string" ? value : JSON.stringify(value, null, 2), truncated: false }
     : renderValue(value);
   return (
-    <tr>
-      <td className="border border-gray-300 px-2 py-1 align-top font-semibold">{port}</td>
-      <td className="border border-gray-300 px-2 py-1 align-top">
-        <pre className="whitespace-pre-wrap break-all text-xs">{rendered.text}</pre>
+    <tr className="border-t border-zinc-800">
+      <td className="px-3 py-1.5 align-top font-mono text-sm text-zinc-200">{port}</td>
+      <td className="px-3 py-1.5 align-top">
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-zinc-300">{rendered.text}</pre>
         {rendered.truncated && !expanded && (
           <button
             type="button"
-            className="mt-1 text-xs text-blue-600 underline"
+            className="mt-1 text-xs text-sky-400 hover:text-sky-300 hover:underline"
             onClick={() => setExpanded(true)}
           >
             show full
           </button>
         )}
       </td>
-      <td className="border border-gray-300 px-2 py-1 align-top text-xs text-gray-500">
+      <td className="px-3 py-1.5 align-top text-xs text-zinc-500 whitespace-nowrap">
         {new Date(writtenAt).toLocaleTimeString()}
       </td>
     </tr>
@@ -76,12 +89,16 @@ function PortRow({ port, value, writtenAt }: { port: string; value: unknown; wri
 export function GateCard({ context, onAnswer }: Props) {
   const [submitting, setSubmitting] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // A: optional free-text feedback persisted to the gate's builtin
+  // __gate_feedback__ port. Most useful on reject — the upstream
+  // regenerating agent reads it via a wire to decide what to change.
+  const [comment, setComment] = useState<string>("");
 
   const click = async (answer: string) => {
     setSubmitting(answer);
     setErrorMsg(null);
     try {
-      const r = await onAnswer(answer);
+      const r = await onAnswer(answer, comment);
       if (!r.ok) setErrorMsg(r.error);
     } finally {
       setSubmitting(null);
@@ -89,28 +106,31 @@ export function GateCard({ context, onAnswer }: Props) {
   };
 
   return (
-    <section className="mb-6 rounded border border-amber-400 bg-amber-50 p-4">
-      <h2 className="mb-1 text-base font-bold text-amber-900">
-        Gate pending: <span className="font-mono">{context.stageName}</span>
-      </h2>
-      <p className="mb-3 text-sm">{context.question.text}</p>
+    <section className="mb-6 rounded-lg border border-amber-500/50 bg-amber-500/10 p-4">
+      <div className="mb-3 flex items-baseline gap-3">
+        <span className="rounded border border-amber-500/50 bg-amber-500/20 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-amber-300">
+          Gate pending
+        </span>
+        <code className="font-mono text-sm text-zinc-200">{context.stageName}</code>
+      </div>
+      <p className="mb-4 text-sm text-zinc-100">{context.question.text}</p>
 
       {context.upstreams.length === 0 ? (
-        <p className="mb-3 text-xs italic text-gray-600">
+        <p className="mb-3 text-xs italic text-zinc-500">
           (no stage upstream; gate is fed by external inputs only)
         </p>
       ) : (
         context.upstreams.map((up) => (
-          <details key={up.stage} className="mb-2" open>
-            <summary className="cursor-pointer font-semibold">
-              {up.stage} ({up.outputs.length} outputs)
+          <details key={up.stage} className="mb-3 rounded border border-zinc-800 bg-zinc-950/50" open>
+            <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-zinc-200 hover:bg-zinc-900/50">
+              {up.stage} <span className="text-xs font-normal text-zinc-500">({up.outputs.length} outputs)</span>
             </summary>
-            <table className="mt-2 w-full border-collapse border border-gray-300 text-sm">
-              <thead className="bg-gray-100">
+            <table className="w-full border-collapse text-sm">
+              <thead className="bg-zinc-900/70 text-xs uppercase tracking-wide text-zinc-400">
                 <tr>
-                  <th className="border border-gray-300 px-2 py-1 text-left">Port</th>
-                  <th className="border border-gray-300 px-2 py-1 text-left">Value</th>
-                  <th className="border border-gray-300 px-2 py-1 text-left">Written</th>
+                  <th className="px-3 py-1.5 text-left font-semibold">Port</th>
+                  <th className="px-3 py-1.5 text-left font-semibold">Value</th>
+                  <th className="px-3 py-1.5 text-left font-semibold">Written</th>
                 </tr>
               </thead>
               <tbody>
@@ -128,22 +148,47 @@ export function GateCard({ context, onAnswer }: Props) {
         ))
       )}
 
+      <div className="mt-4">
+        <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-zinc-400">
+          Feedback (optional)
+          <span className="ml-2 font-normal normal-case text-zinc-500">
+            persisted to <code className="font-mono text-zinc-400">__gate_feedback__</code> port
+          </span>
+        </label>
+        <textarea
+          value={comment}
+          onChange={(e) => setComment(e.target.value)}
+          rows={3}
+          placeholder="Rejecting? Explain what to change. The upstream agent reads this on rerun."
+          className="w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm font-mono text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
+          maxLength={16_384}
+        />
+      </div>
+
       <div className="mt-3 flex flex-wrap gap-2">
         {context.answerOptions.map((opt) => (
           <button
-            key={opt}
+            key={opt.value}
             type="button"
             disabled={submitting !== null}
-            onClick={() => void click(opt)}
-            className="rounded bg-amber-700 px-3 py-1 text-sm font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
+            onClick={() => void click(opt.value)}
+            title={opt.description}
+            className="rounded border border-amber-500/50 bg-amber-500/15 px-3 py-1.5 text-sm font-semibold text-amber-200 hover:border-amber-500/70 hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {submitting === opt ? `${opt} …` : opt}
+            {submitting === opt.value ? `${opt.value} …` : opt.value}
+            {opt.description && (
+              <span className="ml-1.5 text-[11px] font-normal italic text-amber-300/80">
+                — {opt.description.length > 40 ? `${opt.description.slice(0, 40)}…` : opt.description}
+              </span>
+            )}
           </button>
         ))}
       </div>
 
       {errorMsg && (
-        <p className="mt-2 text-sm text-red-700">answer failed: {errorMsg}</p>
+        <p className="mt-3 rounded border border-red-500/50 bg-red-500/10 px-3 py-1.5 text-sm text-red-300">
+          answer failed: {errorMsg}
+        </p>
       )}
     </section>
   );

@@ -17,6 +17,7 @@ import type { Node, Edge } from "@xyflow/react";
 export interface IRPort {
   name: string;
   type: string;
+  description?: string;
 }
 
 export interface IRWireFromStage {
@@ -115,18 +116,34 @@ export interface StageNodeData extends Record<string, unknown> {
   promptRef?: string;
   moduleId?: string;
   state?: StageState;
+  // Port metadata for hover / expand disclosure. Kept minimal so nodes
+  // stay glanceable; the detail panel pulls descriptions from here.
+  inputs?: IRPort[];
+  outputs?: IRPort[];
 }
 
 // Layout constants. NODE_W/NODE_H are dagre layout hints and must match
-// the rendered node size in pipeline-graph.tsx (w-[220px], ~90px tall).
-// Keeping them here avoids drift that would show mis-overlapped nodes.
+// the rendered node size in pipeline-graph.tsx (w-[220px], ~130px tall
+// now that port names are listed in-node). Keeping them here avoids
+// drift that would show mis-overlapped nodes.
 const NODE_W = 220;
-const NODE_H = 90;
+const NODE_H = 130;
 
 // --- Stage → Node conversion ---
 
 function stageToNode(stage: IRStage): Node<StageNodeData> {
+  // Defensive: stage.config may be absent on partially-loaded IRs or
+  // legacy stage rows that slipped in via external seed paths. Access
+  // through a typed local so a missing config never blows up the node
+  // render.
+  const cfg = (stage as { config?: unknown }).config as
+    | Record<string, unknown>
+    | undefined;
+  const inputs = Array.isArray(stage.inputs) ? stage.inputs : [];
+  const outputs = Array.isArray(stage.outputs) ? stage.outputs : [];
   if (stage.type === "agent") {
+    const subAgents = cfg?.subAgents as unknown[] | undefined;
+    const mcpServers = cfg?.mcpServers as unknown[] | undefined;
     return {
       id: stage.name,
       type: "stageNode",
@@ -135,9 +152,11 @@ function stageToNode(stage: IRStage): Node<StageNodeData> {
         label: stage.name,
         stageType: "agent",
         fanout: stage.fanout !== undefined,
-        subAgentCount: stage.config.subAgents?.length ?? 0,
-        mcpCount: stage.config.mcpServers?.length ?? 0,
-        promptRef: stage.config.promptRef,
+        subAgentCount: Array.isArray(subAgents) ? subAgents.length : 0,
+        mcpCount: Array.isArray(mcpServers) ? mcpServers.length : 0,
+        promptRef: typeof cfg?.promptRef === "string" ? cfg.promptRef : undefined,
+        inputs,
+        outputs,
       },
     };
   }
@@ -152,6 +171,8 @@ function stageToNode(stage: IRStage): Node<StageNodeData> {
         fanout: false,
         subAgentCount: 0,
         mcpCount: 0,
+        inputs,
+        outputs,
       },
     };
   }
@@ -166,7 +187,9 @@ function stageToNode(stage: IRStage): Node<StageNodeData> {
       fanout: stage.fanout !== undefined,
       subAgentCount: 0,
       mcpCount: 0,
-      moduleId: stage.config.moduleId,
+      moduleId: typeof cfg?.moduleId === "string" ? cfg.moduleId : undefined,
+      inputs,
+      outputs,
     },
   };
 }

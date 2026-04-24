@@ -23,7 +23,7 @@ const RootLayout = async ({ children }: { children: React.ReactNode }) => {
             <header className="border-b border-zinc-800 px-6 py-4">
               <Nav />
             </header>
-            <main className="mx-auto max-w-4xl px-6 py-8">
+            <main className="mx-auto w-full max-w-[min(1600px,95vw)] px-6 py-6">
               <ErrorBoundary>{children}</ErrorBoundary>
             </main>
           </ToastProvider>

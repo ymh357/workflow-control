@@ -141,8 +141,14 @@ export default function ProposalsPage() {
     }
   }, []);
 
-  if (error && !rows) return <p className="p-6 font-mono text-red-600">Error: {error}</p>;
-  if (!rows) return <p className="p-6 font-mono text-gray-600">Loading…</p>;
+  if (error && !rows) {
+    return (
+      <div className="rounded border border-red-500/50 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        Error: {error}
+      </div>
+    );
+  }
+  if (!rows) return <p className="text-sm text-zinc-500">Loading…</p>;
 
   const pending = rows.filter((r) => r.status === "pending");
   const approved = rows.filter((r) => r.status === "approved");
@@ -159,16 +165,16 @@ export default function ProposalsPage() {
     <section className="mb-6">
       <h2 className="mb-2 text-base font-semibold">{title} ({items.length})</h2>
       {items.length === 0 ? (
-        <p className="text-xs text-gray-500">none</p>
+        <p className="text-xs text-zinc-500">none</p>
       ) : (
-        <table className="w-full border-collapse border border-gray-300">
-          <thead className="bg-gray-100">
+        <table className="w-full border-collapse border border-zinc-800">
+          <thead className="bg-zinc-900/70 text-zinc-400 uppercase text-xs tracking-wide">
             <tr>
-              <th className="border border-gray-300 px-2 py-1 text-left">Proposal</th>
-              <th className="border border-gray-300 px-2 py-1 text-left">Pipeline</th>
-              <th className="border border-gray-300 px-2 py-1 text-left">Actor</th>
-              <th className="border border-gray-300 px-2 py-1 text-left">Created</th>
-              {actions && <th className="border border-gray-300 px-2 py-1 text-left">Actions</th>}
+              <th className="border border-zinc-800 px-2 py-1 text-left">Proposal</th>
+              <th className="border border-zinc-800 px-2 py-1 text-left">Pipeline</th>
+              <th className="border border-zinc-800 px-2 py-1 text-left">Actor</th>
+              <th className="border border-zinc-800 px-2 py-1 text-left">Created</th>
+              {actions && <th className="border border-zinc-800 px-2 py-1 text-left">Actions</th>}
             </tr>
           </thead>
           <tbody>
@@ -177,17 +183,17 @@ export default function ProposalsPage() {
               return (
                 <React.Fragment key={r.proposalId}>
                   <tr>
-                    <td className="border border-gray-300 px-2 py-1 text-xs">{r.proposalId}</td>
-                    <td className="border border-gray-300 px-2 py-1">{r.pipelineName}</td>
-                    <td className="border border-gray-300 px-2 py-1 text-xs">{r.actor}</td>
-                    <td className="border border-gray-300 px-2 py-1 text-xs text-gray-500">
+                    <td className="border border-zinc-800 px-2 py-1 text-xs">{r.proposalId}</td>
+                    <td className="border border-zinc-800 px-2 py-1">{r.pipelineName}</td>
+                    <td className="border border-zinc-800 px-2 py-1 text-xs">{r.actor}</td>
+                    <td className="border border-zinc-800 px-2 py-1 text-xs text-zinc-500">
                       {new Date(r.createdAt).toLocaleString()}
                     </td>
-                    {actions && <td className="border border-gray-300 px-2 py-1">{actions(r)}</td>}
+                    {actions && <td className="border border-zinc-800 px-2 py-1">{actions(r)}</td>}
                   </tr>
                   {extra && (
                     <tr>
-                      <td colSpan={columnCount} className="border border-gray-300 bg-slate-50 p-3">
+                      <td colSpan={columnCount} className="border border-zinc-800 bg-zinc-900/40 p-3">
                         {extra}
                       </td>
                     </tr>
@@ -203,9 +209,18 @@ export default function ProposalsPage() {
   };
 
   return (
-    <div className="mx-auto max-w-7xl p-6 font-mono text-sm">
-      <h1 className="mb-4 text-xl font-bold">Proposals</h1>
-      {error && <p className="mb-3 text-red-600">Error: {error}</p>}
+    <div className="space-y-4">
+      <header className="flex items-baseline gap-3">
+        <h1 className="text-2xl font-semibold tracking-tight">Proposals</h1>
+        <span className="text-sm text-zinc-500">
+          {rows.length} total · {pending.length} pending · {approved.length} approved · {rejected.length} rejected
+        </span>
+      </header>
+      {error && (
+        <div className="rounded border border-red-500/50 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+          {error}
+        </div>
+      )}
       <Section
         title="Pending"
         items={pending}
@@ -215,7 +230,7 @@ export default function ProposalsPage() {
               type="button"
               onClick={() => void togglePreview(r.proposalId)}
               disabled={previewLoading[r.proposalId] ?? false}
-              className="rounded bg-slate-600 px-2 py-1 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-60"
+              className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs font-semibold text-zinc-200 hover:border-zinc-600 hover:bg-zinc-700 disabled:opacity-40"
             >
               {previewLoading[r.proposalId]
                 ? "Loading…"
@@ -224,14 +239,14 @@ export default function ProposalsPage() {
             <button
               type="button"
               onClick={() => void mutateStatus(r.proposalId, "approve")}
-              className="rounded bg-green-700 px-2 py-1 text-xs font-semibold text-white hover:bg-green-800"
+              className="rounded border border-emerald-500/50 bg-emerald-500/15 px-2 py-1 text-xs font-semibold text-emerald-300 hover:border-emerald-500/70 hover:bg-emerald-500/25"
             >
               Approve
             </button>
             <button
               type="button"
               onClick={() => void mutateStatus(r.proposalId, "reject")}
-              className="rounded bg-red-700 px-2 py-1 text-xs font-semibold text-white hover:bg-red-800"
+              className="rounded border border-red-500/50 bg-red-500/15 px-2 py-1 text-xs font-semibold text-red-300 hover:border-red-500/70 hover:bg-red-500/25"
             >
               Reject
             </button>
