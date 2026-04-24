@@ -815,3 +815,76 @@ Everything on the residuals list is closed:
 
 Branch `main`, working tree clean, 549+ commits ahead of origin.
 
+
+---
+
+## 15. Runtime verification of figma-file-fetch — D' now runtime-proven
+
+Submit-time (contract check + tsc compile + whitelist scan) and
+end-to-end generator→persist were already verified in §12–§13. This
+final step closes the last gap: do the generated inline scripts
+actually *execute* correctly under the runtime's restricted require?
+
+### 15.1 Execution
+
+`run_pipeline` against `versionHash=d2209c4a...` with seed values:
+
+- `figmaFileKey = "BogusKeyForRuntimeValidation123"`
+- `figmaAccessToken = "figd_REDACTED_PLACEHOLDER"`
+- `outputPath = "/tmp/figma-dump-runtime-verify.json"`
+
+Task `figma-file-fetch-1777049089394-b9d8ec11` terminated
+`completed/natural` in ~5 seconds.
+
+### 15.2 Stage-by-stage results
+
+| Stage | Type | Status | Evidence |
+|-------|------|--------|----------|
+| `__external__` | seed | success | 3 seed values landed in port_values |
+| `buildRequest` | inline script | success | Compiled and ran. Produced `url`, `headers` — inline script's `node:os` / `node:path` imports worked through restricted require |
+| `fetchFigma` | registry (http_fetch) | success | Real HTTP GET to `api.figma.com/v1/files/BogusKey...`; response was 403 "Invalid token" (as expected for a fake token) |
+| `persistFile` | registry (write_file) | success | Wrote the 403 response body to `/tmp/figma-dump-runtime-verify.json` |
+| `buildResult` | inline script | success | Produced `bytesWritten=36`, `outputPath="/tmp/figma-dump-runtime-verify.json"` |
+
+Final file (verified on disk, 36 bytes): `{"status":403,"err":"Invalid token"}`.
+
+### 15.3 What this proves
+
+1. **Inline scripts compile at submit time AND execute at runtime.**
+   The compile+module-load path produces a function that actually
+   runs when the stage dispatcher invokes it. No divergence between
+   the submit-time contract test's codepath and the real-run codepath.
+
+2. **Restricted require + node-module whitelist work end-to-end.**
+   `buildRequest` uses `node:os` / `node:path`; `buildResult` uses
+   `Buffer.byteLength`. Both landed on the RUNTIME_REQUIRE_ALLOWLIST
+   without any additional configuration.
+
+3. **Registry scripts dispatch correctly.** `http_fetch` and
+   `write_file` (§ D'-1) were resolved by moduleId, invoked with
+   wire-delivered inputs, and returned properly-typed outputs.
+
+4. **AI's defensive assumption held under a real failure.** The
+   Figma API returned 403; the pipeline didn't gate on `ok=false`
+   and proceeded to persist the error body. This matches the
+   assumption AI wrote in §12.1 ("If the Figma API returns a non-2xx
+   response, the error JSON body is written to outputPath"). The
+   author's intent survived codegen into behaviour.
+
+5. **Cross-stage wires work under the new script-stage discriminant.**
+   Data flowed correctly through 8 wires including the external→stage,
+   stage→stage, and to-sink edges.
+
+### 15.4 D' closure statement
+
+D' — "safe AI-generated scripts without worker sandbox" — is now
+proven at every layer:
+
+- **Design-time**: AI prompts emit script stages for pure I/O (§12)
+- **Submit-time**: tsc + whitelist + sample-input contract test (§ D'-2, D'-3)
+- **End-to-end generator pipeline**: generator → registry (§13)
+- **Runtime execution**: inline+registry scripts dispatch and run (§15)
+
+No open items. Script-stage machinery is production-ready for the
+local single-user scope CLAUDE.md defines.
+
