@@ -66,11 +66,34 @@ export function computePipelineDiff(
         };
       }
     } else if (baseStage.type === "script" && propStage.type === "script") {
-      if (baseStage.config.moduleId !== propStage.config.moduleId) {
-        changes.moduleId = {
-          before: baseStage.config.moduleId,
-          after: propStage.config.moduleId,
+      // D'-3: script stages have two variants (registry vs inline).
+      // Changing the variant kind is itself a diff; within the same
+      // variant we diff the implementation-carrying field.
+      if (baseStage.config.source !== propStage.config.source) {
+        changes.scriptSource = {
+          before: baseStage.config.source,
+          after: propStage.config.source,
         };
+      } else if (
+        baseStage.config.source === "registry"
+        && propStage.config.source === "registry"
+      ) {
+        if (baseStage.config.moduleId !== propStage.config.moduleId) {
+          changes.moduleId = {
+            before: baseStage.config.moduleId,
+            after: propStage.config.moduleId,
+          };
+        }
+      } else if (
+        baseStage.config.source === "inline"
+        && propStage.config.source === "inline"
+      ) {
+        if (baseStage.config.moduleSource !== propStage.config.moduleSource) {
+          changes.moduleSource = {
+            before: baseStage.config.moduleSource,
+            after: propStage.config.moduleSource,
+          };
+        }
       }
     } else if (baseStage.type === "gate" && propStage.type === "gate") {
       const bq = baseStage.config.question;

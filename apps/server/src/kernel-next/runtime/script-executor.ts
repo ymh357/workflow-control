@@ -70,6 +70,15 @@ export class ScriptStageExecutor implements StageExecutor {
       portRuntime.recordRead({ attemptId, stageName, portName: p.name, value });
     }
 
+    // ScriptStageExecutor handles the registry-backed variant only.
+    // Inline-source ScriptStages (D'-3) are routed to a different
+    // executor that compiles + imports the source at task start.
+    if (scriptStage.config.source !== "registry") {
+      throw new Error(
+        `ScriptStageExecutor received inline-source ScriptStage '${stageName}'. ` +
+          `Route inline scripts via InlineScriptStageExecutor (Composite maps source='inline' to that delegate).`,
+      );
+    }
     // 2b. Sidecar: open the script_execution_details writer BEFORE module
     //     resolution so even a module-not-found failure leaves a row for
     //     post-mortem tooling. Never throws; returns a no-op on DB error.

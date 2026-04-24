@@ -198,7 +198,7 @@ describe("canonicalizeIR ScriptStage retry", () => {
       externalInputs: [],
       stages: [{
         name: "S", type: "script", inputs: [], outputs: [],
-        config: { moduleId: "m" },
+        config: { source: "registry", moduleId: "m" },
       }],
       wires: [],
     };
@@ -212,7 +212,7 @@ describe("canonicalizeIR ScriptStage retry", () => {
       externalInputs: [],
       stages: [
         { name: "S", type: "script", inputs: [], outputs: [],
-          config: { moduleId: "m", retry: { maxRetries: 2, backToStage: "T" } } },
+          config: { source: "registry", moduleId: "m", retry: { maxRetries: 2, backToStage: "T" } } },
         { name: "T", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }],
           config: { promptRef: "p" } },
       ],

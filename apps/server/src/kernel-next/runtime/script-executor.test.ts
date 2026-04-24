@@ -29,7 +29,7 @@ function irWithOneScriptStage(moduleId: string): PipelineIR {
         type: "script",
         inputs: [{ name: "x", type: "number" }],
         outputs: [{ name: "y", type: "number" }],
-        config: { moduleId },
+        config: { source: "registry", moduleId },
       },
     ],
     wires: [],
@@ -68,7 +68,7 @@ describe("ScriptStageExecutor", () => {
       const irWithWire: PipelineIR = {
         ...ir,
         stages: [
-          { name: "UP", type: "script", inputs: [], outputs: [{ name: "x", type: "number" }], config: { moduleId: "seed" } },
+          { name: "UP", type: "script", inputs: [], outputs: [{ name: "x", type: "number" }], config: { source: "registry", moduleId: "seed" } },
           ir.stages[0]!,
         ],
         wires: [{ from: { stage: "UP", port: "x" }, to: { stage: "S", port: "x" } }],

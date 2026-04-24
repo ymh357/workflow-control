@@ -31,7 +31,7 @@ function irWithOneScriptStage(moduleId: string): PipelineIR {
         type: "script",
         inputs: [{ name: "x", type: "number" }],
         outputs: [{ name: "y", type: "number" }],
-        config: { moduleId },
+        config: { source: "registry", moduleId },
       },
     ],
     wires: [],
@@ -68,12 +68,12 @@ describe("ScriptStageExecutor sidecar", () => {
       const irWithWire: PipelineIR = {
         name: "t",
         stages: [
-          { name: "UP", type: "script", inputs: [], outputs: [{ name: "x", type: "number" }], config: { moduleId: "seed" } },
+          { name: "UP", type: "script", inputs: [], outputs: [{ name: "x", type: "number" }], config: { source: "registry", moduleId: "seed" } },
           {
             name: "S", type: "script",
             inputs: [{ name: "x", type: "number" }],
             outputs: [{ name: "y", type: "number" }],
-            config: { moduleId: "double" },
+            config: { source: "registry", moduleId: "double" },
           },
         ],
         wires: [{ from: { stage: "UP", port: "x" }, to: { stage: "S", port: "x" } }],

@@ -26,7 +26,7 @@ describe("retry debug", () => {
           { name: "S", type: "script",
             inputs: [{ name: "x", type: "number" }],
             outputs: [{ name: "r", type: "boolean" }],
-            config: { moduleId: "m", retry: { maxRetries: 1, backToStage: "A" } } },
+            config: { source: "registry", moduleId: "m", retry: { maxRetries: 1, backToStage: "A" } } },
         ],
         wires: [{ from: { source: "stage", stage: "A", port: "x" }, to: { stage: "S", port: "x" } }],
       };
@@ -67,7 +67,7 @@ describe("retry debug", () => {
           { name: "S", type: "script",
             inputs: [{ name: "x", type: "number" }],
             outputs: [{ name: "r", type: "boolean" }],
-            config: { moduleId: "m", retry: { maxRetries: 1, backToStage: "A" } } },
+            config: { source: "registry", moduleId: "m", retry: { maxRetries: 1, backToStage: "A" } } },
         ],
         wires: [
           { from: { source: "stage", stage: "UP", port: "k" }, to: { stage: "A", port: "k" } },
@@ -119,7 +119,7 @@ describe("retry debug", () => {
           { name: "S", type: "script",
             inputs: [{ name: "y", type: "number" }],
             outputs: [{ name: "r", type: "boolean" }],
-            config: { moduleId: "m", retry: { maxRetries: 1, backToStage: "A" } } },
+            config: { source: "registry", moduleId: "m", retry: { maxRetries: 1, backToStage: "A" } } },
         ],
         wires: [
           { from: { source: "stage", stage: "SRC", port: "x" }, to: { stage: "G", port: "x" } },

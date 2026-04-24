@@ -12,11 +12,16 @@ export interface PortTypeChange {
 }
 
 export interface StageDiffChanges {
-  promptRef?:   { before: string; after: string };
-  moduleId?:    { before: string; after: string };
-  question?:    { before: unknown; after: unknown };
-  inputs?:      { added: PortIR[]; removed: PortIR[]; typeChanged: PortTypeChange[] };
-  outputs?:     { added: PortIR[]; removed: PortIR[]; typeChanged: PortTypeChange[] };
+  promptRef?:     { before: string; after: string };
+  moduleId?:      { before: string; after: string };
+  // D'-3: script stages may switch between registry-backed and
+  // inline-source variants; a variant change is surfaced separately
+  // from moduleId / moduleSource content changes.
+  scriptSource?:  { before: "registry" | "inline"; after: "registry" | "inline" };
+  moduleSource?:  { before: string; after: string };
+  question?:      { before: unknown; after: unknown };
+  inputs?:        { added: PortIR[]; removed: PortIR[]; typeChanged: PortTypeChange[] };
+  outputs?:       { added: PortIR[]; removed: PortIR[]; typeChanged: PortTypeChange[] };
 }
 
 export interface StageDiff {

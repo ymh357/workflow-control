@@ -277,7 +277,17 @@ function stageToDescribed(s: StageIR): DescribedStage {
       mcpServers: s.config.mcpServers,
     };
   } else if (s.type === "script") {
-    out.config = { moduleId: s.config.moduleId };
+    if (s.config.source === "registry") {
+      out.config = { source: "registry", moduleId: s.config.moduleId };
+    } else {
+      // Do not echo the full inline TS source — external callers don't
+      // need to re-see it to call read_port / answer_gate, and it can
+      // be large. Surface only the variant + a byte count.
+      out.config = {
+        source: "inline",
+        moduleSourceBytes: Buffer.byteLength(s.config.moduleSource, "utf8"),
+      };
+    }
   }
   return out;
 }

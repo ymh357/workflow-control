@@ -226,7 +226,7 @@ describe("runner — gate reject rollback", () => {
           outputs: [{ name: "done", type: "boolean" }],
           // backToStage=B means toReset={B} only — G stays in
           // persistentFinalizedStages and G's answer should be replayed.
-          config: { moduleId: "m", retry: { maxRetries: 1, backToStage: "B" } },
+          config: { source: "registry", moduleId: "m", retry: { maxRetries: 1, backToStage: "B" } },
         },
       ],
       wires: [

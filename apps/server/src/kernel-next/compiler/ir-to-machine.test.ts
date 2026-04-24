@@ -504,7 +504,7 @@ describe("ScriptStage retry transition", () => {
           type: "script",
           inputs: [{ name: "x", type: "number" }],
           outputs: [{ name: "r", type: "boolean" }],
-          config: { moduleId: "m" },
+          config: { source: "registry", moduleId: "m" },
         },
       ],
       wires: [
@@ -637,7 +637,7 @@ describe("ScriptStage retry transition", () => {
           type: "script",
           inputs: [{ name: "x", type: "number" }],
           outputs: [{ name: "r", type: "boolean" }],
-          config: { moduleId: "m", retry: { maxRetries: 2, backToStage: "A" } },
+          config: { source: "registry", moduleId: "m", retry: { maxRetries: 2, backToStage: "A" } },
         },
       ],
       wires: [

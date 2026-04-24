@@ -23,7 +23,7 @@ function ir(): PipelineIR {
     name: "mix",
     stages: [
       { name: "A", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
-      { name: "S", type: "script", inputs: [], outputs: [], config: { moduleId: "m" } },
+      { name: "S", type: "script", inputs: [], outputs: [], config: { source: "registry", moduleId: "m" } },
       {
         name: "G",
         type: "gate",

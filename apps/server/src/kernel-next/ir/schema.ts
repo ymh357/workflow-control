@@ -158,15 +158,68 @@ export const AgentStageSchema = z.object({
   fanout: FanoutSpecSchema.optional(),
 });
 
+// D'-1 / D'-3 — ScriptStage has two variants:
+//
+//   1. `source: "registry"` (or omitted for backward-compat) — references
+//      a moduleId registered in the kernel's builtin-script registry.
+//      The IR never carries the implementation; submit-time validation
+//      checks moduleId ∈ BUILTIN_SCRIPT_IDS.
+//
+//   2. `source: "inline"` (D'-3) — carries the TypeScript source of the
+//      ScriptModule directly. The runtime compiles + imports it at
+//      task-start. Submit-time validation: import whitelist, tsc, and
+//      a contract test using `sampleInputs`.
+//
+// The discriminant is `config.source`. Zod preprocess defaults legacy
+// shape (no `source`, has `moduleId`) to `source: "registry"`.
+const ScriptConfigRegistrySchema = z.object({
+  source: z.literal("registry"),
+  moduleId: z.string().min(1),
+  retry: RetrySpecSchema.optional(),
+});
+
+const ScriptConfigInlineSchema = z.object({
+  source: z.literal("inline"),
+  // TypeScript source text. Must `export default` a value conforming to
+  // ScriptModule (enforced at submit via compile-inline-script). Bounded
+  // at 64KB to keep IR rows manageable; scripts larger than this are a
+  // smell — factor into multiple stages.
+  moduleSource: z.string().min(1).max(64 * 1024),
+  // Per-input-port sample values used for the submit-time contract test
+  // (Layer 3). Keys must equal the stage's declared input port names.
+  // At run time this value is NOT consulted — the real wire delivery
+  // provides inputs; sampleInputs only exists for pre-run validation.
+  sampleInputs: z.record(z.string(), z.unknown()),
+  retry: RetrySpecSchema.optional(),
+});
+
 export const ScriptStageSchema = z.object({
   ...StageCommon,
   type: z.literal("script"),
-  config: z.object({
-    moduleId: z.string().min(1),          // userland-provided module identifier
-    retry: RetrySpecSchema.optional(),
-  }),
+  config: z.discriminatedUnion("source", [
+    ScriptConfigRegistrySchema,
+    ScriptConfigInlineSchema,
+  ]),
   fanout: FanoutSpecSchema.optional(),
 });
+
+/**
+ * Normalise a legacy ScriptStage `config` (no `source`, has `moduleId`)
+ * into the `source: "registry"` variant so the discriminated union
+ * parse succeeds. Applied as a top-level preprocess on StageIRSchema
+ * below, NOT on ScriptStageSchema directly — ScriptStageSchema must
+ * remain a ZodObject so z.discriminatedUnion("type", [...]) accepts it.
+ */
+function normalizeLegacyScriptConfig(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object") return raw;
+  const stage = raw as { config?: unknown; type?: unknown };
+  if (stage.type !== "script") return raw;
+  const cfg = stage.config;
+  if (cfg && typeof cfg === "object" && !("source" in cfg) && "moduleId" in cfg) {
+    return { ...stage, config: { source: "registry", ...(cfg as Record<string, unknown>) } };
+  }
+  return raw;
+}
 
 export const GateStageSchema = z.object({
   ...StageCommon,
@@ -187,11 +240,22 @@ export const GateStageSchema = z.object({
   // checked by validator/structural.ts (GATE_FANOUT_FORBIDDEN).
 });
 
-export const StageIRSchema = z.discriminatedUnion("type", [
+const StageIRStrictSchema = z.discriminatedUnion("type", [
   AgentStageSchema,
   ScriptStageSchema,
   GateStageSchema,
 ]);
+
+/**
+ * StageIR parser that normalises legacy ScriptStage `config`
+ * (no `source`, has `moduleId`) to `source: "registry"` before the
+ * discriminated-union parse. Inferred type equals the strict schema's
+ * output — the preprocess only touches input shape.
+ */
+export const StageIRSchema = z.preprocess(
+  normalizeLegacyScriptConfig,
+  StageIRStrictSchema,
+) as unknown as typeof StageIRStrictSchema;
 
 const WireSourceSchema = z.discriminatedUnion("source", [
   z.object({

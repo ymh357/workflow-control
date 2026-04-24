@@ -355,7 +355,7 @@ describe("structural validator — script moduleId resolution (D'-1)", () => {
           type: "script",
           inputs: [{ name: "raw", type: "string" }],
           outputs: [{ name: "value", type: "unknown" }],
-          config: { moduleId },
+          config: { source: "registry", moduleId },
         },
       ],
       wires: [{ from: { stage: "A", port: "raw" }, to: { stage: "B", port: "raw" } }],

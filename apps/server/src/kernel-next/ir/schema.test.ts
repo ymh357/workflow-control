@@ -86,6 +86,7 @@ describe("GateRoutingSchema", () => {
 describe("ScriptStage.config.retry", () => {
   it("accepts a valid retry spec", () => {
     const parsed = ScriptStageSchema.shape.config.parse({
+      source: "registry",
       moduleId: "m",
       retry: { maxRetries: 2, backToStage: "A" },
     });
@@ -93,13 +94,14 @@ describe("ScriptStage.config.retry", () => {
   });
 
   it("treats retry as optional (script without retry is valid)", () => {
-    const parsed = ScriptStageSchema.shape.config.parse({ moduleId: "m" });
+    const parsed = ScriptStageSchema.shape.config.parse({ source: "registry", moduleId: "m" });
     expect(parsed.retry).toBeUndefined();
   });
 
   it("rejects maxRetries < 1", () => {
     expect(() =>
       ScriptStageSchema.shape.config.parse({
+        source: "registry",
         moduleId: "m",
         retry: { maxRetries: 0, backToStage: "A" },
       }),
@@ -109,6 +111,7 @@ describe("ScriptStage.config.retry", () => {
   it("rejects maxRetries > 10", () => {
     expect(() =>
       ScriptStageSchema.shape.config.parse({
+        source: "registry",
         moduleId: "m",
         retry: { maxRetries: 11, backToStage: "A" },
       }),
@@ -118,6 +121,7 @@ describe("ScriptStage.config.retry", () => {
   it("rejects non-identifier backToStage", () => {
     expect(() =>
       ScriptStageSchema.shape.config.parse({
+        source: "registry",
         moduleId: "m",
         retry: { maxRetries: 1, backToStage: "" },
       }),
@@ -197,6 +201,99 @@ describe("IRPatchSchema — NO_OP_PROPOSAL prep", () => {
   it("accepts empty ops (no-op check is enforced at propose() layer, not schema)", () => {
     const r = IRPatchSchema.safeParse({ ops: [] });
     expect(r.success).toBe(true);
+  });
+});
+
+describe("ScriptStage source variants (D'-3)", () => {
+  function baseIR(scriptConfig: unknown) {
+    return {
+      name: "t",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "raw", type: "string" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "B",
+          type: "script",
+          inputs: [{ name: "raw", type: "string" }],
+          outputs: [{ name: "value", type: "unknown" }],
+          config: scriptConfig,
+        },
+      ],
+      wires: [{ from: { stage: "A", port: "raw" }, to: { stage: "B", port: "raw" } }],
+    };
+  }
+
+  it("back-compat: accepts legacy config without 'source' and normalises to registry", () => {
+    const r = PipelineIRSchema.safeParse(baseIR({ moduleId: "m" }));
+    expect(r.success).toBe(true);
+    if (r.success) {
+      const script = r.data.stages[1]!;
+      if (script.type !== "script") throw new Error("expected script");
+      expect(script.config.source).toBe("registry");
+      if (script.config.source === "registry") {
+        expect(script.config.moduleId).toBe("m");
+      }
+    }
+  });
+
+  it("accepts explicit source: 'registry'", () => {
+    const r = PipelineIRSchema.safeParse(baseIR({ source: "registry", moduleId: "m" }));
+    expect(r.success).toBe(true);
+  });
+
+  it("accepts source: 'inline' with moduleSource + sampleInputs", () => {
+    const r = PipelineIRSchema.safeParse(baseIR({
+      source: "inline",
+      moduleSource: `export default { run(){ return { value: 1 }; } };`,
+      sampleInputs: { raw: "hi" },
+    }));
+    expect(r.success).toBe(true);
+    if (r.success) {
+      const script = r.data.stages[1]!;
+      if (script.type !== "script" || script.config.source !== "inline") {
+        throw new Error("expected inline script");
+      }
+      expect(script.config.moduleSource).toContain("export default");
+      expect(script.config.sampleInputs).toEqual({ raw: "hi" });
+    }
+  });
+
+  it("rejects inline config missing sampleInputs", () => {
+    const r = PipelineIRSchema.safeParse(baseIR({
+      source: "inline",
+      moduleSource: `export default { run(){ return {}; } };`,
+    }));
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects inline config missing moduleSource", () => {
+    const r = PipelineIRSchema.safeParse(baseIR({
+      source: "inline",
+      sampleInputs: { raw: "hi" },
+    }));
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects inline moduleSource exceeding 64KB", () => {
+    const r = PipelineIRSchema.safeParse(baseIR({
+      source: "inline",
+      moduleSource: "x".repeat(64 * 1024 + 1),
+      sampleInputs: { raw: "hi" },
+    }));
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects unknown source value", () => {
+    const r = PipelineIRSchema.safeParse(baseIR({
+      source: "evil",
+      moduleId: "m",
+    }));
+    expect(r.success).toBe(false);
   });
 });
 

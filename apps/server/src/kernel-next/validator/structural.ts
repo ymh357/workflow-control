@@ -211,12 +211,16 @@ export function validateStructural(
       }
     }
 
-    // D'-1: script stage moduleId must resolve against the runtime's
-    // builtin registry. Caller supplies the allowed set (keeps the
-    // validator free of a direct import on builtin-scripts/). When the
-    // option is absent, the check is skipped — useful for dry-run
-    // validate_pipeline calls that don't intend to run the pipeline.
-    if (s.type === "script" && options.allowedScriptModuleIds !== undefined) {
+    // D'-1: registry-backed script stages must reference a registered
+    // moduleId. D'-3 adds inline-source script stages (config.source ===
+    // "inline") whose implementation travels in the IR itself; those
+    // skip the registry check here and are validated by
+    // submit-inline-script-contract (Layer 1 + 2 + 3) on the submit path.
+    if (
+      s.type === "script"
+      && s.config.source === "registry"
+      && options.allowedScriptModuleIds !== undefined
+    ) {
       const moduleId = s.config.moduleId;
       if (!options.allowedScriptModuleIds.has(moduleId)) {
         diagnostics.push({
