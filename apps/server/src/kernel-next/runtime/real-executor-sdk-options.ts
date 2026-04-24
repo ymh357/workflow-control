@@ -3,7 +3,7 @@
 // shape be unit-tested independently.
 
 import type { Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
-import type { AgentStage } from "../ir/schema.js";
+import type { SubAgentDef } from "../ir/schema.js";
 import type { ExpandedMcpServer } from "./mcp-servers-expander.js";
 
 export interface BuildSdkBaseOptionsArgs {
@@ -14,7 +14,7 @@ export interface BuildSdkBaseOptionsArgs {
   maxBudgetUsd: number | undefined;
   claudePath: string | undefined;
   childEnv: NodeJS.ProcessEnv;
-  subAgents: AgentStage["config"]["subAgents"];
+  subAgents: SubAgentDef[] | undefined;
   workspaceDir: string | undefined;
   /**
    * P3.5 — per-stage external MCP servers already expanded from
@@ -58,7 +58,7 @@ export function buildSdkBaseOptions(args: BuildSdkBaseOptionsArgs): SdkOptions {
  * SDK keys (SDK treats tools: undefined as "inherit from parent").
  */
 function buildSdkAgents(
-  defs: NonNullable<AgentStage["config"]["subAgents"]>,
+  defs: SubAgentDef[],
 ): NonNullable<SdkOptions["agents"]> {
   const out: Record<string, NonNullable<SdkOptions["agents"]>[string]> = {};
   for (const d of defs) {
