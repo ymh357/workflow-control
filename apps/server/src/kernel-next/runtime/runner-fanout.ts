@@ -197,7 +197,7 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
       // — remaining workers see firstError !== null and stop taking
       // new indices.
       if (firstError === null) {
-        firstError = `fanout element ${i}/${sourceValue.length} failed: ${result.error ?? "unspecified"}`;
+        firstError = `fanout element[${i}] of ${sourceValue.length} failed: ${result.error ?? "unspecified"}`;
       }
       return;
     }
