@@ -888,3 +888,58 @@ proven at every layer:
 No open items. Script-stage machinery is production-ready for the
 local single-user scope CLAUDE.md defines.
 
+
+---
+
+## 16. Session 3 DX polish — C1/C2/C3
+
+Three items from the "DX polish" menu:
+
+### 16.1 C1 — DB path convention
+
+Not a bug. README.md:149 already documents `/tmp/workflow-control-data/`
+as the default DB path with `DATA_DIR` override. The `apps/server/kernel-next.db`
+I queried on first sight was a stale file from 6+ hours earlier (no
+open handles, .gitignore'd). Deleted the stray DB + WAL siblings to
+prevent future confusion. No commit (.gitignored files). Action item
+was personal: read the README before chasing ghosts.
+
+### 16.2 C2 — read_port reason hint (commit `d259ed1`)
+
+Real fix. During §12–§15 I misdiagnosed `"port not found"` three
+times when the actual cause was WAL visibility (the write hadn't
+committed yet). The error was identical for typo vs stale-read.
+
+Shipped a minimal extension. `read_port` now returns an optional
+`reason` field on miss, when `taskId` is supplied:
+
+- `port_not_declared` — stage or port name doesn't match the IR
+- `no_attempt_yet` — stage is declared on this version but no
+  attempt row exists yet for this task
+- `no_write_yet` — attempt row exists, the port_values write hasn't
+  landed yet (wait-and-retry signal)
+
+Implementation: two indexed SELECTs on the miss path (stage_attempts
+lookup + pipeline_versions IR parse). Happy path is untouched. Old
+callers that only check `ok === false` continue to work.
+
+3 new tests in `server.test.ts` cover all three branches plus the
+no-taskId backward-compat path. Full `kernel-next/` suite remains at
+1050 passing (up from 1047). tsc clean.
+
+### 16.3 C3 — SSE history gap
+
+No fix needed. Dashboard task page (`[taskId]/page.tsx:195-269`)
+calls `hydrateHistoricalPorts` + `refreshAttempts` + `refreshAudit`
+unconditionally on mount. Full history is rehydrated from SQLite
+before SSE is subscribed — SSE is a pure incremental channel on top
+of a REST-hydrated snapshot. Ring-buffer loss on restart is
+user-invisible. The concern was theoretical; the architecture already
+handles it by delegating authoritative history to SQLite and using
+SSE only for live deltas.
+
+### 16.4 Session closure — still zero open items
+
+After C1/C2/C3: `main` is +551 over origin, tree clean, every
+residual on this sprint's backlog has a defined state.
+
