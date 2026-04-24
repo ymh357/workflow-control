@@ -448,6 +448,92 @@ mechanism.
 
 ## 9. Session metadata
 
-Branch `main` — 11 commits landed. No force-pushes. No destructive
-git operations. `.dogfood/` ignored; scratch `.mjs` files left as-is
+Branch `main` — 11 commits landed during the D' session itself. A
+brief follow-up session (2026-04-24 late) cleared the two residuals
+that *could* be resolved without human-in-loop: BUG-2 and scratch
+cleanup. See §10 for that addendum.
+
+No force-pushes. No destructive git operations. `.dogfood/` ignored; scratch `.mjs` files left as-is
 (user judgement call).
+
+---
+
+## 10. Follow-up addendum (2026-04-24 late)
+
+Short session, two parallel tracks. Neither required architectural
+decisions — both were already scoped in §6/§7 of this doc.
+
+### 10.1 BUG-2 closed — `35f5768`
+
+**Symptom recap.** Per-task wall-clock timeout (`timeoutMs`) was a
+single `setTimeout(fn, timeoutMs)` fired at run start; human think
+time on a gate counted toward it, so a 40-minute human answer on a
+30-minute-timeout pipeline always failed with `reason=timeout` even
+when actual agent work was seconds.
+
+**Fix approach.** Option B variant — budget pause/resume inside
+`runner.ts` only, **zero cross-module signalling**.
+
+- `runner.ts` (run scope): `remainingBudgetMs`, `activeSinceMs`,
+  `gateInFlight`, `activeTimer` (nullable).
+- `pauseBudget()`: clear timer, debit `Date.now() - activeSinceMs`
+  from `remainingBudgetMs` (floor 0).
+- `resumeBudget()`: rearm `setTimeout` with `remainingBudgetMs`,
+  reset `activeSinceMs`.
+- XState snapshot callback: count `running[stage] === "executing"
+  && stage.type === "gate"` each tick; on 0 → ≥1 transition
+  pause, on ≥1 → 0 resume.
+
+Why this over agent Option A (pause/resume on gate create/answer in
+`gate.ts`): gate.ts lives at the MCP boundary; the dispatcher
+signal already travels through `taskRegistry`, but re-reading it
+from the runner would require either (a) exposing a new registry
+surface for "gate answered" events or (b) polling. The snapshot
+callback is the one place that already observes gate substate
+transitions with zero delay — we piggyback on it.
+
+**Regression test.** `runtime/gate-wall-clock-pause.test.ts`
+  - **Positive**: gate held 900ms under `timeoutMs=400`,
+    fast stages → `completed/natural`.
+  - **Negative control**: entry handler sleeps 600ms under
+    `timeoutMs=200`, no gate ever opens → `failed/timeout`.
+    Proves the fix isn't over-eagerly pausing on *any* delay.
+
+Existing tests untouched and green: `task-finals`, `gate-timeout-sweeper`,
+`gate-resume-downstream`, `gate-race-downstream`. Full `runtime/` suite
+65 files / 438 tests passing; `tsc --noEmit` clean.
+
+**Watchlist update.** §7 item 4 ("BUG-2 residual") now reverses: the
+task will **complete naturally** on a long gate wait, not time out.
+If anyone has a pipeline that relied on the old timeout-kills-stuck-gate
+behaviour, the opt-in per-gate deadline (`gate-timeout-sweeper`, already
+shipped) is the intended knob — it's independent and unchanged.
+
+### 10.2 Scratch cleanup
+
+Deleted 97 untracked `.mjs` + `test-stage-s.ts` debug scripts from
+`apps/server/` root (all were one-shot SQLite-peeking utilities from
+earlier sessions — `all-in-one*`, `check-*`, `invoke-*`, `setup-*`,
+`write-*`, `verify-*`, etc.). None were tracked, so the tree is now
+clean with no commit required — an empty commit for untracked-file
+deletes would have polluted history.
+
+`real-executor.empty-inputs.test.ts` was already tracked in commit
+`a56c148` from an earlier session; the session-start git-status
+snapshot marking it untracked was stale.
+
+### 10.3 Remaining residual
+
+Only **X3a re-dogfood** remains, and it is inherently human-in-loop
+(pick a task, observe whether the AI now elects script stages given
+the new prompt). Next session's owner drives it; this session
+closed every non-human-in-loop item.
+
+---
+
+## 11. Follow-up commit ledger
+
+| SHA | Message | Notes |
+|------|---------|-------|
+| `35f5768` | fix(runner): pause wall-clock budget during gate wait (BUG-2) | +4 LOC state, +2 helpers in runner.ts, +238 LOC regression test |
+
