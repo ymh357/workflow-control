@@ -1138,11 +1138,15 @@ These were considered and rejected:
 These are design nuances whose best answer needs empirical feedback
 during build-out:
 
-- **Fanout concurrency cap default**: how many fanout instances run
-  concurrently by default? Policy-level setting; need real-world
-  sizing.
-- **Gate timeout behaviour**: what happens if a gate is never
-  answered? Policy-level: fail task after N minutes? Configurable.
+- **Fanout concurrency cap default**: ~~how many fanout instances run
+  concurrently by default?~~ **Resolved 2026-04-24 (D5)**: default 3,
+  ceiling 20, per-stage override via `FanoutSpec.concurrency`. See
+  `runner-fanout.ts` worker-pool + `canonical.ts` for hash inclusion.
+- **Gate timeout behaviour**: ~~what happens if a gate is never
+  answered?~~ **Resolved 2026-04-24 (D6)**: opt-in via
+  `GateStage.config.timeout_minutes`; periodic sweeper (60s) cancels
+  the task with reason `gate_timeout: <stage> exceeded <N> minutes`.
+  See `gate-timeout-sweeper.ts`.
 - **Cross-stage store migration during hot-update**: when rerunFrom
   is early, some port_values may be rendered obsolete. Current answer
   is "leave them; new attempts write new rows". This may need a
