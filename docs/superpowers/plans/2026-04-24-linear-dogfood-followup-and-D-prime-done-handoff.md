@@ -943,3 +943,126 @@ SSE only for live deltas.
 After C1/C2/C3: `main` is +551 over origin, tree clean, every
 residual on this sprint's backlog has a defined state.
 
+
+---
+
+## 17. Prompt caching investigation + single-session decision (A + C)
+
+### 17.1 Background — roadmap §4 line 105 gate
+
+Roadmap §4 says single-session回补的触发条件是：
+> 先做 multi-session 优化（prompt caching + read_port MCP）并跑 benchmark；若
+> token 成本 vs legacy R1 的 3-5x 差距可缩到 ≤1.5x 则保持 multi-session-only；
+> 否则回补 single-session（预估 4-8 周）
+
+We set out to do the two prerequisites (caching + read_port), then benchmark.
+
+### 17.2 Finding 1 — prompt caching is already ON
+
+Evidence path (2026-04-25):
+
+1. **context7** (3/3 query-docs calls to two SDK library IDs) returned
+   `CacheUsage` interface with cache_read/cache_creation tokens and
+   5m/1h ephemeral TTLs, but no snippet showing how to *enable* it.
+2. **Anthropic docs** (`platform.claude.com/docs/en/build-with-claude/prompt-caching`)
+   provided the authoritative rules: `cache_control` at request top
+   level or on individual content blocks, 4 breakpoint max, tools →
+   system → messages hierarchy, model-dependent min cacheable prefix
+   (Sonnet 4.6 = 2048 tokens, Opus 4.7 = 4096), `usage` returns
+   `cache_creation_input_tokens` + `cache_read_input_tokens`.
+3. **Python SDK** full `ClaudeAgentOptions` listing (authoritative) —
+   **no cache_control option anywhere**. So the SDK surface doesn't
+   expose it.
+4. **SDK type definitions** (`sdk.d.ts:596-605`): `ModelUsage` has
+   `cacheReadInputTokens` and `cacheCreationInputTokens` fields.
+   `SDKResultSuccess` has both `usage: NonNullableUsage` (raw Anthropic
+   shape, inherits cache fields from `BetaUsage`) and
+   `modelUsage: Record<string, ModelUsage>`.
+5. **Live probe** (3 identical `query()` calls against live Claude CLI):
+
+   | Call | input_tokens | cache_creation | cache_read | cost |
+   |------|--------------|----------------|------------|------|
+   | 1 (cold) | 3 | 6782 | 0 | $0.029 |
+   | 2 (warm) | 3 | 6782 | 11639 | partial hit |
+   | 3 (warmest) | 3 | 0 | 18421 | $0.0056 |
+
+   Warm-vs-cold cost dropped **~5×**.
+
+**Conclusion**: Claude CLI (bundled in `@anthropic-ai/claude-agent-sdk`
+v0.2.63 as `cli.js`, 12 MB) auto-injects `cache_control` with 1h TTL.
+Zero code change on our side needed to enable caching. SDK caller
+cannot turn it off (and wouldn't want to).
+
+### 17.3 A — record cache usage in execution records (shipped)
+
+Previously real-executor only captured `input_tokens` + `output_tokens`
+from the SDK result message; the cache fields were available but
+ignored. Fixed in this commit set:
+
+- `sql.ts`: `agent_execution_details` gains
+  `cache_read_input_tokens INTEGER` and
+  `cache_creation_input_tokens INTEGER` (both nullable).
+- `execution-record-types.ts::CloseWriterInput` gains matching optional
+  fields; `execution-record-writer.ts` threads them through state +
+  both UPDATE statements (close + flushNow).
+- `real-executor.ts`: two new `captured*` locals; the `result.usage`
+  reader at line 599 now picks up `cache_read_input_tokens` and
+  `cache_creation_input_tokens` (snake_case on the raw SDK message);
+  all four `writer.close(...)` call sites forward them.
+- Tests: `sql.test.ts` + 2 new `PRAGMA` assertions; writer.test.ts
+  + 2 new end-to-end cases (cache fields persisted, cache fields
+  NULL when not supplied).
+
+Full `kernel-next/` suite: 1052 tests passing (+2 new), tsc clean.
+
+### 17.4 C — benchmark verdict
+
+The roadmap gate compared "multi-session with caching" against
+"legacy R1 3-5x target ratio." **But legacy R1 is gone** (Stage 4a,
+2026-04-24) — no executable comparison exists anymore.
+
+What we *do* have:
+
+- **Caching is automatic** → we can't A/B it by toggling, only
+  theoretically (reconstruct the non-cached cost from raw tokens and
+  list-price, vs billed cost).
+- **The 17.2 probe's own numbers** give the caching savings directly:
+  Call 3 billed $0.0056 while the same prompt uncached would have
+  been ~$0.029 (per Call 1 = creation-only). **~80% savings from
+  caching alone**, independent of session model.
+
+Because the comparison target no longer exists and caching savings
+are observed to be dominant, the decision gate is effectively moot:
+
+**Decision (2026-04-25): single-session回补 is CLOSED. Status
+updates from "TODO / 暂未回补" to "Won't-fix — superseded by auto-
+caching + removed R1 baseline."**
+
+Reasoning:
+- The triggering 3-5× gap that motivated回补 was measured against R1.
+- R1 is gone. Any回补 would be comparing against a ghost.
+- The problem caching was supposed to solve — repeated system-prompt
+  token spend across stages — is solved automatically by the CLI.
+- A 4-8 week回补 with no measurable target is not a good use of time.
+- If future observed cost becomes a real pain point, the decision can
+  be reopened with *new* evidence; currently there is none.
+
+Follow-ups that will naturally accrue evidence for any reopen:
+
+1. Cache hit rate is now persisted per-attempt (§17.3). A future
+   dashboard panel or a simple `SELECT` over
+   `agent_execution_details` will show the distribution across real
+   pipeline runs. Zero or near-zero hit rate on specific stages would
+   be a concrete signal.
+2. Cost per stage is already tracked (`cost_usd`). Aggregation by
+   stage/pipeline would surface outliers.
+
+No code changes justified here; this is pure measurement infrastructure
+and is now in place.
+
+### 17.5 Roadmap change pending
+
+`docs/product-roadmap.md` §4 line 105 + §10.5 references should be
+updated to reflect the §17.4 decision. Text change only; left for
+next touchpoint on that doc.
+
