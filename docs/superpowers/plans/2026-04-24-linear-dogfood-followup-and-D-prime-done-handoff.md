@@ -1066,3 +1066,105 @@ and is now in place.
 updated to reflect the §17.4 decision. Text change only; left for
 next touchpoint on that doc.
 
+
+---
+
+## 18. §17.4 decision walkback + multi-stage cache evidence (2026-04-25 late)
+
+User challenged the §17.4 reasoning: "how did you conclude single-session回补
+is Won't-fix from a probe of 3 identical-prompt calls?"
+
+The challenge was correct. Walked back §17.4's premature closure:
+
+- §17.2 probe used 3 **identical** `query()` calls. That's
+  within-session cache (same prompt re-sent). It proves the cache
+  mechanism works, not that multi-stage pipeline usage benefits.
+- The relevant scenario for the roadmap decision is: stage A uses
+  `systemPrompt: preset=claude_code, append=<stage-A-specific>`;
+  stage B uses the same preset + different append. **Does the shared
+  preset portion get cached across stages?** §17.2 data does not answer.
+- Roadmap entry and §17.4 decision walked back in commits paired with
+  this section.
+
+### 18.1 Multi-stage evidence — task `193e7970-35ac-43bf-b41d-1df94520cc88`
+
+Ran pipeline-generator (4 agent stages: analyzing / genSkeleton /
+genPrompts / persisting) against a fresh server (PID 32723, post-restart
+after schema ALTER to add the cache columns the writer code had been
+blocked on). Result: completed/natural, ~4 minutes end-to-end.
+
+The decisive data (per-stage cache tokens from
+`agent_execution_details`):
+
+| stage | input_tokens | cache_read | cache_creation | cache_read / (cache_read+cache_create) | cost_usd |
+|-------|--------------|------------|----------------|------|----------|
+| analyzing   | 5  | **61 290**  | 40 766 | 60% | $0.3357 |
+| genSkeleton | 8  | **119 798** | 20 248 | 86% | $0.2046 |
+| genPrompts  | 8  | **114 162** | 14 215 | 89% | $0.1087 |
+| persisting  | 11 | **158 336** | 15 523 | 91% | $0.1506 |
+
+Total pipeline-generator cost: **$0.80** for 4 agent stages on
+Sonnet 4.6.
+
+### 18.2 What this actually shows
+
+1. **Multi-stage cache hit rate is real and high** — every stage's
+   `cache_read_input_tokens` is in the 60 K – 160 K range, with hit
+   rates climbing 60% → 91% across the 4 stages as more preset / tool
+   definitions accumulate into the shared cache prefix.
+2. **input_tokens is consistently single digits** — meaning the ONLY
+   tokens paid at full price per stage are the stage-specific delta
+   (the user message + any non-cached content). The ~20 KB
+   claude_code preset + kernel MCP tool definitions are not being
+   re-billed across stages.
+3. This behavior **cannot** be explained by "within-session only"
+   caching. Each stage is a separate `query()` call; the cross-call
+   cache read is the only way these numbers are reached.
+
+### 18.3 Revised decision posture (replaces §17.4)
+
+**Evidence-based, current state (2026-04-25 late):**
+
+- Original roadmap decision gate (3-5× vs legacy R1, needs to narrow
+  to ≤1.5×): comparison target no longer exists. Gate cannot be
+  executed as written.
+- Multi-stage cache hit rate: 60–91% per stage, with absolute cost
+  reduction of ~90% of input-side spend that would otherwise be
+  repeated per stage.
+- **Qualitative conclusion**: the specific mechanism that made
+  single-session attractive (amortize the shared system prompt
+  across many agent turns) is already happening in multi-session
+  form via auto-caching.
+- **Quantitative conclusion**: with legacy R1 removed, there is no
+  empirical baseline to say "multi-session is X× more expensive
+  than single-session would be." Any such claim would be theoretical.
+
+**Decision**: keep `TODO / 决策 open — deferred` on roadmap §4 line 105
+and B12. Do NOT close as Won't-fix — that would overstate the
+evidence, same way §17.4 overstated it in the opposite direction.
+
+Triggers that would motivate revisiting:
+- A specific pipeline where per-stage `cache_read` is zero or
+  near-zero (preset not being reused for some reason), and cost
+  becomes painful.
+- A future change (new agent architecture, different SDK) that
+  breaks the observed cross-stage caching.
+- Explicit product needs that single-session uniquely serves
+  (stable conversational state across gates, for example — not
+  just token cost).
+
+Until one of those materializes, the cost narrative alone does
+not justify the 4-8 week回补.
+
+### 18.4 Loose ends
+
+- The first task kicked off after the schema ALTER (`4bd653b6`)
+  has NULL in all cost/token fields. Cause: writer's prepared
+  statements on a pre-ALTER process cached the original column set;
+  rows landed but without the new columns. Not worth backfilling
+  (AI research data, no compliance need). Task `193e7970` (post-
+  restart) is the clean measurement row.
+- `apps/server/kernel-next.db` stray — already removed in §16.1.
+- Live server process `32723` still running; tsx watch will
+  auto-restart on next src change. No manual cleanup needed.
+
