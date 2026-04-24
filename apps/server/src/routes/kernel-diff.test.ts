@@ -103,4 +103,23 @@ describe("GET /api/kernel/attempts/:attemptId/diff", () => {
     expect(body.ok).toBe(true);
     expect(body.diff).toBe("");
   });
+
+  it("returns checkpoint status in the response body", async () => {
+    insertAttempt(db, "a-status");
+    // insert a checkpoint with an explicit non-'captured' status
+    db.prepare(
+      `INSERT INTO stage_checkpoints
+       (attempt_id, workdir, before_sha, after_sha, diff_text, status, captured_before_at)
+       VALUES (?, '/tmp', NULL, NULL, NULL, 'not_a_repo', 1000)`,
+    ).run("a-status");
+
+    const res = await buildApp().fetch(
+      new Request("http://t/api/kernel/attempts/a-status/diff"),
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: boolean; diff: string; status: string };
+    expect(body.ok).toBe(true);
+    expect(body.diff).toBe("");
+    expect(body.status).toBe("not_a_repo");
+  });
 });

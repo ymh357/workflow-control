@@ -176,7 +176,7 @@ export default function KernelNextTaskPage() {
   // P6.4 / D27 — per-attempt worktree diffs. Keyed by attempt_id.
   // absent key = not yet requested; null value = loading; object = loaded.
   const [attemptDiffs, setAttemptDiffs] = useState<
-    Record<string, { diff: string; beforeSha: string | null; afterSha: string | null } | null>
+    Record<string, { diff: string; beforeSha: string | null; afterSha: string | null; status?: string } | null>
   >({});
   // P6.3 / D26 — hot-update audit trail. Fetched on mount and when the
   // task reaches a terminal state (task_state / run_final). There is no
@@ -235,11 +235,17 @@ export default function KernelNextTaskPage() {
           diff: string;
           before_sha: string | null;
           after_sha: string | null;
+          status?: string;
         };
         if (body.ok) {
           setAttemptDiffs((prev) => ({
             ...prev,
-            [attemptId]: { diff: body.diff, beforeSha: body.before_sha, afterSha: body.after_sha },
+            [attemptId]: {
+              diff: body.diff,
+              beforeSha: body.before_sha,
+              afterSha: body.after_sha,
+              status: body.status,
+            },
           }));
           return;
         }
@@ -908,6 +914,7 @@ export default function KernelNextTaskPage() {
                                           diff={attemptDiffs[a.attempt_id]!.diff}
                                           beforeSha={attemptDiffs[a.attempt_id]!.beforeSha}
                                           afterSha={attemptDiffs[a.attempt_id]!.afterSha}
+                                          status={attemptDiffs[a.attempt_id]!.status}
                                         />
                                       </td>
                                     </tr>

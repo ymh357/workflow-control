@@ -38,4 +38,24 @@ describe("DiffViewer", () => {
     // No code elements for SHA display
     expect(container.querySelectorAll("code")).toHaveLength(0);
   });
+
+  it("shows status-specific message for empty diff when status provided", () => {
+    render(<DiffViewer diff="" status="capturing" />);
+    expect(screen.getByText(/still capturing/i)).toBeInTheDocument();
+  });
+
+  it("shows 'not a git repository' message for not_a_repo status", () => {
+    render(<DiffViewer diff="" status="not_a_repo" />);
+    expect(screen.getByText(/not a git repository/i)).toBeInTheDocument();
+  });
+
+  it("shows 'diff too large' message for diff_too_large status", () => {
+    render(<DiffViewer diff="" status="diff_too_large" />);
+    expect(screen.getByText(/exceeded size cap/i)).toBeInTheDocument();
+  });
+
+  it("falls back to default message for unknown status value", () => {
+    render(<DiffViewer diff="" status="mystery" />);
+    expect(screen.getByText(/no diff/i)).toBeInTheDocument();
+  });
 });
