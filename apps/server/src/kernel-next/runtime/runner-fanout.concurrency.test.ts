@@ -171,6 +171,51 @@ describe("P5.1: fanout concurrency cap", () => {
     }
   });
 
+  it("stops taking NEW elements once an earlier element errors (drain-but-no-new)", async () => {
+    // Scenario: cap=3, 10 elements, element at index 0 throws.
+    // Worker-pool contract: once firstError !== null, workers stop pulling
+    // new indices but let in-flight elements drain. With cap=3 the pool
+    // can launch AT MOST the first wave (3 elements) + whatever a racing
+    // worker already pulled before observing firstError. CRITICAL
+    // invariant: NOT all 10 elements ran.
+    const db = makeDb();
+    try {
+      const ir = fanoutIR({ elementCount: 10, concurrency: 3 });
+      const hash = versionHash(ir);
+      insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+      const tracker = makeTracker();
+      const handlers: StageHandlerMap = {
+        SRC: () => ({ items: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }),
+        F: async (inputs) => {
+          tracker.inFlight++;
+          tracker.total++;
+          if (tracker.inFlight > tracker.peak) tracker.peak = tracker.inFlight;
+          await new Promise((r) => setTimeout(r, 20));
+          tracker.inFlight--;
+          if ((inputs.item as number) === 1) {
+            throw new Error("forced-fail");
+          }
+          return { doubled: (inputs.item as number) * 2 };
+        },
+      };
+
+      await runPipeline({
+        db, ir, taskId: `t-${Math.random().toString(36).slice(2)}`, versionHash: hash, handlers,
+      });
+
+      // PRIMARY ASSERTION: worker-pool honored firstError and stopped.
+      // With 10 elements and cap=3, an uncapped or broken pool would run
+      // all 10 before returning. We expect at most cap+1 (first wave +
+      // one racing pull). Anything significantly less is also fine —
+      // the point is NOT all 10.
+      expect(tracker.total).toBeLessThanOrEqual(4);
+      expect(tracker.total).toBeGreaterThanOrEqual(1);
+    } finally {
+      db.close();
+    }
+  });
+
   it("schema rejects concurrency out of range", () => {
     // zero, negative, and above the 20 ceiling must all fail parse.
     expect(() => FanoutSpecSchema.parse({ input: "item", concurrency: 0 })).toThrow();
