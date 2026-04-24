@@ -79,7 +79,7 @@ export interface KernelMcpOptions extends KernelServiceOptions {
 
 /** Every tool name emitted by createKernelMcp across all surfaces. */
 type ToolName =
-  | "submit_pipeline" | "validate_pipeline" | "propose_pipeline_change"
+  | "submit_pipeline" | "validate_pipeline" | "describe_pipeline" | "propose_pipeline_change"
   | "list_proposals" | "approve_proposal" | "reject_proposal"
   | "migrate_task"
   | "get_task_status" | "list_gates" | "answer_gate"
@@ -105,7 +105,7 @@ type ToolName =
   | "wait_for_task_event";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
-  "submit_pipeline", "validate_pipeline", "propose_pipeline_change",
+  "submit_pipeline", "validate_pipeline", "describe_pipeline", "propose_pipeline_change",
   "list_proposals", "approve_proposal", "reject_proposal",
   "migrate_task",
   "get_task_status", "list_gates", "answer_gate",

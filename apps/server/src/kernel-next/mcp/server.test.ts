@@ -77,7 +77,7 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("combined surface exposes 29 tools with expected names", () => {
+  it("combined surface exposes 30 tools with expected names", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
@@ -87,6 +87,7 @@ describe("kernel-next MCP server", () => {
       "approve_proposal",
       "cancel_task",
       "compare_runs",
+      "describe_pipeline",
       "diff_runs",
       "dry_run_proposal",
       "dry_run_stage",
@@ -371,6 +372,164 @@ describe("kernel-next MCP server", () => {
   });
 });
 
+describe("describe_pipeline tool", () => {
+  it("returns stages + ports + wires for a submitted pipeline (by versionHash)", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
+    const tools = getTools(mcp);
+    const submit = tools.get("submit_pipeline")!;
+    const describe = tools.get("describe_pipeline")!;
+
+    const { ir } = generatePipeline({ task: "diamond" });
+    const subRes = await submit.handler({ ir, prompts: promptsForIR(ir) });
+    const subBody = parsePayload(subRes) as { ok: boolean; versionHash: string };
+    expect(subBody.ok).toBe(true);
+
+    const descRes = await describe.handler({ versionHash: subBody.versionHash });
+    const body = parsePayload(descRes) as {
+      ok: boolean;
+      versionHash: string;
+      pipeline: {
+        name: string;
+        externalInputs: Array<{ name: string; type: string }>;
+        stages: Array<{
+          name: string;
+          type: string;
+          inputs: Array<{ name: string; type: string; description?: string }>;
+          outputs: Array<{ name: string; type: string; description?: string }>;
+        }>;
+        wires: Array<unknown>;
+      };
+    };
+    expect(body.ok).toBe(true);
+    expect(body.versionHash).toBe(subBody.versionHash);
+    expect(body.pipeline.name).toBe(ir.name);
+    expect(body.pipeline.stages.length).toBe(ir.stages.length);
+    // Each described stage has inputs[] + outputs[] arrays (may be empty)
+    for (const s of body.pipeline.stages) {
+      expect(Array.isArray(s.inputs)).toBe(true);
+      expect(Array.isArray(s.outputs)).toBe(true);
+    }
+    db.close();
+  });
+
+  it("synthesizes __gate_feedback__ output on gate stages", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
+    const tools = getTools(mcp);
+    const submit = tools.get("submit_pipeline")!;
+    const describe = tools.get("describe_pipeline")!;
+
+    // Build an IR with a gate stage explicitly.
+    const ir = {
+      name: "gate-describe-test",
+      externalInputs: [{ name: "seed", type: "string" }],
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [{ name: "seed", type: "string" }],
+          outputs: [{ name: "trigger", type: "string" }],
+          config: { promptRef: "A" },
+        },
+        {
+          name: "gate1",
+          type: "gate",
+          inputs: [{ name: "__gate_signal", type: "unknown" }],
+          outputs: [],
+          config: {
+            question: { text: "approve?" },
+            routing: { routes: { approve: "A" } },
+          },
+        },
+      ],
+      wires: [
+        { from: { source: "external", port: "seed" }, to: { stage: "A", port: "seed" } },
+        { from: { stage: "A", port: "trigger" }, to: { stage: "gate1", port: "__gate_signal" } },
+      ],
+    };
+    const subRes = await submit.handler({ ir, prompts: { A: "dummy" } });
+    const subBody = parsePayload(subRes) as { ok: boolean; versionHash: string };
+    expect(subBody.ok).toBe(true);
+
+    const descRes = await describe.handler({ versionHash: subBody.versionHash });
+    const body = parsePayload(descRes) as {
+      ok: boolean;
+      pipeline: {
+        stages: Array<{
+          name: string;
+          type: string;
+          outputs: Array<{ name: string; type: string; description?: string }>;
+        }>;
+      };
+    };
+    expect(body.ok).toBe(true);
+    const gate = body.pipeline.stages.find((s) => s.name === "gate1")!;
+    const fb = gate.outputs.find((p) => p.name === "__gate_feedback__");
+    expect(fb).toBeDefined();
+    expect(fb!.type).toBe("string");
+    expect(fb!.description).toContain("answer_gate");
+    db.close();
+  });
+
+  it("resolves taskId to the latest version attempt ran on", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
+    const tools = getTools(mcp);
+    const submit = tools.get("submit_pipeline")!;
+    const describe = tools.get("describe_pipeline")!;
+
+    const { ir } = generatePipeline({ task: "diamond" });
+    const subRes = await submit.handler({ ir, prompts: promptsForIR(ir) });
+    const subBody = parsePayload(subRes) as { ok: boolean; versionHash: string };
+
+    // Simulate a task having a stage_attempt recorded against this version.
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, version_hash, kind, status, started_at)
+       VALUES ('a1','t-describe','greet',0,?,'regular','success',?)`,
+    ).run(subBody.versionHash, Date.now());
+
+    const descRes = await describe.handler({ taskId: "t-describe" });
+    const body = parsePayload(descRes) as { ok: boolean; versionHash: string };
+    expect(body.ok).toBe(true);
+    expect(body.versionHash).toBe(subBody.versionHash);
+    db.close();
+  });
+
+  it("returns error when neither taskId nor versionHash provided", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
+    const describe = getTools(mcp).get("describe_pipeline")!;
+    const res = await describe.handler({});
+    expect(res.isError).toBe(true);
+    db.close();
+  });
+
+  it("returns error for unknown taskId", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
+    const describe = getTools(mcp).get("describe_pipeline")!;
+    const res = await describe.handler({ taskId: "nonexistent" });
+    expect(res.isError).toBe(true);
+    db.close();
+  });
+
+  it("returns error for unknown versionHash", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
+    const describe = getTools(mcp).get("describe_pipeline")!;
+    const res = await describe.handler({ versionHash: "deadbeef" });
+    expect(res.isError).toBe(true);
+    db.close();
+  });
+});
+
 describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", () => {
   // External surface = AI-facing. Per design doc the external tools
   // are strictly read-/submit-oriented. Specifically: write_port MUST
@@ -397,6 +556,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
       "approve_proposal",
       "cancel_task",
       "compare_runs",
+      "describe_pipeline",
       "diff_runs",
       "dry_run_proposal",
       "dry_run_stage",
@@ -460,7 +620,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     // Phase 4 P4.2 (D9): +1 tool (prune_records)
     // Phase 4 P4.3 (D4): +1 tool (cancel_task)
     // P1.1 external driver: +1 tool (wait_for_task_event)
-    expect(tools.size).toBe(29);
+    // Phase 2 X1 dogfood: +1 tool (describe_pipeline)
+    expect(tools.size).toBe(30);
     expect(tools.has("write_port")).toBe(true);
     expect(tools.has("submit_pipeline")).toBe(true);
     expect(tools.has("migrate_task")).toBe(true);
@@ -483,8 +644,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
     const tools = getTools(mcp);
-    // 'external' = EXTERNAL_TOOLS only (28 tools after P1.1; excludes write_port).
-    expect(tools.size).toBe(28);
+    // 'external' = EXTERNAL_TOOLS only (29 tools after Phase 2 X1; excludes write_port).
+    expect(tools.size).toBe(29);
     expect(tools.has("write_port")).toBe(false);
     expect(tools.has("submit_pipeline")).toBe(true);
     db.close();
