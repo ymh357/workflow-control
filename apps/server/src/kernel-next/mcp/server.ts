@@ -152,8 +152,22 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
     pipelineGeneratorModel: options.pipelineGeneratorModel,
     pipelineGeneratorMaxTurns: options.pipelineGeneratorMaxTurns,
     pipelineGeneratorMaxBudgetUsd: options.pipelineGeneratorMaxBudgetUsd,
+    // Propagate ALL configurable options to nested MCP servers so the
+    // recursively-constructed server shares the outer caller's overrides
+    // (PG model / budget / maxBytes / writePortDispatcher / tscPath).
+    // Surface + portRuntime must come from the caller since they identify
+    // what the nested server is being spun up for.
     createMcpServer: (s, pr) =>
-      createKernelMcp(db, { surface: s, portRuntime: pr, tscPath: options.tscPath }),
+      createKernelMcp(db, {
+        surface: s,
+        portRuntime: pr,
+        tscPath: options.tscPath,
+        defaultMaxBytes: options.defaultMaxBytes,
+        writePortDispatcher: options.writePortDispatcher,
+        pipelineGeneratorModel: options.pipelineGeneratorModel,
+        pipelineGeneratorMaxTurns: options.pipelineGeneratorMaxTurns,
+        pipelineGeneratorMaxBudgetUsd: options.pipelineGeneratorMaxBudgetUsd,
+      }),
   };
 
   const allTools: ToolDef[] = [
