@@ -67,9 +67,25 @@ export function classifyOrphan(
         WHERE task_id = ? AND status = 'success'`,
     ).all(taskId) as Array<{ stage_name: string }>).map((r) => r.stage_name),
   );
+  // BUG-1 fix: a gate stage is only skippable once it has been answered.
+  // Previously every gate was skippable unconditionally — an orphan task
+  // that died while blocked on an unanswered gate would have its resume
+  // pointer advance past the gate to a downstream stage, whose
+  // gateAuthorizedTargets were never populated, leaving the downstream
+  // stage permanently in `waiting`. If every remaining stage happened to
+  // be a skippable gate, classification would wrongly return `terminal`
+  // and the task would be force-completed without ever running the gated
+  // work. Answered gates must stay skippable so we don't re-open a
+  // gate the user already resolved.
+  const answeredGates = new Set(
+    (db.prepare(
+      `SELECT stage_name FROM gate_queue
+        WHERE task_id = ? AND answer IS NOT NULL`,
+    ).all(taskId) as Array<{ stage_name: string }>).map((r) => r.stage_name),
+  );
   const order = topologicalStageOrder(ir);
   const firstPending = order.find(
-    (name) => !successStages.has(name) && !isSkippable(ir, name),
+    (name) => !successStages.has(name) && !isSkippable(ir, name, answeredGates),
   );
   if (firstPending === undefined) {
     return { kind: "terminal", versionHash: latest.version_hash };
@@ -174,10 +190,11 @@ export function lookupResumeSessionId(
   return row?.session_id ?? undefined;
 }
 
-function isSkippable(ir: PipelineIR, name: string): boolean {
+function isSkippable(ir: PipelineIR, name: string, answeredGates: Set<string>): boolean {
   if (name === "__external__") return true;
   const stage = ir.stages.find((s) => s.name === name);
-  return stage?.type === "gate";
+  // Only answered gates are skippable — see BUG-1 comment in classifyOrphan.
+  return stage?.type === "gate" && answeredGates.has(name);
 }
 
 function topologicalStageOrder(ir: PipelineIR): string[] {

@@ -246,3 +246,122 @@ describe("bootResumability", () => {
     expect(final.reason).toBe("error");
   });
 });
+
+// --- BUG-1 regression: unanswered gate must not be classified as terminal.
+//
+// Real-world repro: external Claude Code session starts a pipeline via
+// start_pipeline_generator. The runner reaches `awaitingConfirm` gate
+// and blocks. While the user considers the answer, DEFAULT_RUN_TIMEOUT_MS
+// expires — runner throws, finally-block unregisters the dispatcher and
+// writes task_finals? NO: the throw happens before the task_finals write,
+// so task_finals is missing. Server keeps running. On next boot scan
+// orphan-reconciler sees a task with:
+//   - stage_attempts: upstream stage(s) success
+//   - gate_queue: gate row with answer IS NULL  (gate never answered)
+//   - post-gate stages: no attempt rows
+// `classifyOrphan` iterates topologically; isSkippable returns true for
+// ALL gate stages → gate never qualifies as firstPending. Post-gate
+// stages DO qualify. But when bootResumability resumes from a post-gate
+// stage, the resumed runner has no gateAuthorizedTargets for the
+// post-gate stage (the gate was never answered), so the post-gate stage
+// sits in `waiting` forever. Worse: if EVERY remaining stage happens
+// to be skippable, classifyOrphan returns `terminal`, and the task is
+// force-completed without ever running the gated work.
+//
+// This test pins the bug: a single-chain pipeline where the ONLY
+// remaining non-success stage is the unanswered gate → should resume
+// the gate (or surface error), must never be classified as terminal.
+
+import { PipelineIRSchema } from "../ir/schema.js";
+import { insertPipelineVersion } from "../ir/sql.js";
+import { versionHash } from "../ir/canonical.js";
+
+function parseGateIR() {
+  return PipelineIRSchema.parse({
+    name: "gate-only-chain",
+    externalInputs: [{ name: "seed", type: "string" }],
+    stages: [
+      {
+        name: "A", type: "agent",
+        inputs: [{ name: "seed", type: "string" }],
+        outputs: [{ name: "trigger", type: "string" }],
+        config: { promptRef: "p" },
+      },
+      {
+        name: "gate1", type: "gate",
+        inputs: [{ name: "__gate_signal", type: "unknown" }],
+        outputs: [],
+        config: {
+          question: { text: "?" },
+          routing: { routes: { approve: "after", reject: "A" } },
+        },
+      },
+      {
+        name: "after", type: "agent",
+        inputs: [{ name: "trigger", type: "string" }],
+        outputs: [{ name: "done", type: "string" }],
+        config: { promptRef: "p" },
+      },
+    ],
+    wires: [
+      { from: { source: "external", port: "seed" }, to: { stage: "A", port: "seed" } },
+      { from: { stage: "A", port: "trigger" }, to: { stage: "gate1", port: "__gate_signal" } },
+      { from: { stage: "A", port: "trigger" }, to: { stage: "after", port: "trigger" } },
+    ],
+  });
+}
+
+describe("classifyOrphan — gate regression (BUG-1)", () => {
+  it("does NOT classify an unanswered gate+downstream as terminal", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const ir = parseGateIR();
+    const vh = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+    const now = Date.now();
+    // Upstream succeeded.
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, version_hash, kind, status, started_at, ended_at)
+       VALUES ('a1','t-gate','A',0,?,'regular','success',?,?)`,
+    ).run(vh, now, now + 1);
+    // Gate_queue row exists but not answered. Post-gate stage has no
+    // attempt. No task_finals row.
+
+    const cls = classifyOrphan(db, "t-gate");
+    // Unanswered gate stays in the candidate set → resume points at the
+    // gate itself so the rebuilt runner re-enters gate `executing` and
+    // re-emits gate_opened. Post-gate stages must NOT be selected while
+    // their upstream gate is still open (authorization would be missing).
+    expect(cls).toEqual({
+      kind: "resume",
+      versionHash: vh,
+      resumeFrom: "gate1",
+    });
+  });
+
+  it("treats an answered gate as skippable (existing behavior)", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const ir = parseGateIR();
+    const vh = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, version_hash, kind, status, started_at, ended_at)
+       VALUES ('a1','t-gate','A',0,?,'regular','success',?,?)`,
+    ).run(vh, now, now + 1);
+    // Gate queue row with answer set → the gate is resolved; a downstream
+    // stage is the correct resume target.
+    db.prepare(
+      `INSERT INTO gate_queue (gate_id, task_id, stage_name, attempt_id, question_json, created_at, answer, answered_at)
+       VALUES ('g1','t-gate','gate1','a1','{"text":"?"}',?,'approve',?)`,
+    ).run(now, now + 2);
+
+    const cls = classifyOrphan(db, "t-gate");
+    expect(cls).toEqual({
+      kind: "resume",
+      versionHash: vh,
+      resumeFrom: "after",
+    });
+  });
+});
