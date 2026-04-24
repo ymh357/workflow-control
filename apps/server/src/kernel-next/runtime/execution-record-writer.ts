@@ -55,6 +55,8 @@ class ActiveWriter implements ExecutionRecordWriter {
   private costUsd: number | null = null;
   private tokenInput: number | null = null;
   private tokenOutput: number | null = null;
+  private cacheReadInputTokens: number | null = null;
+  private cacheCreationInputTokens: number | null = null;
   private sessionId: string | null = null;
   private pendingFlush: NodeJS.Timeout | null = null;
   private closed = false;
@@ -115,11 +117,19 @@ class ActiveWriter implements ExecutionRecordWriter {
     }
   }
 
-  updateCost(patch: { costUsd?: number | null; tokenInput?: number | null; tokenOutput?: number | null }): void {
+  updateCost(patch: {
+    costUsd?: number | null;
+    tokenInput?: number | null;
+    tokenOutput?: number | null;
+    cacheReadInputTokens?: number | null;
+    cacheCreationInputTokens?: number | null;
+  }): void {
     if (this.closed) return;
     if (patch.costUsd !== undefined) this.costUsd = patch.costUsd;
     if (patch.tokenInput !== undefined) this.tokenInput = patch.tokenInput;
     if (patch.tokenOutput !== undefined) this.tokenOutput = patch.tokenOutput;
+    if (patch.cacheReadInputTokens !== undefined) this.cacheReadInputTokens = patch.cacheReadInputTokens;
+    if (patch.cacheCreationInputTokens !== undefined) this.cacheCreationInputTokens = patch.cacheCreationInputTokens;
     this.dirtyMeta = true;
     this.scheduleFlush();
   }
@@ -150,13 +160,17 @@ class ActiveWriter implements ExecutionRecordWriter {
     if (input.costUsd !== undefined) this.costUsd = input.costUsd;
     if (input.tokenInput !== undefined) this.tokenInput = input.tokenInput;
     if (input.tokenOutput !== undefined) this.tokenOutput = input.tokenOutput;
+    if (input.cacheReadInputTokens !== undefined) this.cacheReadInputTokens = input.cacheReadInputTokens;
+    if (input.cacheCreationInputTokens !== undefined) this.cacheCreationInputTokens = input.cacheCreationInputTokens;
     if (input.sessionId !== undefined) this.sessionId = input.sessionId;
     const endedAt = Date.now();
     try {
       this.db.prepare(
         `UPDATE agent_execution_details
          SET tool_calls_json = ?, agent_stream_json = ?, compact_events_json = ?,
-             cost_usd = ?, token_input = ?, token_output = ?, session_id = ?,
+             cost_usd = ?, token_input = ?, token_output = ?,
+             cache_read_input_tokens = ?, cache_creation_input_tokens = ?,
+             session_id = ?,
              ended_at = ?, termination_reason = ?, duration_ms = ?,
              last_heartbeat_at = ?
          WHERE attempt_id = ?`,
@@ -167,6 +181,8 @@ class ActiveWriter implements ExecutionRecordWriter {
         this.costUsd,
         this.tokenInput,
         this.tokenOutput,
+        this.cacheReadInputTokens,
+        this.cacheCreationInputTokens,
         this.sessionId,
         endedAt,
         input.terminationReason,
@@ -201,7 +217,9 @@ class ActiveWriter implements ExecutionRecordWriter {
       this.db.prepare(
         `UPDATE agent_execution_details
          SET tool_calls_json = ?, agent_stream_json = ?, compact_events_json = ?,
-             cost_usd = ?, token_input = ?, token_output = ?, session_id = ?,
+             cost_usd = ?, token_input = ?, token_output = ?,
+             cache_read_input_tokens = ?, cache_creation_input_tokens = ?,
+             session_id = ?,
              last_heartbeat_at = ?
          WHERE attempt_id = ?`,
       ).run(
@@ -211,6 +229,8 @@ class ActiveWriter implements ExecutionRecordWriter {
         this.costUsd,
         this.tokenInput,
         this.tokenOutput,
+        this.cacheReadInputTokens,
+        this.cacheCreationInputTokens,
         this.sessionId,
         now,
         this.attemptId,

@@ -422,6 +422,8 @@ export class RealStageExecutor implements StageExecutor {
       let capturedCostUsd: number | null = null;
       let capturedTokenInput: number | null = null;
       let capturedTokenOutput: number | null = null;
+      let capturedCacheReadInputTokens: number | null = null;
+      let capturedCacheCreationInputTokens: number | null = null;
 
       // P7.4 / D29 — throttled live text-delta publisher. Only
       // instantiated when a broadcaster is wired; the pump path
@@ -597,13 +599,31 @@ export class RealStageExecutor implements StageExecutor {
               }
             }
             if (msg.type === "result" && msg.subtype === "success") {
-              const usage = (msg as { usage?: { input_tokens?: unknown; output_tokens?: unknown } }).usage;
+              const usage = (msg as {
+                usage?: {
+                  input_tokens?: unknown;
+                  output_tokens?: unknown;
+                  // SDK v0.2.63 surfaces these two fields on the
+                  // result.usage object (snake_case, mirroring the
+                  // raw Anthropic API). The SDK's typed ModelUsage
+                  // exposes the camelCase equivalents, but the raw
+                  // message field is snake_case here.
+                  cache_read_input_tokens?: unknown;
+                  cache_creation_input_tokens?: unknown;
+                };
+              }).usage;
               if (usage) {
                 if (typeof usage.input_tokens === "number") {
                   capturedTokenInput = usage.input_tokens;
                 }
                 if (typeof usage.output_tokens === "number") {
                   capturedTokenOutput = usage.output_tokens;
+                }
+                if (typeof usage.cache_read_input_tokens === "number") {
+                  capturedCacheReadInputTokens = usage.cache_read_input_tokens;
+                }
+                if (typeof usage.cache_creation_input_tokens === "number") {
+                  capturedCacheCreationInputTokens = usage.cache_creation_input_tokens;
                 }
               }
               if (typeof msg.total_cost_usd === "number") {
@@ -647,6 +667,8 @@ export class RealStageExecutor implements StageExecutor {
           costUsd: capturedCostUsd,
           tokenInput: capturedTokenInput,
           tokenOutput: capturedTokenOutput,
+          cacheReadInputTokens: capturedCacheReadInputTokens,
+          cacheCreationInputTokens: capturedCacheCreationInputTokens,
           sessionId: capturedSessionId,
         });
         portRuntime.finishAttempt(attemptId, "error", msg, { silent: failSilently });
@@ -705,6 +727,8 @@ export class RealStageExecutor implements StageExecutor {
         costUsd: capturedCostUsd,
         tokenInput: capturedTokenInput,
         tokenOutput: capturedTokenOutput,
+        cacheReadInputTokens: capturedCacheReadInputTokens,
+        cacheCreationInputTokens: capturedCacheCreationInputTokens,
         sessionId: capturedSessionId,
       });
       portRuntime.finishAttempt(attemptId, "success");

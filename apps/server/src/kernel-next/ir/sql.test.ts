@@ -224,6 +224,8 @@ describe("agent_execution_details table", () => {
     expect(names).toContain("termination_reason");
     expect(names).toContain("last_heartbeat_at");
     expect(names).toContain("compact_events_json");
+    expect(names).toContain("cache_read_input_tokens");
+    expect(names).toContain("cache_creation_input_tokens");
     const pk = cols.find((c) => c.name === "attempt_id");
     expect(pk?.pk).toBe(1);
 

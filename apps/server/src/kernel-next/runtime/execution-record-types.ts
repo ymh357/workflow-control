@@ -52,5 +52,7 @@ export interface CloseWriterInput {
   costUsd?: number | null;
   tokenInput?: number | null;
   tokenOutput?: number | null;
+  cacheReadInputTokens?: number | null;
+  cacheCreationInputTokens?: number | null;
   sessionId?: string | null;
 }

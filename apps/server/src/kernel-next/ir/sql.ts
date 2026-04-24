@@ -218,6 +218,14 @@ CREATE TABLE IF NOT EXISTS agent_execution_details (
   cost_usd             REAL,
   token_input          INTEGER,
   token_output         INTEGER,
+  -- Prompt-cache token accounting from the Claude Agent SDK result
+  -- message. SDK v0.2.63 + bundled CLI auto-enables prompt caching
+  -- (verified 2026-04-25 probe: 5x cost drop warm vs cold, 1h TTL).
+  -- These fields are the hard ground truth for cache hit rate; both
+  -- nullable because they are only meaningful for agent stages that
+  -- actually reached a result SDK message.
+  cache_read_input_tokens     INTEGER,
+  cache_creation_input_tokens INTEGER,
   session_id           TEXT,
   duration_ms          INTEGER,
 

@@ -117,6 +117,46 @@ describe("execution-record-writer", () => {
     expect(Number(row.duration_ms)).toBeGreaterThanOrEqual(0);
   });
 
+  it("persists cache token fields on close (verifies prompt-cache hit accounting)", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    seedAttempt(db, "a-cache");
+    const w = openExecutionRecordWriter(db, {
+      attemptId: "a-cache", promptRef: "r", promptContentHash: "hash-1",
+      promptContent: "p", model: "m",
+    });
+    w.close({
+      terminationReason: "natural_completion",
+      costUsd: 0.0056,
+      tokenInput: 3,
+      tokenOutput: 5,
+      cacheReadInputTokens: 18421,
+      cacheCreationInputTokens: 0,
+      sessionId: "sess-cache",
+    });
+    const row = db.prepare(
+      "SELECT cache_read_input_tokens, cache_creation_input_tokens FROM agent_execution_details WHERE attempt_id = ?",
+    ).get("a-cache") as Record<string, unknown>;
+    expect(row.cache_read_input_tokens).toBe(18421);
+    expect(row.cache_creation_input_tokens).toBe(0);
+  });
+
+  it("persists cache fields as NULL when close doesn't provide them (backward compat)", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    seedAttempt(db, "a-nocache");
+    const w = openExecutionRecordWriter(db, {
+      attemptId: "a-nocache", promptRef: "r", promptContentHash: "hash-1",
+      promptContent: "p", model: "m",
+    });
+    w.close({ terminationReason: "natural_completion" });
+    const row = db.prepare(
+      "SELECT cache_read_input_tokens, cache_creation_input_tokens FROM agent_execution_details WHERE attempt_id = ?",
+    ).get("a-nocache") as Record<string, unknown>;
+    expect(row.cache_read_input_tokens).toBeNull();
+    expect(row.cache_creation_input_tokens).toBeNull();
+  });
+
   it("close is idempotent (second call is a no-op)", () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
