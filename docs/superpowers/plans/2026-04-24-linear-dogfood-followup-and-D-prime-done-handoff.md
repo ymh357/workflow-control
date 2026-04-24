@@ -633,3 +633,100 @@ This is **not** a D' regression (D' doesn't touch analyzing's prompt
 or the agent-output pathway), and X3a's conclusion stands on the
 ports that did land. Tracking separately if it recurs.
 
+
+---
+
+## 13. R1 fix — pg.ts MCP surface (commit `2126b41`) + live verification
+
+### 13.1 Root cause
+
+During X3a dogfood (§12) the task finished `failed` at the `persisting`
+stage. Deeper inspection:
+
+- `task_finals.detail`: `stage 'persisting': schema non-compliant:
+  agent did not call write_port for port 'pipelineId'`
+- `agent_execution_details.tool_calls_json` for persisting showed two
+  `isError=1` entries:
+  - `mcp____kernel_next____read_port` → `"No such tool available"`
+  - `mcp____kernel_next____submit_pipeline` → `"No such tool available"`
+- Tool names were correct (`mcp____kernel_next____` quadruple
+  underscore). The tools literally weren't registered on this agent's
+  MCP surface.
+
+Source: `apps/server/src/kernel-next/mcp/tools/pg.ts:64` built each
+pipeline-generator agent's MCP server with `createMcpServer("internal", pr)`.
+`INTERNAL_TOOLS` is `{ "write_port" }` — a one-tool set. But the
+`persist.md` prompt instructs the agent to call `submit_pipeline`
+(EXTERNAL) to register the generated IR, and `gen-skeleton.md` /
+`gen-prompts.md` both use `read_port` (also EXTERNAL) when the
+upstream port value is too large to inline into the prompt.
+
+The surface separation was built for EXTERNAL callers — untrusted
+drivers authoring pipelines from outside. Pipeline-generator's stages
+are authored by us (our own prompts in `builtin-pipelines/`), not
+external consumers; they're internal in origin but need external
+tools to do their job. The right surface is `"combined"` — the same
+one the main real-executor path at `start-pipeline-run.ts:375` uses.
+
+### 13.2 Fix
+
+One-line change at `pg.ts:64`:
+```ts
+// before
+createMcpServer("internal", pr)
+// after
+createMcpServer("combined", pr)
+```
+
+Plus a prose comment explaining why the surface-separation invariant
+doesn't apply to pipeline-generator's internal agents.
+
+### 13.3 Live verification — task `03d967d2-d7bb-4045-8e9f-5f5374eb35b7`
+
+Post-commit, the tsx `watch` mode auto-restarted the server
+(mtime + process-start timestamps aligned to the second), and a
+repeat of the exact X3a Figma dogfood ran to completion:
+
+| Stage | Status |
+|-------|--------|
+| `__external__` | success |
+| `analyzing` | success |
+| `awaitingConfirm` | success |
+| `genSkeleton` | success |
+| `genPrompts` | success |
+| `persisting` | **success** ✓ |
+
+Final: `task_finals = completed/natural`. `persisting` wrote all
+four output ports:
+
+- `versionHash` = `d2209c4a990ae77b28d7e63da3296a5ba51f9dc7ee81f4dac672919dc6639e8c`
+- `pipelineId` = `figma-file-fetch`
+- `pipelineName` = `figma-file-fetch`
+- `subVersionHashes` = `[]`
+
+The new `pipeline_versions` row exists in the registry with 4 stages,
+**every one `stage_type=script`** (buildRequest, buildResult,
+fetchFigma, persistFile). So both the R1 fix (persisting can now
+call submit_pipeline) and the X3a conclusion (AI picks scripts for
+pure I/O) are reproduced on a fresh run against the patched server.
+
+### 13.4 R2 was a misdiagnosis, not a bug
+
+During §12 investigation I reported that analyzing's large-content
+ports (stageDesign, stageContracts, dataFlowSummary, summary,
+description, targetRepoName) were never written. Root cause when
+re-checked: **SQLite WAL visibility race**. The `analyzing` attempt
+hadn't committed yet when I first queried; after it committed, every
+"missing" port returned its full content (stageDesign 3KB,
+stageContracts 3.7KB, summary 1.7KB, dataFlowSummary 1.5KB). The
+agent actually called `write_port` 30 times — all 17 declared ports
+landed, most got the standard 2x (partial + final) writes.
+
+Scratch that paragraph in §12.6. The agent output pathway is fine.
+
+### 13.5 Remaining residuals — none
+
+D' program: all four sub-phases shipped. X3a dogfood: twice verified
+(§12 + §13). BUG-1, BUG-2: both closed. R1: fixed + live verified.
+No known open items from this sprint.
+
