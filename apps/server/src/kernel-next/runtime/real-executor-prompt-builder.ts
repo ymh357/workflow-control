@@ -47,6 +47,7 @@ export function buildSystemPromptAppend(
   // fall back to stage.name — which is wrong for any cross-stage wire
   // but preserves pre-fix behavior for existing tests.
   ir?: PipelineIR,
+  options?: { continuationMode?: boolean },
 ): string {
   const inputPortLines = stage.inputs
     .map((p) => `  - ${p.name}: ${p.type}`)
@@ -99,6 +100,54 @@ export function buildSystemPromptAppend(
     : "";
 
   const migrationNote = migrationHint ? renderMigrationNote(migrationHint) : "";
+
+  if (options?.continuationMode === true) {
+    // Continuation form for single-session mode segments. The SDK has
+    // the segment's prior agent turns in conversation history, so we
+    // can drop the segment-invariant preamble + Stage-contract block.
+    // Per-stage content (Inputs, Task, Output protocol, Identity,
+    // CRITICAL RULES) MUST be re-emitted: output ports differ per
+    // stage; SDK needs explicit write_port instructions every turn.
+    return [
+      "### Inputs",
+      inputDump,
+      "",
+      "### Task",
+      promptSummary,
+      emptyInputsWarning,
+      migrationNote,
+      "",
+      "### Output protocol (MANDATORY — read carefully)",
+      "The ONLY way to emit output for this stage is to call the MCP tool",
+      "  `mcp____kernel_next____write_port`",
+      "exactly once per declared output port. The arguments are:",
+      "  - taskId      (use the exact string provided below)",
+      "  - attemptId   (use the exact string provided below)",
+      "  - stage       (this stage's name)",
+      "  - port        (one of the declared output port names)",
+      "  - value       (the port value — a plain JSON value of the declared type)",
+      "",
+      "Identity for this attempt (use verbatim):",
+      `  taskId    = "${ctx.taskId}"`,
+      `  attemptId = "${ctx.attemptId}"`,
+      `  stage     = "${stage.name}"`,
+      "",
+      "Required tool calls for this stage:",
+      writeCallExamples || "  (none — this stage has no declared outputs)",
+      "",
+      "CRITICAL RULES",
+      "1. The `value` argument is the RAW port value. For a port declared",
+      "   `string`, pass a plain string literal — NOT a JSON-encoded envelope",
+      "   like '{\"<port>\": \"...\"}'. For `number`, pass a bare number.",
+      "2. Do NOT return a final JSON object in your text reply. The text reply",
+      "   is discarded. Only write_port tool calls count.",
+      "3. Do NOT call write_port more than once per port. Do NOT omit any",
+      "   declared port — missing ports fail the stage.",
+      "4. After every declared output port has been written, you may end your",
+      "   turn with a short confirmation message (one sentence). The kernel",
+      "   only inspects the tool calls.",
+    ].join("\n");
+  }
 
   return [
     `You are running stage '${stage.name}' in a kernel-next pipeline.`,
