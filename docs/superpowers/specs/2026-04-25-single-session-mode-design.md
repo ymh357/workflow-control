@@ -230,9 +230,13 @@ of stage names. A stage `S` joins an existing segment iff **all** of:
 - `S.type === "agent"` and `S.fanout === undefined`
 - `S` has exactly **one** upstream agent stage `P` (per `wires`),
   with `P.type === "agent"` and `P.fanout === undefined`
-- `P`'s segment has not yet been closed by a downstream branching
-  (no other agent stage already joined `P`'s segment via a different
-  wire — at most one continuation per segment)
+- `P` has not already been used as the predecessor of another
+  downstream stage (at-most-one continuation **per predecessor**;
+  first eligible downstream wins). This phrasing matters: it is
+  not "the segment is closed after one extension" — that reading
+  would block linear chains a→b→c→d. Closing per-predecessor
+  preserves linear chains while still forcing diamond splits
+  (a→b, a→c) to start a new segment for the second branch.
 - No `script` or `gate` stage sits between `P` and `S`
 
 Otherwise `S` opens a new segment of which it is the first stage.

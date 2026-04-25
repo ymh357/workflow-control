@@ -75,6 +75,28 @@ describe("planSegments", () => {
     expect(planSegments(ir)).toEqual([["a", "b", "c"]]);
   });
 
+  it("merges 4-stage linear chain (regression fence: predecessor- vs segment-closed)", () => {
+    // Regression test for the predecessorConsumed implementation choice.
+    // A naive "close segment after first extension" reading of spec §6.1
+    // would yield [["a","b"],["c","d"]] here instead of one segment.
+    const ir = {
+      name: "p",
+      session_mode: "single" as const,
+      stages: [
+        agentStage("a", [], ["x"]),
+        agentStage("b", ["x"], ["y"]),
+        agentStage("c", ["y"], ["z"]),
+        agentStage("d", ["z"], []),
+      ],
+      wires: [
+        wire("a", "x", "b", "x"),
+        wire("b", "y", "c", "y"),
+        wire("c", "z", "d", "z"),
+      ],
+    } as PipelineIR;
+    expect(planSegments(ir)).toEqual([["a", "b", "c", "d"]]);
+  });
+
   it("breaks segment at script stage", () => {
     const ir = {
       name: "p",

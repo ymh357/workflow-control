@@ -68,6 +68,16 @@ export function planSegments(ir: PipelineIR): string[][] {
   // downstream stage. Each stage can serve as a predecessor at most once —
   // the first eligible downstream wins; any further downstream must open a
   // new segment (at-most-one continuation rule).
+  //
+  // NOTE on spec wording: spec §6.1 says "P's segment has not yet been
+  // closed by a downstream branching", which reads as "close the whole
+  // segment after one extension". That reading breaks linear chains —
+  // a→b→c would yield [[a,b],[c]] instead of [[a,b,c]] — because b
+  // joining a's segment would close segment 0, blocking c. We instead
+  // close the *predecessor* (the stage just consumed), preserving linear
+  // chains while still rejecting diamond-style splits at the predecessor
+  // (a→b, a→c → [[a,b],[c]]). See test "merges 4-stage linear chain"
+  // for the regression fence on this choice.
   const predecessorConsumed = new Set<string>();
   const segments: string[][] = [];
 
