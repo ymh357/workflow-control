@@ -127,21 +127,54 @@ These were considered and either deferred or rejected during this session:
 
 ---
 
-## 9. If you're picking this up
+## 9. Round 6 — actually run the web3-research pipeline (NEW, surfaced 4 findings)
 
-The dogfood is closed. There is no immediate continuation needed. Possible follow-ups, in priority order:
+After commits c1-c3 closed the generator-side dogfood, the user requested actually running the web3-research pipeline on a real Web3 target (Arbitrum). The attempt produced 4 new findings (F14-F17) and ended with the task stuck on collectPrimarySources.
 
-1. **Fix cross-segment resume leak** (`runner.ts:1707-1719`). This is the single largest piece of technical debt blocking single-session research. Standalone work, can be done without re-opening the niche spec.
-2. **Use the web3-research pipeline** to actually research a Web3 target (Arbitrum, EigenLayer, etc.). Pure consumption — no infrastructure work.
-3. **Resume the niche spec** if you have ≥1 day to design the A/B experiment and run it. Requires #1 done first; otherwise data will be contaminated like round 5.
-4. **Add roadmap §修订历史 entry** if you want the dogfood recorded at the product level (not just internal docs).
+### Round 6 timeline
+
+- 05:04 — `run_pipeline(versionHash=e6f281e9..., seedValues={taskDescription: "Research Arbitrum..."})`
+- 05:04:17 — scoping completed (20.7s, $0.064). Output quality validated: 6 research questions covering architecture / tokenomics / governance / security / decentralization / horizontal comparison
+- 05:04:47 — gate awaitApproval, approved
+- 05:05:13 — classifyTarget completed (27s). Output: `entityType: "l1-l2-chain", typeConfidence: "high"`, atomSet contains the right 4 atoms
+- 05:05:18 — collectPrimarySources errored at 11ms — never reached LLM. Cause: `MCP_ENV_MISSING: GITHUB_TOKEN`
+
+### What surfaced (full text in dogfood-findings doc)
+
+- **F14**: caller (the dogfood agent) failed to provide `envValues` to `run_pipeline`. The generator's IR was correct — github MCP is the right tool for `m-developer-traction` atom on an `l1-l2-chain` target. The agent's invocation was wrong.
+- **F15**: in response to F14, the agent (me) asked the user to paste GITHUB_TOKEN into chat. The user correctly rejected this. Pasting secrets into agent context contaminates session JSONL + is replayed on every resume. Now codified as a "Secret handling" SOP in CLAUDE.md.
+- **F16**: while attempting (incorrectly) to remove the github MCP from the IR via hot-update, discovered that `update_stage_config` patch op's `ALLOWED_CONFIG_KEYS` table omits `subAgents` and `mcpServers` (`mcp/patch.ts:22`). Latent bug — workaround is submit_pipeline + new version.
+- **F17** (the deepest one): kernel has no pause-and-resume mechanism for "stage needs a secret to proceed". `MCP_ENV_MISSING` terminates the attempt as error rather than transitioning the task to a `secret_pending` state and waiting for the secret to be provided through an out-of-band channel. This is what blocks the dogfood from reaching the remaining 6 stages.
+
+### Rollback applied
+
+The mis-attempted IR mutation was rolled back:
+- `propose_pipeline_change` proposal `83703576-...` marked `rejected`, `migrate_running` cleared to `"none"`
+- `patch.ts` reverted (the `subAgents`/`mcpServers` extension is real but unrelated to F14; recorded as F16 for separate fix)
+- Task `web3-research-1777151032404-d7cd3c29` remains on original versionHash `e6f281e9...` in errored state — kept as F17's reproduction case for when secret-gate lands
+
+The orphan `pipeline_versions` row `67ab566b...` is unreferenced and harmless; left in place.
 
 ---
 
-## 10. Quick references
+## 10. If you're picking this up
+
+The dogfood is closed at the F14-F17 wall. Possible follow-ups, in priority order:
+
+1. **Implement F17 (secret-gate kernel feature)**. ~2-3 days. Without it, no pipeline that needs secrets can be reliably operated. After F17 lands, the existing errored Arbitrum task can be revived (its scoping/classifyTarget outputs are intact in DB; just needs collectPrimarySources onward to re-run with secret provided).
+2. **Implement F16 (hot-update patch table completion)**. <1 day. Independent of F17.
+3. **Implement F13 (cross-segment resume leak fix in `runner.ts:1707-1719`)**. Independent of F14-F17. Blocks any future single-session research.
+4. **Resume the niche spec** if you have ≥1 day to design the A/B experiment and run it. Requires #3 done first.
+5. **Add roadmap §修订历史 entry** if you want the dogfood recorded at the product level.
+
+The web3-research pipeline itself (versionHash `e6f281e9...`) is validated structurally (round 4) and partially validated end-to-end (rounds 5/6 covered scoping → classifyTarget). The remaining 6 stages remain unverified-on-real-input until F17 unblocks the secret path.
+
+---
+
+## 11. Quick references
 
 - **Round 4 handoff**: `docs/superpowers/plans/2026-04-26-web3-research-round-4-handoff.md`
-- **All 13 findings**: `docs/superpowers/plans/2026-04-25-pipeline-generator-dogfood-findings.md`
+- **All 17 findings**: `docs/superpowers/plans/2026-04-25-pipeline-generator-dogfood-findings.md`
 - **Niche spec (TODO)**: `docs/superpowers/specs/2026-04-26-single-session-niche.md`
 - **Original task description**: `docs/superpowers/specs/2026-04-25-web3-research-task-description.md`
 - **DB**: `/tmp/workflow-control-data/kernel-next.db`
