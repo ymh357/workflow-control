@@ -198,6 +198,10 @@ export function canonicalizeIR(ir: PipelineIR): CanonicalValue {
     stages,
     wires,
     externalInputs,
+    // Default "multi" preserves hash stability for pre-2026-04-25 IRs
+    // whose TS type marks session_mode optional even though the Zod
+    // schema defaults to "multi". Drift here silently re-versions
+    // every legacy pipeline.
     session_mode: ir.session_mode ?? "multi",
   });
 }
