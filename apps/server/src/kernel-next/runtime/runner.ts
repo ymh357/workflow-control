@@ -52,6 +52,7 @@ import {
 } from "./runner-wire-resolver.js";
 import { deleteTaskEnvValues } from "./task-env-values.js";
 import { computeTaskCost } from "./task-cost-aggregator.js";
+import { planSegments } from "./segment-planner.js";
 
 export interface RunnerOptions {
   db: DatabaseSync;
@@ -214,6 +215,10 @@ export const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
 export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_TIMEOUT_MS): Promise<RunResult> {
   const executor: StageExecutor =
     opts.executor ?? new MockStageExecutor({ handlers: opts.handlers });
+
+  // Compute segment plan once per runPipeline. The IR is immutable for
+  // the lifetime of a run, so this is stable across retries.
+  const segments = planSegments(opts.ir);
 
   // ---- Run-scoped state (survives retry rebuilds) -------------------
   // Dispatcher must survive rebuilds — answer_gate / MCP route events
@@ -1049,6 +1054,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
             portRuntime,
             signal: ac.signal,
             ...resumeForThisStage,
+            segmentContinuation: segmentContinuationFor(opts, input.stageName, input.taskId, segments),
           });
           if (result.status === "error") {
             stageErrors.push({ stage: input.stageName, message: result.error ?? "unspecified" });
@@ -1591,6 +1597,76 @@ function resumeFieldsForStage(
     resumeSessionId: opts.resumeSessionId,
     priorNumTurns: parseNumTurnsFromStream(row?.agent_stream_json ?? null),
   };
+}
+
+// Single-session mode (spec §6.3) — derive segmentContinuation for a
+// stage. Returns undefined when:
+//   - the stage is the segment's first stage (no continuation), OR
+//   - the segment has size 1 (multi mode, or single-mode pipeline with
+//     this stage as its own segment), OR
+//   - no prior agent stage in the segment has a persisted session_id
+//     yet (e.g. the previous attempt crashed before result message).
+//
+// Otherwise walks back through the segment to the most recent prior
+// stage that has a persisted session_id, and returns it along with
+// segment-wide priorNumTurns and priorAttempts.
+function segmentContinuationFor(
+  opts: RunnerOptions,
+  stageName: string,
+  taskId: string,
+  segments: string[][],
+):
+  | { resumeSessionId: string; priorNumTurns: number; priorAttempts: string[] }
+  | undefined {
+  const seg = segments.find((s) => s.includes(stageName));
+  if (!seg || seg.length < 2) return undefined;
+  const idx = seg.indexOf(stageName);
+  if (idx === 0) return undefined;
+
+  // Look upstream within the segment for the most recent persisted
+  // session_id. Scan from idx-1 backwards so a partial / failed prior
+  // stage (no session_id row) doesn't block continuation.
+  for (let i = idx - 1; i >= 0; i--) {
+    const prevName = seg[i];
+    const row = opts.db.prepare(
+      `SELECT aed.session_id, aed.attempt_id
+         FROM agent_execution_details aed
+         JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
+        WHERE sa.task_id = ? AND sa.stage_name = ? AND aed.session_id IS NOT NULL
+        ORDER BY aed.started_at DESC
+        LIMIT 1`,
+    ).get(taskId, prevName) as
+      | { session_id: string; attempt_id: string }
+      | undefined;
+    if (!row) continue;
+
+    // Sum num_turns across every prior stage in the segment that has
+    // a persisted attempt — segment-wide budget per spec §4.4.
+    let priorNumTurns = 0;
+    const priorAttempts: string[] = [];
+    for (let j = 0; j <= i; j++) {
+      const pn = seg[j];
+      const r2 = opts.db.prepare(
+        `SELECT aed.agent_stream_json, aed.attempt_id
+           FROM agent_execution_details aed
+           JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
+          WHERE sa.task_id = ? AND sa.stage_name = ?
+          ORDER BY aed.started_at DESC
+          LIMIT 1`,
+      ).get(taskId, pn) as
+        | { agent_stream_json: string | null; attempt_id: string }
+        | undefined;
+      if (!r2) continue;
+      priorAttempts.push(r2.attempt_id);
+      priorNumTurns += parseNumTurnsFromStream(r2.agent_stream_json ?? null);
+    }
+    return {
+      resumeSessionId: row.session_id,
+      priorNumTurns,
+      priorAttempts,
+    };
+  }
+  return undefined;
 }
 
 // Local mirror of the compiler-side buildInitialPortValues. Having a
