@@ -427,8 +427,7 @@ describe("validateStructural: cross_segment_resume_from", () => {
       ],
     };
     const r = validateStructural(ir);
-    const crossDiags = !r.ok ? r.diagnostics.filter((d) => d.code.startsWith("CROSS_SEGMENT")) : [];
-    expect(crossDiags).toEqual([]);
+    expect(r).toEqual({ ok: true });
   });
 
   it("CROSS_SEGMENT_TARGET_NOT_FOUND: target stage doesn't exist", () => {
