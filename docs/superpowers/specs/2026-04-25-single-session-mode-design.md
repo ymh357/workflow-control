@@ -53,6 +53,8 @@ Single-session unlocks four user-facing wins (Q1 from brainstorm):
 
 ## 3. Architectural decision: Hybrid I + II
 
+> **Superseded 2026-04-26.** The default cross-segment-resume behavior described in this section was reversed by the design pivot in `2026-04-26-cross-segment-resume-pivot.md`. Cross-segment resume is now opt-in via `AgentStage.config.cross_segment_resume_from`. Within-segment continuation (the rest of this spec) is unchanged.
+
 Two pure shapes were considered:
 
 - **Shape I — single SDK query for the entire pipeline.** One
