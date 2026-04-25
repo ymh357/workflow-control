@@ -433,3 +433,205 @@ A continuation stage could resume to a *boundary* uuid (the last segment write_p
 
 `session_mode: "single"` capability is preserved in the kernel for pipelines that genuinely match the criteria — the rollback is config-only.
 
+
+---
+
+## Finding 14 — caller (dogfood agent) failed to provide `envValues` for declared MCP envKeys (OPERATIONAL)
+
+### Symptom
+
+Running the round-4-generated `web3-research` pipeline (versionHash `e6f281e9...`) on a real Web3 target failed 11ms into collectPrimarySources:
+
+```
+collectPrimarySources | error | started 1777151107507 | ended 1777151107524 (11ms)
+agent_execution_details: termination_reason=error, token_input=null, token_output=null, stream=[], tools=[]
+```
+
+11ms duration + null tokens + empty stream = stage never reached the LLM. Cause: the stage's `config.mcpServers` contains a github MCP entry with `envKeys: ["GITHUB_TOKEN"]`, and the `run_pipeline` invocation did not supply `envValues.GITHUB_TOKEN`. Kernel's `expandMcpServers` (real-executor.ts:353) failed synchronously with `MCP_ENV_MISSING`, terminating the attempt before any agent work.
+
+### Root cause — operator error, not generator error
+
+The generator's IR is **correct**:
+- `analysis.md` recommends GitHub MCP for m-developer-traction atom work (Arbitrum is `l1-l2-chain` whose atom set includes `m-developer-traction`).
+- `mcpServers` entry on collectPrimarySources is the right place to declare it.
+- `envKeys: ["GITHUB_TOKEN"]` correctly tells the kernel to expand `${GITHUB_TOKEN}` from `task_env_values` at runtime.
+
+The bug is in **how I invoked `run_pipeline`**: I passed `seedValues.taskDescription` but no `envValues.GITHUB_TOKEN`. The `run_pipeline` MCP tool schema clearly exposes `envValues` (object map of env-var name → value); I overlooked it.
+
+### What was attempted, and why it was wrong
+
+I initially mis-diagnosed this as a generator-design gap and wrote (now-deleted) Finding 14 claiming the generator should mark MCPs as optional. I then patched `kernel-next/mcp/patch.ts` to allow `mcpServers` in hot-update `update_stage_config` (this *was* a real gap but unrelated to this task), and used `propose_pipeline_change` to remove the github MCP from the pipeline IR.
+
+Both actions were wrong:
+- The generator did its job correctly. The fix is operator-side.
+- Mutating the IR to remove a legitimate MCP declaration is corrupting the pipeline definition to work around a missing input value.
+
+The user correctly stopped this and pointed out the right path: provide the value via `envValues`, not change the IR.
+
+**Rollback applied (this session)**:
+1. patch.ts `ALLOWED_CONFIG_KEYS.agent` reverted to `["promptRef"]` (the `subAgents`/`mcpServers` extension is a separate, real gap — recorded as Finding 16 below — but not relevant to recovering this task)
+2. Proposal `83703576-...` marked rejected, `migrate_running` cleared to `"none"` so boot reconciler doesn't apply it
+3. Orphaned `pipeline_versions` row `67ab566b...` left in place (harmless; unreferenced)
+4. Task `web3-research-1777151032404-d7cd3c29` remains on the original versionHash `e6f281e9...`
+
+### Correct fix
+
+Two paths, both equivalent in security:
+
+**Path A — server process env**: User exports `GITHUB_TOKEN` in the shell before starting the dev server. The kernel reads from `process.env` for `${VAR}` expansion when no `task_env_values` row exists. Token never enters agent context, prompt, or session JSONL.
+
+**Path B — `run_pipeline.envValues` per-task**: Caller passes `envValues: { GITHUB_TOKEN: "..." }` to `run_pipeline`. The kernel writes the value to `task_env_values` table. At MCP expansion time, `task_env_values` takes precedence over `process.env`. Still never enters agent context — `task_env_values` is read by `expandMcpServers` directly, the value populates the MCP server's `env` field which the SDK passes to the spawned MCP subprocess. The agent only sees the MCP's tool surface, never the env var content.
+
+**Either path keeps the secret out of**:
+- The agent's prompt (no `### Inputs` line ever contains it)
+- Session JSONL on disk (it's not in conversation history)
+- API requests to Anthropic (the only thing in API requests is the prompt + tool-call interactions, not the MCP subprocess's env)
+
+For the current task, Path A is simplest: user exports the token, restarts server, retry the failed stage.
+
+### Why this is a finding worth recording
+
+Two reasons:
+
+1. The dogfood agent (me) didn't read the `run_pipeline` schema carefully enough on first invocation. Future agent sessions will hit the same trap. Recording it teaches the right reflex: **before invoking a pipeline, scan the IR for any stage with `config.mcpServers[*].envKeys` non-empty, and ensure every required envKey is provided via `envValues` or already in `process.env`.**
+
+2. The `run_pipeline` tool description doesn't proactively warn about `envValues` requirements. A small UX improvement: `start_pipeline_generator` and `run_pipeline` could surface "this pipeline requires envKeys: [GITHUB_TOKEN]" in their initial response when those keys are present in the IR but absent from supplied env. Tracked as a possible kernel improvement, not blocking.
+
+---
+
+## Finding 15 — dogfood agent must not request secrets via the chat (OPERATIONAL)
+
+### Symptom
+
+When Finding 14 surfaced, the dogfood agent (me) responded by asking the user to paste their `GITHUB_TOKEN` directly into the chat. The user correctly rejected this.
+
+### Why it's bad
+
+Pasting a secret into the agent's prompt:
+- Lands in the session JSONL on disk (`~/.claude-personal/projects/<encoded-cwd>/<session-id>.jsonl`) — verified earlier this same session via subagent SDK docs query
+- Is sent to the Anthropic API as part of the conversation transcript on resume — full transcript is replayed (see Finding 13 / SDK sessions docs)
+- Cannot be reliably "cleaned up" after the fact — too many copies (session file, prompt cache, possibly DB, possibly shell history)
+
+### Root cause
+
+No documented secret-handling SOP for dogfood operations existed. The agent assumed "ask the user for missing input" was always correct. For non-secret input that's right; for secrets it is not.
+
+### Required SOP
+
+When a pipeline / tool / process needs a secret (API token, password, private key, etc.):
+
+1. **Never** ask the user to paste the secret in the chat.
+2. Direct the user to set the secret in the **server process environment** (`export GITHUB_TOKEN=...; restart server`). Kernel reads from `process.env`; secret never enters agent context.
+3. If per-task injection is needed (different tasks use different tokens), use `run_pipeline.envValues`. The kernel writes to `task_env_values`, expands into MCP `${VAR}` references at runtime. Agent never sees the value.
+4. If neither path works (e.g. hosted instance without shell access), **document the limitation and stop**. Do NOT request the secret as a fallback.
+
+### Why this needs recording in CLAUDE.md / operational docs
+
+Future agent sessions will hit the same scenario (pipeline X needs secret Y, agent doesn't have it). Without a documented SOP, the same anti-pattern recurs. This SOP belongs in project-level instructions (CLAUDE.md or a dedicated operational doc) so every future Claude session inherits it.
+
+### Suggested action
+
+- Add the SOP to `CLAUDE.md` under a "Secret handling" section
+- Cross-reference from any pipeline whose IR declares `envKeys` non-empty
+
+---
+
+## Finding 16 — `update_stage_config` patch op cannot modify `mcpServers` or `subAgents` (LATENT)
+
+### Symptom
+
+Discovered while attempting (incorrectly — see Finding 14) to use `propose_pipeline_change` to remove a github MCP entry from collectPrimarySources. The hot-update patch operation `update_stage_config` is gated by `ALLOWED_CONFIG_KEYS` (`mcp/patch.ts:22`):
+
+```ts
+const ALLOWED_CONFIG_KEYS: Record<StageIR["type"], readonly string[]> = {
+  agent:  ["promptRef"],            // <-- only promptRef
+  script: ["moduleId"],
+  gate:   ["question", "routing"],
+};
+```
+
+But `AgentStageSchema` (`ir/schema.ts:148-157`) actually permits three config keys: `promptRef`, `subAgents`, `mcpServers`. The patch table omits two of them. Any `update_stage_config` op trying to set `subAgents` or `mcpServers` raises `PatchApplyError: stage 'X' is type 'agent' and does not accept config keys [mcpServers]`.
+
+### Why this is real (independent of Finding 14)
+
+There are legitimate reasons to hot-update `mcpServers` or `subAgents`:
+- A new MCP server becomes available and you want to add it to a stage without re-submitting the entire pipeline
+- An MCP server's package name changes and you need to update its `command`/`args`
+- A sub-agent's tool list needs adjustment
+
+All of these are valid hot-update scenarios that the current `ALLOWED_CONFIG_KEYS` table blocks.
+
+### Suggested fix
+
+```ts
+const ALLOWED_CONFIG_KEYS: Record<StageIR["type"], readonly string[]> = {
+  agent:  ["promptRef", "subAgents", "mcpServers"],
+  script: ["moduleId"],  // also missing `retry` and `source`-variant fields; separate gap
+  gate:   ["question", "routing"],
+};
+```
+
+Plus regression tests in `patch.test.ts` for each newly-allowed key. Should also audit `script` variants (registry vs inline) and gate config; this finding may be a symptom of a broader stale-table issue.
+
+### Why latent (not blocking)
+
+Doesn't break anything in current production paths — `submit_pipeline` accepts the full schema, only `update_stage_config` refuses these keys. Workaround: use `submit_pipeline` to register a new IR version, then `propose_pipeline_change` with `currentVersion` set to the new hash and a no-op patch (or use the new pipeline directly). This is what generator-driven flows already do; only ad-hoc surgical IR mutations hit Finding 16.
+
+
+---
+
+## Finding 17 — kernel lacks runtime gate for missing secrets (DESIGN GAP)
+
+### Symptom
+
+When `web3-research` task `web3-research-1777151032404-d7cd3c29` reached collectPrimarySources with `mcpServers: [{ envKeys: ["GITHUB_TOKEN"] }]` but no `GITHUB_TOKEN` available in either `task_env_values` or `process.env`, the kernel terminated the stage immediately with `MCP_ENV_MISSING` and left the task in an error-stuck state. Three sequential attempts (idx 1, 2, 3) all failed with the same root cause within 11ms each — once on initial start, twice on tsx-watch reloads triggering orphan reconciliation.
+
+The actual recovery path was external coordination: the dogfood agent had to ask the user to either set the env var server-side or re-invoke `run_pipeline` with `envValues`, then trigger retry. This is fundamentally wrong — the kernel knows exactly what's missing (it has the envKey list and can detect absence) but the operator is responsible for getting it provided.
+
+### Why this is the deeper issue behind Finding 14
+
+Finding 14 framed this as "operator forgot to pass envValues at run_pipeline time". That's true at the surface, but doesn't explain why **the task can't recover from this oversight without external intervention**. A pipeline-level human gate exists for "should I proceed with X?" decisions; there is no equivalent for "I need a secret to proceed". The result: missing secrets are unrecoverable failures rather than pause-and-resume points.
+
+This affects all pipelines whose stages declare `envKeys`. Today: github MCP. Tomorrow: any vendor MCP needing API tokens (Anthropic, OpenAI, Slack, custom internal services).
+
+### Required behavior
+
+When a stage starts and detects that any `mcpServers[*].envKeys[i]` is unsatisfied (not in `task_env_values`, not in `process.env`):
+
+1. Do **not** terminate the stage as error.
+2. Transition the task to a new state — call it `secret_pending` (or similar) — analogous to `gated`.
+3. Surface metadata describing the missing keys: which stage requested them, which MCP server they're for, what envKey names. This metadata is what the user / dashboard / MCP caller queries to know what to provide.
+4. Block the task until secrets arrive via a kernel-side write path. The write path must be **out-of-band relative to agent context** — direct DB write, dedicated MCP tool (e.g. `provide_task_secrets`), or dashboard form. The values **never** flow through agent prompts or conversation history.
+5. Once all required keys land in `task_env_values`, resume the stage.
+
+### Out-of-scope for this dogfood, but the design fragment
+
+A new MCP tool would look something like:
+
+```
+provide_task_secrets(taskId, secrets: { GITHUB_TOKEN: "ghp_...", ... })
+```
+
+- Validates `secrets` keys against the task's `secret_pending.requiredKeys`
+- Writes to `task_env_values` (already existing table)
+- Dispatches a wakeup to the stuck stage / boots a fresh attempt
+- Returns confirmation without echoing the secret value
+
+The dashboard equivalent: a form rendered when `get_task_status` returns `secret_pending`, posting to the same endpoint.
+
+### Why blocking this dogfood
+
+Without secret-gate, every web3-research run that needs GitHub MCP will hit this exact wall, and recovery requires server restart or out-of-band MCP invocation. The dogfood goal — "let pipeline run end-to-end on a real target" — cannot be reliably hit. We have validated the first three stages (scoping, awaitApproval, classifyTarget all worked correctly on Arbitrum input). The remaining six stages (collectPrimarySources, domainResearch, onChainVerification, atomAnalysis, produceDeliverable, adversarialFactCheck) are unverified-on-real-input but were validated structurally during round 4's generator output review.
+
+Closing the dogfood here. Finding 17 implementation is a separate kernel work item; once done, this exact task can be revived (its `task_env_values` is empty, scoping/classifyTarget outputs are intact, retry would only need to rerun from collectPrimarySources onward).
+
+### Suggested implementation order (when picked up)
+
+1. Schema: add `secret_pending` to task state enum; add `task_secret_requirements` table or extend `gate_queue` with a secret-gate variant
+2. Detector: in `expandMcpServers` (or a layer above), when MCP_ENV_MISSING would fire, instead emit a `secret_pending` transition with the missing key list
+3. Provide path: new MCP tool `provide_task_secrets` + validation
+4. Resumer: when `task_env_values` newly satisfies all `task_secret_requirements`, dispatch a fresh stage attempt (similar to gate-answered → resume flow)
+5. Tests: end-to-end with a stub MCP that needs envKey, verify task pauses → secret provided → task resumes
+
+Roughly 2-3 days of kernel work; no breaking changes to existing pipelines or agent prompts.
+

@@ -148,6 +148,41 @@ Evaluations that assume the codebase state without verification have
 historically produced fabricated gaps and wasted review cycles. Spend
 the time up front.
 
+## Secret handling
+
+When a pipeline, MCP tool, or any process you orchestrate needs a
+secret (API token, password, private key, OAuth credential, etc.):
+
+1. **Never** ask the user to paste the secret in chat. Once a secret
+   appears in the conversation, it is committed to the session JSONL
+   on disk (`~/.claude-personal/projects/<encoded-cwd>/<session-id>.jsonl`)
+   and replayed to the Anthropic API on every subsequent resume of
+   this session. There is no reliable cleanup.
+
+2. **Direct the user to set the secret in the server process
+   environment.** Either:
+   - `export GITHUB_TOKEN=...; <restart kernel-next dev server>`, OR
+   - pass `envValues: { GITHUB_TOKEN: "..." }` to `run_pipeline`
+     (kernel writes to `task_env_values`; expanded into MCP server
+     `${VAR}` references at runtime; never enters agent context).
+
+3. **If neither path works** (hosted instance without shell access,
+   missing tooling), document the limitation and stop. Do **not**
+   request the secret as a fallback — degraded UX is preferable to
+   leaked credentials.
+
+4. **Before invoking a pipeline**, scan the IR for any stage with
+   `config.mcpServers[*].envKeys` non-empty. Verify every required
+   envKey is satisfied via `envValues` or `process.env` before calling
+   `run_pipeline`. The kernel will fail-fast on missing envKeys
+   (`MCP_ENV_MISSING`); recovery requires either a server restart or
+   the (currently unimplemented) secret-gate runtime feature.
+
+**Do not** propose to mutate a pipeline IR (e.g. via
+`propose_pipeline_change`) to remove a `mcpServers` entry just because
+its envKey is unsatisfied. The IR encodes the pipeline author's
+intent; corrupting it to work around a missing input is wrong.
+
 ## When in doubt
 
 Ask. The repo author is also the primary user and reviews changes that
