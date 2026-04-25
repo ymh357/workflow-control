@@ -631,3 +631,131 @@ describe("RealStageExecutor sidecar integration", () => {
     db.close();
   });
 });
+
+describe("RealStageExecutor segmentContinuation (single-session mode)", () => {
+  it("uses segmentContinuation.resumeSessionId for options.resume and clamps maxTurns by segment-wide priorNumTurns", async () => {
+    const db = makeDb();
+    const ir = oneStageIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const portRuntime = new PortRuntime(db, { send: () => { /* inert */ } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const capturedOptions: any[] = [];
+    const executor = new RealStageExecutor({
+      mcpServerFactory: () => ({}),
+      maxTurns: 10,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      queryFn: ((args: any) => {
+        capturedOptions.push(args.options);
+        return (async function* () {
+          yield {
+            type: "result",
+            subtype: "error_max_turns",
+            error_message: "test short-circuit",
+            session_id: "seg-sess-1",
+          };
+        })() as never;
+      }) as never,
+    });
+
+    await executor.executeStage({
+      ir, stageName: "S", taskId: "t-seg-cont", versionHash: hash,
+      portValues: {}, handlers: {}, portRuntime,
+      segmentContinuation: {
+        resumeSessionId: "seg-sess-1",
+        priorNumTurns: 4,
+        priorAttempts: ["a-prior"],
+      },
+    });
+
+    expect(capturedOptions).toHaveLength(1);
+    expect(capturedOptions[0].resume).toBe("seg-sess-1");
+    // 10 - 4 = 6
+    expect(capturedOptions[0].maxTurns).toBe(6);
+    db.close();
+  });
+
+  it("segmentContinuation takes precedence over args.resumeSessionId / priorNumTurns", async () => {
+    const db = makeDb();
+    const ir = oneStageIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const portRuntime = new PortRuntime(db, { send: () => { /* inert */ } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const capturedOptions: any[] = [];
+    const executor = new RealStageExecutor({
+      mcpServerFactory: () => ({}),
+      maxTurns: 10,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      queryFn: ((args: any) => {
+        capturedOptions.push(args.options);
+        return (async function* () {
+          yield {
+            type: "result",
+            subtype: "error_max_turns",
+            error_message: "test short-circuit",
+            session_id: "x",
+          };
+        })() as never;
+      }) as never,
+    });
+
+    await executor.executeStage({
+      ir, stageName: "S", taskId: "t-prec", versionHash: hash,
+      portValues: {}, handlers: {}, portRuntime,
+      // M-R5 fields
+      resumeSessionId: "stage-sess",
+      priorNumTurns: 2,
+      // Segment fields — should win
+      segmentContinuation: {
+        resumeSessionId: "segment-sess",
+        priorNumTurns: 7,
+        priorAttempts: [],
+      },
+    });
+
+    expect(capturedOptions).toHaveLength(1);
+    expect(capturedOptions[0].resume).toBe("segment-sess");
+    expect(capturedOptions[0].maxTurns).toBe(3); // 10 - 7
+    db.close();
+  });
+
+  it("no segmentContinuation → behaves identically to before (no resume, no clamp)", async () => {
+    const db = makeDb();
+    const ir = oneStageIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const portRuntime = new PortRuntime(db, { send: () => { /* inert */ } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const capturedOptions: any[] = [];
+    const executor = new RealStageExecutor({
+      mcpServerFactory: () => ({}),
+      maxTurns: 10,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      queryFn: ((args: any) => {
+        capturedOptions.push(args.options);
+        return (async function* () {
+          yield {
+            type: "result",
+            subtype: "error_max_turns",
+            error_message: "test short-circuit",
+            session_id: "fresh",
+          };
+        })() as never;
+      }) as never,
+    });
+
+    await executor.executeStage({
+      ir, stageName: "S", taskId: "t-fresh", versionHash: hash,
+      portValues: {}, handlers: {}, portRuntime,
+    });
+
+    expect(capturedOptions).toHaveLength(1);
+    expect(capturedOptions[0].resume).toBeUndefined();
+    expect(capturedOptions[0].maxTurns).toBe(10);
+    db.close();
+  });
+});

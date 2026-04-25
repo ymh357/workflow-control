@@ -312,7 +312,7 @@ export class RealStageExecutor implements StageExecutor {
     // 4b. System prompt append describing the stage contract — tool-call only.
     const systemPromptAppend = buildSystemPromptAppend(stage, userPrompt, inputs, {
       taskId, attemptId,
-    }, migrationHint, ir);
+    }, migrationHint, ir, { continuationMode: args.segmentContinuation !== undefined });
 
     // 4. Run query() and consume stream. Output path is the MCP
     //    `write_port` tool (one call per declared output port). The final
@@ -323,11 +323,16 @@ export class RealStageExecutor implements StageExecutor {
       // write_port calls fire PORT_WRITTEN.
       const mcpServer = this.mcpServerFactory(portRuntime.getDispatcher(), portRuntime);
       const subAgents = stage.config.subAgents;
-      // M-R5: clamp maxTurns for resumed sessions so historical turns
-      // do not double the budget. Computed from priorNumTurns supplied
-      // by the runner; zero on a fresh run leaves the ceiling alone.
-      const effectiveMaxTurns = args.resumeSessionId
-        ? clampMaxTurns(this.maxTurns, args.priorNumTurns ?? 0)
+      // M-R5 + single-session: pick which session_id (if any) to resume.
+      // segmentContinuation (single-session mode) takes precedence over
+      // M-R5 per-stage resumeSessionId; both can coexist on a resumed
+      // pipeline whose runner happens to be in the middle of a segment.
+      const sessionToResume =
+        args.segmentContinuation?.resumeSessionId ?? args.resumeSessionId;
+      const turnsAlreadyUsed =
+        args.segmentContinuation?.priorNumTurns ?? args.priorNumTurns ?? 0;
+      const effectiveMaxTurns = sessionToResume
+        ? clampMaxTurns(this.maxTurns, turnsAlreadyUsed)
         : this.maxTurns;
       // P3.5: expand ${VAR} placeholders in stage.config.mcpServers into
       // concrete ExpandedMcpServer records. Precedence: task_env_values
@@ -364,13 +369,13 @@ export class RealStageExecutor implements StageExecutor {
         workspaceDir: this.workspaceDir,
         externalMcpServers,
       });
-      // M-R5: plumb the resume session id via options.resume when the
-      // caller has one. queryFn failure (missing / corrupt session file)
-      // surfaces as a thrown error inside the stream iteration below;
-      // we catch it and restart with a fresh session instead of failing
-      // the stage. Production SDK supports options.resume natively.
-      const options: SdkOptions = args.resumeSessionId
-        ? { ...baseOptions, resume: args.resumeSessionId }
+      // Plumb the resume session_id (M-R5 per-stage OR single-session
+      // segment continuation; segment wins per §6.2). queryFn failure
+      // (missing / corrupt session file) surfaces as a thrown error
+      // inside the stream iteration below; we catch it and restart with
+      // a fresh session instead of failing the stage.
+      const options: SdkOptions = sessionToResume
+        ? { ...baseOptions, resume: sessionToResume }
         : baseOptions;
 
       const stream = this.queryFn({ prompt: userPrompt, options });
