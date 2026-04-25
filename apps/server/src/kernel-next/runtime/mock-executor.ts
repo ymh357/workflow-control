@@ -11,12 +11,26 @@
 // the `MockStageExecutor` class (new P1 surface that mirrors
 // RealStageExecutor).
 
+import type { DatabaseSync } from "node:sqlite";
 import type {
   ExecuteStageArgs,
   ExecuteStageResult,
   StageExecutor,
   StageHandlerMap,
 } from "./executor.js";
+
+export interface ExecuteStageHooks {
+  /**
+   * Invoked after the handler returns successfully but BEFORE any
+   * portRuntime.writePort fires. PORT_WRITTEN dispatches downstream
+   * stage evaluation synchronously (XState), so any DB state that
+   * downstream segmentContinuationFor SQL needs (e.g. synthetic
+   * agent_execution_details rows) must be visible before the first
+   * writePort. The hook is the single seam that satisfies that
+   * ordering — see MockStageExecutor.persistSessionIdMap.
+   */
+  beforePortWrite?: (attemptId: string) => void;
+}
 
 // Re-export shared types so existing importers (runner.ts, tests) keep
 // working via `from "./mock-executor.js"`.
@@ -28,7 +42,10 @@ export type {
   ExecuteStageResult,
 } from "./executor.js";
 
-export async function executeStage(args: ExecuteStageArgs): Promise<ExecuteStageResult> {
+export async function executeStage(
+  args: ExecuteStageArgs,
+  hooks?: ExecuteStageHooks,
+): Promise<ExecuteStageResult> {
   const { ir, stageName, taskId, versionHash, portValues, handlers, portRuntime, fanoutElementIdx } = args;
   const stage = ir.stages.find((s) => s.name === stageName);
   if (!stage) throw new Error(`Stage '${stageName}' not in IR`);
@@ -75,7 +92,11 @@ export async function executeStage(args: ExecuteStageArgs): Promise<ExecuteStage
     return { attemptId, attemptIdx, status: "error", error: msg };
   }
 
-  // 4. Write declared outputs. Any undeclared key in `outputs` is ignored
+  // 4. beforePortWrite hook fires here so any synthetic DB state needed
+  //    by downstream stages is visible before PORT_WRITTEN dispatches.
+  hooks?.beforePortWrite?.(attemptId);
+
+  // 5. Write declared outputs. Any undeclared key in `outputs` is ignored
   //    (same stance as legacy kernel's filterStoreWrites).
   const declaredOutPorts = new Set(stage.outputs.map((p) => p.name));
   for (const [key, value] of Object.entries(outputs)) {
@@ -83,7 +104,7 @@ export async function executeStage(args: ExecuteStageArgs): Promise<ExecuteStage
     portRuntime.writePort({ attemptId, stageName, portName: key, value });
   }
 
-  // 5. Finish attempt.
+  // 6. Finish attempt.
   portRuntime.finishAttempt(attemptId, "success");
   return { attemptId, attemptIdx, status: "success" };
 }
@@ -129,125 +150,66 @@ export class MockStageExecutor implements StageExecutor {
   async executeStage(args: ExecuteStageArgs): Promise<ExecuteStageResult> {
     this.onExecute?.(args);
 
-    // When persistSessionIdMap is set for this stage, we need to insert the
-    // agent_execution_details row BEFORE portRuntime.writePort fires the
-    // PORT_WRITTEN event that triggers downstream stage execution. If we
-    // insert after executeStage returns, a microtask race makes the next
-    // stage's segmentContinuationFor SQL run before the row is committed.
-    // Achieve ordering by running the stage inline and inserting between the
-    // handler call and the port writes.
+    // When persistSessionIdMap is set, the runner needs the synthetic
+    // agent_execution_details row visible before PORT_WRITTEN dispatches
+    // downstream stage evaluation (segmentContinuationFor SQL reads it).
+    // Use the beforePortWrite hook on top-level executeStage so the row
+    // is committed between handler return and the first writePort.
     const entry = this.persistSessionIdMap?.[args.stageName];
-    if (entry !== undefined) {
-      const sessionId = typeof entry === "string" ? entry : entry.sessionId;
-      const numTurns = typeof entry === "string" ? 0 : (entry.numTurns ?? 0);
-      return this.executeStageWithSessionPersist(args, sessionId, numTurns);
-    }
+    const hooks: ExecuteStageHooks | undefined = entry !== undefined
+      ? {
+          beforePortWrite: (attemptId) => {
+            const sessionId = typeof entry === "string" ? entry : entry.sessionId;
+            const numTurns = typeof entry === "string" ? 0 : (entry.numTurns ?? 0);
+            insertSyntheticAgentExecutionDetails(args.portRuntime.getDb(), attemptId, sessionId, numTurns);
+          },
+        }
+      : undefined;
 
-    return executeStage({
-      ...args,
-      handlers: args.handlers ?? this.handlers,
-    });
-  }
-
-  /**
-   * Inline execution path used when persistSessionIdMap includes this stage.
-   * Mirrors the top-level executeStage logic but inserts the synthetic
-   * agent_execution_details row BEFORE writing ports so the DB is consistent
-   * by the time PORT_WRITTEN triggers downstream stage evaluation.
-   *
-   * KNOWN DUPLICATION: ~70 lines of input gathering, handler invocation,
-   * and output filtering are copy-pasted from the top-level `executeStage`
-   * above. The duplication is mock-test-only code and the surface is
-   * narrow (only persistSessionIdMap callers reach this path). A cleaner
-   * factoring would expose a `beforePortWrite?: (attemptId, sessionId)
-   * => void` hook on the top-level executeStage so this becomes a
-   * 3-line wrapper. Deferred — see Task 7 code-review I-1 (2026-04-25).
-   */
-  private async executeStageWithSessionPersist(
-    args: ExecuteStageArgs,
-    sessionId: string,
-    numTurns: number,
-  ): Promise<ExecuteStageResult> {
-    const { ir, stageName, taskId, versionHash, portValues, portRuntime, fanoutElementIdx } = args;
-    const handlers = args.handlers ?? this.handlers;
-
-    const stage = ir.stages.find((s) => s.name === stageName);
-    if (!stage) throw new Error(`Stage '${stageName}' not in IR`);
-
-    const { attemptId, attemptIdx } = portRuntime.startAttempt({
-      taskId, versionHash, stageName, fanoutElementIdx,
-    });
-
-    // Gather inputs (same as top-level executeStage).
-    const inputs: Record<string, unknown> = {};
-    for (const p of stage.inputs) {
-      const wire = ir.wires.find(
-        (w) => w.to.stage === stageName && w.to.port === p.name,
-      );
-      if (!wire) continue;
-      const fromStage = wire.from.source === "external" ? "__external__" : wire.from.stage;
-      const srcKey = `${fromStage}.${wire.from.port}`;
-      const value = portValues[srcKey];
-      inputs[p.name] = value;
-      portRuntime.recordRead({ attemptId, stageName, portName: p.name, value });
-    }
-
-    // Invoke handler.
-    const handler = handlers[stageName];
-    if (!handler) {
-      portRuntime.finishAttempt(attemptId, "error", `No handler for stage '${stageName}'`);
-      return { attemptId, attemptIdx, status: "error", error: `No handler for stage '${stageName}'` };
-    }
-
-    let outputs: Record<string, unknown>;
-    try {
-      outputs = await handler(inputs, { taskId, stageName, attemptId, attemptIdx });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      portRuntime.finishAttempt(attemptId, "error", msg);
-      return { attemptId, attemptIdx, status: "error", error: msg };
-    }
-
-    // Insert agent_execution_details BEFORE writing ports so the row is
-    // visible to downstream segmentContinuationFor SQL when PORT_WRITTEN
-    // triggers the next stage's invoke (XState dispatches synchronously).
-    const db = portRuntime.getDb();
-    const now = Date.now();
-    db.prepare(
-      `INSERT OR IGNORE INTO prompt_contents (content_hash, content, created_at)
-       VALUES (?, ?, ?)`,
-    ).run("mock-hash", "(mock)", now);
-    // Build a synthetic agent_stream_json containing one result message
-    // with the requested num_turns, so segment-wide priorNumTurns sums
-    // correctly in tests that exercise multi-stage segments.
-    const streamBlob = JSON.stringify(
-      numTurns > 0
-        ? [{ type: "result", subtype: "success", num_turns: numTurns, session_id: sessionId }]
-        : [],
+    return executeStage(
+      { ...args, handlers: args.handlers ?? this.handlers },
+      hooks,
     );
-    // No try/catch: any FK / NOT NULL violation here is a real bug in the
-    // mock helper, and surfacing it as a thrown SQLite error is the correct
-    // diagnostic — silently swallowing would produce confusing
-    // "expected sess-X, got undefined" failures elsewhere.
-    db.prepare(
-      `INSERT INTO agent_execution_details (
-         attempt_id, prompt_ref, prompt_content_hash, prompt_content,
-         model, session_id, started_at, last_heartbeat_at,
-         tool_calls_json, agent_stream_json, compact_events_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, '[]')`,
-    ).run(
-      attemptId, "mock-ref", "mock-hash", "(mock)", "mock-model",
-      sessionId, now, now, streamBlob,
-    );
-
-    // Write declared outputs (triggers PORT_WRITTEN → machine evaluates next stage).
-    const declaredOutPorts = new Set(stage.outputs.map((p) => p.name));
-    for (const [key, value] of Object.entries(outputs)) {
-      if (!declaredOutPorts.has(key)) continue;
-      portRuntime.writePort({ attemptId, stageName, portName: key, value });
-    }
-
-    portRuntime.finishAttempt(attemptId, "success");
-    return { attemptId, attemptIdx, status: "success" };
   }
+}
+
+/**
+ * Insert a synthetic agent_execution_details row matching what the real
+ * executor would write via writer.updateSessionId. Used by mock tests
+ * that exercise single-session segment continuation logic — the
+ * segmentContinuationFor SQL needs the row visible before downstream
+ * stages start. agent_stream_json carries one result message so
+ * segment-wide priorNumTurns summing works for multi-stage segments.
+ *
+ * No try/catch: any FK / NOT NULL violation is a real bug in the mock
+ * helper, and surfacing it as a thrown SQLite error is the correct
+ * diagnostic — silently swallowing would produce confusing
+ * "expected sess-X, got undefined" failures elsewhere.
+ */
+function insertSyntheticAgentExecutionDetails(
+  db: DatabaseSync,
+  attemptId: string,
+  sessionId: string,
+  numTurns: number,
+): void {
+  const now = Date.now();
+  db.prepare(
+    `INSERT OR IGNORE INTO prompt_contents (content_hash, content, created_at)
+     VALUES (?, ?, ?)`,
+  ).run("mock-hash", "(mock)", now);
+  const streamBlob = JSON.stringify(
+    numTurns > 0
+      ? [{ type: "result", subtype: "success", num_turns: numTurns, session_id: sessionId }]
+      : [],
+  );
+  db.prepare(
+    `INSERT INTO agent_execution_details (
+       attempt_id, prompt_ref, prompt_content_hash, prompt_content,
+       model, session_id, started_at, last_heartbeat_at,
+       tool_calls_json, agent_stream_json, compact_events_json
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, '[]')`,
+  ).run(
+    attemptId, "mock-ref", "mock-hash", "(mock)", "mock-model",
+    sessionId, now, now, streamBlob,
+  );
 }

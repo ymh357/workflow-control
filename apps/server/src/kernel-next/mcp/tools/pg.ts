@@ -29,17 +29,48 @@ export function buildPgTools(deps: ToolsDeps): ToolDef[] {
       name: "start_pipeline_generator",
       description:
         "Trigger the pipeline-generator builtin with a natural-language task " +
-        "description. Returns {taskId, versionHash} immediately; use " +
-        "wait_pipeline_result to retrieve the generated pipeline.",
+        "description. Pass either `description` (inline string) OR `descriptionPath` " +
+        "(absolute path to a markdown/text file). Returns {taskId, versionHash} " +
+        "immediately; use wait_pipeline_result to retrieve the generated pipeline.",
       inputSchema: {
-        description: z.string().min(1).max(8000),
+        description: z.string().min(1).max(64000).optional(),
+        descriptionPath: z.string().min(1).optional(),
         taskId: z.string().min(1).optional(),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       handler: async (args: any) => {
+        // Dogfood Finding 3 (2026-04-25): real spec files routinely live
+        // on disk (docs/superpowers/specs/*.md). Forcing callers to inline
+        // them via shell jq plumbing is friction. Accept either inline
+        // `description` or a `descriptionPath` (absolute path); reject if
+        // both or neither.
+        let description: string;
+        if (typeof args.description === "string" && typeof args.descriptionPath === "string") {
+          return errorResponse("INVALID_INPUT", { reason: "supply EITHER description OR descriptionPath, not both" });
+        } else if (typeof args.description === "string") {
+          description = args.description;
+        } else if (typeof args.descriptionPath === "string") {
+          const path = args.descriptionPath;
+          if (!path.startsWith("/")) {
+            return errorResponse("INVALID_INPUT", { reason: "descriptionPath must be absolute (start with /)" });
+          }
+          try {
+            const { readFileSync } = await import("node:fs");
+            description = readFileSync(path, "utf-8");
+          } catch (err) {
+            return errorResponse("DESCRIPTION_PATH_READ_FAILED", { reason: (err as Error).message, path });
+          }
+          // Size cap mirrors the inline-description ceiling so the same
+          // 64K guarantee applies regardless of input shape.
+          if (description.length > 64000) {
+            return errorResponse("INVALID_INPUT", { reason: `descriptionPath file size ${description.length} exceeds 64000 char ceiling`, path });
+          }
+        } else {
+          return errorResponse("INVALID_INPUT", { reason: "supply either description (inline) or descriptionPath (absolute path to file)" });
+        }
         const res = await handleStartPipelineGenerator(
           {
-            description: String(args.description),
+            description,
             taskId: typeof args.taskId === "string" ? args.taskId : undefined,
           },
           {
@@ -77,6 +108,16 @@ export function buildPgTools(deps: ToolsDeps): ToolDef[] {
                 model,
                 maxTurns: maxTurns ?? 80,
                 maxBudgetUsd: maxBudgetUsd ?? 8,
+                // Dogfood Finding 11 (2026-04-25): pipeline-generator's
+                // own runs must survive transient API errors (socket
+                // close mid-stream, 5xx, brief rate-limit) AND let
+                // persisting agent self-correct on submit_pipeline
+                // diagnostics. 2 retries on top of the initial = 3
+                // total chances per stage. Default executor retry stays
+                // at 0; this override is opt-in for pipeline-generator
+                // because its multi-stage chain is too long to forfeit
+                // on a single transient failure.
+                maxRetries: 2,
               }),
             model: deps.pipelineGeneratorModel ?? "claude-sonnet-4-6",
             maxTurns: deps.pipelineGeneratorMaxTurns ?? 80,

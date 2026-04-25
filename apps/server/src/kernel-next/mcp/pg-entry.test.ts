@@ -55,10 +55,10 @@ describe("handleStartPipelineGenerator — input validation", () => {
     expect(res.error).toBe("INVALID_DESCRIPTION");
   });
 
-  it("rejects description over 8000 chars", async () => {
+  it("rejects description over 64000 chars", async () => {
     const db = freshDb();
     const res = await handleStartPipelineGenerator(
-      { description: "x".repeat(8001) },
+      { description: "x".repeat(64001) },
       { db, broadcaster: new KernelNextBroadcaster(), runner: vi.fn() as any, loader: vi.fn() as any, model: "m" },
     );
     expect(res.ok).toBe(false);
@@ -378,6 +378,14 @@ describe("handleWaitPipelineResult — gate_pending", () => {
     seedPortValue(db, aD, "pipelineDesign", "pipelineName", "My Gate Pipeline");
     seedPortValue(db, aD, "pipelineDesign", "description", "A design description");
 
+    // Seed an unanswered gate_queue row — required for the wait to settle
+    // as gate_pending after Finding 2 fix (history-replay guard).
+    const gateAttempt = seedAttempt(db, taskId, versionHash, "awaitingConfirm");
+    db.prepare(
+      `INSERT INTO gate_queue (gate_id, task_id, stage_name, attempt_id, question_json, created_at)
+       VALUES ('g1', ?, 'awaitingConfirm', ?, '{"text":"approve?"}', ?)`,
+    ).run(taskId, gateAttempt, Date.now());
+
     broadcaster.publish({
       taskId,
       timestamp: new Date().toISOString(),
@@ -393,6 +401,52 @@ describe("handleWaitPipelineResult — gate_pending", () => {
     // pipelineDesign snapshot should contain the seeded ports
     expect(typeof res.gateContext.pipelineDesign).toBe("object");
     expect((res.gateContext.pipelineDesign as any).pipelineName).toBe("My Gate Pipeline");
+  });
+
+  it("ignores history-replayed stage_executing for an already-answered gate (Finding 2 regression)", async () => {
+    // Dogfood Finding 2 (2026-04-25): broadcaster.subscribe replays event
+    // history. After answer_gate fires, the historical stage_executing for
+    // that gate is still in the broadcaster's buffer. Pre-fix wait would
+    // re-settle on the replayed event, returning gate_pending for a gate
+    // the user already approved/rejected. Post-fix: the wait queries
+    // gate_queue for an unanswered row before settling; an answered gate
+    // gets ignored and wait keeps blocking for the next terminal event
+    // (or running on timeout).
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const taskId = "task-gate-answered";
+    const ir = realIR();
+
+    const versionHash = "test-vh-gate-answered";
+    db.prepare(
+      `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+       VALUES (?, 'test', ?, NULL, '{}', '')`,
+    ).run(versionHash, Date.now());
+
+    // Seed an ANSWERED gate_queue row — represents a gate that user has
+    // already approved.
+    const gateAttempt = seedAttempt(db, taskId, versionHash, "awaitingConfirm");
+    db.prepare(
+      `INSERT INTO gate_queue (gate_id, task_id, stage_name, attempt_id, question_json, answer, answered_at, created_at)
+       VALUES ('g1', ?, 'awaitingConfirm', ?, '{"text":"approve?"}', 'approve', ?, ?)`,
+    ).run(taskId, gateAttempt, Date.now(), Date.now() - 1000);
+
+    // Replay the historical stage_executing for the gate — pre-fix this
+    // would settle wait as gate_pending.
+    broadcaster.publish({
+      taskId,
+      timestamp: new Date().toISOString(),
+      type: "stage_executing",
+      data: { stage: "awaitingConfirm" } as any,
+    });
+
+    const res = await handleWaitPipelineResult({ taskId, timeoutMs: 1000 }, { db, broadcaster, ir });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error();
+    // Should fall through to timeout → status: "running" (or "done" if
+    // a terminal event arrives), NOT gate_pending.
+    expect(res.status).not.toBe("gate_pending");
+    expect(res.status).toBe("running");
   });
 
   it("ignores stage_executing for non-gate stage (falls through to timeout)", async () => {

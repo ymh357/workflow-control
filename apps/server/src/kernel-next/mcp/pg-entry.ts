@@ -70,7 +70,11 @@ export interface PgEntryDeps {
   tscPath?: string;
 }
 
-const MAX_DESCRIPTION_LEN = 8000;
+// Raised from 8000 → 64000 on 2026-04-25. Real dogfood task descriptions
+// for complex pipelines (e.g., a multi-atom research methodology spec)
+// commonly exceed 8000 chars. 64000 is comfortably within Claude's
+// context window while still bounding adversarial / accidental abuse.
+const MAX_DESCRIPTION_LEN = 64000;
 
 export async function handleStartPipelineGenerator(
   input: StartPipelineGeneratorInput,
@@ -385,6 +389,29 @@ export async function handleWaitPipelineResult(
         const data = ev.data as StageExecutingData;
         const stage = deps.ir.stages.find((s) => s.name === data.stage);
         if (stage && stage.type === "gate") {
+          // Dogfood Finding 2 (2026-04-25): broadcaster.subscribe replays
+          // history. A gate that has already been answered will replay its
+          // historical `stage_executing` event when wait subscribes. Without
+          // this guard, the wait settles synchronously on the stale event
+          // (status="gate_pending" gateName=<that gate>), even though the
+          // task is past the gate and running downstream stages. Real status
+          // (running) and replayed status (gate_pending) disagreed and
+          // confused both monitors and humans. Check gate_queue for an
+          // unanswered row before settling — only a genuinely-open gate
+          // counts.
+          const pendingGate = deps.db
+            .prepare(
+              `SELECT 1 FROM gate_queue
+                WHERE task_id = ? AND stage_name = ? AND answer IS NULL
+                LIMIT 1`,
+            )
+            .get(input.taskId, data.stage);
+          if (!pendingGate) {
+            // Gate has been answered (or no gate_queue row exists for it,
+            // which would be a kernel inconsistency); ignore this replayed
+            // event and keep waiting for the next terminal event.
+            return;
+          }
           const pipelineDesignSnapshot = collectStagePorts(deps.db, input.taskId, "pipelineDesign");
           settle({
             ok: true,

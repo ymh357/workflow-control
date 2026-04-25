@@ -108,6 +108,22 @@ export function buildSystemPromptAppend(
     // Per-stage content (Inputs, Task, Output protocol, Identity,
     // CRITICAL RULES) MUST be re-emitted: output ports differ per
     // stage; SDK needs explicit write_port instructions every turn.
+    //
+    // TODO(future, app-level summary): once a single-session segment
+    // grows long (n stages, each with multi-KB reads), the continuation
+    // prompt re-injects every input again — even though the SDK has
+    // already seen the upstream stage's writes in conversation history.
+    // We could let each stage emit a structured `summary` write
+    // alongside its real outputs (declared via store_schema) and have
+    // downstream stages read the summary instead of the full upstream
+    // payload. Trigger condition: cumulative inputDump size > N tokens
+    // OR cache_read regression observed in v_segment_continuity. Not
+    // doing now — current continuation form is already cache-friendly
+    // (Anthropic prompt cache hits the repeated preamble/identity
+    // block) and dogfood evidence shows token_input on continuation
+    // stages is double-digit. Revisit when a real pipeline shows the
+    // problem.
+
     return [
       "### Inputs",
       inputDump,

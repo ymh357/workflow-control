@@ -565,4 +565,183 @@ describe("runner: single-session segment plumbing", () => {
     expect(result).toBeUndefined();
     db.close();
   });
+
+  it("hot-update: superseded v1 session does NOT leak into v2 segment continuation", () => {
+    // Hot-update invariant: when v1 stage `a` was superseded by a
+    // hot-update that introduced v2 with a fresh `a`, v2 stage `b` must
+    // resume v2's a session — never v1's superseded one. This is the
+    // status-filter invariant applied to the cross-version path.
+    //
+    // Note: segmentContinuationFor's SQL is task+stage+status scoped
+    // (no version_hash filter); this is intentional, since the IR
+    // passed in is always the running version's IR. The hot-update
+    // path's correctness depends on the v1 attempt being marked
+    // 'superseded' before v2's stage `b` runs, which is exactly what
+    // migration-orchestrator's supersede transaction does.
+    const ir = PipelineIRSchema.parse({
+      name: "hot-update-cross-version",
+      session_mode: "single",
+      externalInputs: [{ name: "seed", type: "string" }],
+      stages: [
+        {
+          name: "a", type: "agent",
+          inputs: [{ name: "seed", type: "string" }],
+          outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "p/a" },
+        },
+        {
+          name: "b", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "y", type: "string" }],
+          config: { promptRef: "p/b-v2" },
+        },
+      ],
+      wires: [
+        { from: { source: "external", port: "seed" }, to: { stage: "a", port: "seed" } },
+        { from: { source: "stage", stage: "a", port: "x" }, to: { stage: "b", port: "x" } },
+      ],
+    });
+
+    const db = makeDb();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const taskId = "t-hot-update";
+    const v1Hash = "v1-hash";
+    const v2Hash = hash;
+
+    db.prepare(
+      `INSERT OR IGNORE INTO prompt_contents (content_hash, content, created_at) VALUES ('h', '', 0)`,
+    ).run();
+
+    // v2 a: ran first chronologically (started_at=100), succeeded.
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES ('v2-a', ?, ?, 'a', 1, 100, 'success')`,
+    ).run(taskId, v2Hash);
+    db.prepare(
+      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at) VALUES ('v2-a', 'r', 'h', '', 'm', 'v2-a-sess', 100, 100)`,
+    ).run();
+
+    // v1 a: a stale superseded attempt, started LATER (started_at=200).
+    // Without the status filter, the SQL `ORDER BY started_at DESC LIMIT 1`
+    // would pick this one — wrong, because the v1 session's prompt no
+    // longer matches the v2 IR being executed. Status filter is the
+    // only thing that prevents the leak; this row layout makes the
+    // test fail if the filter is ever removed.
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES ('v1-a', ?, ?, 'a', 0, 200, 'superseded')`,
+    ).run(taskId, v1Hash);
+    db.prepare(
+      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at) VALUES ('v1-a', 'r', 'h', '', 'm', 'v1-a-sess', 200, 200)`,
+    ).run();
+
+    const segments = planSegments(ir);
+    const stubOpts = {
+      db, ir, taskId, versionHash: v2Hash, handlers: {},
+    } as Parameters<typeof segmentContinuationFor>[0];
+
+    const result = segmentContinuationFor(stubOpts, "b", taskId, ir, segments);
+    expect(result?.resumeSessionId).toBe("v2-a-sess");
+    db.close();
+  });
+
+  it("hot-update: sibling-preservation diamond — D resumes any wire-upstream success session", () => {
+    // Diamond IR: A → B, A → C, B → D, C → D. Hot-update with rerunFrom=B
+    // supersedes B and D (wire-reachable from B), but A and C stay
+    // success on v1 (B13 sibling preservation). When v2 rerun reaches
+    // D, D's segmentContinuationFor must find a resumable session via
+    // the wire-upstream BFS — either v2 B's session or one of A/C's
+    // (any success ancestor is acceptable per spec §3 cross-segment
+    // resume).
+    //
+    // We assert resumeSessionId is set (non-undefined) and is one of
+    // the known persisted sessions, rather than pinning to a specific
+    // ancestor — the BFS visits in queue order which is an
+    // implementation detail.
+    const ir = PipelineIRSchema.parse({
+      name: "diamond-hot-update",
+      session_mode: "single",
+      externalInputs: [{ name: "seed", type: "string" }],
+      stages: [
+        {
+          name: "A", type: "agent",
+          inputs: [{ name: "seed", type: "string" }],
+          outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "p/A" },
+        },
+        {
+          name: "B", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "yB", type: "string" }],
+          config: { promptRef: "p/B-v2" },
+        },
+        {
+          name: "C", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "yC", type: "string" }],
+          config: { promptRef: "p/C" },
+        },
+        {
+          name: "D", type: "agent",
+          inputs: [
+            { name: "yB", type: "string" },
+            { name: "yC", type: "string" },
+          ],
+          outputs: [{ name: "final", type: "string" }],
+          config: { promptRef: "p/D-v2" },
+        },
+      ],
+      wires: [
+        { from: { source: "external", port: "seed" }, to: { stage: "A", port: "seed" } },
+        { from: { source: "stage", stage: "A", port: "x" }, to: { stage: "B", port: "x" } },
+        { from: { source: "stage", stage: "A", port: "x" }, to: { stage: "C", port: "x" } },
+        { from: { source: "stage", stage: "B", port: "yB" }, to: { stage: "D", port: "yB" } },
+        { from: { source: "stage", stage: "C", port: "yC" }, to: { stage: "D", port: "yC" } },
+      ],
+    });
+
+    const db = makeDb();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const taskId = "t-diamond-hu";
+    const v1 = "v1-hash";
+    const v2 = hash;
+
+    db.prepare(
+      `INSERT OR IGNORE INTO prompt_contents (content_hash, content, created_at) VALUES ('h', '', 0)`,
+    ).run();
+
+    // v1: A success (preserved), B superseded, C success (preserved),
+    //     D superseded. v2: B and D rerun successfully.
+    const seed = (id: string, vhash: string, stage: string, status: string, ts: number, sess: string): void => {
+      db.prepare(
+        `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES (?, ?, ?, ?, 0, ?, ?)`,
+      ).run(id, taskId, vhash, stage, ts, status);
+      db.prepare(
+        `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at) VALUES (?, 'r', 'h', '', 'm', ?, ?, ?)`,
+      ).run(id, sess, ts, ts);
+    };
+    // Layout chronology so pre-status-filter SQL (ORDER BY started_at
+    // DESC LIMIT 1) would pick the superseded v1 rows instead of the
+    // v2 success ones. v2-B runs first (200), then v1's superseded
+    // rows are *more recent* (300+) — only the status filter prevents
+    // them from being chosen.
+    seed("v2-B", v2, "B", "success",    200, "sess-B-new");
+    seed("v1-A", v1, "A", "success",    100, "sess-A");
+    seed("v1-C", v1, "C", "success",    150, "sess-C");
+    seed("v1-B", v1, "B", "superseded", 300, "sess-B-old");
+    seed("v1-D", v1, "D", "superseded", 310, "sess-D-old");
+
+    const segments = planSegments(ir);
+    const stubOpts = {
+      db, ir, taskId, versionHash: v2, handlers: {},
+    } as Parameters<typeof segmentContinuationFor>[0];
+
+    const result = segmentContinuationFor(stubOpts, "D", taskId, ir, segments);
+    // D must resume SOME ancestor session — never the superseded ones.
+    expect(result?.resumeSessionId).toBeDefined();
+    const eligible = new Set(["sess-A", "sess-C", "sess-B-new"]);
+    expect(eligible.has(result!.resumeSessionId)).toBe(true);
+    expect(["sess-B-old", "sess-D-old"]).not.toContain(result?.resumeSessionId);
+    db.close();
+  });
 });

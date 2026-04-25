@@ -62,7 +62,19 @@ function emitStage(stage: StageIR): string[] {
   const lines: string[] = [];
   lines.push(`  export namespace ${stage.name} {`);
   lines.push(...emitPortBlock(stage.inputs, "Inputs"));
-  lines.push(...emitPortBlock(stage.outputs, "Outputs"));
+  // Gate stages have an implicit kernel-emitted `__gate_feedback__` output
+  // carrying the user's reject comment (or empty string on approve). The
+  // structural validator (validator/structural.ts:283) already special-cases
+  // this port as a builtin output. Codegen must mirror that — without the
+  // declaration, any wire from `<gate>.__gate_feedback__` to an upstream
+  // input fails tsc with TS2339, then surfaces as WIRE_TYPE_MISMATCH at
+  // submit time. This is the canonical pattern for gate-reject-feedback
+  // loops; do not require IR authors to declare it manually.
+  const synthesizedOutputs =
+    stage.type === "gate"
+      ? [...stage.outputs, { name: "__gate_feedback__", type: "string" } as PortIR]
+      : stage.outputs;
+  lines.push(...emitPortBlock(synthesizedOutputs, "Outputs"));
   lines.push(`  }`);
   return lines;
 }

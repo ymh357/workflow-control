@@ -444,6 +444,21 @@ export class RealStageExecutor implements StageExecutor {
         ? new DeltaThrottler(this.broadcaster, taskId, attemptId, stageName)
         : null;
 
+      // Synthetic heartbeat ping (dogfood Finding 8, 2026-04-26).
+      // SDK thinking time emits no stream events; without this ping the
+      // writer's last_heartbeat_at freezes for the duration of the think
+      // (sometimes minutes). Monitors that watch heartbeat for liveness
+      // then false-positive-cancel the agent. Ticking every 30s keeps
+      // last_heartbeat_at moving regardless of stream activity, so the
+      // signal reflects "agent process is alive" rather than "agent is
+      // emitting tokens".
+      const heartbeatTimer = setInterval(() => {
+        try { writer.heartbeat(); } catch { /* writer may be closed mid-tick */ }
+      }, 30_000);
+      // Don't keep the event loop alive on an idle interval if the test
+      // harness has no other handles open.
+      heartbeatTimer.unref?.();
+
       let agentOutput: AgentMachineOutput;
       try {
         // Stream pump extracted to stream-pump.ts so A2.3.2 can reuse it
@@ -653,6 +668,7 @@ export class RealStageExecutor implements StageExecutor {
           },
         });
       } finally {
+        clearInterval(heartbeatTimer);
         if (args.signal) args.signal.removeEventListener("abort", onAbort);
         // Always stop the actor — even on adapter/stream errors or waitFor
         // timeout. Otherwise XState keeps a subscription alive and a later

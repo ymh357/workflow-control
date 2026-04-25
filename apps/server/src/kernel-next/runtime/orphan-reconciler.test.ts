@@ -108,6 +108,83 @@ describe("classifyOrphan", () => {
     const cls = classifyOrphan(db, "t1");
     expect(cls.kind).toBe("terminal");
   });
+
+  it("topo sort skips gate-feedback edges so a pipeline with reject-loop wires has a real root", async () => {
+    // Regression for 2026-04-26 dogfood Finding 12: pipeline-generator's
+    // own IR has a wire `awaitingConfirm.__gate_feedback__ → analyzing.rejectionFeedback`
+    // (the canonical reject-feedback loop). Without skipping that edge,
+    // the topo sort sees a cycle (analyzing → awaitingConfirm → analyzing),
+    // every stage's inDegree becomes ≥1, the initial topo queue is empty,
+    // and `firstPending` is undefined → classifyOrphan returns `terminal`
+    // → boot reconciler writes task_finals(completed/natural) over a task
+    // whose work is genuinely incomplete. Here we hand-build a 3-stage IR
+    // that mirrors that topology and assert classify still returns resume.
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    // Hand-build a pipeline: scope (agent) → confirm (gate) → next (agent)
+    // with a feedback wire confirm.__gate_feedback__ → scope.feedbackInput
+    const ir = {
+      name: "feedback-loop-pipeline",
+      externalInputs: [{ name: "seed", type: "string" }],
+      stages: [
+        {
+          name: "scope",
+          type: "agent" as const,
+          inputs: [
+            { name: "seed", type: "string" },
+            { name: "feedbackInput", type: "string" },
+          ],
+          outputs: [{ name: "result", type: "string" }],
+          config: { promptRef: "p/scope" },
+        },
+        {
+          name: "confirm",
+          type: "gate" as const,
+          inputs: [{ name: "__gate_signal", type: "unknown" }],
+          outputs: [],
+          config: {
+            question: { text: "approve?" },
+            routing: { routes: { approve: "next", reject: "scope" } },
+          },
+        },
+        {
+          name: "next",
+          type: "agent" as const,
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "y", type: "string" }],
+          config: { promptRef: "p/next" },
+        },
+      ],
+      wires: [
+        { from: { source: "external" as const, port: "seed" }, to: { stage: "scope", port: "seed" } },
+        { from: { source: "stage" as const, stage: "scope", port: "result" }, to: { stage: "confirm", port: "__gate_signal" } },
+        { from: { source: "stage" as const, stage: "scope", port: "result" }, to: { stage: "next", port: "x" } },
+        // The reject-feedback wire that creates the apparent cycle:
+        { from: { source: "stage" as const, stage: "confirm", port: "__gate_feedback__" }, to: { stage: "scope", port: "feedbackInput" } },
+      ],
+    };
+    const sub = await svc.submit(ir, { prompts: { "p/scope": "x", "p/next": "x" } });
+    if (!sub.ok) throw new Error("submit: " + JSON.stringify(sub.diagnostics));
+
+    const vh = sub.versionHash;
+    const now = Date.now();
+    // scope succeeded, confirm gate succeeded, next NOT run yet.
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, version_hash, kind, status, started_at)
+       VALUES ('a1','t1','scope',0,?,'regular','success',?)`,
+    ).run(vh, now);
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, version_hash, kind, status, started_at)
+       VALUES ('a2','t1','confirm',0,?,'regular','success',?)`,
+    ).run(vh, now + 1);
+
+    const cls = classifyOrphan(db, "t1");
+    expect(cls.kind).toBe("resume");
+    if (cls.kind === "resume") {
+      expect(cls.resumeFrom).toBe("next");
+    }
+  });
 });
 
 describe("lookupResumeSessionId", () => {

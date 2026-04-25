@@ -190,4 +190,58 @@ describe("emitPipelineModule with externalInputs", () => {
     expect(source).not.toMatch(/__external__\.Outputs\["ctx"\]\)\[0\]/);
     expect(source).not.toMatch(/\[null as unknown as __external__/);
   });
+
+  it("gate stages auto-emit __gate_feedback__ in generated Outputs interface", () => {
+    // Regression for 2026-04-25 dogfood Finding 5: pipeline-generator
+    // produced an IR with a wire `gate.__gate_feedback__ → upstream.rejectionFeedback`
+    // (the canonical kernel-next pattern for gate-reject-with-comment).
+    // Validator (structural.ts:283) accepts this — but emit-ts didn't put
+    // `__gate_feedback__` in the gate's generated Outputs interface, so
+    // tsc reported TS2339 ("Property '__gate_feedback__' does not exist
+    // on type 'Outputs'"), which submit_pipeline mapped to
+    // WIRE_TYPE_MISMATCH. The blocked the entire web3-research pipeline
+    // generation. Codegen must mirror what the validator already trusts
+    // as a builtin gate output.
+    const ir: PipelineIR = {
+      name: "g",
+      stages: [
+        { name: "scope", type: "agent",
+          inputs: [{ name: "task", type: "string" }, { name: "rejectionFeedback", type: "string" }],
+          outputs: [{ name: "out", type: "string" }],
+          config: { promptRef: "p" } },
+        { name: "approval", type: "gate",
+          inputs: [{ name: "__gate_signal", type: "unknown" }],
+          outputs: [],
+          config: {
+            question: { text: "approve?" },
+            routing: { routes: { approve: "next", reject: "scope" } },
+          } },
+      ],
+      wires: [
+        { from: { stage: "scope", port: "out" }, to: { stage: "approval", port: "__gate_signal" } },
+        { from: { stage: "approval", port: "__gate_feedback__" }, to: { stage: "scope", port: "rejectionFeedback" } },
+      ],
+    };
+    const { source } = emitPipelineModule(ir);
+    // The gate's generated Outputs interface now contains __gate_feedback__.
+    expect(source).toMatch(/export namespace approval \{[\s\S]+__gate_feedback__: string;/);
+    // The wire from gate.__gate_feedback__ now type-checks because the
+    // declaration exists. (Full tsc run is exercised by validator/types.ts
+    // integration tests; this unit test only checks the codegen emits the
+    // right TS source.)
+    expect(source).toContain("__wire__approval___gate_feedback____TO__scope_rejectionFeedback__");
+  });
+
+  it("non-gate stages do NOT receive __gate_feedback__ in their Outputs", () => {
+    const ir: PipelineIR = {
+      name: "n",
+      stages: [
+        { name: "X", type: "agent", inputs: [], outputs: [{ name: "y", type: "string" }], config: { promptRef: "p" } },
+      ],
+      wires: [],
+    };
+    const { source } = emitPipelineModule(ir);
+    // Agent stage X must not have __gate_feedback__ (it's not a gate).
+    expect(source).not.toMatch(/export namespace X \{[\s\S]+__gate_feedback__/);
+  });
 });

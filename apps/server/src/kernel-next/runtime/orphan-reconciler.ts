@@ -210,6 +210,14 @@ function topologicalStageOrder(ir: PipelineIR): string[] {
   // is good enough for orphan classification.
   for (const w of ir.wires ?? []) {
     if (!("stage" in w.from)) continue;
+    // Skip gate-feedback wires (`<gate>.__gate_feedback__ → <upstream>.rejectionFeedback`).
+    // These are reject-loop edges that do NOT participate in the forward DAG;
+    // including them as forward edges creates spurious cycles and zeros out
+    // every stage's "is a topological root" candidacy, leaving the topo sort
+    // empty — which classifyOrphan then misreads as "no pending stages =
+    // terminal." Mirrors `validator/dag.ts:44` which excludes the same edge
+    // class from cycle detection. Dogfood Finding 12 (2026-04-26).
+    if (w.from.port === "__gate_feedback__") continue;
     const from = w.from.stage;
     const to = w.to.stage;
     if (!adj.has(from) || !inDegree.has(to)) continue;

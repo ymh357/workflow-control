@@ -210,7 +210,16 @@ interface ExecuteStageInvokeInput {
 // the runner threw mid-agent-turn and only the first stage's DB rows
 // survived, which — pre-task_finals (P6-1) — looked like success to
 // the status endpoint.
-export const DEFAULT_RUN_TIMEOUT_MS = 30 * 60 * 1000;
+//
+// Raised from 30min → 90min on 2026-04-25 (dogfood Finding 6). Real-world
+// pipeline-generator runs against complex specs (37K-char input) routinely
+// blow past 30min: analyzing alone burns 9-10 min, persisting agent under
+// retry pressure can spend 15-20 min iterating on submit_pipeline diagnostics.
+// Per-stage `max_turns` and `max_budget_usd` already cap individual stage
+// cost; the global wall-clock ceiling is here to catch wedged runners,
+// not to enforce stage-level budgets. 90min is comfortably above the
+// observed worst case while still preventing forever-stuck tasks.
+export const DEFAULT_RUN_TIMEOUT_MS = 90 * 60 * 1000;
 
 export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_TIMEOUT_MS): Promise<RunResult> {
   const executor: StageExecutor =
