@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { canonicalJSON, versionHash } from "./canonical.js";
+import { canonicalJSON, canonicalizeIR, versionHash } from "./canonical.js";
 import type { PipelineIR } from "./schema.js";
 
 
@@ -332,6 +332,47 @@ describe("canonicalizeIR gate routing widening", () => {
     const canonXY = canonicalJSON(makeIR(["X", "Y"]));
     expect(canonYX).toBe(canonXY);
     expect(canonXY).toContain('"approve":["X","Y"]');
+  });
+});
+
+describe("canonical: cross_segment_resume_from", () => {
+  it("absent → byte-identical to a pre-pivot agent stage canonical form", () => {
+    const without = canonicalizeIR({
+      name: "p",
+      stages: [
+        { name: "a", type: "agent", inputs: [], outputs: [],
+          config: { promptRef: "p" } },
+      ],
+      wires: [],
+    });
+    // Snapshot the canonical without the new field; nothing should
+    // mention cross_segment_resume_from at all.
+    expect(JSON.stringify(without)).not.toContain("cross_segment_resume_from");
+  });
+
+  it("present → field appears in canonical form and shifts hash", () => {
+    const without = canonicalizeIR({
+      name: "p",
+      stages: [
+        { name: "a", type: "agent", inputs: [], outputs: [],
+          config: { promptRef: "p" } },
+        { name: "b", type: "agent", inputs: [], outputs: [],
+          config: { promptRef: "p" } },
+      ],
+      wires: [],
+    });
+    const withField = canonicalizeIR({
+      name: "p",
+      stages: [
+        { name: "a", type: "agent", inputs: [], outputs: [],
+          config: { promptRef: "p" } },
+        { name: "b", type: "agent", inputs: [], outputs: [],
+          config: { promptRef: "p", cross_segment_resume_from: "a" } },
+      ],
+      wires: [],
+    });
+    expect(JSON.stringify(withField)).toContain("cross_segment_resume_from");
+    expect(JSON.stringify(withField)).not.toBe(JSON.stringify(without));
   });
 });
 

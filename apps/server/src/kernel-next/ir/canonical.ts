@@ -115,6 +115,13 @@ function canonicalizeAgentConfig(cfg: AgentStage["config"]): CanonicalValue {
         return server;
       });
   }
+  // 2026-04-26 pivot: cross_segment_resume_from is included in the
+  // canonical form only when present, preserving hash stability for
+  // every pre-pivot IR fixture (their canonical agent config does not
+  // mention the field).
+  if (cfg.cross_segment_resume_from !== undefined) {
+    out.cross_segment_resume_from = cfg.cross_segment_resume_from;
+  }
   return sortKeys(out);
 }
 
