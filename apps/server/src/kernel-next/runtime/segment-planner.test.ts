@@ -180,6 +180,26 @@ describe("planSegments", () => {
     expect(planSegments(ir)).toEqual([["a", "b"]]);
   });
 
+  it("respects wire topology, not ir.stages array order (regression: smoke-test)", () => {
+    // Real bug from 2026-04-25 dogfood: smoke-test's pipeline.ir.json
+    // listed echoBack BEFORE greet in the stages array, even though
+    // greet is the upstream producer. A naive walk in array order
+    // produced [["echoBack"],["greet"]] (two size-1 segments) instead
+    // of one merged [["greet","echoBack"]] segment, defeating
+    // single-session continuation.
+    const ir = {
+      name: "p",
+      session_mode: "single" as const,
+      stages: [
+        // Downstream stage listed FIRST — this is what tripped the bug.
+        agentStage("echoBack", ["x"], []),
+        agentStage("greet", [], ["x"]),
+      ],
+      wires: [wire("greet", "x", "echoBack", "x")],
+    } as PipelineIR;
+    expect(planSegments(ir)).toEqual([["greet", "echoBack"]]);
+  });
+
   it("agent with upstream script (only) starts new segment in single mode", () => {
     const ir = {
       name: "p",

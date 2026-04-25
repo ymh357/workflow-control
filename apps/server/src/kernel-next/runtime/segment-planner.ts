@@ -62,6 +62,18 @@ export function planSegments(ir: PipelineIR): string[][] {
     if (!list.includes(fromStageName)) list.push(fromStageName);
   }
 
+  // Walk stages in TOPOLOGICAL order, not ir.stages array order. The IR's
+  // stages array reflects authorship order, which the runtime ignores —
+  // execution order is determined by wires. Walking in array order would
+  // mis-segment any pipeline whose IR happens to list a downstream stage
+  // before its upstream (e.g. smoke-test lists `echoBack` before `greet`,
+  // which by file order makes greet look like an orphan and breaks the
+  // continuation merge). Build a Kahn-style topo order using ALL wires
+  // (stage-source AND external) — externals contribute zero in-degree
+  // (no source stage) so they don't affect ordering, and we want every
+  // stage represented even if it has no agent upstream.
+  const topoOrder = topologicalStageOrder(ir);
+
   // Map from stage name → index into `segments`.
   const segmentOf = new Map<string, number>();
   // Tracks stages that have already been consumed as a predecessor by one
@@ -81,7 +93,9 @@ export function planSegments(ir: PipelineIR): string[][] {
   const predecessorConsumed = new Set<string>();
   const segments: string[][] = [];
 
-  for (const stage of ir.stages) {
+  for (const stageName of topoOrder) {
+    const stage = stageByName.get(stageName);
+    if (!stage) continue;
     // Only non-fanout agent stages are eligible to continue or start a
     // merged segment.
     const isEligibleAgent =
@@ -112,4 +126,63 @@ export function planSegments(ir: PipelineIR): string[][] {
   }
 
   return segments;
+}
+
+/**
+ * Produce a topological ordering of stage names from the IR's wires.
+ * Used by planSegments so the segment walk matches runtime execution
+ * order rather than IR-file authorship order. Kahn's algorithm:
+ * compute in-degree from stage-source wires (external wires don't
+ * contribute), repeatedly emit zero-in-degree stages, decrement the
+ * in-degree of their stage-source successors.
+ *
+ * On a cycle (which canonical IR validation should reject upstream),
+ * the remaining stages are appended in IR-file order so the planner
+ * still produces a result rather than throwing — defensive, matches
+ * the "tolerate corrupt IR, don't crash" stance of segmentContinuationFor.
+ */
+function topologicalStageOrder(ir: PipelineIR): string[] {
+  const inDegree = new Map<string, number>();
+  const adjacency = new Map<string, string[]>();
+  for (const s of ir.stages) {
+    inDegree.set(s.name, 0);
+    adjacency.set(s.name, []);
+  }
+  for (const w of ir.wires as WireIR[]) {
+    if (w.from.source === "external") continue;
+    const fromStage = (w.from as { source?: "stage"; stage: string; port: string }).stage;
+    if (!fromStage) continue;
+    if (!inDegree.has(fromStage) || !inDegree.has(w.to.stage)) continue;
+    if (fromStage === w.to.stage) continue;
+    const succs = adjacency.get(fromStage)!;
+    if (!succs.includes(w.to.stage)) {
+      succs.push(w.to.stage);
+      inDegree.set(w.to.stage, (inDegree.get(w.to.stage) ?? 0) + 1);
+    }
+  }
+  const queue: string[] = [];
+  // Seed in IR-file order so two equivalent topological orderings produce
+  // a deterministic, author-friendly tie-breaker.
+  for (const s of ir.stages) {
+    if ((inDegree.get(s.name) ?? 0) === 0) queue.push(s.name);
+  }
+  const out: string[] = [];
+  while (queue.length > 0) {
+    const n = queue.shift()!;
+    out.push(n);
+    for (const next of adjacency.get(n) ?? []) {
+      const d = (inDegree.get(next) ?? 0) - 1;
+      inDegree.set(next, d);
+      if (d === 0) queue.push(next);
+    }
+  }
+  // Cycle / unreachable stages: append in IR-file order so every stage is
+  // represented (planner contract: segments.flat() covers every stage).
+  if (out.length < ir.stages.length) {
+    const seen = new Set(out);
+    for (const s of ir.stages) {
+      if (!seen.has(s.name)) out.push(s.name);
+    }
+  }
+  return out;
 }
