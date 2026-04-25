@@ -99,21 +99,27 @@ export async function executeStage(args: ExecuteStageArgs): Promise<ExecuteStage
  *   - onExecute(args): invoked before each stage delegation; receives
  *     the full ExecuteStageArgs (including segmentContinuation set by
  *     the runner). Used by tests to assert what the runner passed.
- *   - persistSessionIdMap: { stageName: sessionId } — after a stage
- *     succeeds, inserts a synthetic agent_execution_details row with
- *     that session_id, so the runner's segment lookup can resolve
- *     prior-stage session IDs in subsequent stages. Mirrors what
- *     RealStageExecutor does via writer.updateSessionId.
+ *   - persistSessionIdMap: per-stage entry can be a bare session_id
+ *     string (num_turns defaults to 0) or { sessionId, numTurns } so
+ *     multi-stage segment tests can verify segment-wide priorNumTurns
+ *     summing. After a stage succeeds, inserts a synthetic
+ *     agent_execution_details row so the runner's segment lookup can
+ *     resolve prior-stage session IDs in subsequent stages. Mirrors
+ *     what RealStageExecutor does via writer.updateSessionId.
  */
+export type MockSessionPersistEntry =
+  | string
+  | { sessionId: string; numTurns?: number };
+
 export class MockStageExecutor implements StageExecutor {
   private readonly handlers: StageHandlerMap;
   private readonly onExecute?: (args: ExecuteStageArgs) => void;
-  private readonly persistSessionIdMap?: Record<string, string>;
+  private readonly persistSessionIdMap?: Record<string, MockSessionPersistEntry>;
 
   constructor(options: {
     handlers: StageHandlerMap;
     onExecute?: (args: ExecuteStageArgs) => void;
-    persistSessionIdMap?: Record<string, string>;
+    persistSessionIdMap?: Record<string, MockSessionPersistEntry>;
   }) {
     this.handlers = options.handlers;
     this.onExecute = options.onExecute;
@@ -130,9 +136,11 @@ export class MockStageExecutor implements StageExecutor {
     // stage's segmentContinuationFor SQL run before the row is committed.
     // Achieve ordering by running the stage inline and inserting between the
     // handler call and the port writes.
-    const sid = this.persistSessionIdMap?.[args.stageName];
-    if (sid !== undefined) {
-      return this.executeStageWithSessionPersist(args, sid);
+    const entry = this.persistSessionIdMap?.[args.stageName];
+    if (entry !== undefined) {
+      const sessionId = typeof entry === "string" ? entry : entry.sessionId;
+      const numTurns = typeof entry === "string" ? 0 : (entry.numTurns ?? 0);
+      return this.executeStageWithSessionPersist(args, sessionId, numTurns);
     }
 
     return executeStage({
@@ -146,10 +154,19 @@ export class MockStageExecutor implements StageExecutor {
    * Mirrors the top-level executeStage logic but inserts the synthetic
    * agent_execution_details row BEFORE writing ports so the DB is consistent
    * by the time PORT_WRITTEN triggers downstream stage evaluation.
+   *
+   * KNOWN DUPLICATION: ~70 lines of input gathering, handler invocation,
+   * and output filtering are copy-pasted from the top-level `executeStage`
+   * above. The duplication is mock-test-only code and the surface is
+   * narrow (only persistSessionIdMap callers reach this path). A cleaner
+   * factoring would expose a `beforePortWrite?: (attemptId, sessionId)
+   * => void` hook on the top-level executeStage so this becomes a
+   * 3-line wrapper. Deferred — see Task 7 code-review I-1 (2026-04-25).
    */
   private async executeStageWithSessionPersist(
     args: ExecuteStageArgs,
     sessionId: string,
+    numTurns: number,
   ): Promise<ExecuteStageResult> {
     const { ir, stageName, taskId, versionHash, portValues, portRuntime, fanoutElementIdx } = args;
     const handlers = args.handlers ?? this.handlers;
@@ -193,24 +210,35 @@ export class MockStageExecutor implements StageExecutor {
 
     // Insert agent_execution_details BEFORE writing ports so the row is
     // visible to downstream segmentContinuationFor SQL when PORT_WRITTEN
-    // triggers the next stage's invoke.
+    // triggers the next stage's invoke (XState dispatches synchronously).
     const db = portRuntime.getDb();
     const now = Date.now();
     db.prepare(
       `INSERT OR IGNORE INTO prompt_contents (content_hash, content, created_at)
        VALUES (?, ?, ?)`,
     ).run("mock-hash", "(mock)", now);
-    try {
-      db.prepare(
-        `INSERT INTO agent_execution_details (
-           attempt_id, prompt_ref, prompt_content_hash, prompt_content,
-           model, session_id, started_at, last_heartbeat_at,
-           tool_calls_json, agent_stream_json, compact_events_json
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', '[]', '[]')`,
-      ).run(attemptId, "mock-ref", "mock-hash", "(mock)", "mock-model", sessionId, now, now);
-    } catch {
-      // Best-effort — visible failure during lookup is the correct diagnostic.
-    }
+    // Build a synthetic agent_stream_json containing one result message
+    // with the requested num_turns, so segment-wide priorNumTurns sums
+    // correctly in tests that exercise multi-stage segments.
+    const streamBlob = JSON.stringify(
+      numTurns > 0
+        ? [{ type: "result", subtype: "success", num_turns: numTurns, session_id: sessionId }]
+        : [],
+    );
+    // No try/catch: any FK / NOT NULL violation here is a real bug in the
+    // mock helper, and surfacing it as a thrown SQLite error is the correct
+    // diagnostic — silently swallowing would produce confusing
+    // "expected sess-X, got undefined" failures elsewhere.
+    db.prepare(
+      `INSERT INTO agent_execution_details (
+         attempt_id, prompt_ref, prompt_content_hash, prompt_content,
+         model, session_id, started_at, last_heartbeat_at,
+         tool_calls_json, agent_stream_json, compact_events_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', ?, '[]')`,
+    ).run(
+      attemptId, "mock-ref", "mock-hash", "(mock)", "mock-model",
+      sessionId, now, now, streamBlob,
+    );
 
     // Write declared outputs (triggers PORT_WRITTEN → machine evaluates next stage).
     const declaredOutPorts = new Set(stage.outputs.map((p) => p.name));
