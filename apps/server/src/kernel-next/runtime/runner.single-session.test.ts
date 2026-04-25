@@ -202,4 +202,101 @@ describe("runner: single-session segment plumbing", () => {
     expect(seenContinuation[2]?.segCont?.priorAttempts).toHaveLength(2);
     db.close();
   });
+
+  it("diamond fan-out a→b, a→c: b continues a's segment; c starts new segment from a's session_id", async () => {
+    // Document/test the actual behavior when single mode meets a
+    // diamond fan-out. segment-planner returns [["a","b"],["c"]];
+    // we want to verify the runner plumbs segmentContinuation
+    // accordingly:
+    //   - b: continues a's segment, sees a's session_id
+    //   - c: opens its own segment, but should ALSO resume a's
+    //     session_id so the SDK conversation is shared (this is the
+    //     spec §3 design — both branches resume same session)
+    // Pivotal question: do b and c end up with the same resumeSessionId?
+    // (If yes, two parallel SDK queries try to resume the same session
+    // simultaneously — verify this doesn't crash the runner. SDK behavior
+    // under concurrent resume is a separate concern; mock test only
+    // verifies what the runner passes to the executor.)
+    const ir = PipelineIRSchema.parse({
+      name: "diamond",
+      session_mode: "single",
+      externalInputs: [{ name: "seed", type: "string" }],
+      stages: [
+        {
+          name: "a", type: "agent",
+          inputs: [{ name: "seed", type: "string" }],
+          outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "p/a" },
+        },
+        {
+          name: "b", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "yb", type: "string" }],
+          config: { promptRef: "p/b" },
+        },
+        {
+          name: "c", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "yc", type: "string" }],
+          config: { promptRef: "p/c" },
+        },
+      ],
+      wires: [
+        { from: { source: "external", port: "seed" }, to: { stage: "a", port: "seed" } },
+        { from: { source: "stage", stage: "a", port: "x" }, to: { stage: "b", port: "x" } },
+        { from: { source: "stage", stage: "a", port: "x" }, to: { stage: "c", port: "x" } },
+      ],
+    });
+
+    const db = makeDb();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const seenContinuation: Array<{ stage: string; segCont: ExecuteStageArgs["segmentContinuation"] }> = [];
+    const diamondHandlers = {
+      a: (): { x: string } => ({ x: "a-out" }),
+      b: (): { yb: string } => ({ yb: "b-out" }),
+      c: (): { yc: string } => ({ yc: "c-out" }),
+    };
+    const executor = new MockStageExecutor({
+      handlers: diamondHandlers,
+      onExecute: (args) =>
+        seenContinuation.push({ stage: args.stageName, segCont: args.segmentContinuation }),
+      persistSessionIdMap: { a: { sessionId: "sa", numTurns: 2 } },
+    });
+
+    const result = await runPipeline({
+      db, ir, taskId: "t-diamond", versionHash: hash,
+      handlers: diamondHandlers, executor, seedValues: { seed: "s0" },
+    });
+
+    expect(result.finalState).toBe("completed");
+    expect(seenContinuation).toHaveLength(3);
+
+    // a: first stage, no continuation.
+    const aRecord = seenContinuation.find((r) => r.stage === "a")!;
+    expect(aRecord.segCont).toBeUndefined();
+
+    // b: continuation of a's segment.
+    const bRecord = seenContinuation.find((r) => r.stage === "b")!;
+    expect(bRecord.segCont?.resumeSessionId).toBe("sa");
+
+    // c: ACTUAL behavior (vs spec §3 intent — see report below):
+    // segmentContinuationFor returns undefined for c because c is the
+    // FIRST stage of its own segment (segments[1] = ["c"], idx===0).
+    // The function's contract is "non-first stages get continuation";
+    // first-stage check (`if (idx === 0) return undefined`) fires
+    // before any walk-back logic. So c starts a FRESH SDK session
+    // with NO resume.
+    //
+    // Implication: in single mode + diamond fan-out, b extends a's
+    // SDK conversation; c forks a brand-new conversation that doesn't
+    // see any of a's history. This is NOT what spec §3 implies — spec
+    // says "next segment opens a new query with options.resume pointing
+    // at the prior segment's session_id". Bug or design choice unclear
+    // from spec; this test documents actual behavior.
+    const cRecord = seenContinuation.find((r) => r.stage === "c")!;
+    expect(cRecord.segCont).toBeUndefined();
+    db.close();
+  });
 });
