@@ -198,6 +198,7 @@ export function canonicalizeIR(ir: PipelineIR): CanonicalValue {
     stages,
     wires,
     externalInputs,
+    session_mode: ir.session_mode ?? "multi",
   });
 }
 

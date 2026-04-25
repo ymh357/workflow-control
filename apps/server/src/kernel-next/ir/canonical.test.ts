@@ -126,21 +126,19 @@ describe("canonical IR", () => {
 describe("canonical IR backward-compat (externalInputs extension)", () => {
   it("preserves diamondIR versionHash when externalInputs is absent", async () => {
     const { diamondIR } = await import("../generator-mock/mini-generator.js");
-    // Baseline captured 2026-04-20 before canonical.ts was touched.
-    // If this fails: canonicalizeIR changed the canonical form for
-    // legacy fixtures — roll back.
-    const BASELINE = "d3c934a0e6778cfdbae40af7a6a33de85103153a74eea234520963fa7637597b";
+    // Baseline re-baselined 2026-04-25 Task 2: session_mode now participates in canonical form.
+    // Previous baseline: d3c934a0e6778cfdbae40af7a6a33de85103153a74eea234520963fa7637597b
+    const BASELINE = "587070ebbd0d735e076c680a5eeb289d1abf3b055a554c750e429bda3e84c125";
     expect(versionHash(diamondIR())).toBe(BASELINE);
   });
 
-  it("smokeTestIR versionHash stays canonical across serialization (re-baselined 2026-04-23 post P6-4)", async () => {
+  it("smokeTestIR versionHash stays canonical across serialization (re-baselined 2026-04-25 Task 2)", async () => {
     const { smokeTestIR } = await import("../builtins/smoke-test.js");
-    // P6-4 fix: smoke-test added externalInputs + wire into
-    // greet.task_text. Baseline updated from the pre-fix value
-    // 2c989597… to the post-fix hash below. If this fails without a
-    // deliberate IR change, canonicalizeIR may have drifted; roll
-    // back the canonical change or update the baseline explicitly.
-    const BASELINE = "bb6511f796ede71a3b131b1eb7ed5d6e913b4963fdf822d8f3c004fcbbd9038e";
+    // Task 2: session_mode now participates in canonical form.
+    // Previous baseline: bb6511f796ede71a3b131b1eb7ed5d6e913b4963fdf822d8f3c004fcbbd9038e
+    // If this fails without a deliberate IR change, canonicalizeIR may have
+    // drifted; roll back the canonical change or update the baseline explicitly.
+    const BASELINE = "c9f051f1774171291161d9c8a041cf6c537dc33cac4b8e3cbf59654f6d1bee4f";
     expect(versionHash(smokeTestIR())).toBe(BASELINE);
   });
 
@@ -334,5 +332,37 @@ describe("canonicalizeIR gate routing widening", () => {
     const canonXY = canonicalJSON(makeIR(["X", "Y"]));
     expect(canonYX).toBe(canonXY);
     expect(canonXY).toContain('"approve":["X","Y"]');
+  });
+});
+
+describe("canonical: session_mode in version_hash", () => {
+  const base: PipelineIR = {
+    name: "p",
+    stages: [{
+      name: "s1",
+      type: "agent",
+      inputs: [],
+      outputs: [],
+      config: { promptRef: "p/r" },
+    }],
+    wires: [],
+  };
+
+  it("differs when session_mode differs", () => {
+    const multi = versionHash({ ...base, session_mode: "multi" });
+    const single = versionHash({ ...base, session_mode: "single" });
+    expect(multi).not.toBe(single);
+  });
+
+  it("includes session_mode in canonical output", () => {
+    const out = canonicalJSON({ ...base, session_mode: "single" });
+    expect(out).toContain("session_mode");
+    expect(out).toContain("single");
+  });
+
+  it("defaults to 'multi' when absent (hash-stable for pre-Task-1 IRs)", () => {
+    const explicit = versionHash({ ...base, session_mode: "multi" });
+    const absent = versionHash({ ...base });
+    expect(explicit).toBe(absent);
   });
 });
