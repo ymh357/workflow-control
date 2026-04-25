@@ -154,6 +154,12 @@ export const AgentStageSchema = z.object({
         (arr) => !arr || new Set(arr.map((m) => m.name)).size === arr.length,
         "duplicate mcpServer name within a stage",
       ),
+    // 2026-04-26 cross-segment resume pivot. When set, names a wire-upstream
+    // agent stage in a different segment whose persisted SDK session this
+    // stage will resume. Default (omitted) → no cross-segment resume.
+    // Validator (structural.ts) enforces: target exists, is wire-reachable,
+    // is in a different segment.
+    cross_segment_resume_from: z.string().min(1).optional(),
   }),
   fanout: FanoutSpecSchema.optional(),
 });

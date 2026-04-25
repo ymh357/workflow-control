@@ -197,6 +197,42 @@ describe("AgentStage.config.subAgents", () => {
   });
 });
 
+describe("AgentStage cross_segment_resume_from", () => {
+  it("accepts an agent stage without the field (backward compat)", () => {
+    const parsed = AgentStageSchema.parse({
+      name: "s",
+      type: "agent",
+      inputs: [],
+      outputs: [],
+      config: { promptRef: "p" },
+    });
+    expect(parsed.config.cross_segment_resume_from).toBeUndefined();
+  });
+
+  it("accepts an agent stage with cross_segment_resume_from set", () => {
+    const parsed = AgentStageSchema.parse({
+      name: "s",
+      type: "agent",
+      inputs: [],
+      outputs: [],
+      config: { promptRef: "p", cross_segment_resume_from: "upstream" },
+    });
+    expect(parsed.config.cross_segment_resume_from).toBe("upstream");
+  });
+
+  it("rejects empty string for cross_segment_resume_from", () => {
+    expect(() =>
+      AgentStageSchema.parse({
+        name: "s",
+        type: "agent",
+        inputs: [],
+        outputs: [],
+        config: { promptRef: "p", cross_segment_resume_from: "" },
+      }),
+    ).toThrow();
+  });
+});
+
 describe("IRPatchSchema — NO_OP_PROPOSAL prep", () => {
   it("accepts empty ops (no-op check is enforced at propose() layer, not schema)", () => {
     const r = IRPatchSchema.safeParse({ ops: [] });
