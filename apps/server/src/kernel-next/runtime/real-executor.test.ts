@@ -368,17 +368,10 @@ describe("RealStageExecutor subAgents pass-through", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       queryFn: ((args: any) => {
         capturedOptions.push(args.options);
-        // Return a stream that immediately emits a terminal error result so
-        // the executor exits quickly without needing port writes (no declared
-        // outputs in this IR).
-        return (async function* () {
-          yield {
-            type: "result",
-            subtype: "error_max_turns",
-            error_message: "test short-circuit",
-            session_id: "s",
-          };
-        })() as never;
+        // Use the shared makeFakeStream("error_max_turns", ...) helper so
+        // the executor's AgentMachine reaches `done` cleanly instead of
+        // waiting out the 5s waitFor timeout on a single-message stream.
+        return makeFakeStream("error_max_turns", { errorMessage: "test short-circuit" });
       }) as never,
     });
 
