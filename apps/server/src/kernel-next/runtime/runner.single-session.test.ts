@@ -786,3 +786,77 @@ describe("runner: single-session segment plumbing", () => {
     db.close();
   });
 });
+
+describe("multi-mode regression after cross-segment-resume pivot", () => {
+  it("multi-mode diamond: every stage has segmentContinuation === undefined", async () => {
+    // Pivot spec §3.3: multi-mode behavior must be byte-identical to
+    // pre-pivot. This test fails if any code path leaks segment
+    // continuation into multi-mode runs.
+    const ir = PipelineIRSchema.parse({
+      name: "multi-diamond",
+      // session_mode omitted → defaults to "multi"
+      externalInputs: [{ name: "seed", type: "string" }],
+      stages: [
+        {
+          name: "a", type: "agent",
+          inputs: [{ name: "seed", type: "string" }],
+          outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "p/a" },
+        },
+        {
+          name: "b", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "yb", type: "string" }],
+          config: { promptRef: "p/b" },
+        },
+        {
+          name: "c", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "yc", type: "string" }],
+          config: { promptRef: "p/c" },
+        },
+      ],
+      wires: [
+        { from: { source: "external", port: "seed" }, to: { stage: "a", port: "seed" } },
+        { from: { source: "stage", stage: "a", port: "x" }, to: { stage: "b", port: "x" } },
+        { from: { source: "stage", stage: "a", port: "x" }, to: { stage: "c", port: "x" } },
+      ],
+    });
+
+    const db = makeDb();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const seenContinuation: Array<{ stage: string; segCont: ExecuteStageArgs["segmentContinuation"] }> = [];
+    const handlers = {
+      a: (): { x: string } => ({ x: "a-out" }),
+      b: (): { yb: string } => ({ yb: "b-out" }),
+      c: (): { yc: string } => ({ yc: "c-out" }),
+    };
+    const executor = new MockStageExecutor({
+      handlers,
+      onExecute: (args) =>
+        seenContinuation.push({ stage: args.stageName, segCont: args.segmentContinuation }),
+      // Persisting session IDs would matter only if multi-mode tried
+      // to resume — which it must not. Set them anyway to make the
+      // assertion stronger: even when sessions exist, multi mode
+      // ignores them.
+      persistSessionIdMap: {
+        a: { sessionId: "sa", numTurns: 2 },
+        b: { sessionId: "sb", numTurns: 2 },
+      },
+    });
+
+    const result = await runPipeline({
+      db, ir, taskId: "t-multi-diamond", versionHash: hash,
+      handlers, executor, seedValues: { seed: "s0" },
+    });
+
+    expect(result.finalState).toBe("completed");
+    expect(seenContinuation).toHaveLength(3);
+    for (const r of seenContinuation) {
+      expect(r.segCont).toBeUndefined();
+    }
+    db.close();
+  });
+});
