@@ -384,20 +384,24 @@ describe("script_execution_details table", () => {
       `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES ('a3', 't2', 'h1', 'solo', 0, 0, 'success')`,
     ).run();
     db.prepare(`INSERT INTO prompt_contents (content_hash, content, created_at) VALUES ('h', '', 0)`).run();
+    // Insert s2's row FIRST (started_at=10) and s1's row SECOND (started_at=20)
+    // — stage_path must still come back as "s1->s2" because the view orders
+    // by started_at internally regardless of insert order.
     db.prepare(
-      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at, token_input, cache_read_input_tokens, cache_creation_input_tokens) VALUES ('a1', 'r', 'h', '', 'm', 'sess-A', 0, 0, 100, 0, 100)`,
+      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at, token_input, cache_read_input_tokens, cache_creation_input_tokens) VALUES ('a2', 'r', 'h', '', 'm', 'sess-A', 20, 0, 50, 90, 0)`,
     ).run();
     db.prepare(
-      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at, token_input, cache_read_input_tokens, cache_creation_input_tokens) VALUES ('a2', 'r', 'h', '', 'm', 'sess-A', 0, 0, 50, 90, 0)`,
+      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at, token_input, cache_read_input_tokens, cache_creation_input_tokens) VALUES ('a1', 'r', 'h', '', 'm', 'sess-A', 10, 0, 100, 0, 100)`,
     ).run();
     db.prepare(
-      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at, token_input, cache_read_input_tokens, cache_creation_input_tokens) VALUES ('a3', 'r', 'h', '', 'm', 'sess-B', 0, 0, 30, 0, 30)`,
+      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at, token_input, cache_read_input_tokens, cache_creation_input_tokens) VALUES ('a3', 'r', 'h', '', 'm', 'sess-B', 30, 0, 30, 0, 30)`,
     ).run();
 
     const rows = db.prepare(
-      "SELECT task_id, session_id, stages_in_segment, segment_input_tokens, segment_cache_reads, segment_cache_creates FROM v_segment_continuity",
+      "SELECT task_id, session_id, stages_in_segment, stage_path, segment_input_tokens, segment_cache_reads, segment_cache_creates FROM v_segment_continuity",
     ).all() as Array<{
       task_id: string; session_id: string; stages_in_segment: number;
+      stage_path: string;
       segment_input_tokens: number; segment_cache_reads: number; segment_cache_creates: number;
     }>;
 
@@ -405,6 +409,9 @@ describe("script_execution_details table", () => {
     expect(rows[0]?.task_id).toBe("t1");
     expect(rows[0]?.session_id).toBe("sess-A");
     expect(rows[0]?.stages_in_segment).toBe(2);
+    // stage_path must be in chronological execution order (s1 first, s2 second)
+    // even though s2's row was INSERTed before s1's.
+    expect(rows[0]?.stage_path).toBe("s1->s2");
     expect(rows[0]?.segment_input_tokens).toBe(150);
     expect(rows[0]?.segment_cache_reads).toBe(90);
     expect(rows[0]?.segment_cache_creates).toBe(100);

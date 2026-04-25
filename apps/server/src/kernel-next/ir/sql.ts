@@ -379,19 +379,36 @@ CREATE INDEX IF NOT EXISTS idx_tev_task ON task_env_values(task_id);
 -- segments (multi-mode equivalent). Used to verify single-session
 -- canaries are actually winning vs multi (run same workload twice,
 -- compare segment_input_tokens). Per spec §9.
-CREATE VIEW IF NOT EXISTS v_segment_continuity AS
+-- Use DROP+CREATE rather than CREATE IF NOT EXISTS so view evolution
+-- (definition changes between releases) takes effect on next schema init
+-- without needing manual db surgery. Views carry no state — re-creating
+-- one is free.
+DROP VIEW IF EXISTS v_segment_continuity;
+CREATE VIEW v_segment_continuity AS
 SELECT
-  sa.task_id                       AS task_id,
-  aed.session_id                   AS session_id,
-  COUNT(*)                         AS stages_in_segment,
-  GROUP_CONCAT(sa.stage_name, '->') AS stage_path,
-  SUM(aed.token_input)             AS segment_input_tokens,
-  SUM(aed.cache_read_input_tokens) AS segment_cache_reads,
-  SUM(aed.cache_creation_input_tokens) AS segment_cache_creates
-FROM agent_execution_details aed
-JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
-WHERE aed.session_id IS NOT NULL
-GROUP BY sa.task_id, aed.session_id
+  ordered.task_id                                 AS task_id,
+  ordered.session_id                              AS session_id,
+  COUNT(*)                                        AS stages_in_segment,
+  GROUP_CONCAT(ordered.stage_name, '->')          AS stage_path,
+  SUM(ordered.token_input)                        AS segment_input_tokens,
+  SUM(ordered.cache_read_input_tokens)            AS segment_cache_reads,
+  SUM(ordered.cache_creation_input_tokens)        AS segment_cache_creates
+FROM (
+  -- Inner subquery sorted by started_at so GROUP_CONCAT below produces
+  -- the stage_path in chronological execution order. SQLite documents
+  -- that GROUP_CONCAT preserves the input-row order from a sorted
+  -- subquery (idiomatic; same pattern used elsewhere in this codebase
+  -- for ordered aggregation).
+  SELECT
+    sa.task_id, aed.session_id, sa.stage_name,
+    aed.token_input, aed.cache_read_input_tokens, aed.cache_creation_input_tokens,
+    aed.started_at
+  FROM agent_execution_details aed
+  JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
+  WHERE aed.session_id IS NOT NULL
+  ORDER BY aed.started_at
+) AS ordered
+GROUP BY ordered.task_id, ordered.session_id
 HAVING COUNT(*) > 1;
 `;
 
