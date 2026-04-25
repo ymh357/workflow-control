@@ -584,7 +584,7 @@ describe("buildSystemPromptAppend continuationMode", () => {
     expect(out).toContain("diff");
   });
 
-  it("omits stage-overview / outputs blocks in continuation form", () => {
+  it("omits Stage-contract overview in continuation form, keeps Output protocol", () => {
     const fullForm = buildSystemPromptAppend(
       stage,
       "Now produce the PR description.",
@@ -600,8 +600,18 @@ describe("buildSystemPromptAppend continuationMode", () => {
       undefined,
       { continuationMode: true },
     );
+    // Continuation is shorter (no preamble, no Stage-contract block)
     expect(continuationForm.length).toBeLessThan(fullForm.length);
-    expect(continuationForm).not.toContain("Output ports");
+    // Stage-contract block must be gone
+    expect(continuationForm).not.toContain("Stage contract");
+    expect(continuationForm).not.toContain("You are running stage");
+    // Output protocol must remain — this stage's output ports still need to be written
+    expect(continuationForm).toContain("Output protocol");
+    expect(continuationForm).toContain("write_port");
+    expect(continuationForm).toContain("CRITICAL RULES");
+    // Identity for this attempt (taskId/attemptId) also remains
+    expect(continuationForm).toContain("t1");
+    expect(continuationForm).toContain("a1");
   });
 
   it("non-continuation behaves identically to before (no flag)", () => {
@@ -641,20 +651,61 @@ export function buildSystemPromptAppend(
 
 ```ts
   if (options?.continuationMode === true) {
-    // Continuation form: reads-section + user task only.
-    // Persona / output ports overview / stage-overview are omitted —
-    // the SDK has them in the segment's prior turn(s).
+    // Continuation form: drop the "you are running stage X" preamble +
+    // the per-stage "Stage contract" overview (input/output port
+    // listings), since the SDK has the segment's prior turns in
+    // conversation history. Keep:
+    //   - Inputs section (reads — auditability invariant per spec §4.2)
+    //   - Task summary (this stage's instruction)
+    //   - emptyInputsWarning + migrationNote (per-stage, may apply)
+    //   - Output protocol + Identity + Required tool calls + CRITICAL
+    //     RULES (output ports DIFFER per stage; SDK needs them every
+    //     turn)
     return [
       "### Inputs",
       inputDump,
       "",
       "### Task",
       promptSummary,
+      emptyInputsWarning,
+      migrationNote,
+      "",
+      "### Output protocol (MANDATORY — read carefully)",
+      "The ONLY way to emit output for this stage is to call the MCP tool",
+      "  `mcp____kernel_next____write_port`",
+      "exactly once per declared output port. The arguments are:",
+      "  - taskId      (use the exact string provided below)",
+      "  - attemptId   (use the exact string provided below)",
+      "  - stage       (this stage's name)",
+      "  - port        (one of the declared output port names)",
+      "  - value       (the port value — a plain JSON value of the declared type)",
+      "",
+      "Identity for this attempt (use verbatim):",
+      `  taskId    = "${ctx.taskId}"`,
+      `  attemptId = "${ctx.attemptId}"`,
+      `  stage     = "${stage.name}"`,
+      "",
+      "Required tool calls for this stage:",
+      writeCallExamples || "  (none — this stage has no declared outputs)",
+      "",
+      "CRITICAL RULES",
+      "1. The `value` argument is the RAW port value. For a port declared",
+      "   `string`, pass a plain string literal — NOT a JSON-encoded envelope",
+      "   like '{\"<port>\": \"...\"}'. For `number`, pass a bare number.",
+      "2. Do NOT return a final JSON object in your text reply. The text reply",
+      "   is discarded. Only write_port tool calls count.",
+      "3. Do NOT call write_port more than once per port. Do NOT omit any",
+      "   declared port — missing ports fail the stage.",
+      "4. After every declared output port has been written, you may end your",
+      "   turn with a short confirmation message (one sentence). The kernel",
+      "   only inspects the tool calls.",
     ].join("\n");
   }
 ```
 
-(c) Do NOT modify the existing full-form return statement. The function should now look like: param list (with new `options`) → existing prep code (inputPortLines, outputPortLines, promptSummary, inputSourceStage, inputDump) → NEW early-return block above → existing full-form return unchanged.
+(c) Do NOT modify the existing full-form return statement. The function should now look like: param list (with new `options`) → existing prep code (inputPortLines, outputPortLines, promptSummary, inputSourceStage, inputDump, writeCallExamples, emptyInputsWarning, migrationNote) → NEW early-return block above → existing full-form return unchanged.
+
+The continuation form keeps every block whose content **changes per stage** (Inputs, Task, output protocol with this stage's `writeCallExamples`, identity, CRITICAL RULES) and drops every block that is **identical or near-identical for every agent stage in the segment** (the "you are running stage X" preamble + the Stage contract overview). The output protocol stays because output port names differ per stage, and the SDK needs to know which ports to write for *this* turn.
 
 Imports: `AgentStage` and `PipelineIR` are already imported per line 8 of this file (verified). No new imports needed.
 

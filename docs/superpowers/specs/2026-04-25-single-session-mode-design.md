@@ -102,25 +102,32 @@ This is not a compromise. It is the only correct shape:
 ### 4.1 Continuation prompt (Q3 = B)
 
 The first agent stage in a segment receives a normal full prompt
-(rendered with all reads, instructions, persona, etc.).
-Subsequent stages in the same segment receive a **continuation prompt**:
+(rendered with all reads, instructions, persona, etc.). Subsequent
+stages in the same segment receive a **continuation prompt** that
+keeps every block whose content changes per stage and drops every
+block that is identical (or near-identical) across the segment:
 
-```
-<reads-section>
-<continuation-instruction>
-```
+**Kept** (per-stage content):
+- `### Inputs` (rendered reads — mandatory per §4.2)
+- `### Task` (this stage's instruction)
+- emptyInputsWarning + migrationNote (when applicable)
+- `### Output protocol` (this stage's output ports differ; SDK must
+  know which ports to call `write_port` for on this turn)
+- Identity block (this attempt's `taskId`/`attemptId`)
+- Required tool calls (per-stage `write_port` examples)
+- CRITICAL RULES (apply every turn)
 
-where `<reads-section>` is the rendered values of the stage's declared
-`reads` (still mandatory — see §4.2), and
-`<continuation-instruction>` is whatever the stage's `prompt` template
-renders to. Pipeline-generator (the AI YAML author) is responsible
-for emitting prompts in this style for stages downstream of the
-segment's first agent stage. See §6.4 for the prompt-author rules
-that must be added to pipeline-generator.
+**Dropped** (segment-invariant content):
+- The "You are running stage X in a kernel-next pipeline" preamble
+- The `### Stage contract` overview (input/output port listings —
+  the SDK has them in the segment's prior turn(s))
 
-Template rendering itself does NOT change — same ref system, same
-DSL, same prompt-content addressing. Only the *content* the AI is
-expected to write changes.
+Pipeline-generator (the AI YAML author) is responsible for emitting
+this-stage `prompt` template content suited to continuation usage —
+short instructions like "Now produce X based on the prior output"
+rather than persona blocks. See §6.4. Template rendering itself
+does NOT change — same ref system, same DSL, same prompt-content
+addressing. Only the *content* the AI is expected to write changes.
 
 ### 4.2 reads/writes invariant preserved (Q4 = α)
 
