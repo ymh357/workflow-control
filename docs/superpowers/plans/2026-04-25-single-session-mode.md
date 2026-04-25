@@ -739,7 +739,13 @@ Expected output around lines 325-375.
 
 - [ ] **Step 2: Write failing test for segmentContinuation passthrough**
 
-Append to `apps/server/src/kernel-next/runtime/real-executor.resume.test.ts`:
+NOTE — Plan originally pointed at `real-executor.resume.test.ts`, but
+that file is unit tests for pure helpers (`clampMaxTurns`, `parseNumTurnsFromStream`)
+and lacks the queryFn harness. Append to `real-executor.test.ts` instead,
+which already has `makeFakeStream`, `oneStageIR`, `makeDb`, and
+`insertPipelineVersion` helpers used by integration-style executor tests.
+
+Append to `apps/server/src/kernel-next/runtime/real-executor.test.ts`:
 
 ```ts
 describe("real-executor: segmentContinuation", () => {

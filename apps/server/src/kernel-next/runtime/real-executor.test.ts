@@ -648,14 +648,7 @@ describe("RealStageExecutor segmentContinuation (single-session mode)", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       queryFn: ((args: any) => {
         capturedOptions.push(args.options);
-        return (async function* () {
-          yield {
-            type: "result",
-            subtype: "error_max_turns",
-            error_message: "test short-circuit",
-            session_id: "seg-sess-1",
-          };
-        })() as never;
+        return makeFakeStream("error_max_turns", { errorMessage: "test short-circuit" });
       }) as never,
     });
 
@@ -691,14 +684,7 @@ describe("RealStageExecutor segmentContinuation (single-session mode)", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       queryFn: ((args: any) => {
         capturedOptions.push(args.options);
-        return (async function* () {
-          yield {
-            type: "result",
-            subtype: "error_max_turns",
-            error_message: "test short-circuit",
-            session_id: "x",
-          };
-        })() as never;
+        return makeFakeStream("error_max_turns", { errorMessage: "test short-circuit" });
       }) as never,
     });
 
@@ -737,14 +723,7 @@ describe("RealStageExecutor segmentContinuation (single-session mode)", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       queryFn: ((args: any) => {
         capturedOptions.push(args.options);
-        return (async function* () {
-          yield {
-            type: "result",
-            subtype: "error_max_turns",
-            error_message: "test short-circuit",
-            session_id: "fresh",
-          };
-        })() as never;
+        return makeFakeStream("error_max_turns", { errorMessage: "test short-circuit" });
       }) as never,
     });
 
