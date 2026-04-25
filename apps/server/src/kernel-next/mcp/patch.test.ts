@@ -166,4 +166,16 @@ describe("applyPatch", () => {
     expect(g.config.timeout_minutes).toBe(60);
     expect(g.config.question).toEqual({ text: "ok?" });
   });
+
+  it("update_stage_config (agent) accepts cross_segment_resume_from", () => {
+    const p: IRPatch = { ops: [
+      { op: "update_stage_config", stage: "A", configPatch: { cross_segment_resume_from: "B" } },
+    ]};
+    const out = applyPatch(base(), p);
+    const a = out.stages[0]!;
+    if (a.type !== "agent") throw new Error("expected agent stage");
+    expect(a.config.cross_segment_resume_from).toBe("B");
+    // promptRef preserved (merge, not replace).
+    expect(a.config.promptRef).toBe("p");
+  });
 });

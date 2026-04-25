@@ -21,9 +21,10 @@ import type { PipelineIR, IRPatch, IRPatchOp, StageIR } from "../ir/schema.js";
 // must be updated.
 //
 // Coverage rationale (Finding 16, 2026-04-26):
-// - agent: AgentStageSchema permits {promptRef, subAgents, mcpServers}.
-//   All three are listed here so hot-update can adjust sub-agent lists
-//   and MCP server declarations without a full pipeline resubmit.
+// - agent: AgentStageSchema permits {promptRef, subAgents, mcpServers,
+//   cross_segment_resume_from}. All four are listed here so hot-update
+//   can adjust sub-agent lists, MCP server declarations, and the
+//   cross-segment-resume target without a full pipeline resubmit.
 // - gate: GateStageSchema permits {question, routing, timeout_minutes}.
 //   timeout_minutes is opt-in deadline (P5.2/D6); listed for parity.
 // - script: ScriptStageSchema is a discriminated union over `source`
@@ -34,7 +35,7 @@ import type { PipelineIR, IRPatch, IRPatchOp, StageIR } from "../ir/schema.js";
 //   for registry-source, retry for both. Variant switches must go via
 //   submit_pipeline + new version. Hot-update is for in-place tweaks.
 const ALLOWED_CONFIG_KEYS: Record<StageIR["type"], readonly string[]> = {
-  agent:  ["promptRef", "subAgents", "mcpServers"],
+  agent:  ["promptRef", "subAgents", "mcpServers", "cross_segment_resume_from"],
   script: ["moduleId", "retry"],
   gate:   ["question", "routing", "timeout_minutes"],
 };
