@@ -15,11 +15,14 @@
 //   - (§4.15) no stage or external input may be named "__external__" (reserved
 //     sentinel for kernel-next seed lineage)
 //   - (§4.4) externalInputs[] names unique and distinct from stage names
+//   - (2026-04-26) cross_segment_resume_from: target must exist, be
+//     wire-upstream, and in a different segment; requires session_mode=single
 //
 // Type compatibility between wire endpoints (TS-level) is M2's job (tsc).
 
 import type { PipelineIR } from "../ir/schema.js";
 import type { Diagnostic, ValidationResult } from "../ir/schema.js";
+import { planSegments } from "../runtime/segment-planner.js";
 
 export interface StructuralValidationOptions {
   /**
@@ -369,6 +372,84 @@ export function validateStructural(
       message: "Pipeline has no wires, no external inputs, and no stage declares any input or output port. Nothing can flow, nothing can execute. Did the submitter strip the schema before submitting?",
       context: { stageCount: ir.stages.length },
     });
+  }
+
+  // --- cross_segment_resume_from (2026-04-26 pivot) ---
+  // Iterate agent stages with the field set. Validate against three rules:
+  //   1. target stage exists
+  //   2. target stage is wire-upstream (BFS through wires)
+  //   3. target stage is in a different segment per planSegments()
+  // Plus: the pipeline must be session_mode === "single" for the field
+  // to have any meaning at all.
+  const stagesWithCrossSegField: Array<{ stageName: string; target: string }> = [];
+  for (const st of ir.stages) {
+    if (st.type !== "agent") continue;
+    const t = st.config.cross_segment_resume_from;
+    if (typeof t === "string") stagesWithCrossSegField.push({ stageName: st.name, target: t });
+  }
+  if (stagesWithCrossSegField.length > 0) {
+    if (ir.session_mode !== "single") {
+      for (const { stageName } of stagesWithCrossSegField) {
+        diagnostics.push({
+          code: "CROSS_SEGMENT_RESUME_FROM_REQUIRES_SINGLE",
+          message: `Stage '${stageName}' declares cross_segment_resume_from but pipeline session_mode is not 'single'; the field has no effect outside single-session pipelines.`,
+          context: { stage: stageName },
+        });
+      }
+    } else {
+      // Build wire-upstream adjacency: for each stage, which stages feed into it directly?
+      const wireUpstream = new Map<string, string[]>();
+      for (const st of ir.stages) wireUpstream.set(st.name, []);
+      for (const w of ir.wires) {
+        if (w.from.source === "external") continue;
+        const fromStage = (w.from as { stage: string }).stage;
+        if (!fromStage) continue;
+        const list = wireUpstream.get(w.to.stage);
+        if (!list) continue;
+        if (!list.includes(fromStage)) list.push(fromStage);
+      }
+
+      const segments = planSegments(ir);
+      const segmentOf = new Map<string, number>();
+      segments.forEach((seg, idx) => seg.forEach((stageName) => segmentOf.set(stageName, idx)));
+
+      for (const { stageName, target } of stagesWithCrossSegField) {
+        // Rule 1: target exists
+        if (!stageNames.has(target)) {
+          diagnostics.push({
+            code: "CROSS_SEGMENT_TARGET_NOT_FOUND",
+            message: `Stage '${stageName}'.cross_segment_resume_from = '${target}' references a stage that is not declared in stages[].`,
+            context: { stage: stageName, target },
+          });
+          continue;
+        }
+        // Rule 2: target is wire-upstream (BFS from stageName's direct predecessors)
+        const reachable = new Set<string>();
+        const queue = [...(wireUpstream.get(stageName) ?? [])];
+        while (queue.length > 0) {
+          const cur = queue.shift()!;
+          if (reachable.has(cur)) continue;
+          reachable.add(cur);
+          for (const up of wireUpstream.get(cur) ?? []) queue.push(up);
+        }
+        if (!reachable.has(target)) {
+          diagnostics.push({
+            code: "CROSS_SEGMENT_TARGET_NOT_REACHABLE",
+            message: `Stage '${stageName}'.cross_segment_resume_from = '${target}' is not wire-reachable upstream from '${stageName}'.`,
+            context: { stage: stageName, target },
+          });
+          continue;
+        }
+        // Rule 3: target is in a different segment
+        if (segmentOf.get(stageName) === segmentOf.get(target)) {
+          diagnostics.push({
+            code: "CROSS_SEGMENT_TARGET_SAME_SEGMENT",
+            message: `Stage '${stageName}'.cross_segment_resume_from = '${target}' is in the same segment; cross-segment resume is not applicable. (Within-segment continuation is automatic.)`,
+            context: { stage: stageName, target },
+          });
+        }
+      }
+    }
   }
 
   return diagnostics.length === 0 ? { ok: true } : { ok: false, diagnostics };

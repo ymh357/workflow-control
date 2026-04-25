@@ -403,3 +403,112 @@ describe("structural validator — script moduleId resolution (D'-1)", () => {
     }
   });
 });
+
+describe("validateStructural: cross_segment_resume_from", () => {
+  it("accepts a valid cross-segment resume target", () => {
+    // a → gate → b. a and b are in different segments because gate
+    // breaks segments. b names a as cross_segment_resume_from.
+    const ir = {
+      name: "p",
+      session_mode: "single" as const,
+      externalInputs: [{ name: "seed", type: "string" as const }],
+      stages: [
+        { name: "a", type: "agent" as const, inputs: [{ name: "seed", type: "string" }], outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "pa" } },
+        { name: "g", type: "gate" as const, inputs: [{ name: "x", type: "string" }], outputs: [{ name: "x", type: "string" }],
+          config: { question: { text: "ok?" }, routing: { routes: { approve: "b", _default: "b" } } } },
+        { name: "b", type: "agent" as const, inputs: [{ name: "x", type: "string" }], outputs: [],
+          config: { promptRef: "pb", cross_segment_resume_from: "a" } },
+      ],
+      wires: [
+        { from: { source: "external" as const, port: "seed" }, to: { stage: "a", port: "seed" } },
+        { from: { source: "stage" as const, stage: "a", port: "x" }, to: { stage: "g", port: "x" } },
+        { from: { source: "stage" as const, stage: "g", port: "x" }, to: { stage: "b", port: "x" } },
+      ],
+    };
+    const r = validateStructural(ir);
+    const crossDiags = !r.ok ? r.diagnostics.filter((d) => d.code.startsWith("CROSS_SEGMENT")) : [];
+    expect(crossDiags).toEqual([]);
+  });
+
+  it("CROSS_SEGMENT_TARGET_NOT_FOUND: target stage doesn't exist", () => {
+    const ir = {
+      name: "p",
+      session_mode: "single" as const,
+      stages: [
+        { name: "a", type: "agent" as const, inputs: [], outputs: [],
+          config: { promptRef: "p", cross_segment_resume_from: "ghost" } },
+      ],
+      wires: [],
+    };
+    const r = validateStructural(ir);
+    const diags = !r.ok ? r.diagnostics : [];
+    expect(diags.find((d) => d.code === "CROSS_SEGMENT_TARGET_NOT_FOUND"))
+      .toBeDefined();
+  });
+
+  it("CROSS_SEGMENT_TARGET_NOT_REACHABLE: target exists but is not wire-upstream", () => {
+    // a and b are independent (no wires between them). b names a but
+    // can't reach a via wires.
+    const ir = {
+      name: "p",
+      session_mode: "single" as const,
+      stages: [
+        { name: "a", type: "agent" as const, inputs: [], outputs: [],
+          config: { promptRef: "pa" } },
+        { name: "b", type: "agent" as const, inputs: [], outputs: [],
+          config: { promptRef: "pb", cross_segment_resume_from: "a" } },
+      ],
+      wires: [],
+    };
+    const r = validateStructural(ir);
+    const diags = !r.ok ? r.diagnostics : [];
+    expect(diags.find((d) => d.code === "CROSS_SEGMENT_TARGET_NOT_REACHABLE"))
+      .toBeDefined();
+  });
+
+  it("CROSS_SEGMENT_TARGET_SAME_SEGMENT: target is in the same segment", () => {
+    // a → b, both agent stages, no break between them, single mode →
+    // segment-planner places them in the same segment. b cannot resume
+    // a cross-segment.
+    const ir = {
+      name: "p",
+      session_mode: "single" as const,
+      externalInputs: [{ name: "seed", type: "string" as const }],
+      stages: [
+        { name: "a", type: "agent" as const, inputs: [{ name: "seed", type: "string" }], outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "pa" } },
+        { name: "b", type: "agent" as const, inputs: [{ name: "x", type: "string" }], outputs: [],
+          config: { promptRef: "pb", cross_segment_resume_from: "a" } },
+      ],
+      wires: [
+        { from: { source: "external" as const, port: "seed" }, to: { stage: "a", port: "seed" } },
+        { from: { source: "stage" as const, stage: "a", port: "x" }, to: { stage: "b", port: "x" } },
+      ],
+    };
+    const r = validateStructural(ir);
+    const diags = !r.ok ? r.diagnostics : [];
+    expect(diags.find((d) => d.code === "CROSS_SEGMENT_TARGET_SAME_SEGMENT"))
+      .toBeDefined();
+  });
+
+  it("CROSS_SEGMENT_RESUME_FROM_REQUIRES_SINGLE: multi-mode pipeline uses the field", () => {
+    const ir = {
+      name: "p",
+      // session_mode omitted → defaults to "multi" via Zod
+      stages: [
+        { name: "a", type: "agent" as const, inputs: [], outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "pa" } },
+        { name: "b", type: "agent" as const, inputs: [{ name: "x", type: "string" }], outputs: [],
+          config: { promptRef: "pb", cross_segment_resume_from: "a" } },
+      ],
+      wires: [
+        { from: { source: "stage" as const, stage: "a", port: "x" }, to: { stage: "b", port: "x" } },
+      ],
+    };
+    const r = validateStructural(ir);
+    const diags = !r.ok ? r.diagnostics : [];
+    expect(diags.find((d) => d.code === "CROSS_SEGMENT_RESUME_FROM_REQUIRES_SINGLE"))
+      .toBeDefined();
+  });
+});
