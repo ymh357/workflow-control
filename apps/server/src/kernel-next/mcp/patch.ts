@@ -19,10 +19,24 @@ import type { PipelineIR, IRPatch, IRPatchOp, StageIR } from "../ir/schema.js";
 // Permitted config keys per stage variant, kept in lockstep with
 // ir/schema.ts. If schema.ts grows new variants or fields, this table
 // must be updated.
+//
+// Coverage rationale (Finding 16, 2026-04-26):
+// - agent: AgentStageSchema permits {promptRef, subAgents, mcpServers}.
+//   All three are listed here so hot-update can adjust sub-agent lists
+//   and MCP server declarations without a full pipeline resubmit.
+// - gate: GateStageSchema permits {question, routing, timeout_minutes}.
+//   timeout_minutes is opt-in deadline (P5.2/D6); listed for parity.
+// - script: ScriptStageSchema is a discriminated union over `source`
+//   ("registry" | "inline"). Cross-variant mutation (registry -> inline
+//   or vice versa) requires more than a shallow merge — moduleId vs
+//   moduleSource/sampleInputs are not co-existent. We expose only the
+//   fields that are safely mergeable within a single variant: moduleId
+//   for registry-source, retry for both. Variant switches must go via
+//   submit_pipeline + new version. Hot-update is for in-place tweaks.
 const ALLOWED_CONFIG_KEYS: Record<StageIR["type"], readonly string[]> = {
-  agent:  ["promptRef"],
-  script: ["moduleId"],
-  gate:   ["question", "routing"],
+  agent:  ["promptRef", "subAgents", "mcpServers"],
+  script: ["moduleId", "retry"],
+  gate:   ["question", "routing", "timeout_minutes"],
 };
 
 export class PatchApplyError extends Error {

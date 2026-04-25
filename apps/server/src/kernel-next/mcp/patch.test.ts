@@ -112,4 +112,58 @@ describe("applyPatch", () => {
     applyPatch(input, { ops: [{ op: "remove_stage", stageName: "A" }] });
     expect(JSON.stringify(input)).toBe(snapshot);
   });
+
+  // Finding 16 regression coverage: ALLOWED_CONFIG_KEYS now matches
+  // the schema for agent (subAgents, mcpServers) and gate
+  // (timeout_minutes). Tests verify each newly-permitted key is
+  // accepted and a representative non-permitted key still rejects.
+  it("update_stage_config (agent) accepts mcpServers", () => {
+    const p: IRPatch = { ops: [
+      { op: "update_stage_config", stage: "A", configPatch: {
+        mcpServers: [{ name: "github", command: "npx", args: ["-y", "@modelcontextprotocol/server-github"], envKeys: ["GITHUB_TOKEN"] }],
+      } },
+    ]};
+    const out = applyPatch(base(), p);
+    const a = out.stages[0]!;
+    if (a.type !== "agent") throw new Error("expected agent stage");
+    expect(a.config.mcpServers).toEqual([
+      { name: "github", command: "npx", args: ["-y", "@modelcontextprotocol/server-github"], envKeys: ["GITHUB_TOKEN"] },
+    ]);
+    // promptRef preserved (merge, not replace).
+    expect(a.config.promptRef).toBe("p");
+  });
+
+  it("update_stage_config (agent) accepts subAgents", () => {
+    const p: IRPatch = { ops: [
+      { op: "update_stage_config", stage: "A", configPatch: {
+        subAgents: [{ name: "helper", description: "h", prompt: "you help" }],
+      } },
+    ]};
+    const out = applyPatch(base(), p);
+    const a = out.stages[0]!;
+    if (a.type !== "agent") throw new Error("expected agent stage");
+    expect(a.config.subAgents).toEqual([
+      { name: "helper", description: "h", prompt: "you help" },
+    ]);
+  });
+
+  it("update_stage_config (gate) accepts timeout_minutes", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "G", type: "gate", inputs: [], outputs: [],
+          config: { question: { text: "ok?" }, routing: { routes: { approve: "X", _default: "X" } } } },
+        { name: "X", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+      ],
+      wires: [],
+    };
+    const p: IRPatch = { ops: [
+      { op: "update_stage_config", stage: "G", configPatch: { timeout_minutes: 60 } },
+    ]};
+    const out = applyPatch(ir, p);
+    const g = out.stages[0]!;
+    if (g.type !== "gate") throw new Error("expected gate stage");
+    expect(g.config.timeout_minutes).toBe(60);
+    expect(g.config.question).toEqual({ text: "ok?" });
+  });
 });
