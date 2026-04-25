@@ -296,6 +296,32 @@ Rules:
 - Do NOT emit `mcpServers` entries with `name` matching `__*__` (reserved).
 - The user supplies each server's `envKeys` at `run_pipeline` time via the `envValues` argument. OAuth-mediated servers (`envKeys: []`) get no user-supplied values; their tokens are managed by the `mcp-remote` bridge.
 
+## Choosing `session_mode`
+
+The top-level IR field `session_mode: "multi" | "single"` is optional and defaults to `"multi"`. Choose `"single"` only when the pipeline meets ALL of:
+
+- Two or more consecutive `agent` stages with NO `script` or `gate` stage between them, AND
+- Each downstream agent stage interprets / refines / extends the prior stage's output (not just consumes it as a typed value), AND
+- No `fanout` declared on any stage in that consecutive chain.
+
+Examples that should be `"single"`:
+- explore → propose → refine
+- fetch_diff → write_pr_description
+- gather_context → draft_response
+
+Examples that MUST stay `"multi"`:
+- Single-agent-stage pipelines (mode is irrelevant; default `"multi"` is correct).
+- Pipelines whose agent stages are separated by gates or scripts (each agent run becomes a size-1 segment anyway; `"single"` adds no value).
+- Pipelines where each agent stage is an independent, idempotent transformation over its inputs (no shared working memory needed).
+
+When `session_mode: "single"` is chosen, emit prompts in **continuation form** for every non-first agent stage in each agent-only segment:
+
+- DO drop persona blocks ("You are a..."), output-port overviews, and full task restatements — the SDK already saw them in the segment's first stage's prompt.
+- KEEP the actual instruction for this turn ("Now produce X based on the prior output").
+- DO NOT manually inject the reads/inputs section — the prompt-builder injects it automatically every turn.
+
+When uncertain, default to `"multi"`. Choosing `"single"` requires explicit reasoning in your generation plan so the human reviewer can sanity-check.
+
 ## Output (via write_port)
 
 - `ir: object` — the main PipelineIR JSON.
