@@ -123,7 +123,7 @@ Gate stage `awaitingConfirm` with `routes: { approve: "finalize", reject: "analy
     {
       "name": "analyzing",
       "inputs": [
-        { "name": "description", "type": "string", "description": "..." },
+        { "name": "taskText", "type": "string", "description": "User-supplied natural-language task description (verbatim from external taskDescription input). NOT named 'description' — see anti-pattern below." },
         { "name": "rejectionFeedback", "type": "string", "description": "User's correction when the previous analyzing output was rejected at awaitingConfirm gate. Empty string on the first run." }
       ],
       ...
@@ -228,6 +228,8 @@ Before emitting the IR, verify:
 - [ ] Every `store_schema` entry's `produced_by.stage` exists in `stages[]` (not a gate).
 - [ ] Every `store_schema` entry's `produced_by.port` exists in that stage's `outputs[]`.
 - [ ] Every `store_schema` entry's `type` equals the referenced port's `type` when both are trimmed.
+- [ ] **No port name is a TS reserved word** (`type`, `class`, `function`, `default`, `new`, `delete`, `void`, `typeof`, `instanceof`, `import`, `export`, `enum`, `interface`, `extends`, `implements`, `public`, `private`, `protected`, `static`, `abstract`, `as`, `is`, `keyof`, `readonly`, `boolean`, `number`, `string`, `null`, `undefined`, `true`, `false`). Use descriptive alternatives: `type` → `entityType`/`category`; `class` → `tier`/`category`; `default` → `fallback`. Submit will fail with `ZOD_PARSE_ERROR: must not be a TS/JS reserved word`.
+- [ ] **No stage has the same name on inputs and outputs**. A stage where `inputs.foo` and `outputs.foo` both exist confuses the agent at runtime — `read_port({stage: "self", port: "foo"})` becomes ambiguous between "read my own input" and "read my own output (which I haven't written yet)". If you need to both consume an upstream value and emit a result of the same logical kind, use distinct names: `taskText` (input) + `pipelineDescription` (output), `rawData` (input) + `processedData` (output), `feedback` (input) + `response` (output). See dogfood Finding 7 (2026-04-25) — this exact pattern stalled an agent for 7+ minutes before manual intervention.
 
 If any check fails, fix or emit diagnostics in your own thinking and try again before calling `write_port`.
 
@@ -296,31 +298,13 @@ Rules:
 - Do NOT emit `mcpServers` entries with `name` matching `__*__` (reserved).
 - The user supplies each server's `envKeys` at `run_pipeline` time via the `envValues` argument. OAuth-mediated servers (`envKeys: []`) get no user-supplied values; their tokens are managed by the `mcp-remote` bridge.
 
-## Choosing `session_mode`
+## `session_mode`
 
-The top-level IR field `session_mode: "multi" | "single"` is optional and defaults to `"multi"`. Choose `"single"` only when the pipeline meets ALL of:
+**Always omit `session_mode` from generated IRs.** It defaults to `"multi"`, which is the only mode this generator currently produces.
 
-- Two or more consecutive `agent` stages with NO `script` or `gate` stage between them, AND
-- Each downstream agent stage interprets / refines / extends the prior stage's output (not just consumes it as a typed value), AND
-- No `fanout` declared on any stage in that consecutive chain.
+`session_mode: "single"` exists in the kernel as a research feature but is not yet validated for production use (see `docs/superpowers/specs/2026-04-26-single-session-niche.md` — niche definition is incomplete; runtime has known cross-segment leak; performance/quality contracts not yet measured on real workloads). Until that work lands, do not generate single-session pipelines under any circumstance.
 
-Examples that should be `"single"`:
-- explore → propose → refine
-- fetch_diff → write_pr_description
-- gather_context → draft_response
-
-Examples that MUST stay `"multi"`:
-- Single-agent-stage pipelines (mode is irrelevant; default `"multi"` is correct).
-- Pipelines whose agent stages are separated by gates or scripts (each agent run becomes a size-1 segment anyway; `"single"` adds no value).
-- Pipelines where each agent stage is an independent, idempotent transformation over its inputs (no shared working memory needed).
-
-When `session_mode: "single"` is chosen, emit prompts in **continuation form** for every non-first agent stage in each agent-only segment:
-
-- DO drop persona blocks ("You are a..."), output-port overviews, and full task restatements — the SDK already saw them in the segment's first stage's prompt.
-- KEEP the actual instruction for this turn ("Now produce X based on the prior output").
-- DO NOT manually inject the reads/inputs section — the prompt-builder injects it automatically every turn.
-
-When uncertain, default to `"multi"`. Choosing `"single"` requires explicit reasoning in your generation plan so the human reviewer can sanity-check.
+If a future task description explicitly requests single-session behavior, surface this as a warning in the analyzing stage's `assumptions` output rather than emitting `session_mode: "single"`.
 
 ## Output (via write_port)
 

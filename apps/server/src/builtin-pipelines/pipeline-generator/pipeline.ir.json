@@ -13,8 +13,9 @@
       },
       "inputs": [
         {
-          "name": "description",
-          "type": "unknown"
+          "name": "taskText",
+          "type": "unknown",
+          "description": "User natural-language task description (passed verbatim from external taskDescription input). Renamed from \"description\" to disambiguate from analyzing.outputs.pipelineDescription — see dogfood Finding 7 (2026-04-25)."
         },
         {
           "name": "rejectionFeedback",
@@ -33,7 +34,7 @@
           "type": "string"
         },
         {
-          "name": "description",
+          "name": "pipelineDescription",
           "type": "string"
         },
         {
@@ -144,7 +145,7 @@
           "type": "string"
         },
         {
-          "name": "description",
+          "name": "pipelineDescription",
           "type": "string"
         },
         {
@@ -239,7 +240,7 @@
           "type": "string"
         },
         {
-          "name": "description",
+          "name": "pipelineDescription",
           "type": "string"
         },
         {
@@ -326,7 +327,7 @@
           "type": "string"
         },
         {
-          "name": "description",
+          "name": "pipelineDescription",
           "type": "string"
         },
         {
@@ -431,7 +432,7 @@
         "source": "external"
       },
       "to": {
-        "port": "description",
+        "port": "taskText",
         "stage": "analyzing"
       }
     },
@@ -467,11 +468,11 @@
     },
     {
       "from": {
-        "port": "description",
+        "port": "pipelineDescription",
         "stage": "analyzing"
       },
       "to": {
-        "port": "description",
+        "port": "pipelineDescription",
         "stage": "genPrompts"
       }
     },
@@ -647,11 +648,11 @@
     },
     {
       "from": {
-        "port": "description",
+        "port": "pipelineDescription",
         "stage": "analyzing"
       },
       "to": {
-        "port": "description",
+        "port": "pipelineDescription",
         "stage": "genSkeleton"
       }
     },
@@ -807,11 +808,11 @@
     },
     {
       "from": {
-        "port": "description",
+        "port": "pipelineDescription",
         "stage": "analyzing"
       },
       "to": {
-        "port": "description",
+        "port": "pipelineDescription",
         "stage": "persisting"
       }
     },
@@ -1047,12 +1048,12 @@
         "port": "dataFlowSummary"
       }
     },
-    "analyzing.description": {
+    "analyzing.pipelineDescription": {
       "type": "string",
       "description": "description emitted by analyzing stage.",
       "produced_by": {
         "stage": "analyzing",
-        "port": "description"
+        "port": "pipelineDescription"
       }
     },
     "analyzing.estimatedStageCount": {

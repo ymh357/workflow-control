@@ -131,7 +131,7 @@ Do NOT wrap every script in its own review gate — that defeats the "scripts ar
 
 ## Available inputs
 
-- `description: string` — the user's task description (via `reads: { description: taskDescription }`).
+- `taskText: string` — the user's natural-language task description, passed verbatim from external `taskDescription`. Renamed from legacy `description` to disambiguate from `pipelineDescription` output (dogfood Finding 7, 2026-04-25).
 - `rejectionFeedback: string` — empty string on the first pass. On a reject-rerun (the user said "reject" with a comment at the `awaitingConfirm` gate), carries that comment verbatim. When NON-EMPTY, you are REGENERATING after a previous output was rejected: read the feedback first, identify what the previous run got wrong, and produce a **different** `stageContracts` / `stageDesign` / `recommendedMcps` / `assumptions`. If your second-pass output would be indistinguishable from the first, you've ignored the feedback — start over.
 
 ## Available tools
@@ -189,7 +189,7 @@ Emit all of the following port values:
 
 - `pipelineName: string` — human-readable (e.g. "Technical Research").
 - `pipelineId: string` — kebab-case (e.g. "tech-research").
-- `description: string` — pipeline description.
+- `pipelineDescription: string` — the description of the pipeline you are designing (1-2 sentences explaining what it does end-to-end). Renamed from legacy `description` to disambiguate from `taskText` input (dogfood Finding 7, 2026-04-25).
 - `stageDesign: markdown` — full stage-by-stage design.
 - `dataFlowSummary: markdown` — optional; port/wire flow diagram.
 - `useCases: string[]` — optional; target use cases.
