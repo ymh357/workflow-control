@@ -53,4 +53,9 @@ describe("loadBuiltinPipelineIR", () => {
       .toEqual(["baseBranch", "branchName", "repoPath"]);
     expect(Object.keys(r.prompts).sort()).toEqual(["system/fetch-diff", "system/write-pr"]);
   });
+
+  it("smoke-test declares session_mode='single' (Task 8 canary)", () => {
+    const r = loadBuiltinPipelineIR("smoke-test");
+    expect(r.ir.session_mode).toBe("single");
+  });
 });
