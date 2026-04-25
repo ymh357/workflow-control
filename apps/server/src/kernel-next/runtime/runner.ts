@@ -1704,11 +1704,22 @@ export function segmentContinuationFor(
     };
   }
 
-  // Phase 2: cross-segment resume. The stage is either segment-first
-  // (idx 0) OR an in-segment stage whose preceding stages have no
-  // persisted session yet. Walk wires upstream to find the most recent
-  // agent ancestor with a persisted session.
-  const upstreamSession = findUpstreamSessionByWires(opts, taskId, ir, stageName);
+  // Phase 2: cross-segment resume (opt-in per 2026-04-26 pivot). The
+  // stage is either segment-first (idx 0) OR an in-segment stage whose
+  // preceding stages have no persisted session yet. Cross-segment
+  // resume is no longer automatic — it requires the stage to declare
+  // `cross_segment_resume_from` naming a wire-upstream agent in a
+  // different segment. Validator (structural.ts) enforces:
+  //   - target stage exists
+  //   - target is wire-upstream
+  //   - target is in a different segment
+  // We do NOT re-check those here; runtime trusts the validated IR.
+  const stage = ir.stages.find((s) => s.name === stageName);
+  if (!stage || stage.type !== "agent") return undefined;
+  const target = stage.config.cross_segment_resume_from;
+  if (!target) return undefined;
+
+  const upstreamSession = findStageSession(opts, taskId, target);
   if (!upstreamSession) return undefined;
 
   return {
@@ -1719,64 +1730,32 @@ export function segmentContinuationFor(
   };
 }
 
-// BFS wires-upstream from `stageName`, return the session_id of the
-// nearest agent ancestor whose attempt is persisted in
-// agent_execution_details. Used by segmentContinuationFor for
-// cross-segment resume per spec §3.
-function findUpstreamSessionByWires(
+// Look up the most recent persisted session_id for a single agent
+// stage on a task. Status filter: 'success' OR 'running' — see
+// segmentContinuationFor's Phase 1 comment for why 'running' is included
+// (an upstream stage typically only just finished writing its outputs;
+// its status='success' transition happens AFTER its writePort calls,
+// so at query time the upstream attempt is often still 'running').
+//
+// Replaces the pre-2026-04-26 findUpstreamSessionByWires helper, which
+// walked wires upstream by BFS. The cross-segment-resume target is now
+// named explicitly via cross_segment_resume_from, so no BFS is needed.
+function findStageSession(
   opts: RunnerOptions,
   taskId: string,
-  ir: PipelineIR,
   stageName: string,
 ): string | undefined {
-  const wireUpstream = new Map<string, string[]>();
-  for (const s of ir.stages) wireUpstream.set(s.name, []);
-  for (const w of ir.wires) {
-    if (w.from.source === "external") continue;
-    const fromStage = "stage" in w.from ? w.from.stage : undefined;
-    if (!fromStage) continue;
-    const list = wireUpstream.get(w.to.stage);
-    if (!list) continue;
-    if (!list.includes(fromStage)) list.push(fromStage);
-  }
-
-  const stageByName = new Map(ir.stages.map((s) => [s.name, s]));
-  const visited = new Set<string>([stageName]);
-  const queue = [...(wireUpstream.get(stageName) ?? [])];
-
-  while (queue.length > 0) {
-    const cur = queue.shift()!;
-    if (visited.has(cur)) continue;
-    visited.add(cur);
-    const stage = stageByName.get(cur);
-    if (!stage) continue;
-    if (stage.type === "agent") {
-      // Status filter: 'success' OR 'running'. Excludes superseded /
-      // error / interrupted attempts whose sessions are stale. See
-      // segmentContinuationFor's Phase 1 comment for the
-      // success+running rationale (upstream often hasn't yet
-      // transitioned from 'running' to 'success' when this query
-      // fires — PORT_WRITTEN dispatch is synchronous).
-      const r = opts.db.prepare(
-        `SELECT aed.session_id
-           FROM agent_execution_details aed
-           JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
-          WHERE sa.task_id = ? AND sa.stage_name = ?
-            AND aed.session_id IS NOT NULL
-            AND sa.status IN ('success', 'running')
-          ORDER BY aed.started_at DESC
-          LIMIT 1`,
-      ).get(taskId, cur) as { session_id: string } | undefined;
-      if (r?.session_id) return r.session_id;
-    }
-    // Continue walking upstream regardless of stage type; an upstream
-    // script/gate doesn't itself have a session, but we follow its
-    // ancestors (an agent before that script is a valid resume target).
-    for (const up of wireUpstream.get(cur) ?? []) {
-      if (!visited.has(up)) queue.push(up);
-    }
-  }
-  return undefined;
+  const r = opts.db.prepare(
+    `SELECT aed.session_id
+       FROM agent_execution_details aed
+       JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
+      WHERE sa.task_id = ? AND sa.stage_name = ?
+        AND aed.session_id IS NOT NULL
+        AND sa.status IN ('success', 'running')
+      ORDER BY aed.started_at DESC
+      LIMIT 1`,
+  ).get(taskId, stageName) as { session_id: string } | undefined;
+  return r?.session_id;
 }
 
 // Local mirror of the compiler-side buildInitialPortValues. Having a

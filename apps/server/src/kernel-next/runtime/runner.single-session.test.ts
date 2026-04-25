@@ -204,24 +204,11 @@ describe("runner: single-session segment plumbing", () => {
     db.close();
   });
 
-  it("diamond fan-out a→b, a→c: both b and c resume a's session_id (cross-segment resume per spec §3)", async () => {
-    // Spec §3: "At a segment boundary (gate / script / fanout / pipeline
-    // end), terminate the SDK query, persist the final session_id, and
-    // the next segment opens a new query with options.resume pointing
-    // at it." Both b and c are next-segment stages from a; both must
-    // resume a's session_id.
-    //
-    // Crucial distinction (Q3 bug fix 2026-04-25):
-    //   - b: idx 1 of segment 0 → uses continuation prompt form
-    //     (SDK already saw a's full prompt in this same query)
-    //   - c: idx 0 of segment 1 → uses FULL prompt form (new SDK query
-    //     resuming a's session — spec §8.4 example: "Stage 3's prompt
-    //     is full ... even though semantically it's 'after the user
-    //     answered the gate'")
-    //
-    // Both branches resuming the same session_id concurrently is a
-    // separate concern (real SDK behavior under that condition is
-    // verified elsewhere; this test only verifies the runner's intent).
+  it("diamond fan-out a→b, a→c: c does NOT resume a by default (cross-segment-resume opt-in per 2026-04-26 pivot)", async () => {
+    // 2026-04-26 pivot: cross-segment resume is now opt-in via
+    // cross_segment_resume_from. Without that field, c (idx 0 of its
+    // own segment) does NOT walk wires back to a. b (idx 1 of segment 0)
+    // still uses in-segment continuation — that's unchanged.
     const ir = PipelineIRSchema.parse({
       name: "diamond",
       session_mode: "single",
@@ -279,17 +266,79 @@ describe("runner: single-session segment plumbing", () => {
     expect(seenContinuation).toHaveLength(3);
 
     // a: first stage of segment 0, no upstream agent → no resume.
-    const aRecord = seenContinuation.find((r) => r.stage === "a")!;
-    expect(aRecord.segCont).toBeUndefined();
+    expect(seenContinuation.find((r) => r.stage === "a")!.segCont).toBeUndefined();
 
-    // b: idx 1 of segment 0 → continuation prompt form, resumes a.
+    // b: idx 1 of segment 0 → in-segment continuation (unchanged behavior).
     const bRecord = seenContinuation.find((r) => r.stage === "b")!;
     expect(bRecord.segCont?.resumeSessionId).toBe("sa");
     expect(bRecord.segCont?.isContinuationStage).toBe(true);
 
-    // c: idx 0 of segment 1, but upstream by wire is `a` (an agent
-    // with persisted session). Cross-segment resume per spec §3 +
-    // §8.4: c resumes a's session_id but uses FULL prompt form.
+    // c: idx 0 of segment 1. Without cross_segment_resume_from, no
+    // resume — this is the post-pivot default.
+    expect(seenContinuation.find((r) => r.stage === "c")!.segCont).toBeUndefined();
+    db.close();
+  });
+
+  it("diamond fan-out with cross_segment_resume_from='a' on c: c resumes a's session", async () => {
+    // Same diamond as above, but c declares cross_segment_resume_from.
+    // c is now expected to resume a's session via the explicit opt-in.
+    const ir = PipelineIRSchema.parse({
+      name: "diamond-opt-in",
+      session_mode: "single",
+      externalInputs: [{ name: "seed", type: "string" }],
+      stages: [
+        {
+          name: "a", type: "agent",
+          inputs: [{ name: "seed", type: "string" }],
+          outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "p/a" },
+        },
+        {
+          name: "b", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "yb", type: "string" }],
+          config: { promptRef: "p/b" },
+        },
+        {
+          name: "c", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "yc", type: "string" }],
+          config: { promptRef: "p/c", cross_segment_resume_from: "a" },
+        },
+      ],
+      wires: [
+        { from: { source: "external", port: "seed" }, to: { stage: "a", port: "seed" } },
+        { from: { source: "stage", stage: "a", port: "x" }, to: { stage: "b", port: "x" } },
+        { from: { source: "stage", stage: "a", port: "x" }, to: { stage: "c", port: "x" } },
+      ],
+    });
+
+    const db = makeDb();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const seenContinuation: Array<{ stage: string; segCont: ExecuteStageArgs["segmentContinuation"] }> = [];
+    const handlers = {
+      a: (): { x: string } => ({ x: "a-out" }),
+      b: (): { yb: string } => ({ yb: "b-out" }),
+      c: (): { yc: string } => ({ yc: "c-out" }),
+    };
+    const executor = new MockStageExecutor({
+      handlers,
+      onExecute: (args) =>
+        seenContinuation.push({ stage: args.stageName, segCont: args.segmentContinuation }),
+      persistSessionIdMap: { a: { sessionId: "sa", numTurns: 2 } },
+    });
+
+    const result = await runPipeline({
+      db, ir, taskId: "t-diamond-optin", versionHash: hash,
+      handlers, executor, seedValues: { seed: "s0" },
+    });
+
+    expect(result.finalState).toBe("completed");
+
+    // c: opt-in resume → resumeSessionId === "sa", isContinuationStage === false
+    // (segment-first stage; full prompt form per spec §8.4).
     const cRecord = seenContinuation.find((r) => r.stage === "c")!;
     expect(cRecord.segCont?.resumeSessionId).toBe("sa");
     expect(cRecord.segCont?.isContinuationStage).toBe(false);
@@ -644,19 +693,18 @@ describe("runner: single-session segment plumbing", () => {
     db.close();
   });
 
-  it("hot-update: sibling-preservation diamond — D resumes any wire-upstream success session", () => {
+  it("hot-update: sibling-preservation diamond — D with cross_segment_resume_from='B' resumes B's session", () => {
     // Diamond IR: A → B, A → C, B → D, C → D. Hot-update with rerunFrom=B
     // supersedes B and D (wire-reachable from B), but A and C stay
-    // success on v1 (B13 sibling preservation). When v2 rerun reaches
-    // D, D's segmentContinuationFor must find a resumable session via
-    // the wire-upstream BFS — either v2 B's session or one of A/C's
-    // (any success ancestor is acceptable per spec §3 cross-segment
-    // resume).
+    // success on v1 (B13 sibling preservation). Post-pivot, when v2
+    // rerun reaches D, D opts into cross-segment resume by naming
+    // cross_segment_resume_from='B' (its segment break is B's
+    // termination, since B's segment ends at D's segment start).
     //
-    // We assert resumeSessionId is set (non-undefined) and is one of
-    // the known persisted sessions, rather than pinning to a specific
-    // ancestor — the BFS visits in queue order which is an
-    // implementation detail.
+    // We assert resumeSessionId === 'sess-B-new' (the v2 success
+    // session), proving:
+    //   - the explicit field works
+    //   - the status filter excludes the v1 superseded B session
     const ir = PipelineIRSchema.parse({
       name: "diamond-hot-update",
       session_mode: "single",
@@ -687,7 +735,7 @@ describe("runner: single-session segment plumbing", () => {
             { name: "yC", type: "string" },
           ],
           outputs: [{ name: "final", type: "string" }],
-          config: { promptRef: "p/D-v2" },
+          config: { promptRef: "p/D-v2", cross_segment_resume_from: "B" },
         },
       ],
       wires: [
@@ -710,8 +758,6 @@ describe("runner: single-session segment plumbing", () => {
       `INSERT OR IGNORE INTO prompt_contents (content_hash, content, created_at) VALUES ('h', '', 0)`,
     ).run();
 
-    // v1: A success (preserved), B superseded, C success (preserved),
-    //     D superseded. v2: B and D rerun successfully.
     const seed = (id: string, vhash: string, stage: string, status: string, ts: number, sess: string): void => {
       db.prepare(
         `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES (?, ?, ?, ?, 0, ?, ?)`,
@@ -720,11 +766,9 @@ describe("runner: single-session segment plumbing", () => {
         `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at) VALUES (?, 'r', 'h', '', 'm', ?, ?, ?)`,
       ).run(id, sess, ts, ts);
     };
-    // Layout chronology so pre-status-filter SQL (ORDER BY started_at
-    // DESC LIMIT 1) would pick the superseded v1 rows instead of the
-    // v2 success ones. v2-B runs first (200), then v1's superseded
-    // rows are *more recent* (300+) — only the status filter prevents
-    // them from being chosen.
+    // v2-B succeeds first (200); v1-B is superseded but more recent in
+    // started_at (300). Status filter must reject v1-B even though it's
+    // newer — the very property the original test verified.
     seed("v2-B", v2, "B", "success",    200, "sess-B-new");
     seed("v1-A", v1, "A", "success",    100, "sess-A");
     seed("v1-C", v1, "C", "success",    150, "sess-C");
@@ -737,11 +781,8 @@ describe("runner: single-session segment plumbing", () => {
     } as Parameters<typeof segmentContinuationFor>[0];
 
     const result = segmentContinuationFor(stubOpts, "D", taskId, ir, segments);
-    // D must resume SOME ancestor session — never the superseded ones.
-    expect(result?.resumeSessionId).toBeDefined();
-    const eligible = new Set(["sess-A", "sess-C", "sess-B-new"]);
-    expect(eligible.has(result!.resumeSessionId)).toBe(true);
-    expect(["sess-B-old", "sess-D-old"]).not.toContain(result?.resumeSessionId);
+    // D explicitly resumes B; status filter picks v2-B (success), not v1-B (superseded).
+    expect(result?.resumeSessionId).toBe("sess-B-new");
     db.close();
   });
 });
