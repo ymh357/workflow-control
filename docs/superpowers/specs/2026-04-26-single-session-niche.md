@@ -129,23 +129,23 @@ There is no hard upper bound on N. Length emerges from §2(c) — every adjacent
 
 ---
 
-## 6. Segment boundary hardness — the "no leak" rule
+## 6. Segment boundary hardness — the design pivot from cross-segment-by-default
 
-A single-session segment is a **closed unit**. Its existence does not change the behavior of any stage outside it.
+A single-session segment must be a **closed unit**. Its existence must not change the behavior of any stage outside it.
 
-**Current implementation has a leak**: `runner.ts:1707-1719` (`findUpstreamSessionByWires`) lets any downstream agent stage resume the nearest upstream agent's session via wire BFS, regardless of whether the upstream is in the same declared segment. This means a single segment "infects" later multi stages with conversation history they did not ask for.
+**The current implementation does not satisfy this** — and on closer inspection, the original 2026-04-25-single-session-mode-design spec §3 deliberately chose the opposite: `runner.ts:1707-1719` (`findUpstreamSessionByWires`) lets any downstream agent stage resume the nearest upstream agent's session via wire BFS, regardless of segment placement. This was framed as "cross-segment resume" in §3 of the original spec, not as a leak.
 
-The leak is the single largest cause of round 5's 73% cost overrun: `genPrompts` and `persisting` stages, which were architecturally multi (no shared working state with `analyzing`/`genSkeleton`), nonetheless inherited the single segment's full conversation because their wires reach back to `analyzing`.
+**This niche spec disagrees with that original design choice.** The decision to flip cross-segment resume from default-on to opt-in is documented as its own design pivot in `docs/superpowers/specs/2026-04-26-cross-segment-resume-pivot.md` (written same date as this niche spec). That pivot supersedes the original §3.
 
-**Required hardness invariants**:
+The reason for the pivot, in one paragraph: when a stage marked `multi` can still inherit a single segment's conversation history just because wires reach back to that segment, "multi" stops meaning what it says. Round 5's 73% cost overrun was the visible symptom — `genPrompts` and `persisting` were structurally multi but ran with full single-segment conversation because of the wire-walk default. Fixing `multi` to mean "fresh session" requires defaulting cross-segment resume off and introducing an opt-in IR field.
 
-1. **Resume only within the planned segment.** Two stages share a session iff `segment-planner` placed them in the same segment. No cross-segment session sharing happens implicitly.
-2. **Cross-segment resume is opt-in.** If a future use case genuinely needs cross-segment resume, it must be expressed via an explicit IR field (e.g., `cross_segment_resume_from: <stageName>`). The default for any cross-segment edge is "fresh session, typed-port-only data flow".
+**Required hardness invariants** (post-pivot):
+
+1. **Resume only within the planned segment.** Two stages share a session iff `segment-planner` placed them in the same segment.
+2. **Cross-segment resume is opt-in.** Express via the IR field `cross_segment_resume_from: <stageName>` on the receiving stage's `config`. Default behavior across any cross-segment edge: fresh session, typed-port-only data flow.
 3. **Multi-session pipelines must be byte-identical in behavior whether or not the kernel even compiled the single-session code paths.** Pure feature flag: enabling single for some segments must not perturb anything outside those segments.
 
-This hardness is enforced at runtime, not at IR validation. The runtime must refuse to plumb `resume: <sessionId>` to a stage that segment-planner did not place in the same segment, even if a session_id happens to be available upstream.
-
-**Implementation note**: the current code at `runner.ts:1707-1719` (`findUpstreamSessionByWires`) does cross-segment resume by default for both single and multi modes. Achieving §6.3 requires reworking this function to gate cross-segment resume behind explicit IR opt-in (e.g., a future `cross_segment_resume_from: <stageName>` field). This is non-trivial work — not a config flip — and must be planned as a deliberate kernel change. Implementation work is out of scope for this niche spec; see the corresponding plan document.
+**Implementation status**: the pivot is decided but not implemented. Code at `runner.ts:1707-1719` still performs cross-segment resume by default. The work to align code with this niche's §6 and the pivot spec is queued as a focused 1-2 day item; see `2026-04-26-cross-segment-resume-pivot.md` §6 for acceptance criteria. Until that work lands, this niche spec's §6 describes the target state, not the current state.
 
 ---
 
@@ -280,7 +280,7 @@ A possible escape: pick tasks where the upstream's working state contains specif
 
 Three things must happen in order before this spec can be accepted:
 
-1. **Cross-segment leak fix in runner.ts**. Until single-session's effects are properly bounded by segment-planner output, every measurement is contaminated. Estimated 1-2 days of kernel work.
+1. **Implement the cross-segment-resume pivot** (`docs/superpowers/specs/2026-04-26-cross-segment-resume-pivot.md`). The pivot reverses the original 2026-04-25 design's default and makes cross-segment resume opt-in. Until single-session's effects are properly bounded by segment-planner output, every empirical measurement is contaminated by spillover into supposedly-multi stages (round 5 evidence). Estimated 1-2 days of focused kernel + IR + test work.
 2. **At least one true niche-internal pipeline implemented and run**. Candidates: a 2-stage explore→propose; a 2-stage critique chain. Run as a clean A/B against a multi+ports equivalent.
 3. **Resume this spec with empirical data**. Re-evaluate §1 (paradigm vs optimization), §7 (performance contract numbers), §9 (acceptance criteria) against actual measurements rather than reasoning.
 
