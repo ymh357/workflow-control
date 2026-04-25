@@ -109,15 +109,20 @@ export const PipelineIRSchema = z.object({
 });
 ```
 
-Update the `PipelineIR` type alias:
+Update the `PipelineIR` type alias to match the existing `externalInputs`
+pattern — Zod's `.default()` makes the inferred output type *required*,
+which would force every test fixture and IR-construction site to add
+the field. Mirror the optional-in-type / required-at-runtime pattern:
 
 ```ts
-export type PipelineIR = Omit<z.infer<typeof PipelineIRSchema>, "externalInputs" | "wires"> & {
+export type PipelineIR = Omit<z.infer<typeof PipelineIRSchema>, "externalInputs" | "wires" | "session_mode"> & {
   externalInputs?: PortIR[];
   wires: WireIR[];
+  session_mode?: "multi" | "single";
 };
 ```
-(no shape change — `session_mode` flows through automatically.)
+Update the comment above the type alias to mention `session_mode`
+alongside `externalInputs`.
 
 - [ ] **Step 5: Run test to verify pass**
 
