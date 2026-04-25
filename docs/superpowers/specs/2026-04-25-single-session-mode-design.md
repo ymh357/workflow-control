@@ -330,31 +330,44 @@ Prompt updates to `pipeline-generator` (the IR-authoring AI):
 These are prompt-level changes, not code changes. They live in
 pipeline-generator's `pipeline.ir.json` system-prompt section.
 
-## 7. Migration of the four builtins (Q7 = B)
+## 7. Migration of the five builtins (Q7 = B)
 
-Per-builtin assessment:
+Per-builtin assessment (verified by reading each `pipeline.ir.json`
+on 2026-04-25, not by assumption):
 
-| Builtin | Decision | Rationale |
-|---|---|---|
-| `smoke-test` | `multi` (no change) | Single agent stage; mode irrelevant |
-| `pipeline-generator` | `multi` (no change) | Two stages: agent → script. Script forces segment boundary; single would degrade to multi anyway |
-| `tech-research-collector` | `multi` (no change) | Per-source fanout; fanout breaks segments |
-| `tech-research-writer` | **`single`** | Three sequential agent stages (outline → draft → polish) where each stage interprets the prior's output. Segment of size 3, no fanout, no script in between. Textbook single-session case |
+| Builtin | Stages | Decision | Rationale |
+|---|---|---|---|
+| `smoke-test` | greet → echoBack (2 agent) | **`single`** (min canary) | Two-stage linear agent segment, ideal smallest end-to-end test of the segment plumbing |
+| `pr-description-generator` | fetchDiff → writePr (2 agent) | **`single`** (prod canary) | Two-stage linear agent segment with real workload — `fetchDiff` produces a diff, `writePr` interprets it. Textbook single-session case |
+| `pipeline-generator` | analyzing → gate → genPrompts → genSkeleton → persisting | `multi` (no change) | Self-modification risk: this is the YAML-author pipeline; its own session model should be stable while we iterate on the feature it ships. Revisit after canary |
+| `tech-research-collector` | collectTargetSources (1 agent) | `multi` (no change) | Single agent stage; mode irrelevant |
+| `tech-research-writer` | writeDeliverable (1 agent) | `multi` (no change) | Single agent stage; mode irrelevant |
 
-Migration of `tech-research-writer`:
+Migration of `smoke-test`:
 
 1. Add `session_mode: "single"` to its `pipeline.ir.json`.
-2. Rewrite the `draft` stage's `prompt` to continuation form: drop
-   the persona / overview block (covered by stage 1's prompt in
-   conversation history), keep the reads section (§4.2) and the
-   "now produce a draft of <X>" instruction.
-3. Same for `polish` stage's prompt.
-4. Re-run the regression smoke task; verify segment is detected;
-   verify session_id continuity in `agent_execution_details`;
-   verify token usage drop on stages 2 and 3.
+2. Inspect `echoBack` stage's prompt (`prompts/system/echo-back.md`
+   or whatever the ref points to). Verify it's already short and
+   continuation-shaped, OR rewrite to drop any redundancy with
+   `greet`'s prompt. Keep the reads-section header (§4.2).
+3. Re-run the smoke regression test; verify both attempts share
+   `session_id` in `agent_execution_details`; verify segment lookup
+   detected the segment.
 
-This migration is itself a verification of the design — if it
-doesn't visibly cut tokens or improve perceived continuity, the
+Migration of `pr-description-generator`:
+
+1. Add `session_mode: "single"` to its `pipeline.ir.json`.
+2. Rewrite `writePr` prompt to continuation form: drop any
+   "you are a PR description writer" persona block (covered by
+   `fetchDiff`'s context which now lives in conversation history),
+   keep the reads section (§4.2) and the "now produce the PR
+   description for <reads.diff>" instruction.
+3. Run on a real PR; verify segment session_id continuity; verify
+   `cache_read_input_tokens` non-zero on stage 2 (cache hit on
+   resumed conversation).
+
+These two migrations are themselves verification of the design — if
+neither visibly cuts tokens or improves perceived continuity, the
 design is wrong.
 
 ## 8. Testing strategy
