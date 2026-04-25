@@ -1621,7 +1621,9 @@ function resumeFieldsForStage(
 //       false — this stage is at idx 0 of its segment but resumes a
 //               prior segment (fresh SDK query with options.resume,
 //               render full prompt form per spec §8.4)
-function segmentContinuationFor(
+// Exported for direct unit tests; runner-internal callers reach it via
+// the closure inside runOneAttempt / executeStageLogic.
+export function segmentContinuationFor(
   opts: RunnerOptions,
   stageName: string,
   taskId: string,
@@ -1648,7 +1650,20 @@ function segmentContinuationFor(
 
   // Phase 1: in-segment aggregation. For idx>0, sum priorNumTurns and
   // priorAttempts over preceding stages in this segment, and pick the
-  // most recent persisted session_id within those.
+  // most recent valid session_id within those.
+  //
+  // Status filter is critical: exclude `superseded` and `error`
+  // attempts so a retry doesn't resume a stale or corrupt SDK
+  // conversation. `running` MUST be included — an upstream stage
+  // typically only just finished writing its outputs (PORT_WRITTEN
+  // dispatched synchronously, triggering this stage) and its
+  // status='success' transition happens AFTER its writePort calls.
+  // At query time, the upstream attempt is therefore still 'running';
+  // its session_id is the current live conversation we want to
+  // continue. Tested by:
+  //   - "retry path: prefers earlier SUCCESS over later SUPERSEDED"
+  //   - "passes segmentContinuation to stage 2 of a single-mode 2-stage segment"
+  //     (running upstream is what triggers this case in production).
   let inSegmentSession: string | undefined;
   let priorNumTurns = 0;
   const priorAttempts: string[] = [];
@@ -1659,6 +1674,7 @@ function segmentContinuationFor(
          FROM agent_execution_details aed
          JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
         WHERE sa.task_id = ? AND sa.stage_name = ?
+          AND sa.status IN ('success', 'running')
         ORDER BY aed.started_at DESC
         LIMIT 1`,
     ).get(taskId, prevName) as
@@ -1726,11 +1742,19 @@ function findUpstreamSessionByWires(
     const stage = stageByName.get(cur);
     if (!stage) continue;
     if (stage.type === "agent") {
+      // Status filter: 'success' OR 'running'. Excludes superseded /
+      // error / interrupted attempts whose sessions are stale. See
+      // segmentContinuationFor's Phase 1 comment for the
+      // success+running rationale (upstream often hasn't yet
+      // transitioned from 'running' to 'success' when this query
+      // fires — PORT_WRITTEN dispatch is synchronous).
       const r = opts.db.prepare(
         `SELECT aed.session_id
            FROM agent_execution_details aed
            JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
-          WHERE sa.task_id = ? AND sa.stage_name = ? AND aed.session_id IS NOT NULL
+          WHERE sa.task_id = ? AND sa.stage_name = ?
+            AND aed.session_id IS NOT NULL
+            AND sa.status IN ('success', 'running')
           ORDER BY aed.started_at DESC
           LIMIT 1`,
       ).get(taskId, cur) as { session_id: string } | undefined;

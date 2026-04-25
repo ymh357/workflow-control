@@ -1,10 +1,11 @@
 import { describe, it, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { runPipeline } from "./runner.js";
+import { runPipeline, segmentContinuationFor } from "./runner.js";
 import { MockStageExecutor } from "./mock-executor.js";
 import { initKernelNextSchema, insertPipelineVersion } from "../ir/sql.js";
 import { PipelineIRSchema } from "../ir/schema.js";
 import { versionHash } from "../ir/canonical.js";
+import { planSegments } from "./segment-planner.js";
 import type { ExecuteStageArgs } from "./executor.js";
 
 function makeDb(): DatabaseSync {
@@ -367,6 +368,201 @@ describe("runner: single-session segment plumbing", () => {
     expect(c.segCont?.isContinuationStage).toBe(true);
     // c resumes the most recent persisted session in its segment (b's).
     expect(c.segCont?.resumeSessionId).toBe("sb");
+    db.close();
+  });
+
+  it("retry path: prefers latest SUCCESS attempt over superseded/error attempts when picking session", () => {
+    // Direct unit test on segmentContinuationFor. Setup: two attempts
+    // for stage `a` — first attempt was superseded (e.g. by a hot-update
+    // or an earlier retry), second attempt succeeded. Stage `b` retry
+    // must resume the SUCCESS session, not the superseded one.
+    //
+    // Bug history: pre-fix, segmentContinuationFor's SQL used
+    // `ORDER BY started_at DESC LIMIT 1` without filtering by status —
+    // so it would pick the most recent attempt regardless of status,
+    // potentially resuming a superseded/error session.
+    const ir = PipelineIRSchema.parse({
+      name: "retry-status-filter",
+      session_mode: "single",
+      externalInputs: [{ name: "seed", type: "string" }],
+      stages: [
+        {
+          name: "a", type: "agent",
+          inputs: [{ name: "seed", type: "string" }],
+          outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "p/a" },
+        },
+        {
+          name: "b", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "y", type: "string" }],
+          config: { promptRef: "p/b" },
+        },
+      ],
+      wires: [
+        { from: { source: "external", port: "seed" }, to: { stage: "a", port: "seed" } },
+        { from: { source: "stage", stage: "a", port: "x" }, to: { stage: "b", port: "x" } },
+      ],
+    });
+
+    const db = makeDb();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const taskId = "t-retry-filter";
+
+    // Seed prompt_contents (FK target).
+    db.prepare(
+      `INSERT OR IGNORE INTO prompt_contents (content_hash, content, created_at) VALUES ('h', '', 0)`,
+    ).run();
+
+    // Attempt 1 of stage a: superseded with old session_id, started earlier.
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES ('a-att1', ?, ?, 'a', 0, 100, 'superseded')`,
+    ).run(taskId, hash);
+    db.prepare(
+      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at) VALUES ('a-att1', 'r', 'h', '', 'm', 'old-superseded-sess', 100, 100)`,
+    ).run();
+
+    // Attempt 2 of stage a: success with new session_id, started later.
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES ('a-att2', ?, ?, 'a', 1, 200, 'success')`,
+    ).run(taskId, hash);
+    db.prepare(
+      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at) VALUES ('a-att2', 'r', 'h', '', 'm', 'new-success-sess', 200, 200)`,
+    ).run();
+
+    const segments = planSegments(ir);
+    // Build a minimal RunnerOptions stub for segmentContinuationFor.
+    const stubOpts = {
+      db, ir, taskId, versionHash: hash, handlers: {},
+    } as Parameters<typeof segmentContinuationFor>[0];
+
+    const result = segmentContinuationFor(stubOpts, "b", taskId, ir, segments);
+    expect(result?.resumeSessionId).toBe("new-success-sess");
+    db.close();
+  });
+
+  it("retry path: prefers earlier SUCCESS over later SUPERSEDED attempt (status > recency)", () => {
+    // The bug-revealing variant: success attempt is FIRST (started_at=100),
+    // then a later attempt was launched but got superseded (started_at=200).
+    // Pre-fix code's `ORDER BY started_at DESC LIMIT 1` would pick the
+    // superseded session — wrong. Status filter must take precedence.
+    const ir = PipelineIRSchema.parse({
+      name: "retry-status-precedence",
+      session_mode: "single",
+      externalInputs: [{ name: "seed", type: "string" }],
+      stages: [
+        {
+          name: "a", type: "agent",
+          inputs: [{ name: "seed", type: "string" }],
+          outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "p/a" },
+        },
+        {
+          name: "b", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "y", type: "string" }],
+          config: { promptRef: "p/b" },
+        },
+      ],
+      wires: [
+        { from: { source: "external", port: "seed" }, to: { stage: "a", port: "seed" } },
+        { from: { source: "stage", stage: "a", port: "x" }, to: { stage: "b", port: "x" } },
+      ],
+    });
+
+    const db = makeDb();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const taskId = "t-precedence";
+
+    db.prepare(
+      `INSERT OR IGNORE INTO prompt_contents (content_hash, content, created_at) VALUES ('h', '', 0)`,
+    ).run();
+
+    // Earlier success.
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES ('a-ok', ?, ?, 'a', 0, 100, 'success')`,
+    ).run(taskId, hash);
+    db.prepare(
+      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at) VALUES ('a-ok', 'r', 'h', '', 'm', 'good-sess', 100, 100)`,
+    ).run();
+
+    // Later superseded.
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES ('a-bad', ?, ?, 'a', 1, 200, 'superseded')`,
+    ).run(taskId, hash);
+    db.prepare(
+      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at) VALUES ('a-bad', 'r', 'h', '', 'm', 'bad-sess', 200, 200)`,
+    ).run();
+
+    const segments = planSegments(ir);
+    const stubOpts = {
+      db, ir, taskId, versionHash: hash, handlers: {},
+    } as Parameters<typeof segmentContinuationFor>[0];
+
+    const result = segmentContinuationFor(stubOpts, "b", taskId, ir, segments);
+    // Must pick the success session, not the more-recent superseded one.
+    expect(result?.resumeSessionId).toBe("good-sess");
+    db.close();
+  });
+
+  it("retry path: ignores error/interrupted attempts even when they're the latest", () => {
+    // Variant: the ONLY persisted attempt for stage `a` is one that
+    // ended in error. Stage `b` should NOT resume that session — it
+    // should return undefined (no upstream success session). Otherwise
+    // a stage-1 crash that left a partial session_id row would let a
+    // resumed stage 2 inherit a corrupt SDK conversation.
+    const ir = PipelineIRSchema.parse({
+      name: "retry-error-filter",
+      session_mode: "single",
+      externalInputs: [{ name: "seed", type: "string" }],
+      stages: [
+        {
+          name: "a", type: "agent",
+          inputs: [{ name: "seed", type: "string" }],
+          outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "p/a" },
+        },
+        {
+          name: "b", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "y", type: "string" }],
+          config: { promptRef: "p/b" },
+        },
+      ],
+      wires: [
+        { from: { source: "external", port: "seed" }, to: { stage: "a", port: "seed" } },
+        { from: { source: "stage", stage: "a", port: "x" }, to: { stage: "b", port: "x" } },
+      ],
+    });
+
+    const db = makeDb();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const taskId = "t-error-filter";
+
+    db.prepare(
+      `INSERT OR IGNORE INTO prompt_contents (content_hash, content, created_at) VALUES ('h', '', 0)`,
+    ).run();
+
+    // Only attempt of stage a: error status with session_id (mid-stream
+    // crash captured init message but errored later).
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status) VALUES ('a-err', ?, ?, 'a', 0, 100, 'error')`,
+    ).run(taskId, hash);
+    db.prepare(
+      `INSERT INTO agent_execution_details (attempt_id, prompt_ref, prompt_content_hash, prompt_content, model, session_id, started_at, last_heartbeat_at) VALUES ('a-err', 'r', 'h', '', 'm', 'errored-sess', 100, 100)`,
+    ).run();
+
+    const segments = planSegments(ir);
+    const stubOpts = {
+      db, ir, taskId, versionHash: hash, handlers: {},
+    } as Parameters<typeof segmentContinuationFor>[0];
+
+    const result = segmentContinuationFor(stubOpts, "b", taskId, ir, segments);
+    // No success session upstream → no resume.
+    expect(result).toBeUndefined();
     db.close();
   });
 });
