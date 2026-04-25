@@ -1,5 +1,6 @@
 {
   "name": "PR Description Generator",
+  "session_mode": "single",
   "externalInputs": [
     { "name": "branchName", "type": "string" },
     { "name": "baseBranch", "type": "string" },

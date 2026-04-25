@@ -58,4 +58,9 @@ describe("loadBuiltinPipelineIR", () => {
     const r = loadBuiltinPipelineIR("smoke-test");
     expect(r.ir.session_mode).toBe("single");
   });
+
+  it("pr-description-generator declares session_mode='single' (Task 9 prod canary)", () => {
+    const r = loadBuiltinPipelineIR("pr-description-generator");
+    expect(r.ir.session_mode).toBe("single");
+  });
 });
