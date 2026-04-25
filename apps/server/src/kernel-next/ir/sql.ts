@@ -372,6 +372,27 @@ CREATE TABLE IF NOT EXISTS task_env_values (
   PRIMARY KEY (task_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_tev_task ON task_env_values(task_id);
+
+-- Single-session mode observability (Task 11). Each row is one
+-- continuous SDK segment: stages sharing one session_id within one task,
+-- with their stage path and aggregate token usage. Excludes size-1
+-- segments (multi-mode equivalent). Used to verify single-session
+-- canaries are actually winning vs multi (run same workload twice,
+-- compare segment_input_tokens). Per spec §9.
+CREATE VIEW IF NOT EXISTS v_segment_continuity AS
+SELECT
+  sa.task_id                       AS task_id,
+  aed.session_id                   AS session_id,
+  COUNT(*)                         AS stages_in_segment,
+  GROUP_CONCAT(sa.stage_name, '->') AS stage_path,
+  SUM(aed.token_input)             AS segment_input_tokens,
+  SUM(aed.cache_read_input_tokens) AS segment_cache_reads,
+  SUM(aed.cache_creation_input_tokens) AS segment_cache_creates
+FROM agent_execution_details aed
+JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
+WHERE aed.session_id IS NOT NULL
+GROUP BY sa.task_id, aed.session_id
+HAVING COUNT(*) > 1;
 `;
 
 export function initKernelNextSchema(db: DatabaseSync): void {
