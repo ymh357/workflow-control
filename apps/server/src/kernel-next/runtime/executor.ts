@@ -82,6 +82,29 @@ export interface ExecuteStageArgs {
    * to inherit.
    */
   priorNumTurns?: number;
+  /**
+   * Single-session segment continuation (spec
+   * 2026-04-25-single-session-mode-design §6.2). When set, this stage
+   * is a non-first stage in an agent-only segment; the executor must:
+   *   - pass `options.resume = resumeSessionId` to the SDK
+   *   - clamp `maxTurns` against `priorNumTurns` (segment-wide sum)
+   *   - render the prompt in continuation form (skip persona, keep
+   *     reads-section)
+   *
+   * `priorAttempts` is informational — recorded for cross-reference
+   * in execution-record but not consumed by the SDK call.
+   *
+   * Distinct from the existing M-R5 `resumeSessionId`/`priorNumTurns`
+   * fields above: those are for crash-recovery resume of a single
+   * stage. Both can coexist; segmentContinuation takes precedence
+   * when both are set (the segment's session subsumes any per-stage
+   * resume since the whole segment is one conversation).
+   */
+  segmentContinuation?: {
+    resumeSessionId: string;
+    priorNumTurns: number;
+    priorAttempts: string[];
+  };
 }
 
 export interface ExecuteStageResult {
