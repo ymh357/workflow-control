@@ -315,6 +315,10 @@ export const PipelineIRSchema = z.object({
   entry: identifier.optional(),
   externalInputs: z.array(PortIRSchema).default([]),
   store_schema: StoreSchemaSchema.optional(),
+  // Single-session mode: when "single", consecutive agent stages share
+  // one SDK conversation (per spec 2026-04-25-single-session-mode-design).
+  // Default "multi" preserves pre-2026-04-25 behavior.
+  session_mode: z.enum(["multi", "single"]).default("multi"),
 });
 
 export type PortIR = z.infer<typeof PortIRSchema>;
@@ -345,15 +349,17 @@ export type WireIR = {
   guard?: string;
 };
 
-// PipelineIR type: externalInputs is typed as optional to keep legacy
-// fixtures compiling. At runtime PipelineIRSchema defaults it to [], so
-// consumers observing a parsed IR will always see a concrete array.
+// PipelineIR type: externalInputs and session_mode are typed as optional
+// to keep legacy fixtures compiling. At runtime PipelineIRSchema defaults
+// them (externalInputs to [], session_mode to "multi"), so consumers
+// observing a parsed IR will always see concrete values.
 export type StoreSchemaEntry = z.infer<typeof StoreSchemaEntrySchema>;
 export type StoreSchema = z.infer<typeof StoreSchemaSchema>;
 
-export type PipelineIR = Omit<z.infer<typeof PipelineIRSchema>, "externalInputs" | "wires"> & {
+export type PipelineIR = Omit<z.infer<typeof PipelineIRSchema>, "externalInputs" | "wires" | "session_mode"> & {
   externalInputs?: PortIR[];
   wires: WireIR[];
+  session_mode?: "multi" | "single";
 };
 
 // IRPatch — see docs/kernel-next-terminal-design.md §10.
