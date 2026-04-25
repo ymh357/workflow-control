@@ -203,20 +203,24 @@ describe("runner: single-session segment plumbing", () => {
     db.close();
   });
 
-  it("diamond fan-out a→b, a→c: b continues a's segment; c starts new segment from a's session_id", async () => {
-    // Document/test the actual behavior when single mode meets a
-    // diamond fan-out. segment-planner returns [["a","b"],["c"]];
-    // we want to verify the runner plumbs segmentContinuation
-    // accordingly:
-    //   - b: continues a's segment, sees a's session_id
-    //   - c: opens its own segment, but should ALSO resume a's
-    //     session_id so the SDK conversation is shared (this is the
-    //     spec §3 design — both branches resume same session)
-    // Pivotal question: do b and c end up with the same resumeSessionId?
-    // (If yes, two parallel SDK queries try to resume the same session
-    // simultaneously — verify this doesn't crash the runner. SDK behavior
-    // under concurrent resume is a separate concern; mock test only
-    // verifies what the runner passes to the executor.)
+  it("diamond fan-out a→b, a→c: both b and c resume a's session_id (cross-segment resume per spec §3)", async () => {
+    // Spec §3: "At a segment boundary (gate / script / fanout / pipeline
+    // end), terminate the SDK query, persist the final session_id, and
+    // the next segment opens a new query with options.resume pointing
+    // at it." Both b and c are next-segment stages from a; both must
+    // resume a's session_id.
+    //
+    // Crucial distinction (Q3 bug fix 2026-04-25):
+    //   - b: idx 1 of segment 0 → uses continuation prompt form
+    //     (SDK already saw a's full prompt in this same query)
+    //   - c: idx 0 of segment 1 → uses FULL prompt form (new SDK query
+    //     resuming a's session — spec §8.4 example: "Stage 3's prompt
+    //     is full ... even though semantically it's 'after the user
+    //     answered the gate'")
+    //
+    // Both branches resuming the same session_id concurrently is a
+    // separate concern (real SDK behavior under that condition is
+    // verified elsewhere; this test only verifies the runner's intent).
     const ir = PipelineIRSchema.parse({
       name: "diamond",
       session_mode: "single",
@@ -273,30 +277,96 @@ describe("runner: single-session segment plumbing", () => {
     expect(result.finalState).toBe("completed");
     expect(seenContinuation).toHaveLength(3);
 
-    // a: first stage, no continuation.
+    // a: first stage of segment 0, no upstream agent → no resume.
     const aRecord = seenContinuation.find((r) => r.stage === "a")!;
     expect(aRecord.segCont).toBeUndefined();
 
-    // b: continuation of a's segment.
+    // b: idx 1 of segment 0 → continuation prompt form, resumes a.
     const bRecord = seenContinuation.find((r) => r.stage === "b")!;
     expect(bRecord.segCont?.resumeSessionId).toBe("sa");
+    expect(bRecord.segCont?.isContinuationStage).toBe(true);
 
-    // c: ACTUAL behavior (vs spec §3 intent — see report below):
-    // segmentContinuationFor returns undefined for c because c is the
-    // FIRST stage of its own segment (segments[1] = ["c"], idx===0).
-    // The function's contract is "non-first stages get continuation";
-    // first-stage check (`if (idx === 0) return undefined`) fires
-    // before any walk-back logic. So c starts a FRESH SDK session
-    // with NO resume.
-    //
-    // Implication: in single mode + diamond fan-out, b extends a's
-    // SDK conversation; c forks a brand-new conversation that doesn't
-    // see any of a's history. This is NOT what spec §3 implies — spec
-    // says "next segment opens a new query with options.resume pointing
-    // at the prior segment's session_id". Bug or design choice unclear
-    // from spec; this test documents actual behavior.
+    // c: idx 0 of segment 1, but upstream by wire is `a` (an agent
+    // with persisted session). Cross-segment resume per spec §3 +
+    // §8.4: c resumes a's session_id but uses FULL prompt form.
     const cRecord = seenContinuation.find((r) => r.stage === "c")!;
-    expect(cRecord.segCont).toBeUndefined();
+    expect(cRecord.segCont?.resumeSessionId).toBe("sa");
+    expect(cRecord.segCont?.isContinuationStage).toBe(false);
+    db.close();
+  });
+
+  it("isContinuationStage flag distinguishes prompt form (continuation) from resume (always when upstream session exists)", async () => {
+    // Linear single chain a→b→c: all three should reuse a's segment.
+    //   - a: idx 0, no upstream → undefined
+    //   - b: idx 1 → resume sa, continuation form
+    //   - c: idx 2 → resume sa (or sb if intermediate stage persisted), continuation form
+    const ir = PipelineIRSchema.parse({
+      name: "linear-three",
+      session_mode: "single",
+      externalInputs: [{ name: "seed", type: "string" }],
+      stages: [
+        {
+          name: "a", type: "agent",
+          inputs: [{ name: "seed", type: "string" }],
+          outputs: [{ name: "x", type: "string" }],
+          config: { promptRef: "p/a" },
+        },
+        {
+          name: "b", type: "agent",
+          inputs: [{ name: "x", type: "string" }],
+          outputs: [{ name: "y", type: "string" }],
+          config: { promptRef: "p/b" },
+        },
+        {
+          name: "c", type: "agent",
+          inputs: [{ name: "y", type: "string" }],
+          outputs: [{ name: "z", type: "string" }],
+          config: { promptRef: "p/c" },
+        },
+      ],
+      wires: [
+        { from: { source: "external", port: "seed" }, to: { stage: "a", port: "seed" } },
+        { from: { source: "stage", stage: "a", port: "x" }, to: { stage: "b", port: "x" } },
+        { from: { source: "stage", stage: "b", port: "y" }, to: { stage: "c", port: "y" } },
+      ],
+    });
+
+    const db = makeDb();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    const seenContinuation: Array<{ stage: string; segCont: ExecuteStageArgs["segmentContinuation"] }> = [];
+    const handlers = {
+      a: (): { x: string } => ({ x: "a-out" }),
+      b: (): { y: string } => ({ y: "b-out" }),
+      c: (): { z: string } => ({ z: "c-out" }),
+    };
+    const executor = new MockStageExecutor({
+      handlers,
+      onExecute: (args) =>
+        seenContinuation.push({ stage: args.stageName, segCont: args.segmentContinuation }),
+      persistSessionIdMap: {
+        a: { sessionId: "sa", numTurns: 1 },
+        b: { sessionId: "sb", numTurns: 1 },
+      },
+    });
+
+    const result = await runPipeline({
+      db, ir, taskId: "t-linear", versionHash: hash,
+      handlers, executor, seedValues: { seed: "s0" },
+    });
+
+    expect(result.finalState).toBe("completed");
+    const a = seenContinuation.find((r) => r.stage === "a")!;
+    const b = seenContinuation.find((r) => r.stage === "b")!;
+    const c = seenContinuation.find((r) => r.stage === "c")!;
+
+    expect(a.segCont).toBeUndefined();
+    // Both b and c are idx>0 in their segment → continuation form.
+    expect(b.segCont?.isContinuationStage).toBe(true);
+    expect(c.segCont?.isContinuationStage).toBe(true);
+    // c resumes the most recent persisted session in its segment (b's).
+    expect(c.segCont?.resumeSessionId).toBe("sb");
     db.close();
   });
 });

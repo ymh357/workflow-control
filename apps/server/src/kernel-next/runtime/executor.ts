@@ -84,12 +84,25 @@ export interface ExecuteStageArgs {
   priorNumTurns?: number;
   /**
    * Single-session segment continuation (spec
-   * 2026-04-25-single-session-mode-design §6.2). When set, this stage
-   * is a non-first stage in an agent-only segment; the executor must:
+   * 2026-04-25-single-session-mode-design §6.2 + §3 cross-segment
+   * resume + §8.4 segment-first-stage prompt form). When set, this
+   * stage has an upstream agent stage with a persisted session_id;
+   * the executor must:
    *   - pass `options.resume = resumeSessionId` to the SDK
    *   - clamp `maxTurns` against `priorNumTurns` (segment-wide sum)
-   *   - render the prompt in continuation form (skip persona, keep
-   *     reads-section)
+   *
+   * The `isContinuationStage` flag separately controls prompt form:
+   *   - `true`: this is a non-first stage in an agent-only segment.
+   *     The SDK has already seen the segment's first-stage full prompt
+   *     in this same query → render continuation form (skip persona +
+   *     Stage-contract overview).
+   *   - `false`: this is a segment-first stage that resumes a prior
+   *     segment's session_id (e.g. cross-segment resume after a gate /
+   *     script / fanout boundary). The SDK is starting a fresh query
+   *     with `options.resume`, but it's a new logical segment from the
+   *     pipeline's perspective → render full prompt form so the stage
+   *     re-establishes its own role despite the resumed conversation
+   *     history.
    *
    * `priorAttempts` is informational — recorded for cross-reference
    * in execution-record but not consumed by the SDK call.
@@ -104,6 +117,7 @@ export interface ExecuteStageArgs {
     resumeSessionId: string;
     priorNumTurns: number;
     priorAttempts: string[];
+    isContinuationStage: boolean;
   };
 }
 

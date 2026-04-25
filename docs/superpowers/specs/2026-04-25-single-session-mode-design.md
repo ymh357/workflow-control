@@ -273,16 +273,32 @@ today's behaviour.
 `ExecuteStageArgs` gains:
 
 ```ts
-// New: when set, this stage is a continuation within the current
-// segment. The executor MUST pass the resume session_id (from prior
-// stage in segment) and SHOULD render a continuation-style prompt.
+// When set, this stage has an upstream agent stage with a persisted
+// session_id; the executor MUST resume that session, and SHOULD pick
+// prompt form according to isContinuationStage.
 segmentContinuation?: {
   resumeSessionId: string;
-  priorNumTurns: number;     // sum across the whole segment so far
+  priorNumTurns: number;     // segment-wide sum so far
   priorAttempts: string[];   // attempt_ids in segment order, for
                              // execution-record cross-reference
+  isContinuationStage: boolean;  // see below
 };
 ```
+
+`isContinuationStage` separates *whether to resume* (always when an
+upstream agent has a persisted session) from *which prompt form to
+render*:
+
+- `true`: this is a non-first stage in the same agent-only segment.
+  The SDK is in the same query that emitted the segment-first
+  stage's full prompt, so the prompt builder uses **continuation
+  form** (drops the persona + Stage-contract overview — see §4.1).
+- `false`: this is a segment-first stage that is resuming a prior
+  segment's session_id (cross-segment resume after a gate / script /
+  fanout boundary, or after a retry). The SDK is starting a fresh
+  query with `options.resume`, but it is logically a new segment
+  from the pipeline's perspective. The prompt builder uses
+  **full form** (§8.4 adversarial example).
 
 This is *additive* to the existing `resumeSessionId` / `priorNumTurns`
 fields — those remain for crash-recovery resume. The two paths share
@@ -290,9 +306,8 @@ the underlying SDK `options.resume` plumbing but differ in:
 
 - `clampMaxTurns` consults the segment-wide turn count, not just
   this stage's own prior attempts.
-- The prompt builder receives a flag `continuationMode: true` so the
-  prompt template can render the abbreviated continuation form (§4.1)
-  instead of the full prompt.
+- The prompt builder receives `continuationMode = isContinuationStage`,
+  not `continuationMode = (segmentContinuation !== undefined)`.
 
 ### 6.3 Runner: segment lifecycle
 
@@ -300,17 +315,27 @@ the underlying SDK `options.resume` plumbing but differ in:
 `resumeFieldsForStage` (M-R5 crash resume only). Extended:
 
 1. Before dispatching each stage, look up its segment via the planner.
-2. If this is the segment's first agent stage: dispatch normally
-   (no `segmentContinuation`).
-3. If this is a non-first agent stage in the segment:
-   - Read the prior stage's `session_id` from
-     `agent_execution_details` (already persisted by `updateSessionId`).
-   - Sum `num_turns` across all prior stages in the segment.
-   - Pass `segmentContinuation: { resumeSessionId, priorNumTurns,
-     priorAttempts }`.
-4. M-R5's crash-recovery resume continues to work unchanged for
-   segment-first stages; for continuation stages, the segment lookup
-   subsumes it.
+2. Compute `isContinuationStage = idx > 0` within the segment.
+3. Resolve resume session in two phases:
+   - **In-segment**: walk preceding stages of this segment (idx <
+     current). Sum `num_turns` over all that ran. Pick the most
+     recent persisted `session_id` among them as the resume target.
+     Capture `priorAttempts` in segment order.
+   - **Cross-segment fallback**: if no in-segment stage has a
+     persisted session yet (typical for segment-first stages, idx
+     0), BFS upstream by wires from this stage. The first agent
+     ancestor with a persisted `session_id` is the resume target.
+     This implements §3 "next segment opens a new query with
+     options.resume pointing at the prior segment's session_id".
+4. If a session was resolved, pass
+   `segmentContinuation = { resumeSessionId, priorNumTurns,
+   priorAttempts, isContinuationStage }`. Otherwise pass `undefined`
+   (this stage is the first agent stage in the pipeline, or upstream
+   is purely script/external/agents-without-sessions).
+5. M-R5's crash-recovery resume continues to work unchanged for
+   segment-first stages with no upstream agent ancestor; for
+   continuation stages and cross-segment-resume stages, the segment
+   lookup subsumes it.
 
 No XState machine changes. Segment is a runner-side concept; the
 machine still sees per-stage `executing → done` transitions.

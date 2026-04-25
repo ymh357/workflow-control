@@ -1054,7 +1054,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
             portRuntime,
             signal: ac.signal,
             ...resumeForThisStage,
-            segmentContinuation: segmentContinuationFor(opts, input.stageName, input.taskId, segments),
+            segmentContinuation: segmentContinuationFor(opts, input.stageName, input.taskId, opts.ir, segments),
           });
           if (result.status === "error") {
             stageErrors.push({ stage: input.stageName, message: result.error ?? "unspecified" });
@@ -1599,72 +1599,149 @@ function resumeFieldsForStage(
   };
 }
 
-// Single-session mode (spec §6.3) — derive segmentContinuation for a
-// stage. Returns undefined when:
-//   - the stage is the segment's first stage (no continuation), OR
-//   - the segment has size 1 (multi mode, or single-mode pipeline with
-//     this stage as its own segment), OR
-//   - no prior agent stage in the segment has a persisted session_id
-//     yet (e.g. the previous attempt crashed before result message).
+// Single-session mode — derive segmentContinuation for a stage.
 //
-// Otherwise walks back through the segment to the most recent prior
-// stage that has a persisted session_id, and returns it along with
-// segment-wide priorNumTurns and priorAttempts.
+// Spec §3: "the next segment opens a new query with options.resume
+// pointing at" the prior segment's session_id. Spec §8.4: stage at the
+// start of a new segment uses FULL prompt form even when the SDK
+// session is resumed.
+//
+// Returns undefined only when there is no upstream agent stage with a
+// persisted session_id (e.g. this is the very first agent stage of the
+// pipeline, or upstream is purely script/external).
+//
+// Otherwise returns:
+//   - resumeSessionId: most recent agent ancestor's persisted session
+//   - priorNumTurns + priorAttempts: aggregated across all in-segment
+//     stages that already ran (segment-wide budget per spec §4.4)
+//   - isContinuationStage:
+//       true  — this stage is at idx>0 within its segment (the SDK
+//               already saw the segment's first-stage full prompt in
+//               this same query, render continuation form)
+//       false — this stage is at idx 0 of its segment but resumes a
+//               prior segment (fresh SDK query with options.resume,
+//               render full prompt form per spec §8.4)
 function segmentContinuationFor(
   opts: RunnerOptions,
   stageName: string,
   taskId: string,
+  ir: PipelineIR,
   segments: string[][],
 ):
-  | { resumeSessionId: string; priorNumTurns: number; priorAttempts: string[] }
+  | {
+      resumeSessionId: string;
+      priorNumTurns: number;
+      priorAttempts: string[];
+      isContinuationStage: boolean;
+    }
   | undefined {
-  const seg = segments.find((s) => s.includes(stageName));
-  if (!seg || seg.length < 2) return undefined;
-  const idx = seg.indexOf(stageName);
-  if (idx === 0) return undefined;
+  // Multi mode: every stage is independent, no segment continuation.
+  // (Multi mode's segments[] is a list of size-1 lists per
+  // segment-planner; gating on session_mode is also explicit so the
+  // function is correct independent of the planner's invariants.)
+  if (ir.session_mode !== "single") return undefined;
 
-  // Look upstream within the segment for the most recent persisted
-  // session_id. Scan from idx-1 backwards so a partial / failed prior
-  // stage (no session_id row) doesn't block continuation.
-  for (let i = idx - 1; i >= 0; i--) {
+  const seg = segments.find((s) => s.includes(stageName));
+  if (!seg) return undefined;
+  const idx = seg.indexOf(stageName);
+  const isContinuationStage = idx > 0;
+
+  // Phase 1: in-segment aggregation. For idx>0, sum priorNumTurns and
+  // priorAttempts over preceding stages in this segment, and pick the
+  // most recent persisted session_id within those.
+  let inSegmentSession: string | undefined;
+  let priorNumTurns = 0;
+  const priorAttempts: string[] = [];
+  for (let i = 0; i < idx; i++) {
     const prevName = seg[i];
-    const row = opts.db.prepare(
-      `SELECT aed.session_id, aed.attempt_id
+    const r = opts.db.prepare(
+      `SELECT aed.session_id, aed.agent_stream_json, aed.attempt_id, aed.started_at
          FROM agent_execution_details aed
          JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
-        WHERE sa.task_id = ? AND sa.stage_name = ? AND aed.session_id IS NOT NULL
+        WHERE sa.task_id = ? AND sa.stage_name = ?
         ORDER BY aed.started_at DESC
         LIMIT 1`,
     ).get(taskId, prevName) as
-      | { session_id: string; attempt_id: string }
+      | { session_id: string | null; agent_stream_json: string | null; attempt_id: string; started_at: number }
       | undefined;
-    if (!row) continue;
+    if (!r) continue;
+    priorAttempts.push(r.attempt_id);
+    priorNumTurns += parseNumTurnsFromStream(r.agent_stream_json ?? null);
+    if (r.session_id) inSegmentSession = r.session_id;
+  }
 
-    // Sum num_turns across every prior stage in the segment that has
-    // a persisted attempt — segment-wide budget per spec §4.4.
-    let priorNumTurns = 0;
-    const priorAttempts: string[] = [];
-    for (let j = 0; j <= i; j++) {
-      const pn = seg[j];
-      const r2 = opts.db.prepare(
-        `SELECT aed.agent_stream_json, aed.attempt_id
-           FROM agent_execution_details aed
-           JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
-          WHERE sa.task_id = ? AND sa.stage_name = ?
-          ORDER BY aed.started_at DESC
-          LIMIT 1`,
-      ).get(taskId, pn) as
-        | { agent_stream_json: string | null; attempt_id: string }
-        | undefined;
-      if (!r2) continue;
-      priorAttempts.push(r2.attempt_id);
-      priorNumTurns += parseNumTurnsFromStream(r2.agent_stream_json ?? null);
-    }
+  if (inSegmentSession) {
     return {
-      resumeSessionId: row.session_id,
+      resumeSessionId: inSegmentSession,
       priorNumTurns,
       priorAttempts,
+      isContinuationStage,
     };
+  }
+
+  // Phase 2: cross-segment resume. The stage is either segment-first
+  // (idx 0) OR an in-segment stage whose preceding stages have no
+  // persisted session yet. Walk wires upstream to find the most recent
+  // agent ancestor with a persisted session.
+  const upstreamSession = findUpstreamSessionByWires(opts, taskId, ir, stageName);
+  if (!upstreamSession) return undefined;
+
+  return {
+    resumeSessionId: upstreamSession,
+    priorNumTurns,
+    priorAttempts,
+    isContinuationStage,
+  };
+}
+
+// BFS wires-upstream from `stageName`, return the session_id of the
+// nearest agent ancestor whose attempt is persisted in
+// agent_execution_details. Used by segmentContinuationFor for
+// cross-segment resume per spec §3.
+function findUpstreamSessionByWires(
+  opts: RunnerOptions,
+  taskId: string,
+  ir: PipelineIR,
+  stageName: string,
+): string | undefined {
+  const wireUpstream = new Map<string, string[]>();
+  for (const s of ir.stages) wireUpstream.set(s.name, []);
+  for (const w of ir.wires) {
+    if (w.from.source === "external") continue;
+    const fromStage = "stage" in w.from ? w.from.stage : undefined;
+    if (!fromStage) continue;
+    const list = wireUpstream.get(w.to.stage);
+    if (!list) continue;
+    if (!list.includes(fromStage)) list.push(fromStage);
+  }
+
+  const stageByName = new Map(ir.stages.map((s) => [s.name, s]));
+  const visited = new Set<string>([stageName]);
+  const queue = [...(wireUpstream.get(stageName) ?? [])];
+
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    if (visited.has(cur)) continue;
+    visited.add(cur);
+    const stage = stageByName.get(cur);
+    if (!stage) continue;
+    if (stage.type === "agent") {
+      const r = opts.db.prepare(
+        `SELECT aed.session_id
+           FROM agent_execution_details aed
+           JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
+          WHERE sa.task_id = ? AND sa.stage_name = ? AND aed.session_id IS NOT NULL
+          ORDER BY aed.started_at DESC
+          LIMIT 1`,
+      ).get(taskId, cur) as { session_id: string } | undefined;
+      if (r?.session_id) return r.session_id;
+    }
+    // Continue walking upstream regardless of stage type; an upstream
+    // script/gate doesn't itself have a session, but we follow its
+    // ancestors (an agent before that script is a valid resume target).
+    for (const up of wireUpstream.get(cur) ?? []) {
+      if (!visited.has(up)) queue.push(up);
+    }
   }
   return undefined;
 }

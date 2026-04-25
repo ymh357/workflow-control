@@ -652,6 +652,7 @@ describe("RealStageExecutor segmentContinuation (single-session mode)", () => {
         resumeSessionId: "seg-sess-1",
         priorNumTurns: 4,
         priorAttempts: ["a-prior"],
+        isContinuationStage: true,
       },
     });
 
@@ -692,12 +693,92 @@ describe("RealStageExecutor segmentContinuation (single-session mode)", () => {
         resumeSessionId: "segment-sess",
         priorNumTurns: 7,
         priorAttempts: [],
+        isContinuationStage: true,
       },
     });
 
     expect(capturedOptions).toHaveLength(1);
     expect(capturedOptions[0].resume).toBe("segment-sess");
     expect(capturedOptions[0].maxTurns).toBe(3); // 10 - 7
+    db.close();
+  });
+
+  it("isContinuationStage=false → resumes session but renders FULL prompt form (cross-segment per spec §8.4)", async () => {
+    const db = makeDb();
+    const ir = oneStageIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const portRuntime = new PortRuntime(db, { send: () => { /* inert */ } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const capturedOptions: any[] = [];
+    const executor = new RealStageExecutor({
+      mcpServerFactory: () => ({}),
+      maxTurns: 10,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      queryFn: ((args: any) => {
+        capturedOptions.push(args.options);
+        return makeFakeStream("error_max_turns", { errorMessage: "test short-circuit" });
+      }) as never,
+    });
+
+    await executor.executeStage({
+      ir, stageName: "S", taskId: "t-cross-seg", versionHash: hash,
+      portValues: {}, handlers: {}, portRuntime,
+      segmentContinuation: {
+        resumeSessionId: "prior-seg-sess",
+        priorNumTurns: 0,
+        priorAttempts: [],
+        isContinuationStage: false,  // segment-first stage that resumes
+      },
+    });
+
+    expect(capturedOptions).toHaveLength(1);
+    // Resume happens regardless of prompt form.
+    expect(capturedOptions[0].resume).toBe("prior-seg-sess");
+    // Full prompt form: contains "Stage contract" overview block
+    // (spec §4.1: this block is dropped only in continuation form).
+    const sysAppend = capturedOptions[0].systemPrompt?.append ?? "";
+    expect(sysAppend).toContain("Stage contract");
+    db.close();
+  });
+
+  it("isContinuationStage=true → continuation prompt form (drops Stage-contract overview)", async () => {
+    const db = makeDb();
+    const ir = oneStageIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    const portRuntime = new PortRuntime(db, { send: () => { /* inert */ } });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const capturedOptions: any[] = [];
+    const executor = new RealStageExecutor({
+      mcpServerFactory: () => ({}),
+      maxTurns: 10,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      queryFn: ((args: any) => {
+        capturedOptions.push(args.options);
+        return makeFakeStream("error_max_turns", { errorMessage: "test short-circuit" });
+      }) as never,
+    });
+
+    await executor.executeStage({
+      ir, stageName: "S", taskId: "t-in-seg", versionHash: hash,
+      portValues: {}, handlers: {}, portRuntime,
+      segmentContinuation: {
+        resumeSessionId: "in-seg-sess",
+        priorNumTurns: 2,
+        priorAttempts: [],
+        isContinuationStage: true,  // mid-segment continuation stage
+      },
+    });
+
+    expect(capturedOptions).toHaveLength(1);
+    expect(capturedOptions[0].resume).toBe("in-seg-sess");
+    // Continuation form: Stage-contract block dropped (SDK already
+    // saw the segment-first stage's full prompt in this same query).
+    const sysAppend = capturedOptions[0].systemPrompt?.append ?? "";
+    expect(sysAppend).not.toContain("Stage contract");
     db.close();
   });
 

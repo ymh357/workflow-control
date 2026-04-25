@@ -310,9 +310,16 @@ export class RealStageExecutor implements StageExecutor {
     const migrationHint = consumeMigrationHint(portRuntime.getDb(), taskId, stageName);
 
     // 4b. System prompt append describing the stage contract — tool-call only.
+    // continuationMode iff the stage is a non-first stage WITHIN its segment
+    // (the SDK already saw the segment-first stage's full prompt in this
+    // same query). A segment-first stage that resumes a prior segment's
+    // session uses FULL prompt form per spec §8.4 — see executor.ts
+    // ExecuteStageArgs.segmentContinuation.isContinuationStage.
     const systemPromptAppend = buildSystemPromptAppend(stage, userPrompt, inputs, {
       taskId, attemptId,
-    }, migrationHint, ir, { continuationMode: args.segmentContinuation !== undefined });
+    }, migrationHint, ir, {
+      continuationMode: args.segmentContinuation?.isContinuationStage === true,
+    });
 
     // 4. Run query() and consume stream. Output path is the MCP
     //    `write_port` tool (one call per declared output port). The final
