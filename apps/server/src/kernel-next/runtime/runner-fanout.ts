@@ -62,7 +62,8 @@ export interface RunFanoutArgs {
 
 export type FanoutResult =
   | { status: "success" }
-  | { status: "error"; error: string };
+  | { status: "error"; error: string }
+  | { status: "secret_pending"; missingKeys: string[] };
 
 export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<FanoutResult> {
   const { ir, stageDef, taskId, versionHash, basePortValues, handlers, db, livePortRuntime, executor } = args;
@@ -156,8 +157,19 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
   // the first error message observed; once set, workers stop taking
   // new elements (in-flight elements still complete — we always await
   // the pool before returning).
+  //
+  // F17/F19: secret_pending is a non-error pause signal. If ANY element
+  // returns secret_pending, we collect its missingKeys, stop scheduling
+  // new elements (workers gate on secretPendingObserved), and once the
+  // pool drains we return the pause result instead of attempting
+  // aggregation — partial element outputs are kept in the silent runtime
+  // and survive into the resumed run via stage_attempts. (executor.ts
+  // already finishAttempt'd the element as secret_pending and wrote a
+  // secret_gate_queue row covering its missingKeys.)
   let nextIdx = 0;
   let firstError: string | null = null;
+  let secretPendingObserved = false;
+  const allMissingKeys = new Set<string>();
 
   const runElement = async (i: number): Promise<void> => {
     // B17 full — if an earlier successful fanout_element attempt
@@ -202,6 +214,17 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
       return;
     }
 
+    if (result.status === "secret_pending") {
+      // F17/F19: per-element missing-envKey pause. Collect every
+      // element's missingKeys (a different element MAY observe a
+      // different envKey if mcpServers vary by element index — though
+      // in practice they don't, since mcpServers is stage-config-level
+      // not element-level). Keep collecting; workers gate on the flag.
+      secretPendingObserved = true;
+      for (const k of result.missingKeys) allMissingKeys.add(k);
+      return;
+    }
+
     // Collect this attempt's output port values from the DB. Write by
     // index (not push) so the aggregated array preserves input order
     // even when elements finish out-of-order under parallelism.
@@ -215,7 +238,7 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
 
   const worker = async (): Promise<void> => {
     while (true) {
-      if (firstError !== null) return;
+      if (firstError !== null || secretPendingObserved) return;
       const i = nextIdx++;
       if (i >= sourceValue.length) return;
       await runElement(i);
@@ -226,6 +249,15 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
 
   if (firstError !== null) {
     return { status: "error", error: firstError };
+  }
+
+  if (secretPendingObserved) {
+    // F17/F19: don't attempt aggregation — at least one element
+    // pause-failed on missing envKeys. The executor already wrote a
+    // secret_gate_queue row per affected element. Return upward; the
+    // runner sets secretPendingObserved on its own flag and dispatches
+    // STAGE_FAILED so the machine resolves out of `executing`.
+    return { status: "secret_pending", missingKeys: Array.from(allMissingKeys).sort() };
   }
 
   // Open an "aggregate attempt" on the live PortRuntime and write each

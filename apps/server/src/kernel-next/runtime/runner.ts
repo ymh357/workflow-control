@@ -1525,6 +1525,21 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
                     stage: stageName,
                     error: result.error,
                   });
+                } else if (result.status === "secret_pending") {
+                  // F17/F19: fanout pause path. Mirror the non-fanout
+                  // secret_pending handling in runner.ts:1091. Set the
+                  // runner-level flag (suppresses task_finals + env
+                  // cleanup), do NOT push to stageErrors, dispatch
+                  // STAGE_FAILED so the machine's stage region exits
+                  // `executing` and the parallel-region final lets
+                  // runOneAttempt resolve. The provideTaskSecrets MCP
+                  // tool resumes via retryTaskFromStage as usual.
+                  secretPendingObserved = true;
+                  dispatcher.send({
+                    type: "STAGE_FAILED",
+                    stage: stageName,
+                    error: `MCP_ENV_MISSING: stage '${stageName}' fanout needs envKeys [${result.missingKeys.join(", ")}]`,
+                  });
                 }
               }, (err: unknown) => {
                 const message = err instanceof Error ? err.message : String(err);
