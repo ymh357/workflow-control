@@ -23,6 +23,14 @@ export interface BuildSdkBaseOptionsArgs {
    * built-in __kernel_next__ entry. Absent/empty → kernel-only mode.
    */
   externalMcpServers?: Record<string, ExpandedMcpServer>;
+  /**
+   * F22 (2026-04-26) — per-attempt AbortController. When aborted, the SDK
+   * subprocess stops immediately so it cannot write port_values after the
+   * attempt is marked terminal (error / secret_pending / interrupted).
+   * doAttempt creates one per invocation and aborts it at every termination
+   * path before calling finishAttempt.
+   */
+  abortController?: AbortController;
 }
 
 export function buildSdkBaseOptions(args: BuildSdkBaseOptionsArgs): SdkOptions {
@@ -49,6 +57,9 @@ export function buildSdkBaseOptions(args: BuildSdkBaseOptionsArgs): SdkOptions {
       ? { agents: buildSdkAgents(args.subAgents) }
       : {}),
     ...(args.workspaceDir !== undefined ? { cwd: args.workspaceDir } : {}),
+    ...(args.abortController !== undefined
+      ? { abortController: args.abortController }
+      : {}),
   };
 }
 

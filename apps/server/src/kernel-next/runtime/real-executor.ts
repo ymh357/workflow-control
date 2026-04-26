@@ -190,6 +190,10 @@ const DEFAULT_MAX_TURNS = 10;
 const DEFAULT_MAX_BUDGET_USD = 0.2;
 const DEFAULT_CLAUDE_PATH = "claude";
 const DEFAULT_MAX_RETRIES = 0;
+// F22 (2026-04-26): Number of free retries granted when an attempt fails with
+// MCP_STARTUP_FAILED. Independent of maxRetries because this is an
+// infrastructure-level race (cold-start npx) not a stage-logic error.
+const MCP_STARTUP_RETRY_BUDGET = 3;
 
 export class RealStageExecutor implements StageExecutor {
   private readonly mcpServerFactory: (
@@ -236,13 +240,40 @@ export class RealStageExecutor implements StageExecutor {
     // failures are recorded silently (machine stays in `executing`); only
     // the final failure (or any success) surfaces to the machine via
     // PORT_WRITTEN / STAGE_FAILED.
+    //
+    // F22 (2026-04-26): MCP_STARTUP_FAILED is a transient infrastructure
+    // error — typically triggered when an `npx -y <package>` MCP subprocess
+    // is still cold-starting when the SDK fires its system.init message.
+    // We treat it as recoverable independently of the configured maxRetries:
+    // up to MCP_STARTUP_RETRY_BUDGET extra attempts are granted, with a
+    // short backoff between each so the npx download has time to complete.
+    // Once another error type surfaces (genuine stage logic failure), the
+    // budget is exhausted and the normal maxRetries gate applies.
     let lastResult: ExecuteStageResult | undefined;
     const totalAttempts = this.maxRetries + 1;
+    let mcpStartupRetriesLeft = MCP_STARTUP_RETRY_BUDGET;
     for (let i = 0; i < totalAttempts; i++) {
-      const isFinalAttempt = i === totalAttempts - 1;
+      const isFinalAttempt = i === totalAttempts - 1 && mcpStartupRetriesLeft === 0;
       const result = await this.doAttempt(args, stage, isFinalAttempt);
       lastResult = result;
       if (result.status === "success") return result;
+      // F22: detect MCP_STARTUP_FAILED and grant a free retry slot.
+      if (
+        result.status === "error" &&
+        result.error?.includes("MCP_STARTUP_FAILED") &&
+        mcpStartupRetriesLeft > 0
+      ) {
+        mcpStartupRetriesLeft -= 1;
+        // Don't advance i — this attempt was free.
+        i -= 1;
+        // Exponential-ish backoff: 2s, 5s, 10s. Short enough to not hold
+        // the runner indefinitely; long enough for a typical npx install.
+        const backoffMs =
+          MCP_STARTUP_RETRY_BUDGET - mcpStartupRetriesLeft === 1 ? 2000
+          : MCP_STARTUP_RETRY_BUDGET - mcpStartupRetriesLeft === 2 ? 5000
+          : 10000;
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      }
     }
     // If we got here, the last attempt failed. lastResult is always set.
     return lastResult!;
@@ -321,6 +352,14 @@ export class RealStageExecutor implements StageExecutor {
       continuationMode: args.segmentContinuation?.isContinuationStage === true,
     });
 
+    // F22 (2026-04-26): one AbortController per doAttempt call. Passed into
+    // the SDK so the subprocess can be killed the moment this attempt is marked
+    // terminal. Aborted at every finishAttempt(error/secret_pending/interrupted)
+    // exit path and in the inner finally block as belt-and-suspenders. Declared
+    // here (outside the outer try) so the catch block can also abort it.
+    // Never shared across retries — executeStage calls doAttempt fresh each time.
+    const abortController = new AbortController();
+
     // 4. Run query() and consume stream. Output path is the MCP
     //    `write_port` tool (one call per declared output port). The final
     //    text message is ignored — no outputFormat.json_schema is sent.
@@ -372,6 +411,7 @@ export class RealStageExecutor implements StageExecutor {
           );
           const errMsg = `MCP_ENV_MISSING: stage '${stage.name}' needs envKeys [${expandResult.missingKeys.join(", ")}]`;
           writer.close({ terminationReason: "secret_pending" });
+          abortController.abort();
           portRuntime.finishAttempt(attemptId, "secret_pending", errMsg, { silent: failSilently });
           return {
             attemptId,
@@ -382,6 +422,7 @@ export class RealStageExecutor implements StageExecutor {
         }
         externalMcpServers = expandResult.servers;
       }
+
       // F3: set SDK cwd only when the caller supplied a workspace.
       // Otherwise leave it undefined so the SDK default (process.cwd())
       // stays in force, preserving legacy test expectations.
@@ -396,6 +437,7 @@ export class RealStageExecutor implements StageExecutor {
         subAgents,
         workspaceDir: this.workspaceDir,
         externalMcpServers,
+        abortController,
       });
       // Plumb the resume session_id (M-R5 per-stage OR single-session
       // segment continuation; segment wins per §6.2). queryFn failure
@@ -434,12 +476,18 @@ export class RealStageExecutor implements StageExecutor {
       // runs as designed. Listener is removed in the finally so we
       // don't leak across sequential stage attempts.
       const onAbort = () => {
+        // F22: kill the SDK subprocess immediately when the runner interrupts.
+        // This prevents the agent from writing port_values after the attempt
+        // is terminal. INTERRUPT to agentActor still runs so the §4.2 state
+        // matrix executes its normal summary-turn logic.
+        abortController.abort();
         agentActor.send({ type: "INTERRUPT" });
       };
       if (args.signal) {
         if (args.signal.aborted) {
           // Signal already aborted (interrupt fired before executeStage
           // even started — e.g. XState stop-on-create). Send immediately.
+          abortController.abort();
           agentActor.send({ type: "INTERRUPT" });
         } else {
           args.signal.addEventListener("abort", onAbort, { once: true });
@@ -695,6 +743,11 @@ export class RealStageExecutor implements StageExecutor {
         // timeout. Otherwise XState keeps a subscription alive and a later
         // test iteration's actor may race with this one.
         agentActor.stop();
+        // F22 — belt-and-suspenders: abort the SDK controller on every exit
+        // path so the subprocess never outlives this doAttempt frame.
+        // abort() is idempotent so double-calling (success path, explicit
+        // abort paths above) is harmless.
+        if (!abortController.signal.aborted) abortController.abort();
         // P7.4 / D29 — flush any pending text so the dashboard sees the
         // tail end of the stream even when the stage ends between
         // flush-interval ticks. dispose() is a no-op when the buffer is
@@ -787,6 +840,10 @@ export class RealStageExecutor implements StageExecutor {
       // branch above already closed it before throwing.
       writer.close({ terminationReason: "error" });
       const msg = err instanceof Error ? err.message : String(err);
+      // F22: abort the SDK controller so any still-running subprocess
+      // (e.g. MCP_STARTUP_FAILED thrown mid-stream) terminates immediately.
+      // The inner finally may have already aborted it; abort() is idempotent.
+      abortController.abort();
       portRuntime.finishAttempt(attemptId, "error", msg, { silent: failSilently });
       return { attemptId, attemptIdx, status: "error", error: msg };
     }

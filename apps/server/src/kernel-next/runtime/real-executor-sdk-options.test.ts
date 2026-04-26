@@ -234,4 +234,36 @@ describe("real-executor-sdk-options: buildSdkBaseOptions", () => {
     });
     expect(Object.keys(opts.mcpServers!)).toEqual(["__kernel_next__"]);
   });
+
+  it("passes abortController through to options.abortController when provided (F22)", () => {
+    const ac = new AbortController();
+    const opts = buildSdkBaseOptions({
+      systemPromptAppend: "",
+      kernelMcp: Symbol() as unknown as never,
+      model: undefined,
+      maxTurns: 5,
+      maxBudgetUsd: undefined,
+      claudePath: undefined,
+      childEnv: {},
+      subAgents: undefined,
+      workspaceDir: undefined,
+      abortController: ac,
+    });
+    expect(opts.abortController).toBe(ac);
+  });
+
+  it("omits abortController from options when not provided (backwards compat)", () => {
+    const opts = buildSdkBaseOptions({
+      systemPromptAppend: "",
+      kernelMcp: Symbol() as unknown as never,
+      model: undefined,
+      maxTurns: 5,
+      maxBudgetUsd: undefined,
+      claudePath: undefined,
+      childEnv: {},
+      subAgents: undefined,
+      workspaceDir: undefined,
+    });
+    expect(opts.abortController).toBeUndefined();
+  });
 });
