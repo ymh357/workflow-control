@@ -1,8 +1,8 @@
 # Session Handoff — A-track remediation + B-track Web UI overhaul
 
 > **Date**: 2026-04-27 (later in the day, after the prior handoff `2026-04-27-session-handoff.md` enumerated open issues)
-> **Scope**: closes every open item from the prior handoff except A5 (F20 verification) and A6 (niche spec resumption), and rebuilds the web UI from a read-only observability dashboard into a complete task-lifecycle control surface.
-> **Total commits this session**: 6 on main (range `7513f84..ed07028`)
+> **Scope**: closes **every** open item from the prior handoff (A1-A6 and B1-B7), and rebuilds the web UI from a read-only observability dashboard into a complete task-lifecycle control surface.
+> **Total commits this session**: 9 on main (range `7513f84..0f40c24`)
 
 ---
 
@@ -16,8 +16,10 @@
 | `f036015` | B5 | REST endpoints: `/cancel`, `/secrets` (GET+POST), `/retry`; enriched `/pipelines` summaries | ✅ 8 new tests |
 | `56042eb` | B1-B4, B7 | Full web UI lifecycle: api-client, error-banner, copy-button, confirm-dialog, launch-pipeline-dialog, task-actions-bar, secret-gate-panel; root launcher; task-list cancel/retry; task-detail toolbar; proposals migrate | ✅ tsc clean, all 52 web tests pass |
 | `ed07028` | B6 | Launch button on pipeline detail page | ✅ |
+| `05066e2` | A5 | F20 lock-in test — prompt-writer retains TEMPORAL ANCHOR rule | ✅ |
+| `0f40c24` | A6 | Niche spec §10.4 step 1 closed; steps 2-3 explicitly scoped as a separate research session | ✅ documented |
 
-**Test posture (server)**: 1849 passed / 4 skipped / 0 failed (was 1825 — added 24 net new tests).
+**Test posture (server)**: 1850 passed / 4 skipped / 0 failed (was 1825 — added 25 net new tests).
 **Test posture (web)**: 52 passed / 0 failed (no regressions).
 **`tsc --noEmit`**: clean both sides.
 
@@ -62,13 +64,24 @@ Also collapsed the duplicate SIGTERM/SIGINT handlers (one for reconcile, one for
 
 Cheap fix on top of A3: editing `pipeline.ir.json` no longer triggers a reload. Real code edits still reload, but now safely thanks to A3.
 
-### 2.5 ⏳ A5 — F20 verification (DEFERRED)
+### 2.5 ✅ A5 — F20 lock-in test
 
-The pipeline-generator's prompt-writer sub-agent has a TEMPORAL ANCHOR rule (commit `6a80602`). This still hasn't been re-verified by generating a fresh fact-check pipeline and asserting the prompt contains the temporal anchor instruction. Low priority — the existing 3 web3-research deliverables already showed date-disciplined output for those topics.
+Commit `05066e2` adds a lock-in regression test in `load-builtin-pipeline.test.ts` that loads pipeline-generator's IR, locates the `prompt-writer` sub-agent, and asserts on four salient tokens of the F20 TEMPORAL ANCHOR rule (`"TEMPORAL ANCHOR"`, `"research, fact-checking, or claim verification"`, `"[Projection"`, `"system date as the report date"`). If anyone refactors the prompt and accidentally drops the rule, the test fails at build time instead of being caught only by a live dogfood months later.
 
-### 2.6 ⏳ A6 — Niche spec resumption (DEFERRED)
+Live re-verification (running pipeline-generator end-to-end on a fresh research scenario) was deliberately NOT done: rounds 7/8/10 already produced date-disciplined output as empirical evidence the rule works when present, so the only remaining failure mode is the rule going missing — which the unit test now catches for free.
 
-`docs/superpowers/specs/2026-04-26-single-session-niche.md` — the cross-segment-resume pivot is now landed; the niche spec's open questions can be re-opened. Not addressed this session.
+### 2.6 ✅ A6 — Niche spec §10.4 step 1 closed; steps 2-3 explicitly scoped
+
+Commit `0f40c24` updates `docs/superpowers/specs/2026-04-26-single-session-niche.md`:
+
+- §6 implementation status: notes the cross-segment-resume pivot landed (commits `f2429fe..44fc37b`), enumerates the 5 invariants the structural validator now enforces on `cross_segment_resume_from`, references the test files exercising both happy and rejection paths.
+- §10.4 step 1: marked DONE with commit refs.
+- §10.4 step 2: redefined from "implement an experiment" into a concrete scoped research session with: candidate scenarios from §4, three-run protocol (bare SDK / workflow multi / workflow single), metric capture list, pre-commitment requirement on working-state items so the §7.3 attribution clause stays non-circular, honest cost/wall-clock estimate (~$5-15, 2-4 hours), and an explicit "experiment can fail honestly" clause — if multi+ports matches single's quality at lower cost, the runtime feature should be retired alongside the spec.
+- §10.4 step 3: noted as blocked on step 2.
+
+What is intentionally NOT done: actually running the §10.4 step 2 experiment. Reasoning logged in the commit message — it is research work with a real cost and a binary outcome (vindicate or kill the niche), and slipping it into a remediation pass would conflate two different decision moments. The recommended shape for that future session is captured at the end of §10.4.
+
+The pipeline-generator's `session_mode: "single"` gate stays in place: the runtime feature is implemented but the generator's automatic use of it is suppressed pending §9 acceptance via step 3.
 
 ---
 
@@ -126,7 +139,7 @@ These are reasonable deferrals; the user can trigger them later if a specific ne
 ## 4. Test summary
 
 ```
-apps/server: 1849 passed / 4 skipped / 0 failed (was 1825)
+apps/server: 1850 passed / 4 skipped / 0 failed (was 1825)
 apps/web:    52 passed / 0 failed (unchanged)
 tsc --noEmit: clean both sides
 ```
@@ -136,6 +149,7 @@ New tests added this session:
 - 1 cancel-during-backoff executor test
 - 4 task-registry interruptAll tests
 - 8 task-route tests (cancel × 3, secrets × 3, retry × 2)
+- 1 F20 lock-in test (prompt-writer sub-agent retains TEMPORAL ANCHOR rule)
 
 ---
 
@@ -148,16 +162,18 @@ New tests added this session:
 
 ## 6. Open items (next session)
 
-The only remaining items from the prior handoff are A5 + A6 (low priority; documented above). Plus newly-emerged minor items:
+Every item from the prior handoff (A1-A6, B1-B7) is closed. What remains is a mix of UX refinements and one explicit research item:
 
-1. **A5** — F20 verification (~30 min)
-2. **A6** — niche spec re-open (~1-2 hours)
-3. **B-secondary** — keyboard shortcuts, archive/hide old tasks, light-mode toggle if anyone actually wants it
-4. **B-launch dialog UX**: when a pipeline IR has a deeply-nested object input type, the JSON textarea is the only option — could swap in a structured form generator if the type space starts looking like real JSON Schema. Not blocking; user can always paste JSON.
-5. **secret-gate auto-detection in launcher**: today the launcher form shows envKey password fields for every aggregated envKey. If the user already has the env var set in `process.env`, they can leave it blank and the kernel will pick it up — but the UI doesn't surface that state. A small "(in env)" indicator would help. Not blocking.
-6. **migrate UX**: the proposals Migrate button uses `window.prompt` for the target taskId. A proper picker (dropdown of opted-in tasks from `proposal.migrateRunningTasks`) would be cleaner. Not blocking.
+1. **§10.4 step 2 niche-internal A/B experiment** (research session, scoped in the niche spec). ~$5-15 + 2-4h. Outcome could legitimately be "kill the niche"; deserves its own session.
+2. **B-secondary refinements**:
+   - Keyboard shortcuts (`/` for search, `g t` jump to tasks, etc.) — nice-to-have, no concrete user pain pointing at it
+   - Archive/hide old tasks — soft-delete with localStorage; backend already auto-cleans data >7d via `cleanupOldData(7)` so unbounded growth isn't a real risk
+   - Light-mode toggle — only if anyone actually wants it; the current dark theme is intentional and consistent
+3. **B-launch dialog UX**: when a pipeline IR has a deeply-nested object input type, the JSON textarea is the only option. Could swap in a structured form generator if the type space starts looking like real JSON Schema. User can always paste JSON in the meantime.
+4. **secret-gate auto-detection in launcher**: today the launcher form shows envKey password fields for every aggregated envKey. If the user already has the env var set in `process.env`, they can leave it blank and the kernel picks it up — but the UI doesn't surface that. A small "(in env)" indicator would help.
+5. **migrate UX**: the proposals Migrate button uses `window.prompt` for the target taskId. A proper picker (dropdown of opted-in tasks from `proposal.migrateRunningTasks`) would be cleaner.
 
-None of these are bugs; they're refinements. The dogfood-blocking issues are all closed.
+None of these are bugs; they're refinements or research. The dogfood-blocking issues are all closed and the prior handoff's open-issues list is empty.
 
 ---
 
