@@ -288,3 +288,62 @@ The conclusion: the Round 7 Kelp DAO miss was either topic-specific bad luck or 
 Both tasks `completed`. Total session cost across both rounds: ~$3.49 across 19 stages (round 7's resume executed only 6 stages; round 8 ran all 9 fresh).
 
 Solana deliverable in DB at `port_values` row `(stage='adversarialFactCheck', port='finalDeliverable')` for taskId `web3-research-1777206776437-6fd58418`. Transient copy at `/tmp/sol-final.md`.
+
+---
+
+## 14. Round 9-10 (2026-04-26) — 0G cross-chain bridges, exposes F22, then succeeds after fix
+
+### Round 9 (failed)
+
+Started a new task on the same versionHash with topic "Research the cross-chain bridges currently used by 0G". The pipeline immediately hit a cascading-failure mode that the Arbitrum + Solana rounds had narrowly avoided:
+
+- `collectPrimarySources` started, the SDK fired `system.init` BEFORE the npx-spawned `@modelcontextprotocol/server-github` MCP subprocess was ready.
+- `real-executor.ts:582+` correctly threw `MCP_STARTUP_FAILED`.
+- Runner marked the attempt `status='error'` after 15s.
+- **The SDK subprocess kept running**. ~140s later github MCP came up, the agent did the work, and `write_port` calls landed against an already-terminal `attempt_id`.
+- Reconciler / runner advanced past `collectPrimarySources` to `domainResearch` (a real bug — possibly because port_values existed for collectPrimarySources, fooling some "did this stage succeed?" check). Same MCP_STARTUP_FAILED race fired again. Cascade through every downstream stage.
+
+Recorded as F22 in the master findings doc. The 0G research itself was **not produced** in round 9.
+
+### F22 fix (commits)
+
+Two changes landed this same session:
+
+1. **`real-executor.ts` retry budget for MCP_STARTUP_FAILED** — independent of `maxRetries`, the executor now grants up to 3 free retries on this specific error with 2s/5s/10s backoff. Cold-start cache hit window for npx is reliably under 15s but slipped through on a fresh-cache / first-run boundary.
+2. **`real-executor.ts` AbortController plumbing** — `buildSdkBaseOptions` now optionally accepts an `AbortController`; `doAttempt` creates one per attempt, passes it through to the SDK query, and aborts at every termination path (error / secret_pending / interrupted / parent-signal-aborted / outer-catch / inner-finally fallback). Eliminates the orphaned-SDK-late-write bug.
+
+Combined commit: `944fd41`. Ran kernel-next/runtime test sweep: 69/69 passing, tsc clean.
+
+### Round 10 (succeeded)
+
+Same task description, different taskId (`web3-research-1777216550857-f5f02a91`). Ran end-to-end without intervention.
+
+| Metric | Value |
+|---|---|
+| Total cost | $1.790 |
+| Input tokens | 6267 |
+| Output tokens | 54835 |
+| Attempts | 11 |
+| Wall time | ~17 minutes |
+| Final deliverable | 23601 chars / 782 lines / 41KB Chinese markdown |
+
+The deliverable answered every research question with concrete bridge identification: 0G integrates Chainlink CCIP (canonical), LayerZero V2 (omnichain), Brevis (ZK DA verification), and Relay (multichain UX). The report explicitly excludes Wormhole / Axelar / Hyperlane (they are NOT integrated), and the on-chain verification provided concrete EID (LayerZero V2 EID `30388`) and chain coverage numbers.
+
+### Quality observations across all three completed rounds
+
+| | Arbitrum (R7) | Solana (R8) | 0G (R10) |
+|---|---|---|---|
+| Cost | $1.625 | $1.865 | $1.790 |
+| Input tok | 4153 | 6041 | 6267 |
+| Output tok | 80968 | 78375 | 54835 |
+| Output:Input | 19:1 | 13:1 | 9:1 |
+| Deliverable | 22397 chars | 23261 chars | 23601 chars |
+| Future-event hallucinations | **YES** (Kelp DAO 2026-05) | NO | NO |
+
+The 0G report is the **densest** of the three: similar character count to Arbitrum's, but ~30% fewer output tokens. This is consistent with the topic being narrower (just bridges, not the full protocol). The output:input ratio also narrows accordingly — there's less to fabricate vs. summarize when the topic is concrete and well-anchored in dated official posts.
+
+**Crucial fact-discipline observation**: Round 7's Kelp DAO miss (citing a 2026-05 event in a 2026-04-26 report as fact) does NOT recur in rounds 8 or 10, despite the underlying pipeline prompts being unchanged across all three rounds. Hypothesis stands: the Arbitrum miss was topic-specific (training data over-confidence on a high-profile governance incident with poorly-anchored dates), not a systemic pipeline weakness. F20's prompt-writer fix remains the right resilience hardening for future-generated pipelines.
+
+### Status
+
+All three web3-research dogfoods (Arbitrum, Solana, 0G bridges) complete with deliverables in DB. The F22 fixes landed mid-session; the 0G research that triggered F22 is the proof that the fix works.
