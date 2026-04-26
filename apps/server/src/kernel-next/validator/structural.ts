@@ -423,6 +423,21 @@ export function validateStructural(
           });
           continue;
         }
+        // Rule 1.5: target must be an agent stage. Resume only makes
+        // sense for agent-typed stages (which own SDK sessions); script
+        // and gate stages have no session_id, and the runtime would
+        // silently fall back to "no resume" for non-agent targets.
+        // Catching it here turns a silent runtime mis-fire into an
+        // authoring-time diagnostic.
+        const targetType = stageTypeByName.get(target);
+        if (targetType !== "agent") {
+          diagnostics.push({
+            code: "CROSS_SEGMENT_TARGET_NOT_AGENT",
+            message: `Stage '${stageName}'.cross_segment_resume_from = '${target}' references a '${targetType}' stage; only agent stages own resumable SDK sessions.`,
+            context: { stage: stageName, target, targetType: targetType ?? "unknown" },
+          });
+          continue;
+        }
         // Rule 2: target is wire-upstream (BFS from stageName's direct predecessors)
         const reachable = new Set<string>();
         const queue = [...(wireUpstream.get(stageName) ?? [])];

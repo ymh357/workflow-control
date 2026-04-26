@@ -446,6 +446,31 @@ describe("validateStructural: cross_segment_resume_from", () => {
       .toBeDefined();
   });
 
+  it("CROSS_SEGMENT_TARGET_NOT_AGENT: target exists but is a script/gate stage", () => {
+    // b names s as the target, but s is a script stage. Script and
+    // gate stages have no session_id, so resuming makes no sense.
+    // Validator catches this at authoring time.
+    const ir = {
+      name: "p",
+      session_mode: "single" as const,
+      externalInputs: [{ name: "seed", type: "string" as const }],
+      stages: [
+        { name: "s", type: "script" as const, inputs: [{ name: "seed", type: "string" }], outputs: [{ name: "x", type: "string" }],
+          config: { source: "registry" as const, moduleId: "noop" } },
+        { name: "b", type: "agent" as const, inputs: [{ name: "x", type: "string" }], outputs: [],
+          config: { promptRef: "pb", cross_segment_resume_from: "s" } },
+      ],
+      wires: [
+        { from: { source: "external" as const, port: "seed" }, to: { stage: "s", port: "seed" } },
+        { from: { source: "stage" as const, stage: "s", port: "x" }, to: { stage: "b", port: "x" } },
+      ],
+    };
+    const r = validateStructural(ir);
+    const diags = !r.ok ? r.diagnostics : [];
+    expect(diags.find((d) => d.code === "CROSS_SEGMENT_TARGET_NOT_AGENT"))
+      .toBeDefined();
+  });
+
   it("CROSS_SEGMENT_TARGET_NOT_REACHABLE: target exists but is not wire-upstream", () => {
     // a and b are independent (no wires between them). b names a but
     // can't reach a via wires.

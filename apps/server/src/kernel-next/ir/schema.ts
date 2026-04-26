@@ -498,6 +498,7 @@ export const DiagnosticSchema = z.object({
     "SCRIPT_CONTRACT_MISSING_OUTPUT",       // Layer 3 — declared output port missing in return
     // 2026-04-26 cross-segment resume pivot — emitted by validator/structural.ts
     "CROSS_SEGMENT_TARGET_NOT_FOUND",          // target stage doesn't exist
+    "CROSS_SEGMENT_TARGET_NOT_AGENT",          // target exists but is not an agent stage
     "CROSS_SEGMENT_TARGET_NOT_REACHABLE",      // target exists but not wire-upstream
     "CROSS_SEGMENT_TARGET_SAME_SEGMENT",       // target is in the same segment as the consumer
     "CROSS_SEGMENT_RESUME_FROM_REQUIRES_SINGLE", // field set on a multi-mode pipeline

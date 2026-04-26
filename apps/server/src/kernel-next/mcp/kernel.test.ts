@@ -307,6 +307,28 @@ describe("KernelService", () => {
     db.close();
   });
 
+  it("propose rejects cross_segment_resume_from on a multi-mode pipeline (trust chain end-to-end)", async () => {
+    // 2026-04-26 cross-segment-resume pivot: multi-mode pipelines must
+    // never carry the field. The validator emits
+    // CROSS_SEGMENT_RESUME_FROM_REQUIRES_SINGLE; this test pins the
+    // hot-update path's trust chain (propose -> applyPatch -> validate)
+    // so that mistakenly patching the field onto a multi-mode pipeline
+    // is rejected, not silently no-op'd at runtime.
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+
+    const patch: IRPatch = { ops: [
+      { op: "update_stage_config", stage: "B", configPatch: { cross_segment_resume_from: "A" } },
+    ]};
+    const r = svc.propose({ currentVersion: submitted.versionHash, patch, actor: "test" });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics.some((d) => d.code === "CROSS_SEGMENT_RESUME_FROM_REQUIRES_SINGLE")).toBe(true);
+    db.close();
+  });
+
   it("propose(empty patch, with prompts override) succeeds; proposedVersion differs from base", async () => {
     const db = makeDb();
     const svc = new KernelService(db, { skipTypeCheck: true });
