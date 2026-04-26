@@ -23,6 +23,9 @@ import { DiagnosticsPanel, type Diagnostic } from "../../../components/diagnosti
 import { AuditTimeline, type AuditEntry } from "../../../components/audit-timeline";
 import { DiffViewer } from "../../../components/diff-viewer";
 import { PipelineGraph } from "../../../components/pipeline-graph";
+import { TaskActionsBar } from "../../../components/task-actions-bar";
+import { SecretGatePanel } from "../../../components/secret-gate-panel";
+import { CopyButton } from "../../../components/copy-button";
 import type { PipelineIRLike, StageState } from "../../../lib/ir-to-flow";
 
 // Payload shape for the `diagnostics_emitted` SSE event. Kept local
@@ -724,11 +727,22 @@ export default function KernelNextTaskPage() {
   return (
     <div className="space-y-6">
       <header className="space-y-2">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight">Task</h1>
-          <code className="rounded bg-zinc-900 px-2 py-1 font-mono text-sm text-sky-300">
-            {taskId ?? "—"}
-          </code>
+        <div className="flex flex-wrap items-baseline justify-between gap-3">
+          <div className="flex items-baseline gap-3">
+            <h1 className="text-2xl font-semibold tracking-tight">Task</h1>
+            <code className="rounded bg-zinc-900 px-2 py-1 font-mono text-sm text-sky-300">
+              {taskId ?? "—"}
+            </code>
+            {taskId && <CopyButton value={taskId} label="copy" />}
+          </div>
+          {taskId && (
+            <TaskActionsBar
+              taskId={taskId}
+              topState={topState}
+              hasFailedStage={stageRows.some((s) => s.state === "error")}
+              onStateChanged={() => { /* SSE auto-refreshes */ }}
+            />
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-400">
           <span className="inline-flex items-center gap-1.5">
@@ -763,6 +777,8 @@ export default function KernelNextTaskPage() {
           )}
         </div>
       </header>
+
+      {taskId && <SecretGatePanel taskId={taskId} />}
 
       {seedRows.length > 0 && (
         <section className="mb-6">

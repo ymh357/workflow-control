@@ -16,9 +16,10 @@ const Nav = () => {
     router.refresh();
   };
 
-  // Tasks is active anywhere under /kernel-next that is not the pipelines
-  // or proposals subtrees. This covers the list page (/kernel-next) and
-  // per-task detail pages (/kernel-next/[taskId]).
+  // 2026-04-27 B1: explicit "/" launcher entry. Tasks remains active for
+  // anything under /kernel-next that is not the pipelines or proposals
+  // subtrees (covers /kernel-next list + per-task detail pages).
+  const inLauncher = pathname === "/";
   const inPipelines = pathname.startsWith("/kernel-next/pipelines");
   const inProposals = pathname.startsWith("/kernel-next/proposals");
   const inTasks = pathname.startsWith("/kernel-next") && !inPipelines && !inProposals;
@@ -31,10 +32,13 @@ const Nav = () => {
   return (
     <nav className="flex items-center gap-1">
       <Link
-        href="/kernel-next"
+        href="/"
         className="mr-4 text-lg font-semibold text-zinc-100 hover:text-white"
       >
         {t("appTitle")}
+      </Link>
+      <Link href="/" className={linkClass(inLauncher)}>
+        Launch
       </Link>
       <Link href="/kernel-next" className={linkClass(inTasks)}>
         {t("nav.tasks")}

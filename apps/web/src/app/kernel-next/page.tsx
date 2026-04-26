@@ -8,8 +8,10 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+import { apiFetch, API_BASE } from "../../lib/api-client";
+import { useToast } from "../../components/toast";
+import { ConfirmDialog } from "../../components/confirm-dialog";
+import { CopyButton } from "../../components/copy-button";
 
 type TaskStatus = "running" | "gated" | "completed" | "failed" | "cancelled" | "orphaned";
 
@@ -91,6 +93,10 @@ export default function TaskListPage() {
   const [live, setLive] = useState<boolean>(false);
   const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null);
   const liveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 2026-04-27 B3 — inline cancel confirmation.
+  const [cancelTarget, setCancelTarget] = useState<TaskRow | null>(null);
+  const [actingTaskId, setActingTaskId] = useState<string | null>(null);
+  const toast = useToast();
 
   const refetch = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -230,6 +236,7 @@ export default function TaskListPage() {
                 <th className="px-3 py-2 text-right font-semibold">Att</th>
                 <th className="px-3 py-2 text-left font-semibold">Started</th>
                 <th className="px-3 py-2 text-right font-semibold">Duration</th>
+                <th className="px-3 py-2 text-right font-semibold">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -246,6 +253,7 @@ export default function TaskListPage() {
                     >
                       {truncate(t.taskId, 34)}
                     </Link>
+                    <CopyButton value={t.taskId} label="copy id" />
                   </td>
                   <td className="px-3 py-2">
                     {t.pipelineName ? (
@@ -289,6 +297,50 @@ export default function TaskListPage() {
                   <td className="px-3 py-2 text-right tabular-nums text-xs text-zinc-400">
                     {formatDuration(t.startedAt, t.endedAt)}
                   </td>
+                  <td className="px-3 py-2 text-right">
+                    {(t.status === "running" || t.status === "gated" || t.status === "orphaned") && (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setCancelTarget(t);
+                        }}
+                        disabled={actingTaskId === t.taskId}
+                        className="rounded border border-red-700/60 bg-red-900/30 px-2 py-1 text-[0.7rem] font-semibold text-red-200 hover:border-red-600 hover:bg-red-800/50 disabled:opacity-50"
+                        title="Cancel this task"
+                      >
+                        Cancel
+                      </button>
+                    )}
+                    {t.status === "failed" && (
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (actingTaskId) return;
+                          setActingTaskId(t.taskId);
+                          const res = await apiFetch(`/api/kernel/tasks/${encodeURIComponent(t.taskId)}/retry`, {
+                            method: "POST",
+                            body: {},
+                          });
+                          setActingTaskId(null);
+                          if (!res.ok) {
+                            toast.error(`Retry failed: ${res.diagnostics[0]?.message ?? "unknown"}`);
+                            return;
+                          }
+                          toast.success("Retry queued");
+                          void refetch();
+                        }}
+                        disabled={actingTaskId === t.taskId}
+                        className="rounded border border-blue-700/60 bg-blue-900/30 px-2 py-1 text-[0.7rem] font-semibold text-blue-200 hover:border-blue-600 hover:bg-blue-800/50 disabled:opacity-50"
+                        title="Retry from the earliest failed stage"
+                      >
+                        Retry
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -301,6 +353,37 @@ export default function TaskListPage() {
           last updated {new Date(lastFetchedAt).toLocaleTimeString()}
         </p>
       )}
+
+      <ConfirmDialog
+        open={cancelTarget !== null}
+        title="Cancel this task?"
+        message={
+          cancelTarget
+            ? `Task ${cancelTarget.taskId.slice(0, 24)}… (${cancelTarget.pipelineName ?? "unknown pipeline"}) will be marked as cancelled and any live SDK subprocess will be killed. This is not reversible.`
+            : ""
+        }
+        confirmLabel="Cancel task"
+        cancelLabel="Keep running"
+        destructive
+        onCancel={() => setCancelTarget(null)}
+        onConfirm={async () => {
+          if (!cancelTarget) return;
+          const target = cancelTarget;
+          setCancelTarget(null);
+          setActingTaskId(target.taskId);
+          const res = await apiFetch(`/api/kernel/tasks/${encodeURIComponent(target.taskId)}/cancel`, {
+            method: "POST",
+            body: { reason: "cancelled from web UI" },
+          });
+          setActingTaskId(null);
+          if (!res.ok) {
+            toast.error(`Cancel failed: ${res.diagnostics[0]?.message ?? "unknown"}`);
+            return;
+          }
+          toast.success("Task cancelled");
+          void refetch();
+        }}
+      />
     </div>
   );
 }

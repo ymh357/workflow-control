@@ -261,7 +261,51 @@ export default function ProposalsPage() {
           return <ProposalDiff baseIr={p.baseIr} projectedIr={p.projectedIr} />;
         }}
       />
-      <Section title="Approved" items={approved} />
+      <Section
+        title="Approved"
+        items={approved}
+        actions={(r) => (
+          <button
+            type="button"
+            onClick={async () => {
+              // 2026-04-27 B7: migrate-on-approve from UI. Prompt for a
+              // target task; this matches design spec §8 (migrate is a
+              // per-task operation, not a fan-out trigger).
+              const taskId = window.prompt(
+                `Migrate proposal ${r.proposalId} into which taskId?\n\n` +
+                `(The task must already be opted into this proposal's migrateRunningTasks list — see migrateRunning='${
+                  Array.isArray(r.migrateRunning) ? r.migrateRunning.join(", ") : r.migrateRunning
+                }')`,
+              );
+              if (!taskId || taskId.trim().length === 0) return;
+              setError(null);
+              try {
+                const res = await fetch(
+                  `${API_BASE}/api/kernel/tasks/${encodeURIComponent(taskId.trim())}/migrate`,
+                  {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: JSON.stringify({ proposalId: r.proposalId }),
+                  },
+                );
+                const body = await res.json() as { ok: boolean; diagnostics?: Array<{ message: string; code: string }> };
+                if (!res.ok || !body.ok) {
+                  setError(`migrate failed: ${body.diagnostics?.[0]?.code ?? ""} ${body.diagnostics?.[0]?.message ?? `HTTP ${res.status}`}`);
+                  return;
+                }
+                setError(null);
+                window.alert(`Migrated proposal into ${taskId.trim()} successfully.`);
+              } catch (err) {
+                setError(err instanceof Error ? err.message : String(err));
+              }
+            }}
+            className="rounded border border-blue-500/50 bg-blue-500/15 px-2 py-1 text-xs font-semibold text-blue-300 hover:border-blue-500/70 hover:bg-blue-500/25"
+            title="Apply this approved proposal to a running task"
+          >
+            Migrate→
+          </button>
+        )}
+      />
       <Section title="Rejected" items={rejected} />
     </div>
   );
