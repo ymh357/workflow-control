@@ -18,6 +18,13 @@ interface PipelineSummary {
   name: string;
   latestVersion: string;
   latestCreatedAt: number;
+  // 2026-04-27 B5: enriched fields for the web quick-launcher.
+  // externalInputs lets the UI render a typed form without a second
+  // round-trip. envKeys aggregates every distinct envKey declared
+  // across all stages, so the launcher can show which secrets the
+  // pipeline will need (without leaking any values).
+  externalInputs: Array<{ name: string; type: string }>;
+  envKeys: string[];
 }
 
 kernelPipelinesRoute.get("/kernel/pipelines", (c) => {
@@ -36,11 +43,25 @@ kernelPipelinesRoute.get("/kernel/pipelines", (c) => {
      )
      ORDER BY pv.pipeline_name ASC`,
   ).all() as Array<{ pipeline_name: string; version_hash: string; created_at: number }>;
-  const pipelines: PipelineSummary[] = rows.map((r) => ({
-    name: r.pipeline_name,
-    latestVersion: r.version_hash,
-    latestCreatedAt: r.created_at,
-  }));
+  const pipelines: PipelineSummary[] = rows.map((r) => {
+    const ir = getPipelineIR(db, r.version_hash);
+    const externalInputs = ir?.externalInputs?.map((p) => ({ name: p.name, type: p.type })) ?? [];
+    const envKeys = new Set<string>();
+    for (const stage of ir?.stages ?? []) {
+      if (stage.type === "agent" && stage.config.mcpServers) {
+        for (const m of stage.config.mcpServers) {
+          for (const k of m.envKeys ?? []) envKeys.add(k);
+        }
+      }
+    }
+    return {
+      name: r.pipeline_name,
+      latestVersion: r.version_hash,
+      latestCreatedAt: r.created_at,
+      externalInputs,
+      envKeys: Array.from(envKeys).sort(),
+    };
+  });
   return c.json({ ok: true, pipelines });
 });
 

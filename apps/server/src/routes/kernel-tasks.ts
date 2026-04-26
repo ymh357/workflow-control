@@ -120,6 +120,135 @@ function statusForRollbackDiagnostic(code: string | undefined): 404 | 409 | 500 
   return 500;
 }
 
+// 2026-04-27 B5 — cancel a running task from the web UI.
+// Diagnostic mapping:
+//   TASK_NOT_FOUND        → 404
+//   TASK_ALREADY_TERMINAL → 409
+kernelTasksRoute.post("/kernel/tasks/:taskId/cancel", async (c) => {
+  const taskId = c.req.param("taskId");
+
+  const raw = await c.req.text();
+  let body: { reason?: string; actor?: string } = {};
+  if (raw.trim().length > 0) {
+    try {
+      body = JSON.parse(raw) as { reason?: string; actor?: string };
+    } catch {
+      return badRequest(c, "INVALID_JSON_BODY", "invalid JSON body");
+    }
+  }
+
+  const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
+  const result = svc.cancelTask({
+    taskId,
+    reason: body.reason,
+    actor: body.actor ?? "web",
+  });
+  if (result.ok) return c.json(result);
+  const code = result.diagnostics[0]?.code;
+  const status = code === "TASK_NOT_FOUND" ? 404 : code === "TASK_ALREADY_TERMINAL" ? 409 : 500;
+  return c.json(result, status);
+});
+
+// 2026-04-27 B5 — provide secrets to a task that's paused on a
+// secret-gate. Resumes the task automatically once the gate is satisfied.
+// Diagnostic mapping:
+//   NO_PENDING_SECRET_GATE   → 409
+//   SECRET_KEY_NOT_REQUIRED  → 400
+const secretsBodySchema = z.object({
+  secrets: z.record(z.string().min(1), z.string().min(1)),
+}).strict();
+
+kernelTasksRoute.post("/kernel/tasks/:taskId/secrets", async (c) => {
+  const taskId = c.req.param("taskId");
+
+  const raw = await c.req.text();
+  let body: unknown;
+  try {
+    body = raw.trim().length === 0 ? {} : JSON.parse(raw);
+  } catch {
+    return badRequest(c, "INVALID_JSON_BODY", "invalid JSON body");
+  }
+  const parsed = secretsBodySchema.safeParse(body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    return badRequest(
+      c,
+      "INVALID_REQUEST_BODY",
+      issue?.message ?? "bad request",
+      issue ? { path: issue.path } : undefined,
+    );
+  }
+
+  const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
+  const result = await svc.provideTaskSecrets(taskId, parsed.data.secrets);
+  if (result.ok) return c.json(result);
+  const code = result.diagnostics[0]?.code;
+  const status =
+    code === "NO_PENDING_SECRET_GATE" ? 409
+    : code === "SECRET_KEY_NOT_REQUIRED" ? 400
+    : 500;
+  return c.json(result, status);
+});
+
+// 2026-04-27 B5 — list pending secret-gates so the dashboard can show
+// "task waiting for secrets [GITHUB_TOKEN, SLACK_WEBHOOK]". Read-only;
+// 404 only when the task itself doesn't exist.
+kernelTasksRoute.get("/kernel/tasks/:taskId/secrets", (c) => {
+  const taskId = c.req.param("taskId");
+  const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
+  const pending = svc.listPendingSecretGates(taskId);
+  return c.json({ ok: true, taskId, pending });
+});
+
+// 2026-04-27 B5 — retry a failed/stalled task from a specific stage.
+// Without `fromStage`, retries from the earliest non-success stage in
+// topological order (KernelService default).
+const retryBodySchema = z.object({
+  fromStage: z.string().min(1).optional(),
+  actor: z.string().min(1).optional(),
+}).strict();
+
+kernelTasksRoute.post("/kernel/tasks/:taskId/retry", async (c) => {
+  const taskId = c.req.param("taskId");
+
+  const raw = await c.req.text();
+  let body: unknown = {};
+  if (raw.trim().length > 0) {
+    try { body = JSON.parse(raw); }
+    catch { return badRequest(c, "INVALID_JSON_BODY", "invalid JSON body"); }
+  }
+  const parsed = retryBodySchema.safeParse(body);
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    return badRequest(
+      c,
+      "INVALID_REQUEST_BODY",
+      issue?.message ?? "bad request",
+      issue ? { path: issue.path } : undefined,
+    );
+  }
+
+  const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
+  const result = await svc.retryTaskFromStage({
+    taskId,
+    fromStage: parsed.data.fromStage,
+    actor: parsed.data.actor ?? "web",
+  });
+  if (result.ok) return c.json(result);
+  const code = result.diagnostics[0]?.code;
+  // retryTaskFromStage diagnostic codes:
+  //   TASK_NOT_FOUND   → 404 (no stage_attempts row exists)
+  //   UNKNOWN_STAGE    → 400 (caller-supplied fromStage not in IR)
+  //   NO_FAILED_STAGE  → 409 (auto-resolution found nothing to retry)
+  //   PATCH_APPLY_ERROR → 500 (IR was GC'd or rerun_from injection failed)
+  const status =
+    code === "TASK_NOT_FOUND" ? 404
+    : code === "UNKNOWN_STAGE" ? 400
+    : code === "NO_FAILED_STAGE" ? 409
+    : 500;
+  return c.json(result, status);
+});
+
 kernelTasksRoute.post("/kernel/tasks/:taskId/rollback", async (c) => {
   const taskId = c.req.param("taskId");
 
