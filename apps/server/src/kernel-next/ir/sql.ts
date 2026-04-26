@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS stage_attempts (
   started_at     INTEGER NOT NULL,
   ended_at       INTEGER,
   status         TEXT NOT NULL
-    CHECK (status IN ('running','success','error','superseded')),
+    CHECK (status IN ('running','success','error','superseded','secret_pending')),
   kind           TEXT NOT NULL DEFAULT 'regular'
     CHECK (kind IN ('regular','fanout_element','fanout_aggregate','external','replay','dry_run')),
   -- A4 replay_stage: points to the original attempt this replay
@@ -132,6 +132,22 @@ CREATE TABLE IF NOT EXISTS gate_queue (
 -- index supports the get_task_status hot path.
 CREATE INDEX IF NOT EXISTS idx_gq_task_answered
   ON gate_queue(task_id, answered_at);
+
+-- secret_gate_queue (F17, 2026-04-26): one row per stage that paused waiting
+-- for MCP envKey values. Mirrors gate_queue but for secrets — no routing,
+-- no reject-rollback, just "stage X needs envKeys [Y]; resolved when all keys
+-- are populated in task_env_values via provide_task_secrets MCP tool".
+CREATE TABLE IF NOT EXISTS secret_gate_queue (
+  secret_gate_id  TEXT PRIMARY KEY,
+  task_id         TEXT NOT NULL,
+  stage_name      TEXT NOT NULL,
+  attempt_id      TEXT NOT NULL REFERENCES stage_attempts(attempt_id),
+  required_keys   TEXT NOT NULL,
+  resolved_at     INTEGER,
+  created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sgq_task_resolved
+  ON secret_gate_queue(task_id, resolved_at);
 
 -- hot_update_events (A8 / §10.8): audit trail for every forward and
 -- rollback migration. Written on migrateTask; supports debugging
@@ -445,6 +461,7 @@ export function initKernelNextSchema(db: DatabaseSync): void {
         DROP TABLE IF EXISTS prompt_contents;
         DROP TABLE IF EXISTS migration_hints;
         DROP TABLE IF EXISTS hot_update_events;
+        DROP TABLE IF EXISTS secret_gate_queue;
         DROP TABLE IF EXISTS gate_queue;
         DROP TABLE IF EXISTS pipeline_proposals;
         DROP TABLE IF EXISTS port_values;
@@ -456,6 +473,23 @@ export function initKernelNextSchema(db: DatabaseSync): void {
       `);
       db.exec("PRAGMA foreign_keys = ON");
     }
+  }
+
+  // F17: zero-historical-compat drop+rebuild trigger. If stage_attempts exists
+  // but secret_gate_queue does not, this is a pre-F17 dev DB. Drop
+  // secret_gate_queue (safe no-op) and stage_attempts (to pick up the new
+  // 'secret_pending' value in the status CHECK — SQLite cannot ALTER a CHECK).
+  // stage_attempts is re-created by db.exec(KERNEL_NEXT_SCHEMA) below.
+  const sgqExists = db.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='secret_gate_queue'`,
+  ).get() as { name: string } | undefined;
+  if (saExists && !sgqExists) {
+    db.exec("PRAGMA foreign_keys = OFF");
+    db.exec(`
+      DROP TABLE IF EXISTS secret_gate_queue;
+      DROP TABLE IF EXISTS stage_attempts;
+    `);
+    db.exec("PRAGMA foreign_keys = ON");
   }
 
   db.exec(KERNEL_NEXT_SCHEMA);
