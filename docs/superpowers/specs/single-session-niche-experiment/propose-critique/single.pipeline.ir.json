@@ -1,0 +1,37 @@
+{
+  "name": "niche-exp-propose-critique-single",
+  "session_mode": "single",
+  "externalInputs": [
+    { "name": "apiBrief", "type": "string" }
+  ],
+  "stages": [
+    {
+      "name": "proposeAPIDesign",
+      "type": "agent",
+      "config": { "promptRef": "system/proposer" },
+      "inputs": [
+        { "name": "apiBrief", "type": "string" }
+      ],
+      "outputs": [
+        { "name": "proposalDone", "type": "boolean" }
+      ]
+    },
+    {
+      "name": "critiqueAPIDesign",
+      "type": "agent",
+      "config": { "promptRef": "system/critic" },
+      "inputs": [
+        { "name": "apiBrief", "type": "string" },
+        { "name": "proposalDone", "type": "boolean" }
+      ],
+      "outputs": [
+        { "name": "critiqueMarkdown", "type": "string" }
+      ]
+    }
+  ],
+  "wires": [
+    { "from": { "source": "external", "port": "apiBrief" }, "to": { "stage": "proposeAPIDesign", "port": "apiBrief" } },
+    { "from": { "source": "external", "port": "apiBrief" }, "to": { "stage": "critiqueAPIDesign", "port": "apiBrief" } },
+    { "from": { "source": "stage", "stage": "proposeAPIDesign", "port": "proposalDone" }, "to": { "stage": "critiqueAPIDesign", "port": "proposalDone" } }
+  ]
+}

@@ -283,7 +283,7 @@ Three things must happen in order before this spec can be accepted:
 
 1. ✅ **Implement the cross-segment-resume pivot** (commits `f2429fe..44fc37b`, 2026-04-27). Done. Cross-segment resume is now opt-in via the IR field `config.cross_segment_resume_from`. Multi-mode pipelines without the field are byte-identical to a kernel without single-session — eliminating the round-5 cross-segment leak that contaminated all earlier cost measurements. See `docs/superpowers/specs/2026-04-26-cross-segment-resume-pivot.md` (the pivot spec) and `2026-04-27-session-handoff.md` §1 for the implementation summary.
 
-2. ⏳ **Run a true niche-internal A/B experiment** (NEXT). Candidate scenarios from §4 (intentionally pre-vetted as niche-positive):
+2. ⏳ **Run a true niche-internal A/B experiment** (NEXT). All offline preparation is done — every IR, every prompt, every protocol step, the scoring rubric, and the results template are checked into `docs/superpowers/specs/single-session-niche-experiment/`. The remaining work is the live runs themselves (~$5-15, ~2-4 hours wall-clock) plus scoring. Re-read the README in that directory before resuming. Candidate scenarios from §4 (intentionally pre-vetted as niche-positive):
    - **Explore→propose chain**: a 2-stage pipeline that explores a small codebase (read N files, accumulate intuitions about coupling / smell) and then proposes a refactor. The "what files felt off" working state is the §4 test's open-ended-state requirement.
    - **Critique chain**: a 2-stage pipeline that proposes a small API design and then critiques it, where the critique stage benefits from knowing which alternatives the proposer considered and rejected (§4 example F).
 
@@ -304,7 +304,9 @@ Three things must happen in order before this spec can be accepted:
 
 **Recommended next session shape** (when someone resumes):
 - Open as "Single-session niche experiment session". Scope: complete §10.4 step 2 + write findings + decide whether to proceed to step 3 or abandon the niche.
-- First action: re-read §0 (the three standards), §2 (criteria), §4 (structurability test), §7 (performance/quality contracts) — these are the rubrics the experiment scores against.
-- Author both candidate pipelines as IR JSON (NOT via pipeline-generator — that path is gated off for `session_mode: "single"`; hand-author or extract from the existing IR collection).
-- Run via the new web launcher (now that it exists post-2026-04-27 B-track) for both modes; capture all metrics from the dashboard's task detail page.
+- First action: re-read `docs/superpowers/specs/single-session-niche-experiment/README.md` — that file points at the protocol, the rubric, the results template, and every IR + prompt needed to run the experiment.
+- Pre-flight: confirm kernel-next server is up + cross-segment-resume pivot is in place (it is).
+- Run all 6 variants (2 scenarios × 3 modes) per the protocol; bare-SDK runs are manual, the workflow runs use the new web launcher (B-track, 2026-04-27).
+- Score with two independent reviewers per output, double-blind.
+- Apply the decision matrix in `protocol.md §5` strictly.
 - The experiment can fail honestly: if the multi+ports run scores as good or better on quality at lower cost, that is a *valid* outcome and means the niche has no real members — at which point the runtime feature should be retired alongside the spec.

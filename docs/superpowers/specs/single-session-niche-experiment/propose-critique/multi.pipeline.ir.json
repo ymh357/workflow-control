@@ -1,0 +1,46 @@
+{
+  "name": "niche-exp-propose-critique-multi",
+  "session_mode": "multi",
+  "externalInputs": [
+    { "name": "apiBrief", "type": "string" }
+  ],
+  "stages": [
+    {
+      "name": "proposeAPIDesign",
+      "type": "agent",
+      "config": { "promptRef": "system/proposer" },
+      "inputs": [
+        { "name": "apiBrief", "type": "string" }
+      ],
+      "outputs": [
+        { "name": "chosenDesignMarkdown", "type": "string" },
+        { "name": "alternativesConsidered", "type": "{ name: string; sketch: string; rejectionReason: string }[]" },
+        { "name": "tracedUseCases", "type": "{ useCase: string; verdictPerAlternative: string }[]" },
+        { "name": "openConcerns", "type": "string[]" }
+      ]
+    },
+    {
+      "name": "critiqueAPIDesign",
+      "type": "agent",
+      "config": { "promptRef": "system/critic" },
+      "inputs": [
+        { "name": "apiBrief", "type": "string" },
+        { "name": "chosenDesignMarkdown", "type": "string" },
+        { "name": "alternativesConsidered", "type": "{ name: string; sketch: string; rejectionReason: string }[]" },
+        { "name": "tracedUseCases", "type": "{ useCase: string; verdictPerAlternative: string }[]" },
+        { "name": "openConcerns", "type": "string[]" }
+      ],
+      "outputs": [
+        { "name": "critiqueMarkdown", "type": "string" }
+      ]
+    }
+  ],
+  "wires": [
+    { "from": { "source": "external", "port": "apiBrief" }, "to": { "stage": "proposeAPIDesign", "port": "apiBrief" } },
+    { "from": { "source": "external", "port": "apiBrief" }, "to": { "stage": "critiqueAPIDesign", "port": "apiBrief" } },
+    { "from": { "source": "stage", "stage": "proposeAPIDesign", "port": "chosenDesignMarkdown" }, "to": { "stage": "critiqueAPIDesign", "port": "chosenDesignMarkdown" } },
+    { "from": { "source": "stage", "stage": "proposeAPIDesign", "port": "alternativesConsidered" }, "to": { "stage": "critiqueAPIDesign", "port": "alternativesConsidered" } },
+    { "from": { "source": "stage", "stage": "proposeAPIDesign", "port": "tracedUseCases" }, "to": { "stage": "critiqueAPIDesign", "port": "tracedUseCases" } },
+    { "from": { "source": "stage", "stage": "proposeAPIDesign", "port": "openConcerns" }, "to": { "stage": "critiqueAPIDesign", "port": "openConcerns" } }
+  ]
+}

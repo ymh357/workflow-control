@@ -1,0 +1,40 @@
+{
+  "name": "niche-exp-explore-propose-single",
+  "session_mode": "single",
+  "externalInputs": [
+    { "name": "repoPath", "type": "string" },
+    { "name": "refactorGoal", "type": "string" }
+  ],
+  "stages": [
+    {
+      "name": "exploreCodebase",
+      "type": "agent",
+      "config": { "promptRef": "system/explorer" },
+      "inputs": [
+        { "name": "repoPath", "type": "string" },
+        { "name": "refactorGoal", "type": "string" }
+      ],
+      "outputs": [
+        { "name": "explorationDone", "type": "boolean" }
+      ]
+    },
+    {
+      "name": "proposeRefactor",
+      "type": "agent",
+      "config": { "promptRef": "system/proposer" },
+      "inputs": [
+        { "name": "refactorGoal", "type": "string" },
+        { "name": "explorationDone", "type": "boolean" }
+      ],
+      "outputs": [
+        { "name": "proposalMarkdown", "type": "string" }
+      ]
+    }
+  ],
+  "wires": [
+    { "from": { "source": "external", "port": "repoPath" }, "to": { "stage": "exploreCodebase", "port": "repoPath" } },
+    { "from": { "source": "external", "port": "refactorGoal" }, "to": { "stage": "exploreCodebase", "port": "refactorGoal" } },
+    { "from": { "source": "external", "port": "refactorGoal" }, "to": { "stage": "proposeRefactor", "port": "refactorGoal" } },
+    { "from": { "source": "stage", "stage": "exploreCodebase", "port": "explorationDone" }, "to": { "stage": "proposeRefactor", "port": "explorationDone" } }
+  ]
+}
