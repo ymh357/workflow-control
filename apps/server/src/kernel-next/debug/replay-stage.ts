@@ -263,13 +263,22 @@ export async function replayStage(
      ORDER BY written_at ASC`,
   ).all(execResult.attemptId) as Array<{ port_name: string; value_json: string }>;
 
+  // Narrow the discriminated union: treat secret_pending as an error so
+  // ReplayStageSuccess.status stays "success" | "error".
+  const status: "success" | "error" =
+    execResult.status === "success" ? "success" : "error";
+  const error: string | undefined =
+    execResult.status === "error" ? execResult.error
+    : execResult.status === "secret_pending"
+      ? `MCP_ENV_MISSING: stage needs envKeys [${execResult.missingKeys.join(", ")}]`
+      : undefined;
   return {
     ok: true,
     sourceAttemptId: input.sourceAttemptId,
     newAttemptId: execResult.attemptId,
     newAttemptIdx: execResult.attemptIdx,
-    status: execResult.status,
-    error: execResult.error,
+    status,
+    error,
     writes: writes.map((r) => {
       let value: unknown;
       try { value = JSON.parse(r.value_json); } catch { value = r.value_json; }

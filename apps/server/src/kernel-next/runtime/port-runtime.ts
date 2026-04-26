@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 import type { ActorRef } from "xstate";
 import type { MachineEvent } from "../compiler/ir-to-machine.js";
 
-export type AttemptStatus = "running" | "success" | "error" | "superseded";
+export type AttemptStatus = "running" | "success" | "error" | "superseded" | "secret_pending";
 
 // Debt #7 — attempt provenance. `regular` is the default (single-execution
 // stage attempt, including gates and retries). `fanout_element` tags the

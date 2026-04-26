@@ -121,12 +121,15 @@ export interface ExecuteStageArgs {
   };
 }
 
-export interface ExecuteStageResult {
-  attemptId: string;
-  attemptIdx: number;
-  status: "success" | "error";
-  error?: string;
-}
+export type ExecuteStageResult =
+  | { attemptId: string; attemptIdx: number; status: "success" }
+  | { attemptId: string; attemptIdx: number; status: "error"; error?: string }
+  | {
+      attemptId: string;
+      attemptIdx: number;
+      status: "secret_pending";
+      missingKeys: string[];
+    };
 
 /**
  * Common contract implemented by MockStageExecutor (mock-executor.ts) and

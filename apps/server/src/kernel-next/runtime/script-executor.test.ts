@@ -111,6 +111,7 @@ describe("ScriptStageExecutor", () => {
 
       const result = await exec.executeStage(buildArgs(ir, portRuntime, {}));
       expect(result.status).toBe("error");
+      if (result.status !== "error") throw new Error("expected error result");
       expect(result.error).toMatch(/Script module 'missing' not found/);
 
       const row = db.prepare(
@@ -137,6 +138,7 @@ describe("ScriptStageExecutor", () => {
 
       const result = await exec.executeStage(buildArgs(ir, portRuntime, {}));
       expect(result.status).toBe("error");
+      if (result.status !== "error") throw new Error("expected error result");
       expect(result.error).toBe("kaboom");
 
       // No output writes.

@@ -36,7 +36,8 @@ export type TerminationReason =
   | "natural_completion"
   | "interrupted"
   | "error"
-  | "superseded";
+  | "superseded"
+  | "secret_pending";
 
 export interface OpenWriterInput {
   attemptId: string;

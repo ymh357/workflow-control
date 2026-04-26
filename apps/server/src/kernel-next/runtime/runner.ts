@@ -338,6 +338,14 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
   // contains errors from the terminal attempt.
   const stageErrors: Array<{ stage: string; message: string; context?: StageErrorContext }> = [];
 
+  // F17 secret-gate: tracks whether any stage paused waiting for secrets.
+  // When true, runner skips the task_finals write (the task is paused, not
+  // terminated) and exits silently; provide_task_secrets MCP tool resumes
+  // via the migration path (synthetic-proposal mechanism in retryTaskFromStage).
+  // P3.6 env-cleanup is also skipped — task_env_values are kept so
+  // any provide_task_secrets writes already in flight aren't clobbered.
+  let secretPendingObserved = false;
+
   // Run-scoped SSE state. `lastTopState` ensures task_state dedupes
   // across rebuilds (a rebuilt actor emits idle→running again; we
   // don't want duplicate running events on the SSE stream).
@@ -819,47 +827,55 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       terminationReason = { kind: "error", detail: "runner exited without reaching final outcome" };
       finalsRow = { state: "failed", reason: "thrown", detail: "runner exited without reaching final outcome" };
     }
-    // Upsert task_finals BEFORE signalTermination so awaitTermination
-    // waiters (migration orchestrator) and downstream status readers
-    // see the authoritative row as soon as the registry signal fires.
-    try {
-      opts.db.prepare(
-        `INSERT INTO task_finals (task_id, version_hash, final_state, reason, detail, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(task_id) DO UPDATE SET
-           version_hash = excluded.version_hash,
-           final_state  = excluded.final_state,
-           reason       = excluded.reason,
-           detail       = excluded.detail,
-           ended_at     = excluded.ended_at
-         -- 'cancelled' is a sticky terminal state: cancel_task writes it
-         -- via INSERT OR IGNORE before dispatching INTERRUPT. If our row
-         -- lands first we must not flip it back to 'failed'/'interrupted'.
-         WHERE task_finals.final_state != 'cancelled'`,
-      ).run(
-        opts.taskId,
-        opts.versionHash,
-        finalsRow.state,
-        finalsRow.reason,
-        finalsRow.detail,
-        Date.now(),
-      );
-    } catch (err) {
-      // task_finals write must never mask the real termination reason.
-      // Log-and-swallow: signalTermination still fires, callers fall back
-      // to the stage_attempts-derived path (pre-P6-1 behavior).
-      // eslint-disable-next-line no-console
-      console.error(`[runner] task_finals upsert failed for task=${opts.taskId}:`, err);
-    }
-    // P3.6: plaintext env tokens must not outlive the task lifetime.
-    // Run in its own try/catch so a cleanup failure cannot be swallowed
-    // by the task_finals catch above. Unconditionally executed — even if
-    // task_finals upsert threw, we still want the env row gone.
-    try {
-      deleteTaskEnvValues(opts.db, opts.taskId);
-    } catch (envErr) {
-      // eslint-disable-next-line no-console
-      console.error(`[runner] deleteTaskEnvValues failed for task=${opts.taskId}:`, envErr);
+    if (secretPendingObserved) {
+      // F17: task is paused on a missing secret. Do not write task_finals;
+      // the task is not terminal. provide_task_secrets will resume via
+      // the migration path (synthetic-proposal mechanism in retryTaskFromStage).
+      // P3.6 env-cleanup is also skipped — task_env_values are kept so
+      // any provide_task_secrets writes already in flight aren't clobbered.
+    } else {
+      // Upsert task_finals BEFORE signalTermination so awaitTermination
+      // waiters (migration orchestrator) and downstream status readers
+      // see the authoritative row as soon as the registry signal fires.
+      try {
+        opts.db.prepare(
+          `INSERT INTO task_finals (task_id, version_hash, final_state, reason, detail, ended_at)
+           VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(task_id) DO UPDATE SET
+             version_hash = excluded.version_hash,
+             final_state  = excluded.final_state,
+             reason       = excluded.reason,
+             detail       = excluded.detail,
+             ended_at     = excluded.ended_at
+           -- 'cancelled' is a sticky terminal state: cancel_task writes it
+           -- via INSERT OR IGNORE before dispatching INTERRUPT. If our row
+           -- lands first we must not flip it back to 'failed'/'interrupted'.
+           WHERE task_finals.final_state != 'cancelled'`,
+        ).run(
+          opts.taskId,
+          opts.versionHash,
+          finalsRow.state,
+          finalsRow.reason,
+          finalsRow.detail,
+          Date.now(),
+        );
+      } catch (err) {
+        // task_finals write must never mask the real termination reason.
+        // Log-and-swallow: signalTermination still fires, callers fall back
+        // to the stage_attempts-derived path (pre-P6-1 behavior).
+        // eslint-disable-next-line no-console
+        console.error(`[runner] task_finals upsert failed for task=${opts.taskId}:`, err);
+      }
+      // P3.6: plaintext env tokens must not outlive the task lifetime.
+      // Run in its own try/catch so a cleanup failure cannot be swallowed
+      // by the task_finals catch above. Unconditionally executed — even if
+      // task_finals upsert threw, we still want the env row gone.
+      try {
+        deleteTaskEnvValues(opts.db, opts.taskId);
+      } catch (envErr) {
+        // eslint-disable-next-line no-console
+        console.error(`[runner] deleteTaskEnvValues failed for task=${opts.taskId}:`, envErr);
+      }
     }
     taskRegistry.signalTermination(opts.taskId, terminationReason);
     taskRegistry.unregister(opts.taskId);
@@ -1072,6 +1088,12 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
               stage: input.stageName,
               error: result.error ?? "unspecified",
             });
+          } else if (result.status === "secret_pending") {
+            // F17: stage is paused waiting for envKeys. Mark the runner-level
+            // flag so the finally block skips task_finals; do NOT push to
+            // stageErrors (this is not a failure), do NOT dispatch
+            // STAGE_FAILED (machine must not advance to its error final).
+            secretPendingObserved = true;
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

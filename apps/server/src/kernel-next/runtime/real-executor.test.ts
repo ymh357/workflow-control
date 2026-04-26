@@ -164,6 +164,7 @@ describe("RealStageExecutor — AgentMachine-driven (A2.2)", () => {
     });
 
     expect(result.status).toBe("error");
+    if (result.status !== "error") throw new Error("expected error result");
     expect(result.error).toContain("turn cap hit");
     db.close();
   });
@@ -188,6 +189,7 @@ describe("RealStageExecutor — AgentMachine-driven (A2.2)", () => {
     });
 
     expect(result.status).toBe("error");
+    if (result.status !== "error") throw new Error("expected error result");
     expect(result.error).toMatch(/schema non-compliant.*'x'/);
     db.close();
   });
@@ -322,6 +324,7 @@ describe("RealStageExecutor — AbortSignal INTERRUPT bridge (A2.3.3)", () => {
     // finalises as 'interrupted' from 'starting'. The stage returns error
     // with a diagnostic message.
     expect(result.status).toBe("error");
+    if (result.status !== "error") throw new Error("expected error result");
     expect(result.error).toContain("interrupted");
     db.close();
   });

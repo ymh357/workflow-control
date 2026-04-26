@@ -26,6 +26,7 @@
 // Non-declared fields in the final JSON are ignored (same stance as
 // mock-executor / legacy kernel's filterStoreWrites).
 
+import { randomUUID } from "node:crypto";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
 import { createActor, waitFor } from "xstate";
@@ -56,7 +57,6 @@ import { buildSystemPromptAppend } from "./real-executor-prompt-builder.js";
 import { buildSdkBaseOptions } from "./real-executor-sdk-options.js";
 import {
   expandMcpServers,
-  McpEnvExpansionError,
   type ExpandedMcpServer,
 } from "./mcp-servers-expander.js";
 import { loadTaskEnvValues } from "./task-env-values.js";
@@ -343,23 +343,44 @@ export class RealStageExecutor implements StageExecutor {
         : this.maxTurns;
       // P3.5: expand ${VAR} placeholders in stage.config.mcpServers into
       // concrete ExpandedMcpServer records. Precedence: task_env_values
-      // (from run_pipeline args) > process.env. Missing variables fail
-      // the stage with a MCP_ENV_MISSING diagnostic; downstream stages
-      // never see a silent kernel-only fallback.
+      // (from run_pipeline args) > process.env.
+      //
+      // 2026-04-26 F17 secret-gate: missing keys no longer terminate the
+      // stage as error. Instead the kernel writes a secret_gate_queue row
+      // enumerating every missing envKey, finishes the attempt as
+      // secret_pending, and returns a typed secret_pending result so the
+      // runner can pause without writing task_finals. The provide_task_secrets
+      // MCP tool resolves the row and resumes via the migration path.
       let externalMcpServers: Record<string, ExpandedMcpServer> | undefined;
       if (stage.config.mcpServers && stage.config.mcpServers.length > 0) {
         const taskEnv = loadTaskEnvValues(portRuntime.getDb(), taskId);
-        try {
-          externalMcpServers = expandMcpServers(stage.config.mcpServers, taskEnv);
-        } catch (e) {
-          if (e instanceof McpEnvExpansionError) {
-            const errMsg = `MCP_ENV_MISSING: server '${e.server}' field '${e.fieldKey}' references unset env variable '${e.variable}'`;
-            writer.close({ terminationReason: "error" });
-            portRuntime.finishAttempt(attemptId, "error", errMsg, { silent: failSilently });
-            return { attemptId, attemptIdx, status: "error", error: errMsg };
-          }
-          throw e;
+        const expandResult = expandMcpServers(stage.config.mcpServers, taskEnv);
+        if (!expandResult.ok) {
+          const db = portRuntime.getDb();
+          const secretGateId = randomUUID();
+          db.prepare(
+            `INSERT INTO secret_gate_queue
+               (secret_gate_id, task_id, stage_name, attempt_id, required_keys, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+          ).run(
+            secretGateId,
+            taskId,
+            stage.name,
+            attemptId,
+            JSON.stringify(expandResult.missingKeys),
+            Date.now(),
+          );
+          const errMsg = `MCP_ENV_MISSING: stage '${stage.name}' needs envKeys [${expandResult.missingKeys.join(", ")}]`;
+          writer.close({ terminationReason: "secret_pending" });
+          portRuntime.finishAttempt(attemptId, "secret_pending", errMsg, { silent: failSilently });
+          return {
+            attemptId,
+            attemptIdx,
+            status: "secret_pending",
+            missingKeys: expandResult.missingKeys,
+          };
         }
+        externalMcpServers = expandResult.servers;
       }
       // F3: set SDK cwd only when the caller supplied a workspace.
       // Otherwise leave it undefined so the SDK default (process.cwd())
