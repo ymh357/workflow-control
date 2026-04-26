@@ -502,6 +502,9 @@ export const DiagnosticSchema = z.object({
     "CROSS_SEGMENT_TARGET_NOT_REACHABLE",      // target exists but not wire-upstream
     "CROSS_SEGMENT_TARGET_SAME_SEGMENT",       // target is in the same segment as the consumer
     "CROSS_SEGMENT_RESUME_FROM_REQUIRES_SINGLE", // field set on a multi-mode pipeline
+    // 2026-04-26 F17 secret-gate
+    "NO_PENDING_SECRET_GATE",
+    "SECRET_KEY_NOT_REQUIRED",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

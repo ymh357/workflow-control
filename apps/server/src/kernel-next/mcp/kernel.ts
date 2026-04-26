@@ -222,7 +222,19 @@ export interface PendingGate {
 export type TaskStatusReport =
   | { ok: true; status: "not_found"; taskId: string }
   | { ok: true; status: "running" | "completed" | "failed" | "cancelled" | "orphaned"; taskId: string }
-  | { ok: true; status: "gated"; taskId: string; pending: PendingGate[] };
+  | { ok: true; status: "gated"; taskId: string; pending: PendingGate[] }
+  | {
+      ok: true;
+      status: "secret_pending";
+      taskId: string;
+      pending: Array<{
+        secretGateId: string;
+        stageName: string;
+        requiredKeys: string[];
+        stillMissing: string[];
+        createdAt: number;
+      }>;
+    };
 
 /**
  * B5: full decision payload for a single gate. Returned by
@@ -1398,6 +1410,156 @@ export class KernelService {
   }
 
   /**
+   * F17 secret-gate: write provided env values to task_env_values and, when
+   * all required keys for the most recent unresolved secret_gate_queue row
+   * are satisfied, mark the row resolved and dispatch a same-version retry
+   * synthetic proposal targeting the paused stage. The migration path
+   * (executeMigration) supersedes the secret_pending attempt and the new
+   * attempt re-runs expandMcpServers — which now succeeds.
+   *
+   * Secrets are never echoed in the response.
+   */
+  async provideTaskSecrets(
+    taskId: string,
+    secrets: Record<string, string>,
+  ): Promise<
+    | { ok: true; resolved: true }
+    | { ok: true; resolved: false; stillMissing: string[] }
+    | { ok: false; diagnostics: Diagnostic[] }
+  > {
+    if (Object.keys(secrets).length === 0) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "SECRET_KEY_NOT_REQUIRED",
+          message: "secrets argument is empty",
+          context: { taskId },
+        }],
+      };
+    }
+
+    const sgRow = this.db.prepare(
+      `SELECT secret_gate_id, stage_name, required_keys, attempt_id
+         FROM secret_gate_queue
+        WHERE task_id = ? AND resolved_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 1`,
+    ).get(taskId) as
+      | { secret_gate_id: string; stage_name: string; required_keys: string; attempt_id: string }
+      | undefined;
+    if (!sgRow) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "NO_PENDING_SECRET_GATE",
+          message: `task '${taskId}' has no unresolved secret_gate_queue row`,
+          context: { taskId },
+        }],
+      };
+    }
+
+    const requiredKeys: string[] = JSON.parse(sgRow.required_keys);
+    const requiredSet = new Set(requiredKeys);
+    const extras = Object.keys(secrets).filter((k) => !requiredSet.has(k));
+    if (extras.length > 0) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "SECRET_KEY_NOT_REQUIRED",
+          message: `keys [${extras.join(", ")}] are not required by stage '${sgRow.stage_name}'`,
+          context: { taskId, stageName: sgRow.stage_name, extras, requiredKeys },
+        }],
+      };
+    }
+    for (const v of Object.values(secrets)) {
+      if (v.length === 0) {
+        return {
+          ok: false,
+          diagnostics: [{
+            code: "SECRET_KEY_NOT_REQUIRED",
+            message: `empty secret values are not accepted`,
+            context: { taskId },
+          }],
+        };
+      }
+    }
+
+    // Write secrets to task_env_values (upsert).
+    const now = Date.now();
+    const insertEnv = this.db.prepare(
+      `INSERT INTO task_env_values (task_id, key, value, created_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(task_id, key) DO UPDATE SET value = excluded.value`,
+    );
+    for (const [k, v] of Object.entries(secrets)) {
+      insertEnv.run(taskId, k, v, now);
+    }
+
+    // Compute stillMissing post-write.
+    const havingRows = this.db.prepare(
+      `SELECT key FROM task_env_values WHERE task_id = ?`,
+    ).all(taskId) as Array<{ key: string }>;
+    const havingKeys = new Set(havingRows.map((r) => r.key));
+    const stillMissing = requiredKeys.filter((k) => !havingKeys.has(k));
+
+    if (stillMissing.length > 0) {
+      return { ok: true, resolved: false, stillMissing };
+    }
+
+    // All required keys present — mark resolved and dispatch retry-resume.
+    this.db.prepare(
+      `UPDATE secret_gate_queue SET resolved_at = ? WHERE secret_gate_id = ?`,
+    ).run(now, sgRow.secret_gate_id);
+
+    // Reuse retry-from-stage migration mechanism. The synthetic proposal
+    // pattern at retryTaskFromStage supersedes the secret_pending attempt
+    // and starts a fresh one targeting the same stage on the same version.
+    const retryResult = await this.retryTaskFromStage({
+      taskId,
+      fromStage: sgRow.stage_name,
+      actor: "secret-gate-resume",
+    });
+    if (!retryResult.ok) {
+      return { ok: false, diagnostics: retryResult.diagnostics };
+    }
+    return { ok: true, resolved: true };
+  }
+
+  /**
+   * F17: list unresolved secret_gate_queue rows for a task. Used by
+   * getTaskStatus and (future) the dashboard.
+   */
+  listPendingSecretGates(taskId: string): Array<{
+    secretGateId: string;
+    stageName: string;
+    requiredKeys: string[];
+    stillMissing: string[];
+    createdAt: number;
+  }> {
+    const rows = this.db.prepare(
+      `SELECT secret_gate_id, stage_name, required_keys, created_at
+         FROM secret_gate_queue
+        WHERE task_id = ? AND resolved_at IS NULL
+        ORDER BY created_at DESC`,
+    ).all(taskId) as Array<{ secret_gate_id: string; stage_name: string; required_keys: string; created_at: number }>;
+    if (rows.length === 0) return [];
+    const havingRows = this.db.prepare(
+      `SELECT key FROM task_env_values WHERE task_id = ?`,
+    ).all(taskId) as Array<{ key: string }>;
+    const havingKeys = new Set(havingRows.map((r) => r.key));
+    return rows.map((r) => {
+      const requiredKeys: string[] = JSON.parse(r.required_keys);
+      return {
+        secretGateId: r.secret_gate_id,
+        stageName: r.stage_name,
+        requiredKeys,
+        stillMissing: requiredKeys.filter((k) => !havingKeys.has(k)),
+        createdAt: r.created_at,
+      };
+    });
+  }
+
+  /**
    * Aggregate task status from stage_attempts + gate_queue. Kernel-next
    * has no `tasks` table — a task exists iff it has at least one row in
    * stage_attempts (keyed by taskId). Priority order when multiple
@@ -1449,6 +1611,18 @@ export class KernelService {
       `SELECT stage_name, attempt_idx, status FROM stage_attempts
        WHERE task_id = ?`,
     ).all(taskId) as Array<{ stage_name: string; attempt_idx: number; status: string }>;
+
+    // F17: unresolved secret-gates take precedence over regular gates and
+    // task_finals. They represent the most recent block on the task.
+    const pendingSecretGates = this.listPendingSecretGates(taskId);
+    if (pendingSecretGates.length > 0) {
+      return {
+        ok: true,
+        status: "secret_pending",
+        taskId,
+        pending: pendingSecretGates,
+      };
+    }
 
     const pendingGates = this.listGates({ taskId, answered: false });
     if (pendingGates.length > 0) {

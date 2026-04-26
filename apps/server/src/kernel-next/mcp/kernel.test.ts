@@ -1618,3 +1618,118 @@ describe("KernelService.getGateContext — B5", () => {
     }
   });
 });
+
+describe("F17 secret-gate", () => {
+  it("provideTaskSecrets writes task_env_values and resolves the gate", async () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+
+    // Submit a real pipeline so retryTaskFromStage can find the IR.
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup failed");
+    const versionHash = submitted.versionHash;
+
+    // Set up a task with an unresolved secret_gate_queue row using stage 'A'
+    // (which exists in the diamond IR so retryTaskFromStage can validate it).
+    const taskId = "t-secret";
+    const attemptId = "att-1";
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+       VALUES (?, ?, ?, 'A', 0, ?, 'secret_pending')`,
+    ).run(attemptId, taskId, versionHash, Date.now());
+    db.prepare(
+      `INSERT INTO secret_gate_queue (secret_gate_id, task_id, stage_name, attempt_id, required_keys, created_at)
+       VALUES ('sg-1', ?, 'A', ?, '["KEY_A","KEY_B"]', ?)`,
+    ).run(taskId, attemptId, Date.now());
+
+    // Provide all required keys.
+    const r = await svc.provideTaskSecrets(taskId, { KEY_A: "va", KEY_B: "vb" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.resolved).toBe(true);
+
+    // Verify task_env_values populated.
+    const rows = db.prepare(`SELECT key, value FROM task_env_values WHERE task_id = ?`).all(taskId) as Array<{ key: string; value: string }>;
+    const envMap = Object.fromEntries(rows.map((row) => [row.key, row.value]));
+    expect(envMap).toEqual({ KEY_A: "va", KEY_B: "vb" });
+
+    // Verify secret_gate_queue.resolved_at populated.
+    const sgRow = db.prepare(`SELECT resolved_at FROM secret_gate_queue WHERE secret_gate_id = 'sg-1'`).get() as { resolved_at: number | null };
+    expect(sgRow.resolved_at).not.toBeNull();
+  });
+
+  it("provideTaskSecrets with partial keys returns resolved:false", async () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const taskId = "t-secret-partial";
+    const attemptId = "att-2";
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+       VALUES (?, ?, 'v1', 's', 0, ?, 'secret_pending')`,
+    ).run(attemptId, taskId, Date.now());
+    db.prepare(
+      `INSERT INTO secret_gate_queue (secret_gate_id, task_id, stage_name, attempt_id, required_keys, created_at)
+       VALUES ('sg-2', ?, 's', ?, '["KEY_A","KEY_B"]', ?)`,
+    ).run(taskId, attemptId, Date.now());
+
+    const r = await svc.provideTaskSecrets(taskId, { KEY_A: "va" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.resolved).toBe(false);
+    if (r.resolved) return;
+    expect(r.stillMissing).toEqual(["KEY_B"]);
+  });
+
+  it("provideTaskSecrets returns NO_PENDING_SECRET_GATE when no unresolved row", async () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const r = await svc.provideTaskSecrets("ghost-task", { X: "y" });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics[0]!.code).toBe("NO_PENDING_SECRET_GATE");
+  });
+
+  it("provideTaskSecrets rejects keys outside the required_keys list", async () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const taskId = "t-secret-extra";
+    const attemptId = "att-3";
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+       VALUES (?, ?, 'v1', 's', 0, ?, 'secret_pending')`,
+    ).run(attemptId, taskId, Date.now());
+    db.prepare(
+      `INSERT INTO secret_gate_queue (secret_gate_id, task_id, stage_name, attempt_id, required_keys, created_at)
+       VALUES ('sg-3', ?, 's', ?, '["KEY_A"]', ?)`,
+    ).run(taskId, attemptId, Date.now());
+
+    const r = await svc.provideTaskSecrets(taskId, { KEY_A: "va", EXTRA: "x" });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.diagnostics[0]!.code).toBe("SECRET_KEY_NOT_REQUIRED");
+  });
+
+  it("getTaskStatus returns 'secret_pending' when an unresolved gate exists", () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const taskId = "t-secret-status";
+    const attemptId = "att-4";
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+       VALUES (?, ?, 'v1', 's', 0, ?, 'secret_pending')`,
+    ).run(attemptId, taskId, Date.now());
+    db.prepare(
+      `INSERT INTO secret_gate_queue (secret_gate_id, task_id, stage_name, attempt_id, required_keys, created_at)
+       VALUES ('sg-4', ?, 's', ?, '["KEY_A"]', ?)`,
+    ).run(taskId, attemptId, Date.now());
+
+    const r = svc.getTaskStatus(taskId);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.status).toBe("secret_pending");
+    if (r.status !== "secret_pending") return;
+    expect(r.pending).toEqual([
+      expect.objectContaining({ stageName: "s", requiredKeys: ["KEY_A"], stillMissing: ["KEY_A"] }),
+    ]);
+  });
+});
