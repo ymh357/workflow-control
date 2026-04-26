@@ -1438,16 +1438,19 @@ export class KernelService {
       };
     }
 
-    const sgRow = this.db.prepare(
+    // Load ALL unresolved rows for this task. Multiple may exist when the
+    // server restarted while paused — orphan-reconciler resumes the task,
+    // it hits MCP_ENV_MISSING again, writes a new row. Same envKey, same
+    // stage, just N rows queued. Resolving must batch-clean them all.
+    const allRows = this.db.prepare(
       `SELECT secret_gate_id, stage_name, required_keys, attempt_id
          FROM secret_gate_queue
         WHERE task_id = ? AND resolved_at IS NULL
-        ORDER BY created_at DESC
-        LIMIT 1`,
-    ).get(taskId) as
-      | { secret_gate_id: string; stage_name: string; required_keys: string; attempt_id: string }
-      | undefined;
-    if (!sgRow) {
+        ORDER BY created_at DESC`,
+    ).all(taskId) as Array<
+      { secret_gate_id: string; stage_name: string; required_keys: string; attempt_id: string }
+    >;
+    if (allRows.length === 0) {
       return {
         ok: false,
         diagnostics: [{
@@ -1458,16 +1461,22 @@ export class KernelService {
       };
     }
 
-    const requiredKeys: string[] = JSON.parse(sgRow.required_keys);
-    const requiredSet = new Set(requiredKeys);
-    const extras = Object.keys(secrets).filter((k) => !requiredSet.has(k));
+    // Validation uses the union of every unresolved row's required_keys —
+    // the operator may be supplying secrets that satisfy several rows at
+    // once, and rejecting "extras" against only the latest row would
+    // wrongly reject a key that belongs to an earlier row.
+    const allRequired = new Set<string>();
+    for (const r of allRows) {
+      for (const k of JSON.parse(r.required_keys) as string[]) allRequired.add(k);
+    }
+    const extras = Object.keys(secrets).filter((k) => !allRequired.has(k));
     if (extras.length > 0) {
       return {
         ok: false,
         diagnostics: [{
           code: "SECRET_KEY_NOT_REQUIRED",
-          message: `keys [${extras.join(", ")}] are not required by stage '${sgRow.stage_name}'`,
-          context: { taskId, stageName: sgRow.stage_name, extras, requiredKeys },
+          message: `keys [${extras.join(", ")}] are not required by any pending secret-gate on task '${taskId}'`,
+          context: { taskId, extras, allRequired: Array.from(allRequired) },
         }],
       };
     }
@@ -1495,32 +1504,60 @@ export class KernelService {
       insertEnv.run(taskId, k, v, now);
     }
 
-    // Compute stillMissing post-write.
+    // Compute stillMissing per row post-write. Mark each row whose
+    // required_keys are now fully satisfied as resolved. Collect the
+    // distinct stage names that became unblocked so we trigger one
+    // retryTaskFromStage per stage (multiple rows for the same stage
+    // dedupe to one retry).
     const havingRows = this.db.prepare(
       `SELECT key FROM task_env_values WHERE task_id = ?`,
     ).all(taskId) as Array<{ key: string }>;
     const havingKeys = new Set(havingRows.map((r) => r.key));
-    const stillMissing = requiredKeys.filter((k) => !havingKeys.has(k));
 
-    if (stillMissing.length > 0) {
-      return { ok: true, resolved: false, stillMissing };
+    const aggregatedStillMissing = new Set<string>();
+    const resolvedStages = new Set<string>();
+    const markResolved = this.db.prepare(
+      `UPDATE secret_gate_queue SET resolved_at = ? WHERE secret_gate_id = ?`,
+    );
+    for (const r of allRows) {
+      const required: string[] = JSON.parse(r.required_keys);
+      const missing = required.filter((k) => !havingKeys.has(k));
+      if (missing.length === 0) {
+        markResolved.run(now, r.secret_gate_id);
+        resolvedStages.add(r.stage_name);
+      } else {
+        for (const k of missing) aggregatedStillMissing.add(k);
+      }
     }
 
-    // All required keys present — mark resolved and dispatch retry-resume.
-    this.db.prepare(
-      `UPDATE secret_gate_queue SET resolved_at = ? WHERE secret_gate_id = ?`,
-    ).run(now, sgRow.secret_gate_id);
+    if (aggregatedStillMissing.size > 0 && resolvedStages.size === 0) {
+      return { ok: true, resolved: false, stillMissing: Array.from(aggregatedStillMissing).sort() };
+    }
 
-    // Reuse retry-from-stage migration mechanism. The synthetic proposal
-    // pattern at retryTaskFromStage supersedes the secret_pending attempt
-    // and starts a fresh one targeting the same stage on the same version.
-    const retryResult = await this.retryTaskFromStage({
-      taskId,
-      fromStage: sgRow.stage_name,
-      actor: "secret-gate-resume",
-    });
-    if (!retryResult.ok) {
-      return { ok: false, diagnostics: retryResult.diagnostics };
+    // Dispatch one retry per distinct unblocked stage. A task may have
+    // pending secret-gates from different stages if the pipeline has
+    // multiple agent stages with envKeys; resolving them in one
+    // provideTaskSecrets call kicks off retries for each.
+    const retryDiagnostics: Diagnostic[] = [];
+    for (const stageName of resolvedStages) {
+      const retryResult = await this.retryTaskFromStage({
+        taskId,
+        fromStage: stageName,
+        actor: "secret-gate-resume",
+      });
+      if (!retryResult.ok) {
+        retryDiagnostics.push(...retryResult.diagnostics);
+      }
+    }
+    if (retryDiagnostics.length > 0) {
+      return { ok: false, diagnostics: retryDiagnostics };
+    }
+
+    if (aggregatedStillMissing.size > 0) {
+      // Some rows were resolved (and retried) but a separate row for a
+      // different stage still has missing keys. Surface as
+      // resolved:false so the operator knows there's more to provide.
+      return { ok: true, resolved: false, stillMissing: Array.from(aggregatedStillMissing).sort() };
     }
     return { ok: true, resolved: true };
   }
@@ -1547,16 +1584,24 @@ export class KernelService {
       `SELECT key FROM task_env_values WHERE task_id = ?`,
     ).all(taskId) as Array<{ key: string }>;
     const havingKeys = new Set(havingRows.map((r) => r.key));
-    return rows.map((r) => {
-      const requiredKeys: string[] = JSON.parse(r.required_keys);
-      return {
-        secretGateId: r.secret_gate_id,
-        stageName: r.stage_name,
-        requiredKeys,
-        stillMissing: requiredKeys.filter((k) => !havingKeys.has(k)),
-        createdAt: r.created_at,
-      };
-    });
+    // Filter out rows whose required_keys are fully satisfied by the
+    // current task_env_values. Such rows SHOULD have been marked
+    // resolved by provideTaskSecrets's batch-resolve, but on legacy
+    // data (rows created before the batch-resolve fix) or in any
+    // race condition this guard prevents getTaskStatus from returning
+    // secret_pending for a task whose secrets are actually all in.
+    return rows
+      .map((r) => {
+        const requiredKeys: string[] = JSON.parse(r.required_keys);
+        return {
+          secretGateId: r.secret_gate_id,
+          stageName: r.stage_name,
+          requiredKeys,
+          stillMissing: requiredKeys.filter((k) => !havingKeys.has(k)),
+          createdAt: r.created_at,
+        };
+      })
+      .filter((row) => row.stillMissing.length > 0);
   }
 
   /**

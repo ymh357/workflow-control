@@ -1732,4 +1732,78 @@ describe("F17 secret-gate", () => {
       expect.objectContaining({ stageName: "s", requiredKeys: ["KEY_A"], stillMissing: ["KEY_A"] }),
     ]);
   });
+
+  it("provideTaskSecrets batch-resolves every unresolved row whose keys are now satisfied", async () => {
+    // Real-world scenario from web3-research dogfood: server restarts
+    // multiple times while paused on missing GITHUB_TOKEN. Each
+    // orphan-reconciler resume attempt re-runs the stage, hits
+    // MCP_ENV_MISSING, writes a new secret_gate_queue row. Pre-fix,
+    // provideTaskSecrets only resolved the LATEST row by created_at;
+    // older rows remained unresolved and getTaskStatus kept
+    // returning secret_pending even after the keys were supplied.
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup failed");
+    const versionHash = submitted.versionHash;
+
+    const taskId = "t-batch-resolve";
+    // Three unresolved rows, all on stage A, all needing GITHUB_TOKEN.
+    for (let i = 0; i < 3; i++) {
+      const aid = `att-${i}`;
+      db.prepare(
+        `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+         VALUES (?, ?, ?, 'A', ?, ?, 'secret_pending')`,
+      ).run(aid, taskId, versionHash, i, Date.now() + i);
+      db.prepare(
+        `INSERT INTO secret_gate_queue (secret_gate_id, task_id, stage_name, attempt_id, required_keys, created_at)
+         VALUES (?, ?, 'A', ?, '["GITHUB_TOKEN"]', ?)`,
+      ).run(`sg-${i}`, taskId, aid, Date.now() + i);
+    }
+
+    const r = await svc.provideTaskSecrets(taskId, { GITHUB_TOKEN: "ghp_test" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.resolved).toBe(true);
+
+    // Every row must be resolved — not just the most recent.
+    const stillUnresolved = db.prepare(
+      `SELECT COUNT(*) as n FROM secret_gate_queue WHERE task_id = ? AND resolved_at IS NULL`,
+    ).get(taskId) as { n: number };
+    expect(stillUnresolved.n).toBe(0);
+
+    // getTaskStatus must NOT return secret_pending — there are no
+    // unresolved rows whose stillMissing is non-empty.
+    const status = svc.getTaskStatus(taskId);
+    expect(status.ok).toBe(true);
+    if (!status.ok) return;
+    expect(status.status).not.toBe("secret_pending");
+  });
+
+  it("listPendingSecretGates filters out fully-satisfied rows (defensive guard)", () => {
+    // Defensive guard: if a row exists with required_keys all in
+    // task_env_values but resolved_at IS NULL (legacy data, race),
+    // listPendingSecretGates must NOT surface it as still-pending —
+    // otherwise getTaskStatus would lie.
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+
+    const taskId = "t-defensive";
+    const attemptId = "att-d";
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+       VALUES (?, ?, 'v1', 's', 0, ?, 'secret_pending')`,
+    ).run(attemptId, taskId, Date.now());
+    db.prepare(
+      `INSERT INTO secret_gate_queue (secret_gate_id, task_id, stage_name, attempt_id, required_keys, created_at)
+       VALUES ('sg-d', ?, 's', ?, '["KEY"]', ?)`,
+    ).run(taskId, attemptId, Date.now());
+    // Pre-populate task_env_values with the key — simulating a stale row.
+    db.prepare(
+      `INSERT INTO task_env_values (task_id, key, value, created_at) VALUES (?, 'KEY', 'v', ?)`,
+    ).run(taskId, Date.now());
+
+    const pending = svc.listPendingSecretGates(taskId);
+    expect(pending).toEqual([]); // filtered out — keys all satisfied
+  });
 });
