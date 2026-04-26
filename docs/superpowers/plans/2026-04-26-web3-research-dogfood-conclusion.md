@@ -232,3 +232,59 @@ read_port({ taskId: "web3-research-1777151032404-d7cd3c29", stage: "adversarialF
 ```
 
 Or from this session's transient copy at `/tmp/web3-final.md`.
+
+---
+
+## 13. Round 8 (2026-04-26) — Solana on the same pipeline, fresh task
+
+To validate that the pipeline isn't accidentally tuned to Arbitrum, ran the same versionHash `e6f281e9...` on a Solana task description focused on PoH/Tower BFT consensus, validator economics, SOL inflation, network outages, and Firedancer rollout. F17 path was bypassed by passing `envValues` directly at `run_pipeline` time (operator path; the secret-gate path itself was already validated end-to-end in round 7).
+
+### Task: `web3-research-1777206776437-6fd58418`
+
+| Stage | Action | Notes |
+|---|---|---|
+| scoping | wrote 6 research questions, 4 assumptions, 1 task summary | normal |
+| awaitApproval (gate) | auto-approved by orchestrator | |
+| classifyTarget | entityType=`l1-l2-chain`, atomSet derived from L1 type | |
+| collectPrimarySources | github MCP queried; primarySourceReport written | ~10 min |
+| domainResearch | candidateList covers Aptos/Sui/Avalanche L1 competition; ~$0.32 / 9K out | bigger than Arbitrum (more L1 peers to enumerate) |
+| onChainVerification | onChainReport empty/skipped — atomSet didn't include `m-onchain-verification` for this Solana shape | |
+| atomAnalysis | analysisReport per-atom; ~$0.16 / 12K out | normal |
+| produceDeliverable | 17K-token Chinese deliverable | normal |
+| adversarialFactCheck | finalDeliverable = corrected version with on-chain corrections inlined | normal |
+
+### Empirical numbers
+
+| Metric | Round 7 (Arbitrum, resumed) | Round 8 (Solana, fresh) |
+|---|---|---|
+| Total cost | $1.625 | $1.865 |
+| Input tokens | 4153 | 6041 |
+| Output tokens | 80968 | 78375 |
+| Attempts (incl. historical) | 50 | 10 |
+| Final deliverable | 22397 chars / 728 lines | 23261 chars / 545 lines |
+
+### Quality observations
+
+**Solana report's fact-discipline is materially better than Arbitrum's**. Concrete examples:
+- "1.5% 固定下限,**预计**于 2026 年下半年至 2027 年达成 [Official]" — future-dated milestone explicitly hedged with "预计"
+- "Alpenglow 提案目标在 2026 年将其减少到 100-150ms,但**部署时间尚不确定** [Secondary]" — uncertainty surfaced
+- "**截至 2026 年 4 月 17 日**,20%-22% 的验证者质押运行 Firedancer" — concrete date (9 days before report) for a current-state claim
+- "**截至 2026 年 4 月 26 日**" used as the report's temporal anchor explicitly
+
+The report's 材料更正 section (in 附注与数据质量声明) records that on-chain verification corrected SOL circulating supply from 464.4M (in primarySourceReport) to ~575.9M (verified via CoinGecko/Solana Compass on report date) — this is the F20-style temporal-anchor discipline working. The Arbitrum round-7 report had the Kelp DAO 2026-05 future-event fabrication without flagging; Round 8's Solana report does not have any equivalent issue.
+
+### Why is Round 8 better at temporal discipline?
+
+Three plausible explanations, none mutually exclusive:
+
+1. **Topic specificity**: Solana's recent state (Firedancer rollout %, validator counts, outage logs from StatusGator) is well-anchored in dated public data. There's less surface for the model to confabulate "what happened recently" because StatusGator and Helius publish dated outage records that the model used as ground.
+2. **Subject-matter familiarity**: the model's training likely had more Solana coverage than Arbitrum's recent governance events, so the pattern of "specific event in 2026-05" pulled fewer hallucinated date-anchored claims.
+3. **F20 fix is NOT yet in this report's prompts**: this Round 8 task uses the same versionHash `e6f281e9...` as round 7. The F20 prompt-writer fix (commit `6a80602`) only affects future pipeline-generator outputs. So the improvement here is NOT attributable to F20.
+
+The conclusion: the Round 7 Kelp DAO miss was either topic-specific bad luck or training-data over-confidence on a specific Arbitrum incident. F20 still matters for resilience, but the empirical baseline now has at least one well-disciplined report on the same prompts.
+
+### Status
+
+Both tasks `completed`. Total session cost across both rounds: ~$3.49 across 19 stages (round 7's resume executed only 6 stages; round 8 ran all 9 fresh).
+
+Solana deliverable in DB at `port_values` row `(stage='adversarialFactCheck', port='finalDeliverable')` for taskId `web3-research-1777206776437-6fd58418`. Transient copy at `/tmp/sol-final.md`.
