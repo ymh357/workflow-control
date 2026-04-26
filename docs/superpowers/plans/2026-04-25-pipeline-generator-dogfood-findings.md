@@ -635,3 +635,29 @@ Closing the dogfood here. Finding 17 implementation is a separate kernel work it
 
 Roughly 2-3 days of kernel work; no breaking changes to existing pipelines or agent prompts.
 
+---
+
+## Finding 18 — `provideTaskSecrets` only resolved one row at a time (RESOLVED, 2026-04-26 round 7)
+
+After F17 secret-gate landed (commits `f44e0ea`..`c9fa070`), real-task dogfood (round 7 reviving the round-6 Arbitrum task) revealed a second bug. When the server had restarted multiple times while the task was paused on missing GITHUB_TOKEN, orphan-reconciler's resume attempts each wrote a new `secret_gate_queue` row. The original `provideTaskSecrets` only updated the LATEST row by `created_at`. After supplying the token, 17 of 18 rows remained `resolved_at IS NULL` — `getTaskStatus` kept returning `secret_pending` because `listPendingSecretGates` saw those rows as still-pending (even though `stillMissing` was now empty).
+
+Fixed in commit `19b62bf`: `provideTaskSecrets` now loads ALL unresolved rows, validates "extras" against the union of every row's `required_keys`, batch-marks every fully-satisfied row as resolved, and dispatches one `retryTaskFromStage` per distinct unblocked stage. `listPendingSecretGates` additionally filters out rows whose `stillMissing` is empty as a defensive guard.
+
+## Finding 19 — fanout orchestrator did not handle `secret_pending` from per-element executor results (RESOLVED, 2026-04-26)
+
+`runner-fanout.ts:194` only branched on `error`. Per-element results of shape `{ status: "secret_pending", missingKeys: [...] }` were treated like success, and the post-loop aggregator read no port writes (the element's executor never produced any). Aggregation filled with `undefined` per port. Latent — web3-research has no fanout stages, so the bug never fired in production. Would surface on the first fanout pipeline whose elements declare envKeys.
+
+Fixed in commit `86b989d`: `FanoutResult` union extended with a `secret_pending` variant; `runElement` collects missingKeys from every paused element (deduplicated, sorted); workers gate on the flag so subsequent elements stop scheduling; orchestrator returns `secret_pending` before opening the aggregate attempt — no half-aggregated array writes. `runner.ts` fanout-result consumer mirrors the non-fanout `secret_pending` handling. Two new isolated tests against `orchestrateFanoutStage` cover the happy path and dedup/sort behavior.
+
+## Finding 20 — `adversarialFactCheck` returned `confidence: high` while citing future events (OPEN)
+
+The Arbitrum deliverable from round 7 references "Kelp DAO 资产冻结事件 (2026年5月)" as a fact in a report dated 2026-04-26. Either the model hallucinated, or it pulled a forward-looking analysis piece without flagging the date. `adversarialFactCheck` cited 4 independent sources and returned `confidenceScore: high`. The fact-check prompt may need an explicit "anything dated AFTER `<reportDate>` must be flagged as projection, not fact" rule. Doesn't invalidate the report — most claims are well-grounded — but the confidence rating is misleading.
+
+Suggested fix: modify pipeline-generator's adversarialFactCheck prompt template to instruct fact-check stages to verify dates against the implicit `reportDate` (current date passed via system context). Alternatively, add this to the existing web3-research pipeline's prompt directly.
+
+## Finding 21 — Multi-session pipeline cost profile is dominated by output volume, not prompt overhead (DATA)
+
+Round 7 measured 4117 input / 76879 output tokens at $1.625 across 9 stages including 4 MCP-driven stages. Output:input ratio ~19:1 confirms cost is dominated by agent generation, not by prompt-overhead waste. Comparable to round-4's `$3.55` pipeline-generator (no MCP, 6 stages); web3-research at `$1.625` for 9 stages including MCP-driven stages is materially cheaper. Multi-session structural-data-flow approach pays off: each stage gets exactly the typed inputs it needs, no carry-forward of stages-1..k-1 prompt bodies.
+
+This is the empirical baseline against which any future single-session experiment must beat to justify the loss of mode orthogonality.
+
