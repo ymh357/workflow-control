@@ -442,3 +442,50 @@ describe("classifyOrphan — gate regression (BUG-1)", () => {
     });
   });
 });
+
+// F17: tasks with unresolved secret_gate_queue rows must not auto-resume.
+describe("classifyOrphan — secret_pending (F17)", () => {
+  it("classifies a task with unresolved secret_gate_queue as secret_pending (no auto-resume)", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const ir = parseGateIR();
+    const vh = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+
+    const taskId = "t-orphan-secret";
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+       VALUES ('a1', ?, ?, 'A', 0, ?, 'secret_pending')`,
+    ).run(taskId, vh, Date.now());
+    db.prepare(
+      `INSERT INTO secret_gate_queue (secret_gate_id, task_id, stage_name, attempt_id, required_keys, created_at)
+       VALUES ('sg-orphan', ?, 'A', 'a1', '["KEY"]', ?)`,
+    ).run(taskId, Date.now());
+
+    const cls = classifyOrphan(db, taskId);
+    expect(cls.kind).toBe("secret_pending");
+  });
+
+  it("does NOT classify secret_pending when all secret_gate_queue rows are resolved", () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const ir = parseGateIR();
+    const vh = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+
+    const taskId = "t-orphan-secret-resolved";
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+       VALUES ('a1', ?, ?, 'A', 0, ?, 'success')`,
+    ).run(taskId, vh, now);
+    db.prepare(
+      `INSERT INTO secret_gate_queue (secret_gate_id, task_id, stage_name, attempt_id, required_keys, created_at, resolved_at)
+       VALUES ('sg-resolved', ?, 'A', 'a1', '["KEY"]', ?, ?)`,
+    ).run(taskId, now, now + 1000);
+
+    const cls = classifyOrphan(db, taskId);
+    // Resolved secret gate → normal classification; next stage is pending
+    expect(cls.kind).not.toBe("secret_pending");
+  });
+});

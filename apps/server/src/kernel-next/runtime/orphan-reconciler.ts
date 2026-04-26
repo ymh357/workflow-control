@@ -28,12 +28,26 @@ export function scanOrphanTaskIds(db: DatabaseSync): string[] {
 export type OrphanClassification =
   | { kind: "resume"; versionHash: string; resumeFrom: string }
   | { kind: "terminal"; versionHash: string }
-  | { kind: "unresolvable"; reason: "no_attempts" | "ir_not_found" };
+  | { kind: "unresolvable"; reason: "no_attempts" | "ir_not_found" }
+  | { kind: "secret_pending"; versionHash: string };
 
 export function classifyOrphan(
   db: DatabaseSync,
   taskId: string,
 ): OrphanClassification {
+  // F17: unresolved secret_gate_queue rows mark this task as paused
+  // waiting for secrets. Reconciler must NOT auto-resume; the task
+  // resumes only when provide_task_secrets is called.
+  const hasPendingSecret = db.prepare(
+    `SELECT 1 FROM secret_gate_queue WHERE task_id = ? AND resolved_at IS NULL LIMIT 1`,
+  ).get(taskId) !== undefined;
+  if (hasPendingSecret) {
+    const latest = db.prepare(
+      `SELECT version_hash FROM stage_attempts WHERE task_id = ? ORDER BY started_at DESC LIMIT 1`,
+    ).get(taskId) as { version_hash: string } | undefined;
+    return { kind: "secret_pending", versionHash: latest?.version_hash ?? "-" };
+  }
+
   const latest = db.prepare(
     `SELECT version_hash, started_at FROM stage_attempts
       WHERE task_id = ?
@@ -142,6 +156,12 @@ export async function bootResumability(
       // P3.6: plaintext env tokens must not outlive the task lifetime.
       deleteTaskEnvValues(db, taskId);
       terminalRecovered += 1;
+      continue;
+    }
+    if (cls.kind === "secret_pending") {
+      // F17: don't auto-resume; don't write task_finals (the task is paused).
+      // The task remains in this state until provide_task_secrets resolves
+      // its secret_gate_queue row, which itself triggers retryTaskFromStage.
       continue;
     }
     if (cls.kind === "unresolvable") {
