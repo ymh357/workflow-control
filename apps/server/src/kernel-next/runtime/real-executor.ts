@@ -185,6 +185,31 @@ export function parseNumTurnsFromStream(raw: string | null | undefined): number 
   return total;
 }
 
+/**
+ * Promise-based delay that resolves early when `signal` aborts. Used inside
+ * the MCP_STARTUP_RETRY backoff so cancel_task / migrate's INTERRUPT can
+ * cut a retry-pending attempt short instead of waiting up to 10s for the
+ * scheduled timer to elapse. Resolves silently in both cases — the caller
+ * is expected to re-check signal.aborted and act accordingly.
+ */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 const DEFAULT_MODEL = "claude-haiku-4-5";
 const DEFAULT_MAX_TURNS = 10;
 const DEFAULT_MAX_BUDGET_USD = 0.2;
@@ -253,6 +278,17 @@ export class RealStageExecutor implements StageExecutor {
     const totalAttempts = this.maxRetries + 1;
     let mcpStartupRetriesLeft = MCP_STARTUP_RETRY_BUDGET;
     for (let i = 0; i < totalAttempts; i++) {
+      // A2 (2026-04-27): if the parent signal aborted BETWEEN attempts —
+      // e.g. cancel_task fired during an MCP_STARTUP_RETRY backoff — stop
+      // instead of starting another doAttempt. We only short-circuit when
+      // a prior attempt already ran (lastResult set); a pre-aborted signal
+      // on the first iteration still falls through to doAttempt so the
+      // AgentMachine's §4.2 INTERRUPT-from-starting path produces the
+      // canonical 'interrupted' diagnostic that callers (tests, runner)
+      // already depend on.
+      if (args.signal?.aborted && lastResult) {
+        return lastResult;
+      }
       const isFinalAttempt = i === totalAttempts - 1 && mcpStartupRetriesLeft === 0;
       const result = await this.doAttempt(args, stage, isFinalAttempt);
       lastResult = result;
@@ -272,7 +308,11 @@ export class RealStageExecutor implements StageExecutor {
           MCP_STARTUP_RETRY_BUDGET - mcpStartupRetriesLeft === 1 ? 2000
           : MCP_STARTUP_RETRY_BUDGET - mcpStartupRetriesLeft === 2 ? 5000
           : 10000;
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        // A2 (2026-04-27): backoff is abortable. If cancel_task fires
+        // mid-sleep, resolve early so the loop's signal check (above)
+        // exits the retry budget instead of granting another attempt
+        // after the user already asked for cancellation.
+        await abortableDelay(backoffMs, args.signal);
       }
     }
     // If we got here, the last attempt failed. lastResult is always set.
