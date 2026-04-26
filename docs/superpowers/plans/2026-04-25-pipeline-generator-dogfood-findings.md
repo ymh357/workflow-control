@@ -661,3 +661,33 @@ Round 7 measured 4117 input / 76879 output tokens at $1.625 across 9 stages incl
 
 This is the empirical baseline against which any future single-session experiment must beat to justify the loss of mode orthogonality.
 
+## Finding 22 — `MCP_STARTUP_FAILED` is treated as stage error but the SDK subprocess keeps running, corrupting attempt state (OPEN, blocking)
+
+Round 9 (0G bridges dogfood) hit this immediately. Sequence:
+
+1. `collectPrimarySources` started; `npx -y @modelcontextprotocol/server-github` was likely still spinning up when the SDK fired its `system.init` message.
+2. `real-executor.ts:566+` validation found github MCP not in advertised tools → threw `MCP_STARTUP_FAILED`.
+3. Runner marked the attempt `status='error'` (15s after start).
+4. **The SDK subprocess kept running** — `npx` eventually finished, github MCP came up, the agent did the work and called `write_port`. The `port_values` rows landed at `started_at + 142s`, long after the attempt was already terminal.
+5. Reconciler / runner saw the error attempt and triggered new attempts for `domainResearch`, `onChainVerification`, `atomAnalysis`, `produceDeliverable` — all of which started and failed similarly. Cascade fail.
+
+Root cause has multiple facets:
+
+- **MCP_STARTUP_FAILED is racy**: SDK fires `system.init` before MCP subprocesses are guaranteed ready. The validation in `real-executor.ts:582-614` is correct in intent but the race window is real for cold-start `npx` packages.
+- **Runner doesn't kill the SDK subprocess on stage termination**: a 15-second timeout-equivalent termination leaves the SDK running for minutes more, confusing port_values writes against an already-terminal attempt_id. `cancel_task` similarly doesn't kill child SDK processes.
+- **Reconciler advances past the broken stage**: when `collectPrimarySources` is `status=error`, the reconciler should pick it as `firstPending`. Empirically it picked `domainResearch` instead. This may be a separate bug or a consequence of the cascade — needs deeper investigation. (Possibly: `successStages` query result is incomplete when port_values exist for the stage even though stage_attempts says error?)
+
+### What this means for dogfood
+
+Round 9 (0G bridges) is **not completable on the current kernel** until F22 is fixed. The attempt-status / port-values inconsistency makes any retry-from-error path produce garbage outputs (downstream stages read partial collectPrimarySources outputs while believing the upstream had succeeded vs failed).
+
+### Suggested fix sketch
+
+1. **Treat MCP_STARTUP_FAILED as transient and force a stage-level retry** even when `maxRetries=0`. The internal retry path (`real-executor.ts:241+ doAttempt loop`) should retry on this specific error a fixed number of times (3?) with exponential backoff.
+2. **Kill SDK subprocess on attempt termination**: real-executor must AbortController-cancel the active SDK query whenever it calls `finishAttempt(attemptId, "error" | "secret_pending" | "interrupted")`. This eliminates the orphaned-SDK-late-writes bug.
+3. **Validate `port_values.attempt_id` references a non-error stage_attempt** at write time: if the attempt is already terminal, drop the write rather than corrupting downstream views. (Defensive — fix #2 should prevent this from arising.)
+
+### Out-of-scope for this finding
+
+The 0G research itself was never completed; no deliverable was produced. Round 7 (Arbitrum) and Round 8 (Solana) are the only successful end-to-end web3-research dogfoods on this kernel.
+
