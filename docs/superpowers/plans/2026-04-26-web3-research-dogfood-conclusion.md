@@ -180,3 +180,55 @@ The web3-research pipeline itself (versionHash `e6f281e9...`) is validated struc
 - **DB**: `/tmp/workflow-control-data/kernel-next.db`
 - **Server log**: `/tmp/wfctl-server.log`
 - **MCP endpoint**: `POST http://localhost:3001/api/mcp` (server still running unless reboot)
+
+---
+
+## 12. Round 7 (2026-04-26 later same day) — F17 lands, dogfood unblocks, deliverable produced
+
+After F17 (secret-gate) was implemented and merged (commits `f44e0ea`..`c9fa070` + bug fix `19b62bf`), the long-paused round-6 task was revived without server restart:
+
+```
+provide_task_secrets({ taskId: "web3-research-1777151032404-d7cd3c29", secrets: { GITHUB_TOKEN: "..." } })
+→ { ok: true, resolved: true }
+```
+
+Task status flipped from `secret_pending` → `running`, executed `collectPrimarySources` → `domainResearch` → `onChainVerification` → `atomAnalysis` → `produceDeliverable` → `adversarialFactCheck`, terminated `completed`.
+
+### Empirical numbers
+
+| Metric | Value |
+|---|---|
+| New stages executed | 6 (round 6 stopped at stage 4) |
+| Net cost from resume to completion | ~$0.92 (round 6 was $0.70; final $1.625) |
+| Net token usage (in/out) | ~4117 input / ~76879 output |
+| New attempts created | 4 (46 → 50) |
+| Wall time from `provide_task_secrets` to `completed` | ~10 minutes |
+| Final deliverable | 22397 chars / 728 lines / 38KB Chinese markdown |
+
+### Findings from round 7
+
+**F18 — `provideTaskSecrets` only resolved ONE row (the latest by `created_at`).** When server restarted while paused, orphan-reconciler resumed and each resume attempt wrote a new `secret_gate_queue` row. Pre-fix, `provideTaskSecrets` only updated the latest; older rows stayed unresolved; `getTaskStatus` kept returning `secret_pending` even after secrets supplied. Fixed in commit `19b62bf`: load ALL unresolved rows, batch-resolve every row whose `required_keys` are now fully in `task_env_values`, dispatch one `retryTaskFromStage` per distinct unblocked stage. `listPendingSecretGates` additionally filters out fully-satisfied rows as a defensive guard. Two new tests cover this.
+
+**F19 — `runner-fanout.ts` does not handle `secret_pending` from per-element `executor.executeStage` calls.** Per-element results have shape `{ status: "success" | "error" | "secret_pending" }`. The fanout orchestrator (`runner-fanout.ts:194`) only branches on `error`, treating `secret_pending` as success and proceeding to read `silentRuntime.readWritesForAttempt(result.attemptId)` which returns nothing. Subsequent aggregation gets `undefined` per port. Latent — web3-research has no fanout stages; would surface on the first fanout pipeline whose elements declare envKeys. Fix is the next item in this session.
+
+**F20 — Adversarial fact-check stage returned `confidence: high` without flagging temporal inconsistencies.** The deliverable references "Kelp DAO 资产冻结事件 (2026年5月)" — this is a **future event** at the time of writing (2026-04-26). Either the model hallucinated, or it pulled a forward-looking analysis piece without flagging the date. The adversarial pass cited 4 independent sources but did not catch this. The fact-check prompt may need an explicit "anything dated AFTER `<reportDate>` must be flagged as projection, not fact" rule. Doesn't invalidate the report — most claims are well-grounded — but the confidence rating is misleading.
+
+**F21 — Token-budget asymmetry: input 4117, output 76879 (~19:1 output:input).** Healthy ratio for a research-and-write pipeline (most cost is in agent generation, not prompt overhead). Confirms multi-session pipeline's cost profile is dominated by output volume, not by reprompt waste. Comparable to round-4's $3.55 generator (no MCP, 6 stages); web3-research at $1.625 for 9 stages including MCP-driven stages is materially cheaper, suggesting pipeline-generator's structural-data-flow approach pays off.
+
+### What's still open
+
+1. **F19 fanout secret_pending handling** — fix in this session (next).
+2. **F20 adversarial fact-check temporal-anchor rule** — modify pipeline-generator's prompt template to instruct fact-check stages to verify dates against `reportDate`. Alternatively, add to web3-research's adversarialFactCheck prompt directly.
+3. **Hallucination-detection auxiliary pipeline** — not on roadmap, but the Kelp DAO miss is the kind of error a second-opinion auditor pipeline could catch. Consider after dogfood matures.
+
+### Status of the original errored task
+
+`web3-research-1777151032404-d7cd3c29` is now `completed`. `task_finals` row written, `total_cost_usd = 1.625`, `final_state = completed`, all `secret_gate_queue` rows resolved.
+
+The deliverable is in DB at `port_values` row `(stage='adversarialFactCheck', port='finalDeliverable')`. Read via:
+
+```
+read_port({ taskId: "web3-research-1777151032404-d7cd3c29", stage: "adversarialFactCheck", port: "finalDeliverable" })
+```
+
+Or from this session's transient copy at `/tmp/web3-final.md`.
