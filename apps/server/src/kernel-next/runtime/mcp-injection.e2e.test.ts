@@ -17,7 +17,7 @@ import { initKernelNextSchema } from "../ir/sql.js";
 import { KernelService } from "../mcp/kernel.js";
 import { startPipelineRun } from "./start-pipeline-run.js";
 import { loadTaskEnvValues } from "./task-env-values.js";
-import { expandMcpServers, McpEnvExpansionError } from "./mcp-servers-expander.js";
+import { expandMcpServers } from "./mcp-servers-expander.js";
 import { buildSdkBaseOptions } from "./real-executor-sdk-options.js";
 import type { AgentStage, McpServerDecl, PipelineIR } from "../ir/schema.js";
 import type { KernelNextBroadcaster } from "../sse/broadcaster.js";
@@ -95,7 +95,10 @@ describe("D1 external MCP injection: end-to-end", () => {
     // Expander produces the expected SDK-shaped record
     const agentStage = ir.stages[0] as AgentStage;
     // Pass empty processEnv to prove the value really came from taskEnv.
-    const expanded = expandMcpServers(agentStage.config.mcpServers!, loaded, {});
+    const expandResult = expandMcpServers(agentStage.config.mcpServers!, loaded, {});
+    expect(expandResult.ok).toBe(true);
+    if (!expandResult.ok) throw new Error("expansion failed unexpectedly");
+    const expanded = expandResult.servers;
     expect(expanded.github).toEqual({
       type: "stdio",
       command: "npx",
@@ -123,7 +126,7 @@ describe("D1 external MCP injection: end-to-end", () => {
     expect(opts.mcpServers!.github).toEqual(expanded.github);
   });
 
-  it("missing envValue causes expansion to throw McpEnvExpansionError with MCP_ENV_MISSING semantics", async () => {
+  it("missing envValue causes expansion to return ok:false with MCP_ENV_MISSING semantics", async () => {
     const decls: McpServerDecl[] = [
       {
         name: "github",
@@ -135,18 +138,15 @@ describe("D1 external MCP injection: end-to-end", () => {
     ];
 
     // Empty taskEnv + empty processEnv -> expansion must fail
-    expect(() => expandMcpServers(decls, {}, {})).toThrow(McpEnvExpansionError);
-
-    try {
-      expandMcpServers(decls, {}, {});
-      throw new Error("should have thrown");
-    } catch (e) {
-      if (!(e instanceof McpEnvExpansionError)) throw e;
-      expect(e.server).toBe("github");
-      expect(e.fieldKey).toBe("env.GITHUB_TOKEN");
-      expect(e.variable).toBe("GITHUB_TOKEN");
-      expect(e.message).toContain("GITHUB_TOKEN");
-    }
+    const r = expandMcpServers(decls, {}, {});
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.missingKeys).toEqual(["GITHUB_TOKEN"]);
+    expect(r.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ server: "github", fieldKey: "env.GITHUB_TOKEN", key: "GITHUB_TOKEN" }),
+      ]),
+    );
   });
 
   it("stage without mcpServers skips expansion entirely (backwards compat)", async () => {
@@ -207,7 +207,10 @@ describe("D1 external MCP injection: end-to-end", () => {
         envKeys: ["NT"],
       },
     ];
-    const expanded = expandMcpServers(decls, { GH: "gha", NT: "nta" }, {});
+    const expandResult = expandMcpServers(decls, { GH: "gha", NT: "nta" }, {});
+    expect(expandResult.ok).toBe(true);
+    if (!expandResult.ok) throw new Error("expansion failed unexpectedly");
+    const expanded = expandResult.servers;
     expect(Object.keys(expanded).sort()).toEqual(["github", "notion"]);
     expect(expanded.github.env!.GITHUB_TOKEN).toBe("gha");
     expect(expanded.notion.env!.NOTION_TOKEN).toBe("nta");

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { expandMcpServers, McpEnvExpansionError } from "./mcp-servers-expander.js";
+import { expandMcpServers } from "./mcp-servers-expander.js";
 import type { McpServerDecl } from "../ir/schema.js";
 
 describe("expandMcpServers", () => {
@@ -11,7 +11,10 @@ describe("expandMcpServers", () => {
       env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" },
       envKeys: ["GITHUB_TOKEN"],
     }];
-    const out = expandMcpServers(decls, { GITHUB_TOKEN: "ghp_x" }, {});
+    const r = expandMcpServers(decls, { GITHUB_TOKEN: "ghp_x" }, {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const out = r.servers;
     expect(out.github).toEqual({
       type: "stdio",
       command: "npx",
@@ -24,7 +27,10 @@ describe("expandMcpServers", () => {
     const decls: McpServerDecl[] = [{
       name: "n", command: "c", args: [], env: { K: "${X}" }, envKeys: ["X"],
     }];
-    const out = expandMcpServers(decls, { X: "task" }, { X: "proc" });
+    const r = expandMcpServers(decls, { X: "task" }, { X: "proc" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const out = r.servers;
     expect(out.n.env!.K).toBe("task");
   });
 
@@ -32,31 +38,36 @@ describe("expandMcpServers", () => {
     const decls: McpServerDecl[] = [{
       name: "n", command: "c", args: [], env: { K: "${X}" }, envKeys: ["X"],
     }];
-    const out = expandMcpServers(decls, {}, { X: "proc" });
+    const r = expandMcpServers(decls, {}, { X: "proc" });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const out = r.servers;
     expect(out.n.env!.K).toBe("proc");
   });
 
-  it("throws McpEnvExpansionError on missing variable", () => {
+  it("returns ok:false with detail on missing variable", () => {
     const decls: McpServerDecl[] = [{
       name: "n", command: "c", args: [], env: { K: "${MISSING}" }, envKeys: ["MISSING"],
     }];
-    expect(() => expandMcpServers(decls, {}, {})).toThrow(McpEnvExpansionError);
-    try {
-      expandMcpServers(decls, {}, {});
-      throw new Error("should have thrown");
-    } catch (e) {
-      if (!(e instanceof McpEnvExpansionError)) throw e;
-      expect(e.server).toBe("n");
-      expect(e.fieldKey).toBe("env.K");
-      expect(e.variable).toBe("MISSING");
-    }
+    const r = expandMcpServers(decls, {}, {});
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.missingKeys.length).toBeGreaterThan(0);
+    expect(r.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ server: "n", fieldKey: "env.K", key: "MISSING" }),
+      ]),
+    );
   });
 
   it("handles env-less declaration", () => {
     const decls: McpServerDecl[] = [{
       name: "context7", command: "npx", args: ["-y", "@upstash/context7-mcp@latest"], envKeys: [],
     }];
-    const out = expandMcpServers(decls, {}, {});
+    const r = expandMcpServers(decls, {}, {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const out = r.servers;
     expect(out.context7).toEqual({
       type: "stdio", command: "npx", args: ["-y", "@upstash/context7-mcp@latest"],
     });
@@ -67,7 +78,10 @@ describe("expandMcpServers", () => {
     const decls: McpServerDecl[] = [{
       name: "n", command: "c", args: [], env: { K: "plain-value" }, envKeys: [],
     }];
-    const out = expandMcpServers(decls, {}, {});
+    const r = expandMcpServers(decls, {}, {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const out = r.servers;
     expect(out.n.env!.K).toBe("plain-value");
   });
 
@@ -75,22 +89,22 @@ describe("expandMcpServers", () => {
     const decls: McpServerDecl[] = [{
       name: "n", command: "${CMD}", args: ["${A}"], envKeys: ["CMD", "A"],
     }];
-    const out = expandMcpServers(decls, { CMD: "npx", A: "arg1" }, {});
+    const r = expandMcpServers(decls, { CMD: "npx", A: "arg1" }, {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const out = r.servers;
     expect(out.n.command).toBe("npx");
     expect(out.n.args).toEqual(["arg1"]);
   });
 
-  it("throws with fieldKey args[0] when args-level var missing", () => {
+  it("returns ok:false with fieldKey args[0] when args-level var missing", () => {
     const decls: McpServerDecl[] = [{
       name: "n", command: "c", args: ["${X}"], envKeys: [],
     }];
-    try {
-      expandMcpServers(decls, {}, {});
-      throw new Error("should have thrown");
-    } catch (e) {
-      if (!(e instanceof McpEnvExpansionError)) throw e;
-      expect(e.fieldKey).toBe("args[0]");
-    }
+    const r = expandMcpServers(decls, {}, {});
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.details[0]!.fieldKey).toBe("args[0]");
   });
 
   it("handles multiple servers independently", () => {
@@ -98,7 +112,10 @@ describe("expandMcpServers", () => {
       { name: "a", command: "c", args: [], env: { K: "${X}" }, envKeys: ["X"] },
       { name: "b", command: "c", args: [], env: { K: "${Y}" }, envKeys: ["Y"] },
     ];
-    const out = expandMcpServers(decls, { X: "1", Y: "2" }, {});
+    const r = expandMcpServers(decls, { X: "1", Y: "2" }, {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const out = r.servers;
     expect(out.a.env!.K).toBe("1");
     expect(out.b.env!.K).toBe("2");
   });
@@ -107,7 +124,50 @@ describe("expandMcpServers", () => {
     const decls: McpServerDecl[] = [{
       name: "n", command: "c", args: [], env: { K: "${A}" }, envKeys: ["A"],
     }];
-    const out = expandMcpServers(decls, { A: "${B}", B: "should-not-see" }, {});
+    const r = expandMcpServers(decls, { A: "${B}", B: "should-not-see" }, {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const out = r.servers;
     expect(out.n.env!.K).toBe("${B}");
+  });
+});
+
+describe("expandMcpServers (batched missing-key enumeration)", () => {
+  it("returns ok:true with servers when all variables resolved", () => {
+    const decls = [
+      { name: "github", command: "npx", args: ["-y", "@modelcontextprotocol/server-github"], envKeys: ["GITHUB_TOKEN"], env: { GITHUB_TOKEN: "${GITHUB_TOKEN}" } },
+    ];
+    const r = expandMcpServers(decls, { GITHUB_TOKEN: "ghp_x" }, {});
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.servers.github!.env!.GITHUB_TOKEN).toBe("ghp_x");
+  });
+
+  it("returns ok:false with all missing keys, deduplicated and sorted", () => {
+    const decls = [
+      { name: "a", command: "npx", args: ["${KEY_B}"], envKeys: ["KEY_B"], env: { X: "${KEY_A}" } },
+      { name: "b", command: "npx", args: ["${KEY_A}"], envKeys: ["KEY_A"] },
+    ];
+    const r = expandMcpServers(decls, {}, {});
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.missingKeys).toEqual(["KEY_A", "KEY_B"]); // sorted, deduped
+    expect(r.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ server: "a", fieldKey: "args[0]", key: "KEY_B" }),
+        expect.objectContaining({ server: "a", fieldKey: "env.X", key: "KEY_A" }),
+        expect.objectContaining({ server: "b", fieldKey: "args[0]", key: "KEY_A" }),
+      ]),
+    );
+  });
+
+  it("returns ok:false with single key when only one missing", () => {
+    const decls = [
+      { name: "x", command: "${MISSING}", args: [], envKeys: ["MISSING"] },
+    ];
+    const r = expandMcpServers(decls, {}, {});
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.missingKeys).toEqual(["MISSING"]);
   });
 });
