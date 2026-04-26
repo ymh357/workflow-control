@@ -185,6 +185,76 @@ describe("classifyOrphan", () => {
       expect(cls.resumeFrom).toBe("next");
     }
   });
+
+  // Invariant lock-in (2026-04-27 handoff §2.1): if a stage_attempt is
+  // status='error' AND port_values rows exist tied to that attempt
+  // (e.g. a leaked SDK subprocess wrote outputs after the attempt was
+  // marked terminal), classifyOrphan must STILL classify the task as
+  // resume from THAT stage, never advance past it. F22 prevents the
+  // race in practice by aborting the SDK on error, but the invariant
+  // matters because the reconciler's correctness must not depend on
+  // executor-level discipline.
+  it("resumes from error stage even when port_values rows exist for that attempt", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const loaded = loadBuiltinPipelineIR("smoke-test");
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const sub = await svc.submit(loaded.ir, { prompts: loaded.prompts });
+    if (!sub.ok) throw new Error("seed failed");
+    const vh = sub.versionHash;
+    const now = Date.now();
+    // greet ended in error; echoBack never started.
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, version_hash, kind, status, started_at)
+       VALUES ('a1','t1','greet',0,?,'regular','error',?)`,
+    ).run(vh, now);
+    // Simulate the leaked-SDK race: port_values rows tied to the error
+    // attempt, written AFTER the row's status was set to 'error'.
+    db.prepare(
+      `INSERT INTO port_values (value_id, attempt_id, stage_name, port_name, direction, value_json, written_at)
+       VALUES ('pv1','a1','greet','greeting','out', ?, ?)`,
+    ).run(JSON.stringify("hello"), now + 100_000);
+
+    const cls = classifyOrphan(db, "t1");
+    expect(cls.kind).toBe("resume");
+    if (cls.kind === "resume") {
+      expect(cls.resumeFrom).toBe("greet");
+    }
+  });
+
+  // Same invariant but with a downstream stage having NO attempt yet —
+  // the canonical round-9-style failure mode. Without F22 the leaked
+  // writes happen on the upstream stage's attempt; the runner advanced
+  // past it because XState's parallel onDone fires when every region
+  // is in any final state (including `error`). The reconciler is the
+  // safety net: it must surface the un-succeeded stage as the resume
+  // pointer regardless of which downstream attempts also exist.
+  it("resumes from error stage even with downstream attempts present", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const loaded = loadBuiltinPipelineIR("smoke-test");
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const sub = await svc.submit(loaded.ir, { prompts: loaded.prompts });
+    if (!sub.ok) throw new Error("seed failed");
+    const vh = sub.versionHash;
+    const now = Date.now();
+    // greet failed, echoBack also has an attempt (the round-9 pattern).
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, version_hash, kind, status, started_at)
+       VALUES ('a1','t1','greet',0,?,'regular','error',?)`,
+    ).run(vh, now);
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, version_hash, kind, status, started_at)
+       VALUES ('a2','t1','echoBack',0,?,'regular','error',?)`,
+    ).run(vh, now + 200_000);
+
+    const cls = classifyOrphan(db, "t1");
+    expect(cls.kind).toBe("resume");
+    if (cls.kind === "resume") {
+      // Topological order puts greet before echoBack; greet is firstPending.
+      expect(cls.resumeFrom).toBe("greet");
+    }
+  });
 });
 
 describe("lookupResumeSessionId", () => {
