@@ -107,6 +107,42 @@ class TaskRegistry {
   __clearForTest(): void {
     this.byTaskId.clear();
   }
+
+  /**
+   * 2026-04-27 A3 — graceful-shutdown helper. Dispatches INTERRUPT to every
+   * registered task's machine then awaits termination of each up to a
+   * shared deadline. Returns the count of tasks that terminated within
+   * the deadline (vs were still running when the timeout elapsed).
+   *
+   * Caller (index.ts gracefulExit) uses this BEFORE writing
+   * stage_attempts.status='superseded', so live runners get a chance to
+   * close cleanly (write task_finals, kill SDK subprocesses via the F22
+   * abortController) instead of being left as zombies. The DB-level
+   * reconcile becomes a safety net for the timeout-exceeded slice.
+   */
+  async interruptAll(deadlineMs: number): Promise<{ total: number; terminated: number }> {
+    const taskIds = Array.from(this.byTaskId.keys());
+    if (taskIds.length === 0) return { total: 0, terminated: 0 };
+    const deadline = Date.now() + deadlineMs;
+    for (const taskId of taskIds) {
+      const dispatcher = this.byTaskId.get(taskId)?.dispatcher;
+      if (!dispatcher) continue;
+      try {
+        dispatcher.send({ type: "INTERRUPT" } as never);
+      } catch {
+        // Dispatcher failure must not block the rest of the shutdown.
+      }
+    }
+    let terminated = 0;
+    await Promise.all(
+      taskIds.map(async (taskId) => {
+        const remaining = Math.max(0, deadline - Date.now());
+        const reason = await this.awaitTermination(taskId, remaining);
+        if (reason.kind !== "never_started") terminated += 1;
+      }),
+    );
+    return { total: taskIds.length, terminated };
+  }
 }
 
 export const taskRegistry = new TaskRegistry();

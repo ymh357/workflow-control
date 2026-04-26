@@ -92,15 +92,35 @@ const lockHandle = lockResult.release;
 process.on("exit", () => { releaseServerLock(lockHandle); });
 
 // --- Graceful shutdown handler (SIGTERM/SIGINT) ---
-// Transitions every running stage_attempt belonging to an unfinalized
-// task to 'superseded' + 'interrupted' so the next boot's orphan
-// reconciler can pick them up cleanly. Does NOT write task_finals —
-// the task is not terminal, just mid-flight between server lifetimes.
+// Sequence (2026-04-27 A3 — no longer a simple DB UPDATE):
+//   1. Dispatch INTERRUPT to every live runner via taskRegistry.interruptAll
+//      so each one runs the F22 abort path (kills its SDK subprocess) and
+//      writes task_finals on its own.
+//   2. Await termination per task with a shared deadline.
+//   3. Run reconcileRunningAttempts as a safety net: any task that didn't
+//      terminate inside the deadline still has its stage_attempts flipped
+//      to 'superseded' + agent_execution_details.termination_reason set
+//      to 'interrupted', so the next boot's orphan reconciler can pick it
+//      up cleanly.
+//   4. Close HTTP server + DBs.
+//   5. process.exit(0).
+//
+// This also collapses the previously-duplicated SIGTERM/SIGINT handlers
+// (one for reconcile, another for HTTP/DB cleanup, both racing process.exit).
+const SHUTDOWN_DEADLINE_MS = 8_000;
 let shuttingDown = false;
-async function gracefulExit(signal: NodeJS.Signals): Promise<void> {
+async function gracefulExit(signal: NodeJS.Signals | "manual"): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
-  logger.info({ signal }, "graceful shutdown: reconciling in-flight attempts");
+  const { taskRegistry } = await import("./kernel-next/runtime/task-registry.js");
+  const live = taskRegistry.size();
+  logger.info({ signal, live }, "graceful shutdown: dispatching INTERRUPT to live runners");
+  try {
+    const result = await taskRegistry.interruptAll(SHUTDOWN_DEADLINE_MS);
+    logger.info({ signal, ...result }, "graceful shutdown: runners settled");
+  } catch (err) {
+    logger.error({ err }, "graceful shutdown: interruptAll failed");
+  }
   try {
     const db = getKernelNextDb();
     const taskIds = (db.prepare(
@@ -108,10 +128,23 @@ async function gracefulExit(signal: NodeJS.Signals): Promise<void> {
         WHERE status='running' AND task_id NOT IN (SELECT task_id FROM task_finals)`,
     ).all() as Array<{ task_id: string }>).map((r) => r.task_id);
     const n = reconcileRunningAttempts(db, taskIds);
-    logger.info({ signal, reconciled: n }, "graceful shutdown: complete");
+    if (n > 0) logger.warn({ signal, reconciled: n }, "graceful shutdown: DB safety-net flipped attempts to superseded");
   } catch (err) {
-    logger.error({ err }, "graceful shutdown: reconcile failed");
+    logger.error({ err }, "graceful shutdown: DB reconcile failed");
   }
+  // Stop accepting new HTTP requests + close DBs. Best-effort — any
+  // failure here is logged but does not block process.exit.
+  try { clearInterval(gateTimeoutTimer); } catch { /* best-effort */ }
+  try { server.close(); } catch { /* best-effort */ }
+  try {
+    const { closeDb } = await import("./lib/db.js");
+    closeDb();
+  } catch { /* best-effort */ }
+  try {
+    const { closeKernelNextDb } = await import("./lib/kernel-next-db.js");
+    closeKernelNextDb();
+  } catch { /* best-effort */ }
+  logger.info({ signal }, "graceful shutdown: complete");
   process.exit(0);
 }
 process.on("SIGTERM", () => { void gracefulExit("SIGTERM"); });
@@ -232,21 +265,7 @@ const port = Number(process.env.PORT ?? 3001);
 logger.info({ port }, "Server ready");
 
 const server = serve({ fetch: app.fetch, port });
-
-async function gracefulShutdown(signal: string): Promise<void> {
-  logger.info(`${signal} received — shutting down gracefully`);
-  try { clearInterval(gateTimeoutTimer); } catch { /* best-effort */ }
-  try { server.close(); } catch { /* best-effort */ }
-  try {
-    const { closeDb } = await import("./lib/db.js");
-    closeDb();
-  } catch { /* best-effort */ }
-  try {
-    const { closeKernelNextDb } = await import("./lib/kernel-next-db.js");
-    closeKernelNextDb();
-  } catch { /* best-effort */ }
-  process.exit(0);
-}
-
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+// SIGTERM/SIGINT handlers are already registered above (see gracefulExit).
+// HTTP/DB shutdown happens inside that handler; do not register a second
+// pair here — duplicate handlers race process.exit and can cause partial
+// shutdowns.

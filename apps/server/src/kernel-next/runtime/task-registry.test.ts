@@ -64,3 +64,54 @@ describe("taskRegistry — termination signal (Stage 5B)", () => {
     expect(taskRegistry.get("legacy")).toBeUndefined();
   });
 });
+
+describe("taskRegistry — interruptAll (2026-04-27 A3)", () => {
+  it("returns 0/0 when registry is empty", async () => {
+    const r = await taskRegistry.interruptAll(1000);
+    expect(r).toEqual({ total: 0, terminated: 0 });
+  });
+
+  it("dispatches INTERRUPT to every registered task", async () => {
+    const sent: Array<{ taskId: string; type: string }> = [];
+    const make = (id: string): EventDispatcher => ({
+      send: (ev) => sent.push({ taskId: id, type: (ev as { type: string }).type }),
+    });
+    taskRegistry.register("a", make("a"));
+    taskRegistry.register("b", make("b"));
+    // Resolve their terminations promptly so interruptAll doesn't sit on
+    // the deadline. In production the runner does this from its finally.
+    const finishAll = (): void => {
+      taskRegistry.signalTermination("a", { kind: "interrupted" });
+      taskRegistry.signalTermination("b", { kind: "interrupted" });
+    };
+    setTimeout(finishAll, 20);
+
+    const r = await taskRegistry.interruptAll(1000);
+    expect(r.total).toBe(2);
+    expect(r.terminated).toBe(2);
+    expect(sent.map((s) => s.taskId).sort()).toEqual(["a", "b"]);
+    expect(sent.every((s) => s.type === "INTERRUPT")).toBe(true);
+  });
+
+  it("times out gracefully when a runner ignores INTERRUPT", async () => {
+    taskRegistry.register("zombie", noop);
+    const start = Date.now();
+    const r = await taskRegistry.interruptAll(80);
+    const elapsed = Date.now() - start;
+    expect(r.total).toBe(1);
+    // The unresponsive task counts as not-terminated; safety net (DB
+    // reconcile) handles its stage_attempts at the index.ts level.
+    expect(r.terminated).toBe(0);
+    expect(elapsed).toBeGreaterThanOrEqual(70);
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("counts terminations even when only some runners settle in time", async () => {
+    taskRegistry.register("fast", noop);
+    taskRegistry.register("slow", noop);
+    setTimeout(() => taskRegistry.signalTermination("fast", { kind: "natural" }), 20);
+    const r = await taskRegistry.interruptAll(120);
+    expect(r.total).toBe(2);
+    expect(r.terminated).toBe(1);
+  });
+});
