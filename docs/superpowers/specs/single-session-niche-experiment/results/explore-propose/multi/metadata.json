@@ -1,0 +1,19 @@
+{
+  "scenario": "explore-propose",
+  "variant": "multi",
+  "wallClockMs": 156717,
+  "wallClockMsExternal": 150400,
+  "stageBreakdown": {
+    "exploreCodebase": { "durationMs": 121255, "costUsd": 0.24228990000000003, "inputTokens": 136, "outputTokens": 7797, "model": "claude-haiku-4-5", "toolCalls": 17 },
+    "proposeRefactor":  { "durationMs": 39716,  "costUsd": 0.0415532,         "inputTokens": 27,  "outputTokens": 3232, "model": "claude-haiku-4-5", "toolCalls": 3 }
+  },
+  "totalCostUsd": 0.2838431,
+  "totalInputTokens": 163,
+  "totalOutputTokens": 11029,
+  "tokenSplitNote": "kernel-next records cumulative SDK input/output as last-message tokens; high output, near-zero cumulative input is a reporting quirk of the Claude SDK's per-attempt token accounting (system+conversation cache is internal). Costs are billed normally; total is authoritative.",
+  "model": "claude-haiku-4-5 (workflow run with explicit model override)",
+  "taskId": "niche-exp-explore-propose-multi-1777240159689-06c659c9",
+  "versionHash": "1db8c5014c06b26bc9f7ca7a5f7a887bc63f6cfb361ad97410f699cd1f223e69",
+  "ranAt": "2026-04-26T21:49:19Z",
+  "endedAt": "2026-04-26T21:51:50Z"
+}

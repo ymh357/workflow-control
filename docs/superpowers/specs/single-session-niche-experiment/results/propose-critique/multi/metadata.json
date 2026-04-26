@@ -1,0 +1,18 @@
+{
+  "scenario": "propose-critique",
+  "variant": "multi",
+  "wallClockMs": 175400,
+  "stageBreakdown": {
+    "proposeAPIDesign":  { "durationMs": 107890, "costUsd": 0.08939725,         "inputTokens": 45, "outputTokens": 9481, "model": "claude-haiku-4-5", "toolCalls": 4, "sessionId": "13d7c755-20e4-49bc-bf53-5061b813b1c9" },
+    "critiqueAPIDesign": { "durationMs": 77664,  "costUsd": 0.06638664999999999, "inputTokens": 27, "outputTokens": 6420, "model": "claude-haiku-4-5", "toolCalls": 5, "sessionId": "d5de47b3-72da-4f7c-8496-da85d4d8cb90" }
+  },
+  "twoSessionIds": true,
+  "totalCostUsd": 0.1557839,
+  "totalInputTokens": 72,
+  "totalOutputTokens": 15901,
+  "model": "claude-haiku-4-5",
+  "taskId": "niche-exp-propose-critique-multi-1777241002566-62858167",
+  "versionHash": "8f63632e4612639f596aea1c30a8a92988b4a82e52a063042015187256d80683",
+  "ranAt": "2026-04-26T22:03:22Z",
+  "endedAt": "2026-04-26T22:06:18Z"
+}

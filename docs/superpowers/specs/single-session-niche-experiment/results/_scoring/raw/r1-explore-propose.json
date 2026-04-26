@@ -1,0 +1,39 @@
+{
+  "reviewer": "R1-explore-propose",
+  "model": "sonnet",
+  "scores": {
+    "output_a": {
+      "brief":            { "score":  9, "reason": "All five required sections present and non-trivial; 'Files Explicitly NOT Touched' lists specific files with reasons, open questions are substantive — minor deduction for 'executor.ts' not-touched reason being thin." },
+      "specificity":      { "score":  9, "reason": "Cites real function names (abortableDelay line 195, pumpSdkStream, queryFn, deltaThrottler, capturedSessionId), specific line ranges, names the F22 invariant; references the 5+ nested scope problem concretely." },
+      "coherence":        { "score":  9, "reason": "Observations in Phase 1 map cleanly to the proposal in Phase 2; the decision to not touch test files follows logically from the stated queryFn injection pattern." },
+      "a1_filesRuledOut":  { "score":  9, "reason": "Four specific files ruled out with concrete reasons: executor.ts (interface invisible to callers), test files (queryFn injection unchanged), port-runtime.ts (pure computation role), helper module trio with honest TBD caveat." },
+      "a2_couplingGrounding":{ "score": 9, "reason": "Risk section explicitly names F22 abort semantics and the finally block at lines 779-796 as critical coupling, notes that cleanup order must be preserved — risks grounded in observed code structure." },
+      "a3_antiHallucination":{ "score":10, "reason": "All cited file paths exist; function names pumpSdkStream, abortableDelay, deltaThrottler, capturedSessionId, MCP_STARTUP_RETRY_BUDGET, queryFn, RealStageExecutor all verified present in real-executor.ts." },
+      "total":   55,
+      "attribution": 2,
+      "attributionReason": "The depth of Phase 1 observations (13+ nesting levels, 7 AbortController locations, specific line numbers for each lifecycle element) reads like the proposer directly 'saw' the code during exploration — a typed-port summary would not preserve that granularity."
+    },
+    "output_b": {
+      "brief":            { "score":  8, "reason": "All five required sections present; 'Files Explicitly NOT Touched' is a proper list with reasons, open questions are substantive — deducted one point because the table format adds entries listed as 'no changes' which blurs touched/not-touched boundary." },
+      "specificity":      { "score":  7, "reason": "Cites cleanup order concretely, the 5 writer.close() exit paths, schema validation at lines 823-865, but uses wrong function name for stream pump and sdk-options — reducing confidence in grounding." },
+      "coherence":        { "score":  8, "reason": "Risk section follows from 'brittle cleanup order' observation, open questions well-scoped; only mild incoherence is listing 'no changes' files in the touched table." },
+      "a1_filesRuledOut":  { "score":  8, "reason": "Nine files explicitly ruled out with specific reasons tied to their roles (graceful-shutdown is process-level, rate-limit-backoff is retry utility, real-executor-prompt-builder is upstream of lifecycle); solid reasoning per file." },
+      "a2_couplingGrounding":{ "score": 8, "reason": "Identifies cleanup ordering dependency and 5 writer.close() call sites with different terminationReason parameters as concrete coupling hazards, calls out schema validation path at lines 823-865 as double-close risk." },
+      "a3_antiHallucination":{ "score": 4, "reason": "Two fabrications: 'startStreamPump()' (actual export is pumpSdkStream) and 'getRealExecutorSdkOptions()' (actual export is buildSdkBaseOptions); each deducted 3 points from 10." },
+      "total":   43,
+      "attribution": -1,
+      "attributionReason": "The clean section structure (summary, table, ruled-out list, risk, open questions) with two incorrect function names suggests the proposer received structured port data describing module responsibilities but not the actual function signatures — consistent with typed-port handoff."
+    },
+    "output_c": {
+      "brief":            { "score":  8, "reason": "All five required sections present; 'Files explicitly NOT touched' section is comparatively brief (5 entries, some thin), and Files Touched section covers only 2 files." },
+      "specificity":      { "score":  9, "reason": "Cites specific line numbers for F22 comment (395), signal bridging (510-535), finally block (779-796), migration hint (381), systemPromptAppend (389), and names real-executor.abort-on-error.test.ts explicitly — high concrete anchoring." },
+      "coherence":        { "score":  9, "reason": "Tightly focused: risk section directly flows from F22 abort semantics observation, mitigation steps map to specific risks, open questions precisely scoped to extraction boundary decisions." },
+      "a1_filesRuledOut":  { "score":  6, "reason": "Five files ruled out but with thin reasons: 'Already extracted; reused by the new class' and 'Used unchanged by new class' do not cite specific observations from exploration." },
+      "a2_couplingGrounding":{ "score":10, "reason": "Risk section explicitly references F22 abort timing invariant, copies exact finally logic at lines 779-796, names all abort() call sites, calls out the belt-and-suspenders pattern — the most precisely grounded coupling analysis of the three." },
+      "a3_antiHallucination":{ "score": 7, "reason": "One fabrication: 'getRealExecutorSdkOptions()' does not exist (actual export is buildSdkBaseOptions); deducted 3 points; all file paths and other names verified correct." },
+      "total":   49,
+      "attribution": 1,
+      "attributionReason": "The precise line-number citations (381, 389, 510-535, 779-796) and verbatim F22 comment reference suggest direct code access during exploration, but the thin files-not-touched section hints at some information compression consistent with a partial handoff."
+    }
+  }
+}

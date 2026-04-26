@@ -1,0 +1,4 @@
+{
+  "explore-propose": { "a": "bare-sdk", "b": "multi", "c": "single" },
+  "propose-critique": { "a": "bare-sdk", "b": "multi", "c": "single" }
+}

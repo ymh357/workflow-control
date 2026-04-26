@@ -1,0 +1,39 @@
+{
+  "reviewer": "R2-explore-propose",
+  "model": "sonnet",
+  "scores": {
+    "output_a": {
+      "brief":            { "score":  9, "reason": "All five required sections present and substantive. Minor gap: rollback described conceptually rather than specifying a git revert or equivalent." },
+      "specificity":      { "score":  9, "reason": "Line numbers verified accurate (abortableDelay 195-211, doAttempt 322-890, AbortController 401, heartbeat 564-569, stream pump 576, writer 366-376, finally 779-796). Names specific coupling: '7 locations', '13+ levels'." },
+      "coherence":        { "score":  9, "reason": "Phase 1 findings directly cited in Phase 2 decisions. 'Orchestration vs lifecycle' framing consistent throughout. No contradictions." },
+      "a1_filesRuledOut":  { "score":  9, "reason": "Five sets of files ruled out with specific mechanistic reasons; each rooted in observed architecture, not generic." },
+      "a2_couplingGrounding":{ "score": 9, "reason": "Risk section cites: 'Abort semantics (F22) are unchanged - still happen on every finishAttempt error path and in the finally'. References exact finally block structure (4 independent concerns)." },
+      "a3_antiHallucination":{ "score":10, "reason": "All file paths verified: real-executor.ts, execution-record-writer.ts, stream-pump.ts, agent-machine.ts, executor.ts, port-runtime.ts, mcp-servers-expander.ts, real-executor-sdk-options.ts, real-executor-prompt-builder.ts." },
+      "total":   55,
+      "attribution": 2,
+      "attributionReason": "Deep specificity with verified line numbers, named internal constants (F22), and specific behavioral descriptions that would not survive a typed summary. Phase 1/Phase 2 structure and line-level accuracy strongly indicates working-state carry-over."
+    },
+    "output_b": {
+      "brief":            { "score":  8, "reason": "All five required sections present. Files Touched uses table with line refs. Files Explicitly NOT Touched has nine entries. Minor: rollback slightly underspecified." },
+      "specificity":      { "score":  8, "reason": "Cites specific coupling: '5 resource lifetimes (abortController, mcpServer, agentActor, heartbeatTimer, deltaThrottler)', '6 sidecar capture variables', 'writer.close() at 5 exit paths' (off-by-one: actual 6), MCP_STARTUP_RETRY_BUDGET by name, schema validation 823-865 verified." },
+      "coherence":        { "score":  8, "reason": "Risk section directly references specific cleanup order ('clear heartbeat, remove abort listener, stop actor, abort controller, dispose throttler') matching actual finally block. Mild inconsistency: executor.ts in both touched and not-touched lists." },
+      "a1_filesRuledOut":  { "score":  8, "reason": "Nine files ruled out, each with architecturally grounded reasons. mock-executor.ts ('different executor with different lifecycle concerns'), graceful-shutdown.ts ('Process-level shutdown; orthogonal to per-attempt cleanup'), etc." },
+      "a2_couplingGrounding":{ "score": 9, "reason": "Strongest of the three on coupling specificity: cleanup sequence, 5 writer.close() exit paths with different terminationReason params, schema validation dependency on attempt-scoped port values, double-close risk." },
+      "a3_antiHallucination":{ "score":10, "reason": "All nine NOT-touched files verified: mock-executor.ts, composite-executor.ts, inline-script-executor.ts, task-registry.ts, real-executor-prompt-builder.ts, mcp-servers-expander.ts, graceful-shutdown.ts, rate-limit-backoff.ts. No fabrications." },
+      "total":   51,
+      "attribution": 1,
+      "attributionReason": "Code-level familiarity (exact cleanup order, 6 capture variables, MCP_STARTUP_RETRY_BUDGET by name, lines 823-865), but slightly more formal table-driven structure than output_a. Writer.close() off-by-one (5 vs 6) is a minor tell. Likely working-state with editorial organization."
+    },
+    "output_c": {
+      "brief":            { "score":  7, "reason": "All five sections present but more compressed. Files Touched has only 2 entries. Risk and Rollback compressed into one paragraph. Brevity reduces non-trivial bar; Files Touched omits helper files." },
+      "specificity":      { "score":  7, "reason": "References F22 by code label, lines 779-796, 510-535 (verified), 381 (verified), 389 (verified), real-executor.abort-on-error.test.ts (exists). More conceptual than output_a/b in places: '~570 lines to ~150-200 lines' is an estimate; '6+ places' for writer.close() is vaguer." },
+      "coherence":        { "score":  8, "reason": "'Precedent set by stream-pump.ts' framing consistent with proposal structure. Open questions logically derived from code structure. No contradictions but compressed." },
+      "a1_filesRuledOut":  { "score":  6, "reason": "Six files ruled out but reasons shorter and less specific. 'Already extracted; reused by the new class' for stream-pump.ts is correct but does not explain why considered and ruled out." },
+      "a2_couplingGrounding":{ "score": 8, "reason": "Names F22 abort controller timing issue specifically, proposes mitigation by copying exact finally logic from lines 779-796. Less detailed than output_b on cleanup sequence ordering." },
+      "a3_antiHallucination":{ "score":10, "reason": "All cited files verified to exist; line references 779-796, 510-535, 381, 389 all verified accurate. No fabrications." },
+      "total":   46,
+      "attribution": 0,
+      "attributionReason": "Genuine code familiarity (F22, exact line ranges, real-executor.abort-on-error.test.ts by name), but proposal more compressed and higher-level than output_a. Format compatible with both modes."
+    }
+  }
+}

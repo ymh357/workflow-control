@@ -1,0 +1,21 @@
+{
+  "scenario": "explore-propose",
+  "variant": "single",
+  "wallClockMs": 133175,
+  "wallClockMsExternal": 127700,
+  "stageBreakdown": {
+    "exploreCodebase": { "durationMs": 104661, "costUsd": 0.19954935000000001, "inputTokens": 130, "outputTokens": 5633, "model": "claude-haiku-4-5", "toolCalls": 17, "sessionId": "7cba5e84-9ef1-4af0-a5c8-c7edb7e30fff" },
+    "proposeRefactor":  { "durationMs": 33828,  "costUsd": 0.0848707,            "inputTokens": 18,  "outputTokens": 2573, "model": "claude-haiku-4-5", "toolCalls": 1,  "sessionId": "7cba5e84-9ef1-4af0-a5c8-c7edb7e30fff" }
+  },
+  "sharedSessionId": "7cba5e84-9ef1-4af0-a5c8-c7edb7e30fff",
+  "crossSegmentResumeWorked": true,
+  "totalCostUsd": 0.28442005,
+  "totalInputTokens": 148,
+  "totalOutputTokens": 8206,
+  "outputTokensVsMulti": "8206 vs 11029 = -26% (single emits less because the explorer doesn't have to write 4 typed ports it would never need to summarize)",
+  "model": "claude-haiku-4-5",
+  "taskId": "niche-exp-explore-propose-single-1777240436457-9da8d203",
+  "versionHash": "5748bcf7d21ee75e334a2977d3ec53203397399f31c46da742f7cd0923d1bd40",
+  "ranAt": "2026-04-26T21:53:56Z",
+  "endedAt": "2026-04-26T21:56:09Z"
+}

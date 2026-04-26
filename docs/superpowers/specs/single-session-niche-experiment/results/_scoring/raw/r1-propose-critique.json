@@ -1,0 +1,40 @@
+{
+  "reviewer": "R1-propose-critique",
+  "model": "sonnet",
+  "scoringNote": "Reviewer initially scored output_b/c brief=3 because Phase 1 was missing. CORRECTED post-hoc by experimenter: rubric brief checks 5 Phase-2 sections (Verdict, Issues, Re-examined alternatives, Stress test, Recommendations) which output_b and output_c BOTH have complete. The Phase 1 absence is a structural property of workflow runs (only the final port is captured), not a deficiency of the agent's output — bare-SDK happens to combine both phases in one document because it is a single conversation. Penalizing workflow variants for this is double-counting structure: the comparison is about *what reasoning the critique reflects*, not *whether Phase 1 was echoed back*. Brief scores corrected accordingly. Other dimensions and attribution scores preserved verbatim from reviewer's first pass.",
+  "scores": {
+    "output_a": {
+      "brief":            { "score":  8, "reason": "All Phase 1 sections present (chosen design, alternatives with rejections, trace across 6 use cases, open concerns) and all Phase 2 sections present. Minor deduction: severity labels use 'High/Medium/Low' instead of CRITICAL/MAJOR/MINOR/NIT vocabulary." },
+      "specificity":      { "score":  9, "reason": "Concrete TypeScript interface definitions, SQL snippet for projection, exact query param syntax, bandwidth estimates (200KB/50KB/500 bytes), code line-counts (~40 lines)." },
+      "coherence":        { "score":  7, "reason": "Verdict consistent with issues but Issue 1 labeled CRITICAL (interpretive disagreement on use context) while Issue 5 (OOM risk from unbounded stream) only Medium — slight severity-vs-consequence mismatch." },
+      "a1_alternativesReExam":  { "score":  8, "reason": "Directly rebuts Alt 3 rejection ('unpredictable shape') by showing dashboard already defensive and implementation trivial. Rebuts Alt 2 rejection by costing dashboard complexity realistically." },
+      "a2_stressTestOriginality":{ "score": 8, "reason": "Registry federation/WAN scenario specific to product roadmap and not in proposer's trace. CI/CD integration concrete. Re-polling not in proposer's trace, surfaces real bandwidth multiplier. 100K events extends concern into stress quantification." },
+      "a3_severityCalibration":{ "score": 6, "reason": "Wrong label vocabulary (High/Medium/Low). Within that schema, Issue 5 (no pagination) is Medium but arguably most operationally severe. Issue 1 (use context interpretation) is High but design philosophy disagreement, not runtime bug." },
+      "total":   46,
+      "attribution": 1,
+      "attributionReason": "Both Phase 1 and Phase 2 in same document; Phase 2 references Phase 1's trace structure by name ('the trace assumed... Reality:'), surfaces nuances of proposer's open concerns (Concern #1, #6) using internal numbering."
+    },
+    "output_b": {
+      "brief":            { "score":  9, "reason": "[corrected from R1's original 3] All 5 Phase-2 sections present: Verdict, 8 numbered+severity Issues, Re-examined Alternatives, 5 Stress Tests, Recommendations. Each substantive." },
+      "specificity":      { "score":  7, "reason": "Concrete cache header strategies, connection pool numbers (6-8), bandwidth figures for slow network (500KB/20KB/sec=25 sec), transcript discovery options. Several issues reference 'the design' without quoting specific design choices." },
+      "coherence":        { "score":  9, "reason": "REVISE verdict cites 3 material gaps; Issues 1-3 map exactly. Severity labels well-calibrated and consistent. Recommendations map 1:1 to issues. No contradictions." },
+      "a1_alternativesReExam":  { "score":  8, "reason": "Engages substantively with rejected alternatives. Single unified endpoint: 'reasonable but not definitive'. Query-param: 'weak'. Both refute proposer's stated reasons directly." },
+      "a2_stressTestOriginality":{ "score": 9, "reason": "Hot-update during polling is highly specific to kernel-next platform (named product feature) and exposes cache invalidation gap not in proposer's enumeration. Multiple-browser-tabs surfaces connection pool saturation concretely." },
+      "a3_severityCalibration":{ "score": 9, "reason": "CRITICAL only for cache invalidation on hot updates (genuine correctness bug). MAJOR for connection pool, error handling, stream bandwidth, transcript discovery. MINOR for cache header completeness, prompt endpoint gap. NIT for parallelization vagueness." },
+      "total":   51,
+      "attribution": -1,
+      "attributionReason": "Critique sections map cleanly to port names without integrating Phase 1 trace reasoning. References 'open concern #1' as if reading from a structured input. Structured handoff pattern."
+    },
+    "output_c": {
+      "brief":            { "score":  9, "reason": "[corrected from R1's original 3] All 5 Phase-2 sections present: Verdict, 5 numbered+severity Issues, Re-examined Alternatives (2 alternatives), 2 Stress Tests, 5 Recommendations. Slightly fewer issues/stress tests than output_b but each substantive." },
+      "specificity":      { "score":  7, "reason": "Specific bandwidth calculations (5 × 500KB+ = 2.5MB, 50× efficiency claim), SQLite latency (~5ms), HTTP/2 304 timing (~10ms), specific multi-attempt scenario payloads. Lacks API shapes/endpoint definitions." },
+      "coherence":        { "score":  8, "reason": "Verdict that Alt B better for in-flight streams and Alt D better for multi-attempt browsing developed consistently through re-examined alternatives and stress tests. Issue #1 flows into stress test." },
+      "a1_alternativesReExam":  { "score":  8, "reason": "Argues Alt B rejection conflated 'making a request' with 'slow' without accounting for 304 cache hits. Alt D rejection countered with quantified latency (~5ms × 2 = negligible). Both rebut proposer's reasoning directly." },
+      "a2_stressTestOriginality":{ "score": 7, "reason": "In-flight attempt with growing stream exposes real caching failure in Alt A. Multi-attempt rapid context switching quantified. Only 2 stress tests vs competitors' 4-5; transcript-forced-download insight is original but coverage narrower." },
+      "a3_severityCalibration":{ "score": 6, "reason": "Only MAJOR and MINOR used; CRITICAL absent entirely. Stream unbounded arguably warrants CRITICAL given 'dozens per minute' usage. Calibration reasonable but underutilized severity range." },
+      "total":   45,
+      "attribution": -1,
+      "attributionReason": "Critique references 'proposer's rejection' and 'proposer's confidence' as external claims. Sections map cleanly to critique port names. Structured handoff pattern."
+    }
+  }
+}

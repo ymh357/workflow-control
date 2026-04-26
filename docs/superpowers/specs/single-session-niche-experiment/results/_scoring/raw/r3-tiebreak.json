@@ -1,0 +1,20 @@
+{
+  "reviewer": "R3-tiebreak-explore-propose-a3",
+  "model": "sonnet",
+  "purpose": "Resolve >=3-point disagreements between R1 and R2 on a3_antiHallucination for explore-propose multi+single. R1 verified function names; R2 only verified file paths.",
+  "method": "Strict: extract every function/method/type/file name from each output; grep the actual codebase; subtract 3 per fabrication.",
+  "scores": {
+    "output_b_multi": {
+      "a3_antiHallucination": { "score": 4, "reason": "Two fabrications: 'startStreamPump' (actual export is pumpSdkStream in stream-pump.ts), 'getRealExecutorSdkOptions' (actual export is buildSdkBaseOptions in real-executor-sdk-options.ts). Confirms R1's finding; R2 missed because R2 only checked file paths."},
+      "fabrications": ["startStreamPump", "getRealExecutorSdkOptions"]
+    },
+    "output_c_single": {
+      "a3_antiHallucination": { "score": 10, "reason": "All file paths exist; no function/method/type names cited incorrectly. output_c references only RealStageExecutor, doAttempt, executeStage, StageExecutor — all confirmed present in codebase. R1's 7 was a misread (output_c does NOT cite getRealExecutorSdkOptions); R2's 10 is correct; R3 verifies 10."},
+      "fabrications": []
+    }
+  },
+  "verdictUsedInFinalAggregation": {
+    "explore-propose-multi-a3":  4,
+    "explore-propose-single-a3": 10
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "reviewer": "R2-propose-critique",
+  "model": "sonnet",
+  "scoringNote": "Reviewer initially scored output_b brief=6, output_c brief=5 because Phase 1 was missing. CORRECTED post-hoc as in r1-propose-critique: rubric brief checks 5 Phase-2 sections, all present. Phase 1 absence is a structural property of workflow runs (final port only). Brief scores corrected. Other dimensions preserved verbatim.",
+  "scores": {
+    "output_a": {
+      "brief":            { "score":  9, "reason": "All required sections present and substantive: chosen design with full typed interface, three alternatives, six use cases traced, five open concerns. Phase 2 sections all present. Slight weakness: chose status-quo design with 'no changes required'." },
+      "specificity":      { "score":  9, "reason": "Exceptionally concrete: typed AttemptDetailsPayload interface with all 13 fields named, exact URL shapes, code snippet showing ?include= implementation (~40 lines), numbered bandwidth estimates (200KB, 12MB over 60 requests). One small gap: 'dozens of requests per minute' not quantified to QPS ceiling." },
+      "coherence":        { "score":  8, "reason": "Verdict (REVISE) consistent with issues. Mild tension: Issue #1 labeled CRITICAL but recommendation is just 'add a comment' — slight mismatch between severity and remediation." },
+      "a1_alternativesReExam":  { "score":  9, "reason": "Both Alt 2 and Alt 3 re-examined with specific implementation cost (~40 lines for Alt 3) and concrete counter-arguments. Genuine reversal of Alt 2's rejection ('stronger than proposal suggests')." },
+      "a2_stressTestOriginality":{ "score": 8, "reason": "Four stress tests: CI/CD, Registry federation/WAN, large attempt (100K events), high-frequency re-polling. WAN/Registry novel and grounded in product roadmap. Slight deduction: re-polling implicit in Phase 1 concern #1." },
+      "a3_severityCalibration":{ "score": 7, "reason": "Most severity assignments reasonable but CRITICAL on Issue #1 overcalibrated — design philosophy disagreement, not runtime bug. Issue #4 (prompt content) Medium correctly calibrated. Low on Issue #6 (Alt 2 parallel fetch assumption) correctly understated." },
+      "total":   50,
+      "attribution": 1,
+      "attributionReason": "Phase 2 specifically references Phase 1's trace reasoning ('the trace assumed user loads page once... Reality:'). Integration between phases seamless. However, section structure clean enough that typed-port handoff is plausible."
+    },
+    "output_b": {
+      "brief":            { "score":  9, "reason": "[corrected from R2's original 6] All 5 Phase-2 sections present and substantive: Verdict, 8 numbered+severity Issues, Re-examined Alternatives, 5 Stress Tests, Recommendations. Each issue detailed." },
+      "specificity":      { "score":  7, "reason": "Concrete: specific HTTP status codes (410 Gone, 204 No Content, 304), specific request counts (5 parallel, 6/10sec), specific bandwidth (50-200KB per poll, 25 seconds on 2G). Several issues reference 'the design' without quoting." },
+      "coherence":        { "score":  8, "reason": "REVISE verdict supported by 3 CRITICAL/MAJOR issues. Stress tests map back to issues. Coherence gap: Issue 7 (prompt content) labeled MINOR but not in recommendations." },
+      "a1_alternativesReExam":  { "score":  8, "reason": "Single unified endpoint re-examination identifies proposer's efficiency argument 'assumes users constantly switch tabs' and challenges this. Query-param re-examination refutes 'adds complexity' as 'one .split call.' Genuine reversal." },
+      "a2_stressTestOriginality":{ "score": 9, "reason": "Five stress tests: hot update during polling (kernel-next-specific), multiple browser tabs (specific math: 6 req/10sec), server error on /tools, slow network 2G, transcript discovery. Multiple-tabs and 2G are particularly original." },
+      "a3_severityCalibration":{ "score": 7, "reason": "Hot-update cache invalidation CRITICAL is correct. Per-tab error handling MAJOR slightly overcalibrated for single-user local tool. Sub-agent transcript discovery MAJOR overcalibrated — UX refinement, not correctness." },
+      "total":   48,
+      "attribution": -1,
+      "attributionReason": "Absence of Phase 1 content and clean 8-issue numbered structure with dedicated sub-headers (Re-examined Alternatives, Stress Tests, Recommendations) suggest typed port that received only critique-section inputs. Working-state conversation would have included Phase 1 content visible inline."
+    },
+    "output_c": {
+      "brief":            { "score":  9, "reason": "[corrected from R2's original 5] All 5 Phase-2 sections present: Verdict, 5 numbered+severity Issues, Re-examined Alternatives (2 alternatives), 2 Stress Tests, 5 Recommendations. Issues and re-examination substantive." },
+      "specificity":      { "score":  7, "reason": "Payload math concrete (Alt A vs Alt D: 2.8MB vs negligible, 50× efficiency for multi-attempt browsing). Specific stream event bounds (last 1000). However, no HTTP endpoint shapes defined; 'Alternative B' endpoints never named beyond letter labels." },
+      "coherence":        { "score":  7, "reason": "REVISE verdict consistent with issues. Conditional framing ('if Alt A adopted with revisions, viable; if rejected, reconsider Alt B') logically consistent. Mild inconsistency: Issue 4 (error cases undefined) MINOR when critique elsewhere treats partial failure seriously." },
+      "a1_alternativesReExam":  { "score":  8, "reason": "Alt B re-examination correctly identifies proposer conflated 'making a request' with 'slow' without accounting for 304 cache hits. Alt D re-examination includes specific payload math (50× efficiency)." },
+      "a2_stressTestOriginality":{ "score": 7, "reason": "In-flight attempt with growing stream reveals transcript unconditional inclusion as dominant cost driver. Multi-attempt rapid switching generates concrete payload comparisons. Only 2 stress tests vs 4-5 in competitors; neither probes failure modes." },
+      "a3_severityCalibration":{ "score": 6, "reason": "Caching incomplete MAJOR correct. Transcript MAJOR appropriate. Stream unbounded MAJOR correct. Error cases undefined MINOR is undercalibrated — for dashboard with dozens calls/min, undefined error handling at least MAJOR." },
+      "total":   44,
+      "attribution": -1,
+      "attributionReason": "Critique-only with no Phase 1 content; alternatives referenced by letter labels (A, B, D) never introduced in this document. Use of abstract labels without definitions is a strong typed-port signal — port likely received alternativesConsidered as structured input not echoed into output."
+    }
+  }
+}

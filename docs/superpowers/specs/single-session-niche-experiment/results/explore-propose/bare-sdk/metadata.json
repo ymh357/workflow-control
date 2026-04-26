@@ -1,0 +1,17 @@
+{
+  "scenario": "explore-propose",
+  "variant": "bare-sdk",
+  "wallClockMs": 67439,
+  "wallClockMsExternal": 85049,
+  "totalTokens": 56513,
+  "toolUses": 12,
+  "model": "claude-haiku-4-5 (via Agent tool subagent_type=general-purpose, model=haiku)",
+  "costUsd": null,
+  "costNote": "Agent tool subagent does not return per-run cost. token-only proxy. Haiku 4.5 input ~$1/Mtok, output ~$5/Mtok. With 56513 total tokens and unknown input/output split, cost is bounded between ~$0.06 (all input) and ~$0.28 (all output); midpoint estimate ~$0.15.",
+  "inputTokens": null,
+  "outputTokens": null,
+  "tokenSplitNote": "Agent tool returns total only.",
+  "taskId": null,
+  "agentId": "a51042e7e488f5682",
+  "ranAt": "2026-04-26T21:46:56Z"
+}
