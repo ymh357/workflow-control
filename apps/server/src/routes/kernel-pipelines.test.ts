@@ -134,3 +134,57 @@ describe("GET /api/kernel/pipelines/:versionHash", () => {
     expect(body.createdAt).toBeGreaterThan(0);
   });
 });
+
+describe("REST POST /api/kernel/pipelines/env-probe", () => {
+  it("reports per-key process.env presence without leaking values", async () => {
+    process.env.WFCTL_TEST_PRESENT = "real-value";
+    delete process.env.WFCTL_TEST_ABSENT;
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/pipelines/env-probe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ envKeys: ["WFCTL_TEST_PRESENT", "WFCTL_TEST_ABSENT"] }),
+    }));
+    expect(res.status).toBe(200);
+    const body = await res.json() as { ok: true; status: Record<string, boolean> };
+    expect(body.ok).toBe(true);
+    expect(body.status.WFCTL_TEST_PRESENT).toBe(true);
+    expect(body.status.WFCTL_TEST_ABSENT).toBe(false);
+    expect(JSON.stringify(body)).not.toContain("real-value");
+    delete process.env.WFCTL_TEST_PRESENT;
+  });
+
+  it("treats empty-string env values as absent", async () => {
+    process.env.WFCTL_TEST_EMPTY = "";
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/pipelines/env-probe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ envKeys: ["WFCTL_TEST_EMPTY"] }),
+    }));
+    expect(res.status).toBe(200);
+    const body = await res.json() as { status: Record<string, boolean> };
+    expect(body.status.WFCTL_TEST_EMPTY).toBe(false);
+    delete process.env.WFCTL_TEST_EMPTY;
+  });
+
+  it("returns 400 on missing envKeys array", async () => {
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/pipelines/env-probe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({}),
+    }));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 on malformed JSON", async () => {
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/pipelines/env-probe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{not-json",
+    }));
+    expect(res.status).toBe(400);
+  });
+});

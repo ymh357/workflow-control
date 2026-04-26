@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { apiFetch } from "../lib/api-client";
 import { useToast } from "./toast";
 import { ErrorBanner } from "./error-banner";
+import { StructuredInput } from "./structured-input";
+import { parseObjectType } from "../lib/parse-ts-object-type";
 import type { ApiDiagnostic } from "../lib/api-client";
 
 interface PortLike {
@@ -53,6 +55,8 @@ export const LaunchPipelineDialog = ({
   const [submitting, setSubmitting] = useState(false);
   const [diagnostics, setDiagnostics] = useState<ApiDiagnostic[]>([]);
 
+  const [envProbe, setEnvProbe] = useState<Record<string, boolean>>({});
+
   useEffect(() => {
     if (open) {
       setSeedValues({});
@@ -62,8 +66,19 @@ export const LaunchPipelineDialog = ({
       setMaxBudgetUsd("");
       setSubmitting(false);
       setDiagnostics([]);
+      setEnvProbe({});
+      // Probe which envKeys are already visible in process.env so the
+      // form can mark them "in env" and the user can leave those blank.
+      if (pipeline.envKeys.length > 0) {
+        void apiFetch<{ status: Record<string, boolean> }>(
+          "/api/kernel/pipelines/env-probe",
+          { method: "POST", body: { envKeys: pipeline.envKeys } },
+        ).then((r) => {
+          if (r.ok) setEnvProbe(r.data.status);
+        });
+      }
     }
-  }, [open]);
+  }, [open, pipeline.envKeys]);
 
   useEffect(() => {
     if (!open) return;
@@ -180,36 +195,50 @@ export const LaunchPipelineDialog = ({
                 Inputs
               </h3>
               <div className="space-y-3">
-                {pipeline.externalInputs.map((p) => (
-                  <div key={p.name}>
-                    <label className="block text-sm">
-                      <span className="font-mono text-zinc-200">{p.name}</span>
-                      <span className="ml-2 font-mono text-xs text-zinc-500">
-                        {p.type}
-                      </span>
-                    </label>
-                    {p.type.includes("object") || p.type.includes("[]") || p.type.startsWith("{") ? (
-                      <textarea
-                        value={seedValues[p.name] ?? ""}
-                        onChange={(e) =>
-                          setSeedValues((prev) => ({ ...prev, [p.name]: e.target.value }))
-                        }
-                        placeholder="JSON value"
-                        rows={3}
-                        className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
-                      />
-                    ) : (
-                      <input
-                        type={p.type === "number" ? "number" : "text"}
-                        value={seedValues[p.name] ?? ""}
-                        onChange={(e) =>
-                          setSeedValues((prev) => ({ ...prev, [p.name]: e.target.value }))
-                        }
-                        className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
-                      />
-                    )}
-                  </div>
-                ))}
+                {pipeline.externalInputs.map((p) => {
+                  // 2026-04-27: parse the TS-style type and use a structured
+                  // form when we recognize the shape; otherwise fall back to
+                  // a JSON textarea (StructuredInput handles both internally).
+                  const parsed = parseObjectType(p.type);
+                  const isStructurable = parsed.kind === "object" || parsed.kind === "primitive-array";
+                  const isPrimitive = parsed.kind === "primitive";
+                  return (
+                    <div key={p.name}>
+                      <label className="block text-sm">
+                        <span className="font-mono text-zinc-200">{p.name}</span>
+                        <span className="ml-2 font-mono text-xs text-zinc-500">{p.type}</span>
+                      </label>
+                      {isStructurable ? (
+                        <StructuredInput
+                          typeStr={p.type}
+                          value={seedValues[p.name] ?? ""}
+                          onChange={(next) =>
+                            setSeedValues((prev) => ({ ...prev, [p.name]: next }))
+                          }
+                        />
+                      ) : isPrimitive ? (
+                        <input
+                          type={p.type === "number" ? "number" : "text"}
+                          value={seedValues[p.name] ?? ""}
+                          onChange={(e) =>
+                            setSeedValues((prev) => ({ ...prev, [p.name]: e.target.value }))
+                          }
+                          className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
+                        />
+                      ) : (
+                        <textarea
+                          value={seedValues[p.name] ?? ""}
+                          onChange={(e) =>
+                            setSeedValues((prev) => ({ ...prev, [p.name]: e.target.value }))
+                          }
+                          placeholder="JSON value"
+                          rows={3}
+                          className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
+                        />
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             </section>
           )}
@@ -225,21 +254,34 @@ export const LaunchPipelineDialog = ({
                 never enter the agent prompt context.
               </p>
               <div className="space-y-2">
-                {pipeline.envKeys.map((k) => (
-                  <label key={k} className="block text-sm">
-                    <span className="font-mono text-xs text-zinc-300">{k}</span>
-                    <input
-                      type="password"
-                      autoComplete="off"
-                      value={envValues[k] ?? ""}
-                      onChange={(e) =>
-                        setEnvValues((prev) => ({ ...prev, [k]: e.target.value }))
-                      }
-                      className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
-                      placeholder="(leave empty to use process.env)"
-                    />
-                  </label>
-                ))}
+                {pipeline.envKeys.map((k) => {
+                  const inEnv = envProbe[k] === true;
+                  return (
+                    <label key={k} className="block text-sm">
+                      <span className="flex items-baseline justify-between gap-2">
+                        <span className="font-mono text-xs text-zinc-300">{k}</span>
+                        {inEnv && (
+                          <span
+                            className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-300"
+                            title="Already visible in server process.env — leave blank to use that value"
+                          >
+                            in env
+                          </span>
+                        )}
+                      </span>
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        value={envValues[k] ?? ""}
+                        onChange={(e) =>
+                          setEnvValues((prev) => ({ ...prev, [k]: e.target.value }))
+                        }
+                        className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
+                        placeholder={inEnv ? "(leave empty — using process.env)" : "(leave empty to use process.env)"}
+                      />
+                    </label>
+                  );
+                })}
               </div>
             </section>
           )}

@@ -4,6 +4,7 @@ import { useTranslations } from "next-intl";
 import { usePathname, useRouter } from "next/navigation";
 import Link from "next/link";
 import { usePendingProposalsCount } from "../hooks/use-pending-proposals-count";
+import { ThemeToggle } from "./theme-toggle";
 
 const Nav = () => {
   const t = useTranslations("Common");
@@ -26,14 +27,14 @@ const Nav = () => {
 
   const linkClass = (active: boolean) =>
     active
-      ? "rounded px-2 py-1 text-sm font-semibold text-zinc-100 bg-zinc-800"
-      : "rounded px-2 py-1 text-sm text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200 transition-colors";
+      ? "rounded px-2 py-1 text-sm font-semibold text-primary bg-elevated"
+      : "rounded px-2 py-1 text-sm text-secondary hover:bg-surface hover:text-primary transition-colors";
 
   return (
     <nav className="flex items-center gap-1">
       <Link
         href="/"
-        className="mr-4 text-lg font-semibold text-zinc-100 hover:text-white"
+        className="mr-4 text-lg font-semibold text-primary hover:opacity-90"
       >
         {t("appTitle")}
       </Link>
@@ -58,16 +59,18 @@ const Nav = () => {
         )}
       </Link>
       <div className="ml-auto flex items-center gap-1 text-xs">
+        <ThemeToggle />
+        <span className="text-secondary opacity-30">|</span>
         <button
           onClick={() => switchLocale("en")}
-          className="rounded px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+          className="rounded px-2 py-1 text-secondary hover:bg-elevated hover:text-primary transition-colors"
         >
           {t("language.en")}
         </button>
-        <span className="text-zinc-600">|</span>
+        <span className="text-secondary opacity-30">|</span>
         <button
           onClick={() => switchLocale("zh")}
-          className="rounded px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors"
+          className="rounded px-2 py-1 text-secondary hover:bg-elevated hover:text-primary transition-colors"
         >
           {t("language.zh")}
         </button>

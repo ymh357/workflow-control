@@ -12,6 +12,7 @@ import { apiFetch, API_BASE } from "../../lib/api-client";
 import { useToast } from "../../components/toast";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { CopyButton } from "../../components/copy-button";
+import { useArchivedTasks } from "../../hooks/use-archived-tasks";
 
 type TaskStatus = "running" | "gated" | "completed" | "failed" | "cancelled" | "orphaned";
 
@@ -96,6 +97,8 @@ export default function TaskListPage() {
   // 2026-04-27 B3 — inline cancel confirmation.
   const [cancelTarget, setCancelTarget] = useState<TaskRow | null>(null);
   const [actingTaskId, setActingTaskId] = useState<string | null>(null);
+  const [showArchived, setShowArchived] = useState(false);
+  const archive = useArchivedTasks();
   const toast = useToast();
 
   const refetch = useCallback(async (signal?: AbortSignal) => {
@@ -199,6 +202,18 @@ export default function TaskListPage() {
           >
             refresh
           </button>
+          {archive.archivedCount > 0 && (
+            <label className="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 cursor-pointer hover:border-zinc-600">
+              <input
+                type="checkbox"
+                checked={showArchived}
+                onChange={(e) => setShowArchived(e.target.checked)}
+                className="accent-blue-500"
+              />
+              <span>archived</span>
+              <span className="text-zinc-500 text-xs">{archive.archivedCount}</span>
+            </label>
+          )}
         </div>
       </header>
 
@@ -240,7 +255,7 @@ export default function TaskListPage() {
               </tr>
             </thead>
             <tbody>
-              {tasks.map((t) => (
+              {tasks.filter((t) => showArchived || !archive.isArchived(t.taskId)).map((t) => (
                 <tr
                   key={t.taskId}
                   className="border-t border-zinc-800 hover:bg-zinc-900/40 transition-colors"
@@ -339,6 +354,35 @@ export default function TaskListPage() {
                       >
                         Retry
                       </button>
+                    )}
+                    {(t.status === "completed" || t.status === "failed" || t.status === "cancelled") && (
+                      archive.isArchived(t.taskId) ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            archive.unarchive(t.taskId);
+                          }}
+                          className="ml-1 rounded border border-zinc-700/60 bg-zinc-900/30 px-2 py-1 text-[0.7rem] font-semibold text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800/50"
+                          title="Unarchive (restore to default view)"
+                        >
+                          Unarchive
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            archive.archive(t.taskId);
+                          }}
+                          className="ml-1 rounded border border-zinc-800/60 bg-zinc-900/20 px-2 py-1 text-[0.7rem] text-zinc-400 hover:border-zinc-700 hover:bg-zinc-800/40"
+                          title="Hide from default view (UI-only, server data untouched)"
+                        >
+                          Archive
+                        </button>
+                      )
                     )}
                   </td>
                 </tr>

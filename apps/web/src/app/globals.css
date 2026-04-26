@@ -1,1 +1,56 @@
 @import "tailwindcss";
+
+/*
+ * 2026-04-27 — light/dark theme tokens.
+ *
+ * The dashboard was originally dark-only with hard-coded zinc-* classes
+ * everywhere. To support light mode without rewriting every page, we
+ * keep zinc-* fixed-dark on the long-tail surfaces and introduce
+ * semantic tokens for the chrome (page background, primary text,
+ * borders, accents) that the user actually notices most.
+ *
+ * Pages opted into theme tokens: layout shell, nav, /, /kernel-next.
+ * Pages that remain dark-only by design (data-dense surfaces where
+ * dark is the right default): /kernel-next/[taskId], /kernel-next/
+ * proposals, /kernel-next/pipelines/[name], /kernel-next/attempts/*.
+ *
+ * Future expansion: replace bg-zinc-950 / bg-zinc-900 / text-zinc-100
+ * etc. with the bg-page / bg-surface / text-primary tokens below as
+ * pages get touched. There is no grand-refactor PR — gradual migration.
+ */
+
+:root {
+  --color-bg-page: oklch(0.18 0.01 280);          /* zinc-950-ish */
+  --color-bg-surface: oklch(0.22 0.01 280);       /* zinc-900 */
+  --color-bg-elevated: oklch(0.27 0.01 280);      /* zinc-800 */
+  --color-text-primary: oklch(0.96 0.005 280);    /* zinc-100 */
+  --color-text-secondary: oklch(0.78 0.005 280);  /* zinc-400 */
+  --color-text-muted: oklch(0.58 0.005 280);      /* zinc-500 */
+  --color-border-default: oklch(0.31 0.005 280);  /* zinc-800 */
+  --color-border-strong: oklch(0.40 0.005 280);   /* zinc-700 */
+  --color-accent: oklch(0.72 0.18 235);           /* sky-400 */
+}
+
+[data-theme="light"] {
+  --color-bg-page: oklch(0.99 0.002 280);
+  --color-bg-surface: oklch(0.97 0.003 280);
+  --color-bg-elevated: oklch(0.94 0.005 280);
+  --color-text-primary: oklch(0.20 0.01 280);
+  --color-text-secondary: oklch(0.40 0.01 280);
+  --color-text-muted: oklch(0.55 0.01 280);
+  --color-border-default: oklch(0.88 0.005 280);
+  --color-border-strong: oklch(0.78 0.005 280);
+  --color-accent: oklch(0.55 0.18 245);
+}
+
+@theme {
+  --color-page: var(--color-bg-page);
+  --color-surface: var(--color-bg-surface);
+  --color-elevated: var(--color-bg-elevated);
+  --color-primary: var(--color-text-primary);
+  --color-secondary: var(--color-text-secondary);
+  --color-muted: var(--color-text-muted);
+  --color-default: var(--color-border-default);
+  --color-strong: var(--color-border-strong);
+  --color-accent: var(--color-accent);
+}

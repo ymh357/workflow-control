@@ -8,6 +8,7 @@
 
 import React, { useCallback, useEffect, useState } from "react";
 import { ProposalDiff } from "../../../components/proposal-diff";
+import { MigrateProposalDialog } from "../../../components/migrate-proposal-dialog";
 import type { PipelineIRLike } from "../../../lib/ir-to-flow";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -40,6 +41,8 @@ export default function ProposalsPage() {
   // attemptDiffs pattern from task detail (P6.4).
   const [previews, setPreviews] = useState<Record<string, PreviewPayload | null>>({});
   const [previewLoading, setPreviewLoading] = useState<Record<string, boolean>>({});
+  // 2026-04-27 B-secondary: real Migrate dialog replaces window.prompt.
+  const [migrateTarget, setMigrateTarget] = useState<ProposalRow | null>(null);
 
   const refetch = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -267,46 +270,31 @@ export default function ProposalsPage() {
         actions={(r) => (
           <button
             type="button"
-            onClick={async () => {
-              // 2026-04-27 B7: migrate-on-approve from UI. Prompt for a
-              // target task; this matches design spec §8 (migrate is a
-              // per-task operation, not a fan-out trigger).
-              const taskId = window.prompt(
-                `Migrate proposal ${r.proposalId} into which taskId?\n\n` +
-                `(The task must already be opted into this proposal's migrateRunningTasks list — see migrateRunning='${
-                  Array.isArray(r.migrateRunning) ? r.migrateRunning.join(", ") : r.migrateRunning
-                }')`,
-              );
-              if (!taskId || taskId.trim().length === 0) return;
-              setError(null);
-              try {
-                const res = await fetch(
-                  `${API_BASE}/api/kernel/tasks/${encodeURIComponent(taskId.trim())}/migrate`,
-                  {
-                    method: "POST",
-                    headers: { "content-type": "application/json" },
-                    body: JSON.stringify({ proposalId: r.proposalId }),
-                  },
-                );
-                const body = await res.json() as { ok: boolean; diagnostics?: Array<{ message: string; code: string }> };
-                if (!res.ok || !body.ok) {
-                  setError(`migrate failed: ${body.diagnostics?.[0]?.code ?? ""} ${body.diagnostics?.[0]?.message ?? `HTTP ${res.status}`}`);
-                  return;
-                }
-                setError(null);
-                window.alert(`Migrated proposal into ${taskId.trim()} successfully.`);
-              } catch (err) {
-                setError(err instanceof Error ? err.message : String(err));
-              }
-            }}
-            className="rounded border border-blue-500/50 bg-blue-500/15 px-2 py-1 text-xs font-semibold text-blue-300 hover:border-blue-500/70 hover:bg-blue-500/25"
-            title="Apply this approved proposal to a running task"
+            onClick={() => setMigrateTarget(r)}
+            disabled={r.migrateRunning === "none"}
+            className="rounded border border-blue-500/50 bg-blue-500/15 px-2 py-1 text-xs font-semibold text-blue-300 hover:border-blue-500/70 hover:bg-blue-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
+            title={
+              r.migrateRunning === "none"
+                ? "This proposal is for new tasks only (migrateRunningTasks=\"none\")"
+                : "Apply this approved proposal to a running task"
+            }
           >
             Migrate→
           </button>
         )}
       />
       <Section title="Rejected" items={rejected} />
+
+      {migrateTarget && (
+        <MigrateProposalDialog
+          open={true}
+          proposalId={migrateTarget.proposalId}
+          pipelineName={migrateTarget.pipelineName}
+          migrateRunning={migrateTarget.migrateRunning}
+          onClose={() => setMigrateTarget(null)}
+          onSuccess={() => void refetch()}
+        />
+      )}
     </div>
   );
 }

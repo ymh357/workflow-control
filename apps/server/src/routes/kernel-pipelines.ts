@@ -94,3 +94,41 @@ kernelPipelinesRoute.get("/kernel/pipelines/:versionHash", (c) => {
     createdAt: meta?.created_at ?? 0,
   });
 });
+
+// 2026-04-27 — env probe for the launcher: tells the UI which of the
+// supplied envKeys are already visible to the server's process.env so
+// the user can leave those password fields blank with confidence. Only
+// returns key NAMES + a boolean `present`; values never leave the
+// server. POST so the keys travel in the body (not a query string).
+//
+// Request:  POST /api/kernel/pipelines/env-probe   { envKeys: string[] }
+// Response: { ok: true, status: { GITHUB_TOKEN: true, FOO: false, ... } }
+kernelPipelinesRoute.post("/kernel/pipelines/env-probe", async (c) => {
+  const raw = await c.req.text();
+  let body: unknown = {};
+  if (raw.trim().length > 0) {
+    try { body = JSON.parse(raw); }
+    catch {
+      return c.json({
+        ok: false,
+        diagnostics: [{ code: "INVALID_JSON_BODY", message: "invalid JSON body" }],
+      }, 400);
+    }
+  }
+  const keys = (body as { envKeys?: unknown }).envKeys;
+  if (!Array.isArray(keys) || !keys.every((k): k is string => typeof k === "string" && k.length > 0)) {
+    return c.json({
+      ok: false,
+      diagnostics: [{
+        code: "INVALID_REQUEST_BODY",
+        message: "envKeys must be a non-empty array of strings",
+      }],
+    }, 400);
+  }
+  const status: Record<string, boolean> = {};
+  for (const k of keys) {
+    const v = process.env[k];
+    status[k] = typeof v === "string" && v.length > 0;
+  }
+  return c.json({ ok: true, status });
+});
