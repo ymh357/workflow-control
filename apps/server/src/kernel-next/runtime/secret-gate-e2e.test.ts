@@ -2,17 +2,21 @@
 //
 // F17 secret-gate end-to-end integration test.
 //
+// PATH A (real runner — deadlock regression test):
+//
+// Calls runPipeline directly with RealStageExecutor against a pipeline whose
+// stage requires F17_E2E_KEY_<suffix> via mcpServers. The envKey is absent
+// from process.env and no envValues are provided, so the executor returns
+// secret_pending. With the F17 fix (dispatch INTERRUPT on secret_pending),
+// runPipeline exits cleanly via the interrupted path. The killer assertion is
+// that runPipeline resolves within the test timeout — if the fix is absent,
+// the machine stays in `executing` and the test times out (deadlock).
+//
 // PATH B (direct executor invocation):
 //
-// The runner fires runPipeline as a fire-and-forget background promise and
-// never resolves while a stage is in secret_pending (the machine is stuck in
-// `executing`). Awaiting runPipeline directly would deadlock the test.
-//
-// Instead this test exercises the secret-gate path by invoking
-// RealStageExecutor.executeStage directly (bypassing the runner/machine loop).
-// This covers 100% of the secret-gate code in real-executor.ts (the path that
-// writes secret_gate_queue and returns secret_pending) and the full
-// KernelService layer for getTaskStatus / provideTaskSecrets.
+// Exercises the secret-gate path by invoking RealStageExecutor.executeStage
+// directly (bypassing the runner/machine loop). Covers the KernelService
+// layer for getTaskStatus / provideTaskSecrets end-to-end.
 //
 // Acceptance signals (per the task spec):
 //  1. After running without F17_TEST_KEY in env, secret_gate_queue row exists
@@ -24,17 +28,18 @@
 //     secret_gate_queue.resolved_at is non-null.
 //  5. After provide, getTaskStatus is no longer "secret_pending".
 //
-// NOTE: F17_TEST_KEY (not GITHUB_TOKEN) is used as the envKey so the test
-// is immune to any real token that may exist in process.env.
+// NOTE: F17_TEST_KEY / F17_E2E_KEY_* (not GITHUB_TOKEN) is used as the
+// envKey so the test is immune to any real token that may exist in process.env.
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 
-import { initKernelNextSchema } from "../ir/sql.js";
+import { initKernelNextSchema, insertPipelineVersion } from "../ir/sql.js";
 import { KernelService } from "../mcp/kernel.js";
 import { RealStageExecutor } from "./real-executor.js";
 import { PortRuntime, type EventDispatcher } from "./port-runtime.js";
+import { runPipeline } from "./runner.js";
 import type { PipelineIR } from "../ir/schema.js";
 
 function noopDispatcher(): EventDispatcher {
@@ -71,6 +76,97 @@ function pipelineNeedingF17TestKey(): PipelineIR {
     wires: [],
   };
 }
+
+// --- PATH A: real runner deadlock-regression test -------------------
+
+describe("F17 secret-gate end-to-end (Path A — real runner)", () => {
+  let db: DatabaseSync;
+
+  beforeEach(() => {
+    db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    // Use a unique envKey per run so no real machine token can accidentally
+    // satisfy it. The suffix makes the key name unique even if tests run in
+    // parallel (vitest worker isolation handles DB; this protects process.env).
+    const uniqueKey = `F17_E2E_KEY_${randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase()}`;
+    delete process.env[uniqueKey];
+    // Store on the instance so the test body can reference it.
+    (db as DatabaseSync & { __f17Key?: string }).__f17Key = uniqueKey;
+  });
+
+  it("runPipeline resolves (no deadlock) and task_finals is NOT written when stage returns secret_pending", async () => {
+    const uniqueKey = (db as DatabaseSync & { __f17Key?: string }).__f17Key!;
+
+    // Build a pipeline with one agent stage that requires the unique envKey.
+    const ir: PipelineIR = {
+      name: "secret-gate-path-a",
+      externalInputs: [],
+      stages: [
+        {
+          name: "gated-stage",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "result", type: "string" }],
+          config: {
+            promptRef: "stub",
+            mcpServers: [
+              {
+                name: "fake-mcp",
+                command: "npx",
+                args: ["-y", "@fake/mcp-server"],
+                envKeys: [uniqueKey],
+                env: { [uniqueKey]: `\${${uniqueKey}}` },
+              },
+            ],
+          },
+        },
+      ],
+      wires: [],
+    };
+
+    const vh = randomUUID().replace(/-/g, "").slice(0, 40);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+
+    const taskId = `path-a-${randomUUID().slice(0, 8)}`;
+
+    const executor = new RealStageExecutor({
+      // Never called — secret_pending fires before any MCP transport is started.
+      mcpServerFactory: () => ({}),
+    });
+
+    // This is the killer assertion: if the INTERRUPT dispatch is absent,
+    // runPipeline will never resolve (the XState machine stays in `executing`)
+    // and the test times out. With the fix, it resolves promptly.
+    const result = await runPipeline({
+      db,
+      ir,
+      taskId,
+      versionHash: vh,
+      handlers: {},
+      executor,
+    }, 15_000); // 15 s safety ceiling — real fix makes it resolve in < 1 s
+
+    // The runner exited via the interrupted path (INTERRUPT dispatched on secret_pending).
+    // finalState may be "failed" (interrupted verdict), which is correct —
+    // the task is paused, not completed.
+    expect(result.finalState).toMatch(/^(failed|completed)$/);
+
+    // CRITICAL: task_finals must NOT be written. The task is paused, not terminal.
+    const finalsRow = db.prepare(
+      `SELECT final_state FROM task_finals WHERE task_id = ?`,
+    ).get(taskId);
+    expect(finalsRow).toBeUndefined();
+
+    // secret_gate_queue row must exist (executor wrote it before returning secret_pending).
+    const sgRow = db.prepare(
+      `SELECT required_keys, resolved_at FROM secret_gate_queue WHERE task_id = ? AND resolved_at IS NULL`,
+    ).get(taskId) as { required_keys: string; resolved_at: number | null } | undefined;
+    expect(sgRow).toBeDefined();
+    expect(JSON.parse(sgRow!.required_keys)).toEqual([uniqueKey]);
+  }, 20_000);
+});
+
+// --- PATH B: direct executor invocation ------------------------------
 
 describe("F17 secret-gate end-to-end (Path B — direct executor invocation)", () => {
   let db: DatabaseSync;

@@ -1091,9 +1091,28 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
           } else if (result.status === "secret_pending") {
             // F17: stage is paused waiting for envKeys. Mark the runner-level
             // flag so the finally block skips task_finals; do NOT push to
-            // stageErrors (this is not a failure), do NOT dispatch
-            // STAGE_FAILED (machine must not advance to its error final).
+            // stageErrors (this is not a failure).
+            //
+            // Dispatch STAGE_FAILED so the machine's stage region transitions
+            // from `executing` to its `error` final, which allows the parallel
+            // top-level machine to reach its own `failed` final, which
+            // resolves the runOneAttempt promise. Without this, the machine
+            // stays in `executing` for the secret-pending stage and
+            // runPipeline deadlocks.
+            //
+            // Note: we intentionally skip pushing to stageErrors (this is
+            // not an error from the pipeline's perspective) and the
+            // secretPendingObserved guard in the finally block ensures
+            // task_finals is never written (the task is paused, not
+            // terminal). The run appears as `failed` internally but no
+            // terminal row is committed; provide_task_secrets will resume
+            // the task via retryTaskFromStage.
             secretPendingObserved = true;
+            dispatcher.send({
+              type: "STAGE_FAILED",
+              stage: input.stageName,
+              error: "secret_pending",
+            });
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
