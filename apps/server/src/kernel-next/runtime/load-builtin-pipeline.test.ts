@@ -63,4 +63,40 @@ describe("loadBuiltinPipelineIR", () => {
     const r = loadBuiltinPipelineIR("pr-description-generator");
     expect(r.ir.session_mode).toBe("single");
   });
+
+  // 2026-04-27 A5 (F20 lock-in): the prompt-writer sub-agent inside the
+  // pipeline-generator's analyzeRequirements stage MUST instruct the
+  // model to inject a TEMPORAL ANCHOR rule into any research / fact-check
+  // / claim-verification stage prompt it generates. The rule was added in
+  // commit 6a80602 after the round-7 Arbitrum dogfood produced a
+  // "Kelp DAO 资产冻结事件 (2026年5月)" hallucination that was a future-
+  // dated projection treated as established fact. If anyone refactors the
+  // prompt and accidentally drops this paragraph, every downstream
+  // research pipeline regresses silently — only a live dogfood would
+  // catch it. This test makes the regression a build failure instead.
+  it("pipeline-generator prompt-writer sub-agent retains the TEMPORAL ANCHOR rule (F20)", () => {
+    const r = loadBuiltinPipelineIR("pipeline-generator");
+    type AgentStageWithSubAgents = {
+      type: string;
+      config: { subAgents?: Array<{ name: string; prompt: string }> };
+    };
+    let promptWriterPrompt: string | undefined;
+    for (const stage of r.ir.stages) {
+      const s = stage as unknown as AgentStageWithSubAgents;
+      if (s.type !== "agent" || !s.config.subAgents) continue;
+      const writer = s.config.subAgents.find((sa) => sa.name === "prompt-writer");
+      if (writer) {
+        promptWriterPrompt = writer.prompt;
+        break;
+      }
+    }
+    expect(promptWriterPrompt).toBeDefined();
+    // The exact phrasing is what gets copied verbatim into generated
+    // prompts; assert on the salient tokens so the test survives minor
+    // wordsmithing while still failing if the rule is removed.
+    expect(promptWriterPrompt).toContain("TEMPORAL ANCHOR");
+    expect(promptWriterPrompt).toContain("research, fact-checking, or claim verification");
+    expect(promptWriterPrompt).toContain("[Projection");
+    expect(promptWriterPrompt).toContain("system date as the report date");
+  });
 });
