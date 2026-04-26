@@ -1,8 +1,9 @@
 # Single-Session Niche Definition
 
-> Date: 2026-04-26
-> Status: **TODO / paused** — niche definition is incomplete. Brainstorming surfaced unresolved fundamental questions (see §10 below). pipeline-generator has been instructed to NEVER emit `session_mode: "single"` until this spec is resolved. The runtime feature itself remains; only the generator's use of it is gated off.
+> Date: 2026-04-26 (last updated 2026-04-27)
+> Status: **§10.4 step 1 DONE → niche feasibility now actually testable.** Sections §10.4 steps 2-3 (run a true niche-internal A/B experiment and re-evaluate the spec with empirical data) remain open. pipeline-generator continues to NOT emit `session_mode: "single"` until that experiment lands. The runtime feature itself remains; only the generator's use of it is gated off.
 > Trigger: 2026-04-26 round 5 dogfood proved the current single-session mode is misapplied to structured-data-flow pipelines (+34% wall, +73% cost vs multi). Brainstorming a niche definition revealed that the boundary between "single is genuinely better" and "single is misapplied" is not yet operationally definable.
+> 2026-04-27 update (A6 of `2026-04-27-followup-session-handoff.md`): the cross-segment-resume pivot called for in §10.4 step 1 has landed (commits `f2429fe..44fc37b`). Multi-session pipelines are now byte-identical regardless of whether single-session segments exist, eliminating the round-5 cost-data contamination. §10.4 is updated to record this. Steps 2-3 are now executable as a focused experimental session — see §10.4.
 
 ---
 
@@ -145,7 +146,7 @@ The reason for the pivot, in one paragraph: when a stage marked `multi` can stil
 2. **Cross-segment resume is opt-in.** Express via the IR field `cross_segment_resume_from: <stageName>` on the receiving stage's `config`. Default behavior across any cross-segment edge: fresh session, typed-port-only data flow.
 3. **Multi-session pipelines must be byte-identical in behavior whether or not the kernel even compiled the single-session code paths.** Pure feature flag: enabling single for some segments must not perturb anything outside those segments.
 
-**Implementation status**: the pivot is decided but not implemented. Code at `runner.ts:1707-1719` still performs cross-segment resume by default. The work to align code with this niche's §6 and the pivot spec is queued as a focused 1-2 day item; see `2026-04-26-cross-segment-resume-pivot.md` §6 for acceptance criteria. Until that work lands, this niche spec's §6 describes the target state, not the current state.
+**Implementation status (2026-04-27 update)**: the pivot has landed. The original `findUpstreamSessionByWires` wire-walk default has been removed; cross-segment resume now requires the IR opt-in field `config.cross_segment_resume_from: <stageName>` on the receiving agent stage, and the structural validator enforces (i) the target stage exists, (ii) the target is an agent stage, (iii) the target is wire-upstream via BFS, (iv) the target lives in a different segment, and (v) the pipeline is multi-mode. The field participates in canonical form / version_hash with hash stability when absent (the canonical JSON omits the key entirely). Multi-mode pipelines that do not set the field are byte-identical in runtime behavior to a build that lacks the single-session code paths entirely — satisfying §6 invariants 1-3. See commits `f2429fe..44fc37b` (11 commits) for the implementation; tests in `apps/server/src/kernel-next/validator/structural.test.ts` and `apps/server/src/kernel-next/runtime/runner.single-session.test.ts` exercise both happy and rejection paths.
 
 ---
 
@@ -280,8 +281,30 @@ A possible escape: pick tasks where the upstream's working state contains specif
 
 Three things must happen in order before this spec can be accepted:
 
-1. **Implement the cross-segment-resume pivot** (`docs/superpowers/specs/2026-04-26-cross-segment-resume-pivot.md`). The pivot reverses the original 2026-04-25 design's default and makes cross-segment resume opt-in. Until single-session's effects are properly bounded by segment-planner output, every empirical measurement is contaminated by spillover into supposedly-multi stages (round 5 evidence). Estimated 1-2 days of focused kernel + IR + test work.
-2. **At least one true niche-internal pipeline implemented and run**. Candidates: a 2-stage explore→propose; a 2-stage critique chain. Run as a clean A/B against a multi+ports equivalent.
-3. **Resume this spec with empirical data**. Re-evaluate §1 (paradigm vs optimization), §7 (performance contract numbers), §9 (acceptance criteria) against actual measurements rather than reasoning.
+1. ✅ **Implement the cross-segment-resume pivot** (commits `f2429fe..44fc37b`, 2026-04-27). Done. Cross-segment resume is now opt-in via the IR field `config.cross_segment_resume_from`. Multi-mode pipelines without the field are byte-identical to a kernel without single-session — eliminating the round-5 cross-segment leak that contaminated all earlier cost measurements. See `docs/superpowers/specs/2026-04-26-cross-segment-resume-pivot.md` (the pivot spec) and `2026-04-27-session-handoff.md` §1 for the implementation summary.
 
-Until then: pipeline-generator does not emit `session_mode: "single"`; the runtime feature stays in place; this spec stays in TODO state as a research breadcrumb.
+2. ⏳ **Run a true niche-internal A/B experiment** (NEXT). Candidate scenarios from §4 (intentionally pre-vetted as niche-positive):
+   - **Explore→propose chain**: a 2-stage pipeline that explores a small codebase (read N files, accumulate intuitions about coupling / smell) and then proposes a refactor. The "what files felt off" working state is the §4 test's open-ended-state requirement.
+   - **Critique chain**: a 2-stage pipeline that proposes a small API design and then critiques it, where the critique stage benefits from knowing which alternatives the proposer considered and rejected (§4 example F).
+
+   The experiment must produce three runs on identical input:
+   - (a) **Bare-SDK baseline**: one continuous Claude Code conversation, no workflow wrapping
+   - (b) **Workflow multi-session**: same logical work split across the same 2 stages, but `session_mode: "multi"`, with the smallest set of typed ports the §4 structurability test would land on
+   - (c) **Workflow single-session**: same 2 stages, `session_mode: "single"`, no extra ports beyond what the work strictly requires
+
+   For each run: capture wall-clock, total cost (USD), input/output tokens, and the terminal artifact (proposal markdown / critique markdown). Score quality via the §7.3 rubric using two independent reviewers (LLM + human, or two LLMs with different system prompts) — record agreement rate, not just average score. The experiment must be designed to make the "attribution" clause of §7.3 verifiable: pre-commit to specific working-state items (e.g., a list of files the explorer considered then ruled out) and check whether the downstream output references them. Without this pre-commitment, the quality contract reduces to circular reasoning per §10.3.
+
+   Estimated cost: ~$5-15 across the 3 runs × 2 scenarios = 6 runs total. Estimated wall-clock: 2-4 hours of focused work to author the pipelines + run + score + write findings. This is a focused research session, not a bug-fix session — it should be scoped explicitly with the outcome (vindicate or kill the niche) called out before starting.
+
+3. ⏳ **Resume this spec with empirical data** (BLOCKED on step 2). Re-evaluate §1 (paradigm vs optimization), §7 (performance contract numbers), §9 (acceptance criteria) against actual measurements rather than reasoning. The current §7 numbers (≤5% baseline overhead, ≤20% multi premium) are placeholders; step 2 either confirms them, tightens them, or rejects them.
+
+**Current state (2026-04-27)**: step 1 is closed; steps 2-3 remain. pipeline-generator continues to NOT emit `session_mode: "single"` (the gate stays in place — the runtime feature is implemented but the generator's automatic use of it is suppressed pending §9 acceptance via step 3). The runtime feature stays compiled in so manual experiments (step 2) can be authored against it without a code-rebuild round-trip.
+
+**Why the gating decision is still right**: the original gating was "we don't know when single helps". Step 1 removed the *contamination* that prevented us from measuring. It did not produce evidence that single helps anywhere — that requires step 2. So the generator gate stays.
+
+**Recommended next session shape** (when someone resumes):
+- Open as "Single-session niche experiment session". Scope: complete §10.4 step 2 + write findings + decide whether to proceed to step 3 or abandon the niche.
+- First action: re-read §0 (the three standards), §2 (criteria), §4 (structurability test), §7 (performance/quality contracts) — these are the rubrics the experiment scores against.
+- Author both candidate pipelines as IR JSON (NOT via pipeline-generator — that path is gated off for `session_mode: "single"`; hand-author or extract from the existing IR collection).
+- Run via the new web launcher (now that it exists post-2026-04-27 B-track) for both modes; capture all metrics from the dashboard's task detail page.
+- The experiment can fail honestly: if the multi+ports run scores as good or better on quality at lower cost, that is a *valid* outcome and means the niche has no real members — at which point the runtime feature should be retired alongside the spec.
