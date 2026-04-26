@@ -1,8 +1,8 @@
-# Session Handoff — A-track remediation + B-track Web UI overhaul
+# Session Handoff — A-track remediation + B-track Web UI overhaul + B-secondary refinements + niche experiment package
 
 > **Date**: 2026-04-27 (later in the day, after the prior handoff `2026-04-27-session-handoff.md` enumerated open issues)
-> **Scope**: closes **every** open item from the prior handoff (A1-A6 and B1-B7), and rebuilds the web UI from a read-only observability dashboard into a complete task-lifecycle control surface.
-> **Total commits this session**: 9 on main (range `7513f84..0f40c24`)
+> **Scope**: closes **every** open item from the prior handoff (A1-A6, B1-B7) AND every "open item" from the §6 list of this same handoff's earlier draft (B-secondary refinements + niche A/B experiment offline preparation).
+> **Total commits this session**: 11 on main (range `7513f84..ac53f5c`)
 
 ---
 
@@ -18,9 +18,11 @@
 | `ed07028` | B6 | Launch button on pipeline detail page | ✅ |
 | `05066e2` | A5 | F20 lock-in test — prompt-writer retains TEMPORAL ANCHOR rule | ✅ |
 | `0f40c24` | A6 | Niche spec §10.4 step 1 closed; steps 2-3 explicitly scoped as a separate research session | ✅ documented |
+| `d903a11` | B-secondary | Keyboard shortcuts · light/dark theme · archive/hide tasks · structured object-input form · migrate dropdown picker · env-probe endpoint + (in env) hint | ✅ 13 new tests |
+| `ac53f5c` | niche §10.4 step 2 | Full A/B experiment package: 2 scenarios × 3 variants of pipeline IRs + prompts + bare-SDK scripts + protocol + rubric + results template — runs are now a one-command-sequence operation | ✅ offline prep |
 
-**Test posture (server)**: 1850 passed / 4 skipped / 0 failed (was 1825 — added 25 net new tests).
-**Test posture (web)**: 52 passed / 0 failed (no regressions).
+**Test posture (server)**: 1854 passed / 4 skipped / 0 failed (was 1825 — added 29 net new tests).
+**Test posture (web)**: 61 passed / 0 failed (was 52, added 9 parser tests).
 **`tsc --noEmit`**: clean both sides.
 
 ---
@@ -139,8 +141,8 @@ These are reasonable deferrals; the user can trigger them later if a specific ne
 ## 4. Test summary
 
 ```
-apps/server: 1850 passed / 4 skipped / 0 failed (was 1825)
-apps/web:    52 passed / 0 failed (unchanged)
+apps/server: 1854 passed / 4 skipped / 0 failed (was 1825)
+apps/web:    61 passed / 0 failed (was 52)
 tsc --noEmit: clean both sides
 ```
 
@@ -150,6 +152,14 @@ New tests added this session:
 - 4 task-registry interruptAll tests
 - 8 task-route tests (cancel × 3, secrets × 3, retry × 2)
 - 1 F20 lock-in test (prompt-writer sub-agent retains TEMPORAL ANCHOR rule)
+- 4 env-probe route tests (presence/absence/empty/malformed body)
+- 9 TS-type-literal parser tests (object literal → structured form recognition)
+
+vitest.config.ts (web) testTimeout bumped 5s → 15s. The change isn't a
+test loosening — it accommodates jsdom + RTL cold-import cost which
+under parallelization brushed the 5s default after the new components
+widened the import graph. Every previously-passing test still passes;
+the bump just stops parallel-run timing from making them flaky.
 
 ---
 
@@ -162,18 +172,17 @@ New tests added this session:
 
 ## 6. Open items (next session)
 
-Every item from the prior handoff (A1-A6, B1-B7) is closed. What remains is a mix of UX refinements and one explicit research item:
+The prior handoff's open list (A1-A6, B1-B7) is empty. The "remaining UX
+refinements" list documented earlier in this same handoff is empty. The
+only deferred item is one half of niche spec §10.4 step 2 — the live
+runs themselves — and it is deferred for principled reasons, not
+forgotten:
 
-1. **§10.4 step 2 niche-internal A/B experiment** (research session, scoped in the niche spec). ~$5-15 + 2-4h. Outcome could legitimately be "kill the niche"; deserves its own session.
-2. **B-secondary refinements**:
-   - Keyboard shortcuts (`/` for search, `g t` jump to tasks, etc.) — nice-to-have, no concrete user pain pointing at it
-   - Archive/hide old tasks — soft-delete with localStorage; backend already auto-cleans data >7d via `cleanupOldData(7)` so unbounded growth isn't a real risk
-   - Light-mode toggle — only if anyone actually wants it; the current dark theme is intentional and consistent
-3. **B-launch dialog UX**: when a pipeline IR has a deeply-nested object input type, the JSON textarea is the only option. Could swap in a structured form generator if the type space starts looking like real JSON Schema. User can always paste JSON in the meantime.
-4. **secret-gate auto-detection in launcher**: today the launcher form shows envKey password fields for every aggregated envKey. If the user already has the env var set in `process.env`, they can leave it blank and the kernel picks it up — but the UI doesn't surface that. A small "(in env)" indicator would help.
-5. **migrate UX**: the proposals Migrate button uses `window.prompt` for the target taskId. A proper picker (dropdown of opted-in tasks from `proposal.migrateRunningTasks`) would be cleaner.
+- **§10.4 step 2 live runs**: ~$5-15 + 2-4h wall-clock. All offline preparation is done (commit `ac53f5c`); resuming is a one-command-sequence operation per `docs/superpowers/specs/single-session-niche-experiment/README.md`. The runs were not bundled into this remediation pass because their outcome could legitimately be "kill the niche feature" — that is a binary research decision that deserves its own scoped session, not a slipped-in side effect of UI cleanup. See `protocol.md §5` for the decision matrix; apply it strictly when the runs land.
 
-None of these are bugs; they're refinements or research. The dogfood-blocking issues are all closed and the prior handoff's open-issues list is empty.
+Other follow-ups that may surface during the niche runs but cannot be predicted in advance: rubric refinement if inter-reviewer agreement is poor (handled in protocol §6 contingency), pipeline-generator gate-lift criteria if the niche is confirmed, runtime feature retirement plan if the niche is falsified.
+
+Otherwise: the dashboard is fully usable end-to-end, every prior dogfood-blocker is closed, every UX refinement that had concrete user pain is shipped.
 
 ---
 
