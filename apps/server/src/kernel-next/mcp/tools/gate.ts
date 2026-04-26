@@ -33,6 +33,32 @@ export function buildGateTools(deps: ToolsDeps): ToolDef[] {
       },
     },
     {
+      name: "provide_task_secrets",
+      description:
+        "Supply secret values (env vars) required by a stage that is paused " +
+        "with status 'secret_pending'. Secrets are written to task_env_values " +
+        "and never echoed back in the response. When all required keys are " +
+        "satisfied the secret gate is marked resolved and the paused stage is " +
+        "automatically retried. If some keys are still missing the response " +
+        "includes a `stillMissing` array so the caller knows what to provide next.",
+      inputSchema: {
+        taskId: z.string(),
+        secrets: z.record(z.string(), z.string()),
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      handler: async (args: any) => {
+        try {
+          const result = await kernel.provideTaskSecrets(
+            String(args.taskId),
+            (args.secrets ?? {}) as Record<string, string>,
+          );
+          return jsonResponse(result);
+        } catch (err) {
+          return errorResponse(err instanceof Error ? err.message : String(err));
+        }
+      },
+    },
+    {
       name: "answer_gate",
       description:
         "Answer an open gate. The answer is validated against the gate " +

@@ -83,7 +83,7 @@ type ToolName =
   | "submit_pipeline" | "validate_pipeline" | "describe_pipeline" | "propose_pipeline_change"
   | "list_proposals" | "approve_proposal" | "reject_proposal"
   | "migrate_task"
-  | "get_task_status" | "list_gates" | "answer_gate"
+  | "get_task_status" | "list_gates" | "answer_gate" | "provide_task_secrets"
   | "read_port" | "query_lineage" | "diff_runs" | "compare_runs"
   | "write_port"
   | "start_pipeline_generator" | "wait_pipeline_result"
@@ -109,7 +109,7 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "describe_pipeline", "propose_pipeline_change",
   "list_proposals", "approve_proposal", "reject_proposal",
   "migrate_task",
-  "get_task_status", "list_gates", "answer_gate",
+  "get_task_status", "list_gates", "answer_gate", "provide_task_secrets",
   "read_port", "query_lineage", "diff_runs", "compare_runs",
   "start_pipeline_generator", "wait_pipeline_result",
   "run_pipeline",

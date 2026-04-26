@@ -77,7 +77,7 @@ describe("kernel-next MCP server", () => {
     expect(existsSync(TSC_PATH)).toBe(true);
   });
 
-  it("combined surface exposes 30 tools with expected names", async () => {
+  it("combined surface exposes 31 tools with expected names", async () => {
     const db = new DatabaseSync(":memory:");
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH, surface: "combined" });
@@ -97,6 +97,7 @@ describe("kernel-next MCP server", () => {
       "migrate_task",
       "propose_pipeline_change",
       "propose_pipeline_fix",
+      "provide_task_secrets",
       "prune_records",
       "query_hot_update_stats",
       "query_lineage",
@@ -670,6 +671,7 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
       "migrate_task",
       "propose_pipeline_change",
       "propose_pipeline_fix",
+      "provide_task_secrets",
       "prune_records",
       "query_hot_update_stats",
       "query_lineage",
@@ -725,7 +727,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     // Phase 4 P4.3 (D4): +1 tool (cancel_task)
     // P1.1 external driver: +1 tool (wait_for_task_event)
     // Phase 2 X1 dogfood: +1 tool (describe_pipeline)
-    expect(tools.size).toBe(30);
+    // F17 secret-gate: +1 tool (provide_task_secrets)
+    expect(tools.size).toBe(31);
     expect(tools.has("write_port")).toBe(true);
     expect(tools.has("submit_pipeline")).toBe(true);
     expect(tools.has("migrate_task")).toBe(true);
@@ -748,8 +751,8 @@ describe("A6: external vs internal MCP surfaces (§9.1 physical separation)", ()
     initKernelNextSchema(db);
     const mcp = createKernelMcp(db, { tscPath: TSC_PATH });
     const tools = getTools(mcp);
-    // 'external' = EXTERNAL_TOOLS only (29 tools after Phase 2 X1; excludes write_port).
-    expect(tools.size).toBe(29);
+    // 'external' = EXTERNAL_TOOLS only (30 tools after F17; excludes write_port).
+    expect(tools.size).toBe(30);
     expect(tools.has("write_port")).toBe(false);
     expect(tools.has("submit_pipeline")).toBe(true);
     db.close();

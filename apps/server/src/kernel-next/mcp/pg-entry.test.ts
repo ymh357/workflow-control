@@ -594,6 +594,83 @@ describe("handleWaitPipelineResult — rollback transparency", () => {
   });
 });
 
+describe("handleWaitPipelineResult — secret_pending", () => {
+  it("returns secret_pending verdict with hint when secret_gate_queue has an unresolved row", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const taskId = "task-secret-1";
+    const ir = realIR();
+
+    const versionHash = "test-vh-secret-1";
+    db.prepare(
+      `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+       VALUES (?, 'test', ?, NULL, '{}', '')`,
+    ).run(versionHash, Date.now());
+
+    // Seed a stage_attempt in secret_pending status.
+    const attemptId = randomUUID();
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status, kind)
+       VALUES (?, ?, ?, 'fetchData', 0, ?, 'secret_pending', 'regular')`,
+    ).run(attemptId, taskId, versionHash, Date.now());
+
+    // Seed an unresolved secret_gate_queue row.
+    db.prepare(
+      `INSERT INTO secret_gate_queue (secret_gate_id, task_id, stage_name, attempt_id, required_keys, created_at)
+       VALUES ('sg-test-1', ?, 'fetchData', ?, '["GITHUB_TOKEN","NPM_TOKEN"]', ?)`,
+    ).run(taskId, attemptId, Date.now());
+
+    // No SSE events published — wait will time out and detect secret_pending via DB query.
+    const res = await handleWaitPipelineResult({ taskId, timeoutMs: 1000 }, { db, broadcaster, ir });
+
+    expect(res.ok).toBe(true);
+    if (!res.ok || res.status !== "secret_pending") {
+      throw new Error(`expected secret_pending, got: ${JSON.stringify(res)}`);
+    }
+    expect(res.pending).toHaveLength(1);
+    expect(res.pending[0].stageName).toBe("fetchData");
+    expect(res.pending[0].requiredKeys).toEqual(["GITHUB_TOKEN", "NPM_TOKEN"]);
+    // Both keys are missing (no task_env_values rows seeded).
+    expect(res.pending[0].stillMissing).toEqual(["GITHUB_TOKEN", "NPM_TOKEN"]);
+    expect(res.hint).toContain("provide_task_secrets");
+    expect(res.hint).toContain("GITHUB_TOKEN");
+    expect(res.hint).toContain("NPM_TOKEN");
+  });
+
+  it("returns running (not secret_pending) when secret_gate_queue row is resolved", async () => {
+    const db = freshDb();
+    const broadcaster = new KernelNextBroadcaster();
+    const taskId = "task-secret-resolved";
+    const ir = realIR();
+
+    const versionHash = "test-vh-secret-resolved";
+    db.prepare(
+      `INSERT INTO pipeline_versions (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+       VALUES (?, 'test', ?, NULL, '{}', '')`,
+    ).run(versionHash, Date.now());
+
+    const attemptId = randomUUID();
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status, kind)
+       VALUES (?, ?, ?, 'fetchData', 0, ?, 'secret_pending', 'regular')`,
+    ).run(attemptId, taskId, versionHash, Date.now());
+
+    // Resolved secret_gate_queue row (resolved_at IS NOT NULL) — should not trigger secret_pending.
+    db.prepare(
+      `INSERT INTO secret_gate_queue (secret_gate_id, task_id, stage_name, attempt_id, required_keys, created_at, resolved_at)
+       VALUES ('sg-resolved', ?, 'fetchData', ?, '["GITHUB_TOKEN"]', ?, ?)`,
+    ).run(taskId, attemptId, Date.now() - 2000, Date.now() - 1000);
+
+    const res = await handleWaitPipelineResult({ taskId, timeoutMs: 1000 }, { db, broadcaster, ir });
+    expect(res.ok).toBe(true);
+    if (!res.ok) throw new Error();
+    // Should fall through to running since the secret gate is resolved.
+    expect(res.status).toBe("running");
+  });
+});
+
 describe("handleWaitPipelineResult — done", () => {
   it("returns done with result fields when run_final completed event arrives", async () => {
     const db = freshDb();

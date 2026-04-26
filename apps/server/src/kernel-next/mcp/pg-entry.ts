@@ -225,6 +225,7 @@ export interface DoneResult {
 export type WaitPipelineResultResult =
   | { ok: true; status: "done"; taskId: string; result: DoneResult }
   | { ok: true; status: "gate_pending"; taskId: string; gateName: string; gateContext: { pipelineDesign: Record<string, unknown> }; hint: string }
+  | { ok: true; status: "secret_pending"; taskId: string; pending: Array<{ secretGateId: string; stageName: string; requiredKeys: string[]; stillMissing: string[]; createdAt: number }>; hint: string }
   | { ok: true; status: "running"; taskId: string; currentStage: string | null; elapsedMs: number; hint: string }
   | { ok: false; status: "error"; taskId: string; error: string; failedStage?: string };
 
@@ -439,6 +440,57 @@ export async function handleWaitPipelineResult(
     // do not arm the timeout.
     if (!settled) {
       timer = setTimeout(() => {
+        // F17: check for secret_pending before falling back to "running".
+        // When a stage is waiting for secrets, the runner exits without
+        // emitting run_final, so wait times out. Detect the paused state
+        // by querying secret_gate_queue directly so we can return a
+        // diagnostic hint without adding KernelService to WaitDeps.
+        try {
+          const sgRows = deps.db
+            .prepare(
+              `SELECT sgq.secret_gate_id, sgq.stage_name, sgq.required_keys, sgq.created_at
+               FROM secret_gate_queue sgq
+               WHERE sgq.task_id = ? AND sgq.resolved_at IS NULL
+               ORDER BY sgq.created_at DESC`,
+            )
+            .all(input.taskId) as Array<{
+              secret_gate_id: string;
+              stage_name: string;
+              required_keys: string;
+              created_at: number;
+            }>;
+          if (sgRows.length > 0) {
+            const havingRows = deps.db
+              .prepare(`SELECT key FROM task_env_values WHERE task_id = ?`)
+              .all(input.taskId) as Array<{ key: string }>;
+            const havingKeys = new Set(havingRows.map((r) => r.key));
+            const pending = sgRows.map((r) => {
+              const requiredKeys: string[] = JSON.parse(r.required_keys);
+              return {
+                secretGateId: r.secret_gate_id,
+                stageName: r.stage_name,
+                requiredKeys,
+                stillMissing: requiredKeys.filter((k) => !havingKeys.has(k)),
+                createdAt: r.created_at,
+              };
+            });
+            const allMissing = pending.flatMap((p) => p.stillMissing);
+            settle({
+              ok: true,
+              status: "secret_pending",
+              taskId: input.taskId,
+              pending,
+              hint:
+                "Task paused: missing required secret keys [" +
+                allMissing.join(", ") +
+                "]. Call provide_task_secrets({taskId, secrets: {KEY: VALUE, ...}}) to supply them, then wait_pipeline_result again.",
+            });
+            return;
+          }
+        } catch {
+          // secret_gate_queue may not exist on older schemas — fall through to running
+        }
+
         let currentStage: string | null = null;
         try {
           const row = deps.db
