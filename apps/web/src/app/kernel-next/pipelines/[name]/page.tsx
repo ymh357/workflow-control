@@ -9,6 +9,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { PromptsEditor } from "../../../../components/prompts-editor";
 import { PipelineGraph } from "../../../../components/pipeline-graph";
+import { LaunchPipelineDialog } from "../../../../components/launch-pipeline-dialog";
+import { CopyButton } from "../../../../components/copy-button";
 import type { PipelineIRLike } from "../../../../lib/ir-to-flow";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
@@ -35,6 +37,7 @@ export default function PipelineEditorPage() {
   const [detail, setDetail] = useState<PipelineDetail | null>(null);
   const [actor, setActor] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [launcherOpen, setLauncherOpen] = useState(false);
 
   useEffect(() => {
     // Prefill actor from localStorage so repeat users don't re-type.
@@ -126,20 +129,40 @@ export default function PipelineEditorPage() {
 
   const externalInputs = detail.ir?.externalInputs ?? [];
   const stageCount = detail.ir?.stages?.length ?? 0;
+  const envKeysSet = new Set<string>();
+  for (const stage of detail.ir?.stages ?? []) {
+    type Mcp = { envKeys?: string[] };
+    type StageWithMcp = { config?: { mcpServers?: Mcp[] } };
+    const cfg = (stage as StageWithMcp).config;
+    for (const m of cfg?.mcpServers ?? []) {
+      for (const k of m.envKeys ?? []) envKeysSet.add(k);
+    }
+  }
+  const envKeys = Array.from(envKeysSet).sort();
 
   return (
     <div className="space-y-6">
-      <header className="space-y-1">
-        <div className="flex items-baseline gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight">{detail.name}</h1>
-          <span className="text-sm text-zinc-500">{stageCount} stages</span>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex items-baseline gap-3">
+            <h1 className="text-2xl font-semibold tracking-tight">{detail.name}</h1>
+            <span className="text-sm text-zinc-500">{stageCount} stages</span>
+          </div>
+          <p className="text-xs text-zinc-500">
+            base version:{" "}
+            <code className="rounded bg-zinc-900 px-1.5 py-0.5 font-mono text-zinc-300">
+              {detail.latestVersion}
+            </code>
+            <CopyButton value={detail.latestVersion} label="copy hash" />
+          </p>
         </div>
-        <p className="text-xs text-zinc-500">
-          base version:{" "}
-          <code className="rounded bg-zinc-900 px-1.5 py-0.5 font-mono text-zinc-300">
-            {detail.latestVersion}
-          </code>
-        </p>
+        <button
+          type="button"
+          onClick={() => setLauncherOpen(true)}
+          className="rounded border border-blue-600 bg-blue-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-400"
+        >
+          Launch →
+        </button>
       </header>
 
       {externalInputs.length > 0 && (
@@ -197,6 +220,19 @@ export default function PipelineEditorPage() {
           onSubmit={handleSubmit}
         />
       </section>
+
+      {launcherOpen && (
+        <LaunchPipelineDialog
+          open={true}
+          pipeline={{
+            name: detail.name,
+            latestVersion: detail.latestVersion,
+            externalInputs: externalInputs.map((p) => ({ name: p.name, type: p.type })),
+            envKeys,
+          }}
+          onClose={() => setLauncherOpen(false)}
+        />
+      )}
     </div>
   );
 }
