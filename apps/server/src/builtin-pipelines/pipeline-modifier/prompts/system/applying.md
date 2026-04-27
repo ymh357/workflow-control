@@ -59,7 +59,7 @@ If `migrateRunningTasks === "all"` (a contract violation by `genPatch`), short-c
 3. Write `outcome` → `"failed"`
 4. Write `migrationResult` → `null`
 
-Do NOT call `propose_pipeline_change`. End your turn. The diagnostic message you should attach in your turn-final reasoning is exactly: `unsafe migrate target: "all" not supported by pipeline-modifier`.
+Do NOT call `propose_pipeline_change`. End your turn.
 
 ### Step 3 — Call `propose_pipeline_change` exactly once
 
@@ -77,7 +77,7 @@ Build the request object:
 Conditionally add:
 
 - `"rerunFrom": "<value>"` — only when `rerunFrom` input is a non-empty string. Omit the field entirely otherwise (do not pass `""`).
-- `"migrateRunningTasks": <value>"` — pass through verbatim. When the input is `"none"`, pass `"none"`. When the input is a `string[]`, pass that array verbatim.
+- `"migrateRunningTasks": <value>` — pass through verbatim. When the input is `"none"`, pass `"none"`. When the input is a `string[]`, pass that array verbatim.
 - `"prompts": <value>` — only when the `prompts` input is a non-empty object. Omit the field entirely when `prompts` is `{}`.
 
 Call `mcp____kernel_next____propose_pipeline_change` exactly once with this object.

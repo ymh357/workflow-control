@@ -155,6 +155,7 @@ Write `failureBundle` exactly as:
 
 ```json
 {
+  "taskId": "<failureContext.taskId>",
   "failedStage": "<failedStageName>",
   "errorMessage": "<errorMessage>",
   "lineagePreview": [
@@ -164,7 +165,7 @@ Write `failureBundle` exactly as:
 }
 ```
 
-Do not add other keys. Do not nest the diagnostic shape from Step 1 inside this bundle — that shape is reserved for the rejection/fetch-failure paths.
+Include `taskId: failureContext.taskId` verbatim from the input so downstream stages can reference the originating task. Do not add other keys. Do not nest the diagnostic shape from Step 1 inside this bundle — that shape is reserved for the rejection/fetch-failure paths.
 
 End your turn.
 
@@ -174,7 +175,7 @@ End your turn.
 
 1. `null` — no diagnosis attached. Used when `failureContext` was `null`, `taskId` was missing, or the task could not be located.
 2. `{ "diagnostic": { code, message, ... } }` — used by Step 1 (self-modification rejection) and Step 2 (`get_pipeline_definition` failure). Downstream treats this as a hard stop signal.
-3. `{ "failedStage": string, "errorMessage": string, "lineagePreview": Array<{ stage, port, valuePreview }> }` — the full failure-investigation bundle from Step 4.
+3. `{ "taskId": string, "failedStage": string, "errorMessage": string, "lineagePreview": Array<{ stage, port, valuePreview }> }` — the full failure-investigation bundle from Step 4. `taskId` is copied verbatim from `failureContext.taskId`.
 
 ## Worked example — populated `failureBundle`
 
@@ -182,6 +183,7 @@ Given `failureContext = { "taskId": "t-42", "failedStageName": "collectSources" 
 
 ```json
 {
+  "taskId": "t-42",
   "failedStage": "collectSources",
   "errorMessage": "fetch failed: ECONNREFUSED https://example.com",
   "lineagePreview": [

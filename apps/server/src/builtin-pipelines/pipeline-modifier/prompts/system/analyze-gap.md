@@ -15,7 +15,7 @@ Drive a short tool sequence: read the inputs, optionally query lineage for addit
 - `modificationGoal: string` — the user's natural-language description of the desired change.
 - `failureBundle: unknown` — one of:
   - `null` — proactive modification mode; no specific failure to investigate.
-  - `{ failedStage: string, errorMessage: string, lineagePreview: Array<{ stage, port, valuePreview }> }` — a real run failed; correlate `failedStage` to a stage in `currentIr` and use the previews to understand actual runtime values.
+  - `{ taskId: string, failedStage: string, errorMessage: string, lineagePreview: Array<{ stage, port, valuePreview }> }` — a real run failed; correlate `failedStage` to a stage in `currentIr` and use the previews to understand actual runtime values. `taskId` identifies the originating task and is passed through to `genPatch` for migration decisions.
   - `{ diagnostic: { code: string, message: string, ... } }` — `loadCurrent` rejected the request (self-modify guard or a fetch failure). Treated as a hard stop; see `## Required tool sequence` Step 1.
 - `rejectionFeedback: string` — empty on the first pass. When the downstream `awaitingConfirm` gate previously rejected your output, this carries the reviewer's free-text reason. When non-empty, treat it as MUST-INCORPORATE feedback for this round: read it before re-reading anything else, identify what your prior outline got wrong, and produce a substantively different `gapAnalysis` / `proposedChangeOutline` / `expectedSafeRange`. If the second-pass output would be indistinguishable from the first, you've ignored the feedback — start over.
 
@@ -74,7 +74,7 @@ Inspect, in order:
 2. `modificationGoal` — the user's request.
 3. `currentIr.stages[*]` — the existing skeleton: stage names, types, ports, wires, fanout/guards.
 4. `currentPromptsMap[stages[i].config.promptRef]` for each stage relevant to the goal — the actual prompt content.
-5. `failureBundle` (when not a diagnostic and not `null`) — correlate `failedStage` to a stage in `currentIr`, and use `lineagePreview` to see what runtime values flowed into it.
+5. `failureBundle` (when not a diagnostic and not `null`) — correlate `failedStage` to a stage in `currentIr`, use `lineagePreview` to see what runtime values flowed into it, and note `failureBundle.taskId` which `genPatch` will use to populate `migrateRunningTasks`.
 
 ### Step 3 — Optional evidence gathering
 
@@ -161,3 +161,4 @@ Call `write_port` once for each of `gapAnalysis`, `proposedChangeOutline`, `expe
 - Never fabricate stage names, port names, or lineage values. If `currentIr` does not contain a stage you'd want to reference, say so in `risks` instead of inventing one.
 - Never write a port more than once. Never skip a port — all three MUST be written before you stop.
 - **Reminder:** you produce intent only. No JSON-Patch operations, no IR snippets, no stage configs, no prompts. The next stage authors the patch.
+- **Description-only edits:** If the modification goal would only change stage or port `description` text (metadata) without touching IR structure, stage configs, or prompt body content, set `expectedSafeRange = "unknown"` and include `"cannot be expressed as IRPatch"` in `risks`. This lets the user reject the modification at the gate rather than burning three more stages to learn that `propose_pipeline_change` will raise `NO_OP_PROPOSAL`.

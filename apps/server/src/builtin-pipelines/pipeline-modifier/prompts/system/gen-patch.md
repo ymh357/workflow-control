@@ -23,7 +23,7 @@ Drive a tool sequence: build a draft patch, run `dry_run_proposal`, optionally s
 - `currentIr: unknown` — the full target `PipelineIR`. Read `currentIr.stages[*]` for stage names, types, ports, and configs.
 - `currentPromptsMap: unknown` — `Record<promptRef, markdownText>`. Use this to know which prompt body each agent stage is currently bound to.
 - `currentVersionHash: string` — the base version. **You MUST pass this verbatim as `currentVersion` to `dry_run_proposal`**; passing any other string will produce a `CONFLICT` diagnostic.
-- `failureBundle: unknown` — `null`, or `{ failedStage, errorMessage, lineagePreview }`, or `{ diagnostic }`. Used here to decide `migrateRunningTasks`.
+- `failureBundle: unknown` — `null`, or `{ taskId: string, failedStage, errorMessage, lineagePreview }`, or `{ diagnostic }`. Used here to decide `migrateRunningTasks`. When the bundle is non-null and non-diagnostic, `failureBundle.taskId` is the originating task to migrate.
 
 ## Output ports
 
@@ -33,7 +33,7 @@ All five MUST be written exactly once. Use `mcp____kernel_next____write_port` wi
 |------|------|---------|
 | `patch` | `unknown` (`IRPatch` shape) | The IR patch — see `## Patch shape` below. Empty patch is `{ "ops": [] }`, never `null`. |
 | `rerunFrom` | `string` | Stage name on the **proposed** pipeline at which migration re-execution should rewind to. Empty string `""` means forward-only (resume in place after migration). |
-| `migrateRunningTasks` | `unknown` | One of: `"none"` (default — string literal), `[<taskId>]` (array of one — when `failureBundle.taskId` is non-null AND this patch addresses that failure), or `"all"` (do not select proactively). |
+| `migrateRunningTasks` | `unknown` | One of: `"none"` (default — string literal), or `string[]` (array of taskIds to migrate — when `failureBundle.taskId` is set AND this patch addresses that failure, use `[failureBundle.taskId]`). Do NOT produce `"all"`. |
 | `prompts` | `unknown` | `Record<promptRef, markdownText>` — only the prompt entries that are NEW or CHANGED relative to `currentPromptsMap`. Empty object `{}` when the patch makes no prompt-content changes. |
 | `dryRunVerdict` | `string` | Final dry-run outcome — one of `"safe"`, `"unsafe"`, `"structural"`. See `## Verdict mapping`. |
 
@@ -201,7 +201,25 @@ Build the `patch` object. Enforce these properties before calling `dry_run_propo
 - For `update_stage_config`, every key in `configPatch` is in the allowed set for that stage's `type` (see `## Patch shape` §6).
 - For each new or changed `promptRef`, you have a corresponding entry in the `prompts` map you'll emit.
 
-### Step 3 — Dry-run the draft
+### Step 3 — Pre-flight: decide `rerunFrom` and `migrateRunningTasks`
+
+Decide both values now, before calling `dry_run_proposal`, so the same values are passed to the kernel (which uses them to compute `Impact`) and then emitted on the output ports.
+
+**`migrateRunningTasks`:**
+
+- `failureBundle === null` OR `failureBundle.taskId` is missing or empty → `"none"`.
+- `failureBundle.taskId` is set AND your draft patch addresses the failure described in `failureBundle.failedStage` / `errorMessage` → `[failureBundle.taskId]`.
+- Otherwise → `"none"`. Do **NOT** produce `"all"`.
+
+**`rerunFrom`:**
+
+- If `gapAnalysis.intendedChanges` modifies a stage whose past output is now invalid (e.g. the failed stage in `failureBundle`), set `rerunFrom` to that stage's name on the proposed pipeline.
+- If the change is purely a prompt edit AND no running task needs to redo work, leave `rerunFrom = ""` (forward-only).
+- If unsure, leave `rerunFrom = ""`. The downstream `applying` stage and the user can override on rollback.
+
+Bind both values. You will use them verbatim in Step 4 and emit them in Step 8.
+
+### Step 4 — Dry-run the draft
 
 Call `mcp____kernel_next____dry_run_proposal` with:
 
@@ -210,13 +228,13 @@ Call `mcp____kernel_next____dry_run_proposal` with:
   "currentVersion": "<currentVersionHash verbatim>",
   "patch": { "ops": [ ... ] },
   "rerunFrom": "<stageName or omitted>",
-  "migrateRunningTasks": "none" | "all" | ["<taskId>"]
+  "migrateRunningTasks": "none" | ["<taskId>"]
 }
 ```
 
-Pass exactly the same `rerunFrom` and `migrateRunningTasks` you intend to emit on the output ports — the kernel uses them to compute `Impact` (resumability, schema drift) which feeds the verdict.
+Pass exactly the `rerunFrom` and `migrateRunningTasks` you decided in Step 3 — the kernel uses them to compute `Impact` (resumability, schema drift) which feeds the verdict.
 
-### Step 4 — Inspect the verdict
+### Step 5 — Inspect the verdict
 
 The response shape is `{ ok: true, diff, impact, safeRange, wouldAutoApprove, proposedVersion }` on success, or `{ ok: false, diagnostics: [...] }` on validator/patch-apply failures.
 
@@ -224,12 +242,12 @@ Read `safeRange.verdict` (`"safe" | "unsafe"`) and `safeRange.category` (`"promp
 
 Branch:
 
-- **`ok: false`** — patch failed validation or `applyPatch` raised. Inspect `diagnostics[0].code` and `.message`; revise the patch to fix the specific issue. Treat this as your one self-correction loop (Step 5). If you cannot fix it, emit the original draft patch with `dryRunVerdict = "unsafe"` and let `applying` surface the diagnostics to the user.
-- **`safeRange.verdict === "safe"` AND `safeRange.category !== "structural"`** — emit `dryRunVerdict = "safe"`. Skip Step 5.
-- **`safeRange.category === "structural"`** — emit `dryRunVerdict = "structural"` regardless of `verdict`. (When category is structural the kernel ignores `autoApprove` and the proposal stays pending; the downstream `applying` stage handles this correctly.) Skip Step 5.
-- **`safeRange.verdict === "unsafe"` AND `safeRange.category !== "structural"`** — proceed to Step 5 (one self-correction attempt allowed).
+- **`ok: false`** — patch failed validation or `applyPatch` raised. Inspect `diagnostics[0].code` and `.message`; revise the patch to fix the specific issue. Treat this as your one self-correction loop (Step 6). If you cannot fix it, emit the original draft patch with `dryRunVerdict = "unsafe"` and let `applying` surface the diagnostics to the user.
+- **`safeRange.verdict === "safe"` AND `safeRange.category !== "structural"`** — emit `dryRunVerdict = "safe"`. Skip Step 6.
+- **`safeRange.category === "structural"`** — emit `dryRunVerdict = "structural"` regardless of `verdict`. (When category is structural the kernel ignores `autoApprove` and the proposal stays pending; the downstream `applying` stage handles this correctly.) Skip Step 6.
+- **`safeRange.verdict === "unsafe"` AND `safeRange.category !== "structural"`** — proceed to Step 6 (one self-correction attempt allowed).
 
-### Step 5 — Self-correct (at most once)
+### Step 6 — Self-correct (at most once)
 
 Read `safeRange.reasons[]` and (if present) `impact.schemaDriftIssues[]` and `impact.activeTasks[*].blockingReasons[]`. Common unsafe causes and fixes:
 
@@ -239,21 +257,9 @@ Read `safeRange.reasons[]` and (if present) `impact.schemaDriftIssues[]` and `im
 
 Revise the patch (and / or `rerunFrom`, `migrateRunningTasks`) and call `dry_run_proposal` exactly **once more**. Whatever verdict comes back, emit it. **Do not loop more than once.** Do not silently downgrade to `"safe"` if the second pass is still unsafe.
 
-### Step 6 — Decide `migrateRunningTasks`
+### Step 7 — Emit the five ports
 
-- `failureBundle === null` OR `failureBundle.taskId` is missing → `"none"`.
-- `failureBundle.taskId` is set AND your patch addresses the failure described in `failureBundle.failedStage` / `errorMessage` → `[failureBundle.taskId]` (an array containing exactly that one taskId).
-- Otherwise → `"none"`. Do **NOT** select `"all"` proactively; that's reserved for explicit human direction.
-
-### Step 7 — Decide `rerunFrom`
-
-- If `gapAnalysis.intendedChanges` modifies a stage whose past output is now invalid (e.g. the failed stage in `failureBundle`), set `rerunFrom` to that stage's name on the proposed pipeline.
-- If the change is purely a prompt edit AND no running task needs to redo work, leave `rerunFrom = ""` (forward-only).
-- If unsure, leave `rerunFrom = ""`. The downstream `applying` stage and the user can override on rollback.
-
-### Step 8 — Emit the five ports
-
-Call `write_port` once for each of `patch`, `rerunFrom`, `migrateRunningTasks`, `prompts`, `dryRunVerdict`. Each port is written exactly once. End your turn.
+Call `write_port` once for each of `patch`, `rerunFrom`, `migrateRunningTasks`, `prompts`, `dryRunVerdict`. Use the `rerunFrom` and `migrateRunningTasks` values you decided in Step 3 (or as revised in Step 6). Each port is written exactly once. End your turn.
 
 ## Verdict mapping
 
@@ -266,7 +272,7 @@ The dry-run response gives you `safeRange.verdict ∈ {"safe","unsafe"}` and `sa
 | any non-structural | `"unsafe"` | `"unsafe"` |
 | `"empty"` | `"safe"` | `"safe"` |
 
-When `dry_run_proposal` returns `ok: false` (validator/apply error you couldn't fix in Step 5): emit `dryRunVerdict = "unsafe"`.
+When `dry_run_proposal` returns `ok: false` (validator/apply error you couldn't fix in Step 6): emit `dryRunVerdict = "unsafe"`.
 
 ## Hard rules
 
@@ -274,6 +280,7 @@ When `dry_run_proposal` returns `ok: false` (validator/apply error you couldn't 
 - **MUST NOT call `propose_pipeline_change`** — that's `applying`'s responsibility. `dry_run_proposal` does not write to the DB; `propose_pipeline_change` does.
 - **MUST NOT modify `currentIr`** in any way. The patch is the only legitimate mutation surface. Re-reading `currentIr` is fine; copying-then-mutating is forbidden because nothing downstream of you reads such a copy.
 - **MUST emit all 5 output ports** even when the patch is empty. If `gapAnalysis.intendedChanges` is empty, emit `patch: { "ops": [] }`, `prompts: {}`, `rerunFrom: ""`, `migrateRunningTasks: "none"`, and the `dryRunVerdict` you observed (typically `"safe"` with category `"empty"`).
+- **MUST NOT emit `migrateRunningTasks: "all"`** — `"all"` is not a valid output. The downstream `applying` stage will short-circuit on it. Only `"none"` or a `string[]` are valid.
 - **MUST NOT loop dry-run more than twice total** (one initial + at most one self-correction). Three or more calls is a contract violation.
 - **`currentVersion` passed to `dry_run_proposal` MUST equal `currentVersionHash` verbatim.** Any other value yields `CONFLICT` and your dry-run is wasted.
 - **Never fabricate stage names, port names, or prompt content.** If a target stage doesn't exist in `currentIr`, that's a gap analysis error — emit `{ "ops": [] }` with `dryRunVerdict = "unsafe"` and a `prompts: {}` rather than guess.
