@@ -51,7 +51,7 @@
         },
         {
           "name": "recommendedMcps",
-          "type": "object[]"
+          "type": "Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>"
         },
         {
           "name": "recommendedSkills",
@@ -166,7 +166,7 @@
         },
         {
           "name": "recommendedMcps",
-          "type": "object[]"
+          "type": "Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>"
         },
         {
           "name": "recommendedSkills",
@@ -257,7 +257,7 @@
         },
         {
           "name": "recommendedMcps",
-          "type": "object[]"
+          "type": "Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>"
         },
         {
           "name": "recommendedSkills",
@@ -352,7 +352,7 @@
         },
         {
           "name": "recommendedMcps",
-          "type": "object[]"
+          "type": "Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>"
         },
         {
           "name": "recommendedSkills",
