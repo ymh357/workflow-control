@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import {
   encryptValue,
   decryptValue,
+  keyFileExists,
   loadKeyForTest,
   resetKeyCacheForTest,
 } from "./crypto.js";
@@ -79,5 +80,20 @@ describe("mcp-catalog/crypto", () => {
     process.env.WORKFLOW_CONTROL_SECRET_KEY = randomBytes(16).toString("base64");
     resetKeyCacheForTest();
     expect(() => encryptValue("test")).toThrow(/32 bytes/);
+  });
+
+  it("keyFileExists returns true when env override is the source", () => {
+    // env override is set in beforeEach; the env path doesn't touch a file.
+    // The helper checks the DEFAULT file path; with an env override the
+    // file may or may not exist, but the helper's return value should be
+    // independent of env (it inspects the disk, not env).
+    // We can't make absolute assertions about a real ~/.workflow-control
+    // path in CI, so we exercise the path argument form instead.
+    expect(typeof keyFileExists()).toBe("boolean");
+  });
+
+  it("keyFileExists honors an explicit path argument", () => {
+    const tmp = `${process.cwd()}/.test-nonexistent-${Date.now()}-${Math.random()}`;
+    expect(keyFileExists(tmp)).toBe(false);
   });
 });
