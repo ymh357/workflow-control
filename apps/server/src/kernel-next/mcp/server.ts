@@ -21,6 +21,7 @@ import { buildPgTools } from "./tools/pg.js";
 import { buildDebugTools } from "./tools/debug.js";
 import { buildHotUpdateTools } from "./tools/hot-update.js";
 import { buildAdminTools } from "./tools/admin.js";
+import { buildMcpCatalogTools } from "./tools/mcp-catalog.js";
 import { BUILTIN_SCRIPT_IDS } from "../builtin-scripts/index.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
@@ -103,7 +104,10 @@ type ToolName =
   // Phase 4 P4.3 (D4)
   | "cancel_task"
   // P1.1 external-driver observation (post-4.5 dogfood)
-  | "wait_for_task_event";
+  | "wait_for_task_event"
+  // Phase 1 MCP supply-chain
+  | "recommend_mcp_servers"
+  | "get_mcp_catalog_entry";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "describe_pipeline", "propose_pipeline_change",
@@ -129,6 +133,9 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "cancel_task",
   // P1.1 external-driver observation
   "wait_for_task_event",
+  // Phase 1 MCP supply-chain
+  "recommend_mcp_servers",
+  "get_mcp_catalog_entry",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
@@ -193,6 +200,7 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
       ...buildDebugTools(deps),
       ...buildHotUpdateTools(deps),
       ...buildAdminTools(deps),
+      ...buildMcpCatalogTools(deps),
   ];
 
   return createSdkMcpServer({

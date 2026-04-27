@@ -22,6 +22,7 @@ import { kernelRunRoute } from "./routes/kernel-run.js";
 import { kernelMcpRoute } from "./routes/kernel-mcp.js";
 import { kernelTaskListRoute } from "./routes/kernel-task-list.js";
 import { kernelTaskPortsRoute } from "./routes/kernel-task-ports.js";
+import { createKernelMcpCatalogRoute } from "./routes/kernel-mcp-catalog.js";
 import { runPreflight, printPreflightResults } from "./lib/preflight.js";
 import { logger } from "./lib/logger.js";
 import { loadSystemSettings } from "./lib/config-loader.js";
@@ -161,6 +162,24 @@ startPeriodicCleanup();
   installBuiltinPipelines();
 }
 
+// --- Seed MCP catalog builtins ---
+{
+  const { seedBuiltinFromJson } = await import("./kernel-next/mcp-catalog/seed.js");
+  const catalogJsonPath = join(
+    import.meta.dirname ?? new URL(".", import.meta.url).pathname,
+    "kernel-next/mcp-catalog/entries.json",
+  );
+  const seedResult = seedBuiltinFromJson(getKernelNextDb(), catalogJsonPath);
+  if (!seedResult.ok) {
+    logger.error({ error: seedResult.error }, "[mcp-catalog] seed failed");
+  } else {
+    logger.info(
+      { inserted: seedResult.inserted, updated: seedResult.updated, deprecated: seedResult.deprecated },
+      "[mcp-catalog] seed complete",
+    );
+  }
+}
+
 // --- Resume orphan tasks ---
 // Scans for tasks without a task_finals row (runner crashed, graceful
 // shutdown, etc.). Each orphan is either resumed via startPipelineRun
@@ -259,6 +278,7 @@ app.route("/api", kernelRunRoute);
 app.route("/api", kernelMcpRoute);
 app.route("/api", kernelTaskListRoute);
 app.route("/api", kernelTaskPortsRoute);
+app.route("/api", createKernelMcpCatalogRoute(getKernelNextDb));
 
 const port = Number(process.env.PORT ?? 3001);
 
