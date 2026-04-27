@@ -54,6 +54,21 @@ describe("CatalogEntrySchema", () => {
     const bad = { ...validEntry, source: "marketplace" };
     expect(CatalogEntrySchema.safeParse(bad).success).toBe(false);
   });
+
+  it("rejects id with trailing hyphen", () => {
+    const bad = { ...validEntry, id: "etherscan-" };
+    expect(CatalogEntrySchema.safeParse(bad).success).toBe(false);
+  });
+
+  it("rejects id with consecutive hyphens", () => {
+    const bad = { ...validEntry, id: "ether--scan" };
+    expect(CatalogEntrySchema.safeParse(bad).success).toBe(false);
+  });
+
+  it("accepts entry with empty envKeys array", () => {
+    const noSecret = { ...validEntry, envKeys: [] };
+    expect(CatalogEntrySchema.safeParse(noSecret).success).toBe(true);
+  });
 });
 
 describe("RecommendResultSchema", () => {
@@ -87,5 +102,6 @@ describe("CATALOG_DIAGNOSTIC_CODES", () => {
     expect(CATALOG_DIAGNOSTIC_CODES).toContain("CATALOG_ENTRY_ID_CONFLICT");
     expect(CATALOG_DIAGNOSTIC_CODES).toContain("CATALOG_INVALID_ENTRY");
     expect(CATALOG_DIAGNOSTIC_CODES).toContain("CATALOG_BUILTIN_NOT_WRITABLE");
+    expect(CATALOG_DIAGNOSTIC_CODES.length).toBe(4);
   });
 });

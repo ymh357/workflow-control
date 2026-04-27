@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const KEBAB_ID = /^[a-z][a-z0-9-]*$/;
+const KEBAB_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
 export const CatalogEntrySchema = z.object({
   id: z.string().min(1).max(64).regex(KEBAB_ID, "id must be kebab-case lowercase"),
@@ -10,7 +10,7 @@ export const CatalogEntrySchema = z.object({
   name: z.string().min(1).max(128),
   description: z.string().min(1).max(1024),
   useCases: z.array(z.string().min(1)).min(1),
-  tags: z.array(z.string().min(1)).min(0),
+  tags: z.array(z.string().min(1)),
   homepage: z.string().url().optional(),
 
   command: z.string().min(1),
@@ -21,15 +21,15 @@ export const CatalogEntrySchema = z.object({
     name: z.string().min(1).max(128),
     required: z.boolean(),
     description: z.string(),
-    obtainUrl: z.string().url(),
-    obtainSteps: z.string(),
+    obtainUrl: z.string().url().optional(),
+    obtainSteps: z.string().optional(),
   })),
 
   healthCheckTimeoutMs: z.number().int().positive(),
 
   toolsPreview: z.array(z.object({
-    name: z.string(),
-    brief: z.string(),
+    name: z.string().min(1),
+    brief: z.string().min(1),
   })).optional(),
 
   deprecatedAt: z.number().int().positive().optional(),
