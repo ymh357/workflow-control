@@ -61,16 +61,22 @@ describe("runSecretKeyRecovery", () => {
     writeInventoryStatus(db, "playwright", "equipped");
     // playwright has no secrets — but it's an equipped row; we still mark it
     // unhealthy because the key loss casts doubt on the system as a whole.
+    writeInventoryStatus(db, "linear", "pending-secret");
+    // pending-secret rows must also be flipped to unhealthy on key loss —
+    // they had a partial config; after key loss, that partial config is
+    // unverifiable just like equipped rows.
 
     const r = runSecretKeyRecovery(db, { keyFileExists: () => false });
     expect(r.recovered).toBe(true);
-    expect(r.affectedRows).toBe(3);
+    expect(r.affectedRows).toBe(4);
 
     expect(readInventoryRow(db, "etherscan")?.status).toBe("unhealthy");
     expect(readInventoryRow(db, "etherscan")?.lastUnhealthyReason).toBe("encryption-key-lost");
     expect(readInventoryRow(db, "github")?.status).toBe("unhealthy");
     expect(readInventoryRow(db, "github")?.lastUnhealthyReason).toBe("encryption-key-lost");
     expect(readInventoryRow(db, "playwright")?.status).toBe("unhealthy");
+    expect(readInventoryRow(db, "linear")?.status).toBe("unhealthy");
+    expect(readInventoryRow(db, "linear")?.lastUnhealthyReason).toBe("encryption-key-lost");
   });
 
   it("idempotent: running twice returns affectedRows=0 on the second pass", () => {

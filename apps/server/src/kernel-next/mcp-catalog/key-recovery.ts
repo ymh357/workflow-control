@@ -88,10 +88,12 @@ export function runSecretKeyRecovery(
       return { recovered: false, reason: "no-equipped-rows", affectedRows: 0 };
     }
     return { recovered: true, affectedRows: affected };
-  } catch {
-    // Never crash startup. The catch is intentionally empty — any failure
-    // here is recovered by the regular Phase 2 decrypt-fails-loud path
-    // when an actual task tries to use a secret.
+  } catch (e) {
+    // Never crash startup, but DO log so an operator has a breadcrumb.
+    console.warn(
+      "[mcp-catalog] key-recovery guard failed — falling back to decrypt-time error path:",
+      e instanceof Error ? e.message : String(e),
+    );
     return { recovered: false, reason: "no-tables", affectedRows: 0 };
   }
 }

@@ -1,8 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { initCatalogSchema } from "./sql.js";
 import { initInventorySchema } from "./inventory-sql.js";
 import { insertBuiltinEntry } from "./catalog-store.js";
@@ -22,13 +19,11 @@ const ETHERSCAN = {
 };
 
 describe("inventory recovery — equip then simulate key loss", () => {
-  let tmpDir: string;
   let prevEnv: string | undefined;
 
   beforeEach(() => {
     prevEnv = process.env[ENV_OVERRIDE];
     delete process.env[ENV_OVERRIDE];
-    tmpDir = mkdtempSync(join(tmpdir(), "phase4-recovery-"));
     process.env[ENV_OVERRIDE] = Buffer.alloc(32, 5).toString("base64");
     resetKeyCacheForTest();
   });
@@ -36,7 +31,6 @@ describe("inventory recovery — equip then simulate key loss", () => {
     if (prevEnv === undefined) delete process.env[ENV_OVERRIDE];
     else process.env[ENV_OVERRIDE] = prevEnv;
     resetKeyCacheForTest();
-    rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("equip → key-file disappears → recovery flips status to unhealthy with right reason", async () => {

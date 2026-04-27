@@ -82,7 +82,7 @@ describe("mcp-catalog/crypto", () => {
     expect(() => encryptValue("test")).toThrow(/32 bytes/);
   });
 
-  it("keyFileExists returns true when env override is the source", () => {
+  it("keyFileExists returns a boolean for the default path", () => {
     // env override is set in beforeEach; the env path doesn't touch a file.
     // The helper checks the DEFAULT file path; with an env override the
     // file may or may not exist, but the helper's return value should be
