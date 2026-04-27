@@ -35,6 +35,8 @@ export const SecretGatePanel = ({ taskId, onResolved }: SecretGatePanelProps) =>
   const [values, setValues] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [diagnostics, setDiagnostics] = useState<ApiDiagnostic[]>([]);
+  const [inventoryMap, setInventoryMap] = useState<Record<string, string | null>>({});
+  const [persistChecked, setPersistChecked] = useState<Record<string, boolean>>({});
 
   const refresh = async (): Promise<void> => {
     const res = await apiFetch<{ pending: PendingSecretGate[] }>(
@@ -53,6 +55,16 @@ export const SecretGatePanel = ({ taskId, onResolved }: SecretGatePanelProps) =>
     return () => clearInterval(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskId]);
+
+  useEffect(() => {
+    if (!pending || pending.length === 0) return;
+    const allKeys = new Set<string>();
+    for (const p of pending) for (const k of p.stillMissing) allKeys.add(k);
+    if (allKeys.size === 0) return;
+    void apiFetch<{ mapping: Record<string, string | null> }>(
+      `/api/kernel/mcp-catalog/lookup-by-envkey?names=${[...allKeys].map(encodeURIComponent).join(",")}`,
+    ).then((r) => { if (r.ok) setInventoryMap(r.data.mapping); });
+  }, [pending]);
 
   if (pending === null || pending.length === 0) return null;
 
@@ -78,9 +90,14 @@ export const SecretGatePanel = ({ taskId, onResolved }: SecretGatePanelProps) =>
     }
     setSubmitting(true);
     setDiagnostics([]);
+    const persistAs: Record<string, { entryId: string }> = {};
+    for (const k of Object.keys(secrets)) {
+      const eid = inventoryMap[k];
+      if (typeof eid === "string" && persistChecked[k]) persistAs[k] = { entryId: eid };
+    }
     const res = await apiFetch(`/api/kernel/tasks/${encodeURIComponent(taskId)}/secrets`, {
       method: "POST",
-      body: { secrets },
+      body: Object.keys(persistAs).length > 0 ? { secrets, persistAs } : { secrets },
     });
     setSubmitting(false);
     if (!res.ok) {
@@ -122,18 +139,30 @@ export const SecretGatePanel = ({ taskId, onResolved }: SecretGatePanelProps) =>
       </ul>
 
       <form onSubmit={onSubmit} className="mt-4 space-y-3">
-        {missingArr.map((k) => (
-          <label key={k} className="block text-sm">
-            <span className="font-mono text-xs text-amber-200">{k}</span>
-            <input
-              type="password"
-              autoComplete="off"
-              value={values[k] ?? ""}
-              onChange={(e) => setValues((prev) => ({ ...prev, [k]: e.target.value }))}
-              className="mt-1 w-full rounded border border-amber-500/30 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 focus:border-amber-400 focus:outline-none"
-            />
-          </label>
-        ))}
+        {missingArr.map((k) => {
+          const eid = inventoryMap[k];
+          return (
+            <div key={k} className="block text-sm">
+              <label className="block">
+                <span className="font-mono text-xs text-amber-200">{k}</span>
+                <input
+                  type="password"
+                  autoComplete="off"
+                  value={values[k] ?? ""}
+                  onChange={(e) => setValues((prev) => ({ ...prev, [k]: e.target.value }))}
+                  className="mt-1 w-full rounded border border-amber-500/30 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 focus:border-amber-400 focus:outline-none"
+                />
+              </label>
+              {typeof eid === "string" && (
+                <label className="mt-1 flex items-center gap-2 text-[0.65rem] text-amber-200/80">
+                  <input type="checkbox" checked={persistChecked[k] === true}
+                    onChange={(e) => setPersistChecked((p) => ({ ...p, [k]: e.target.checked }))} />
+                  Save to MCP inventory as <code className="font-mono">{eid}</code> for reuse on later runs
+                </label>
+              )}
+            </div>
+          );
+        })}
 
         {diagnostics.length > 0 && <ErrorBanner diagnostics={diagnostics} />}
 

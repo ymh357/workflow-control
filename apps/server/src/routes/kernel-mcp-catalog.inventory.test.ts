@@ -141,4 +141,14 @@ describe("kernel-mcp-catalog inventory routes", () => {
     const res = await app.request("/api/kernel/mcp-catalog/equip", { method: "POST", body: "" });
     expect(res.status).toBe(400);
   });
+
+  it("GET /lookup-by-envkey returns mapping + status", async () => {
+    const { app } = makeApp();
+    const res = await app.request("/api/kernel/mcp-catalog/lookup-by-envkey?names=ETHERSCAN_API_KEY,UNKNOWN_KEY");
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(body.mapping.ETHERSCAN_API_KEY).toBe("etherscan");
+    expect(body.mapping.UNKNOWN_KEY).toBeNull();
+    expect(body.statuses.etherscan).toBe("not-equipped");
+  });
 });

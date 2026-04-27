@@ -298,5 +298,32 @@ export function createKernelMcpCatalogRoute(
     return c.json(result);
   });
 
+  route.get("/kernel/mcp-catalog/lookup-by-envkey", (c) => {
+    const names = (c.req.query("names") ?? "").split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+    if (names.length === 0) return c.json({ ok: true, mapping: {}, statuses: {} });
+    const db = getDb();
+    const allEntries = listEntries(db, { source: "all", includeDeprecated: false });
+
+    const mapping: Record<string, string | null> = {};
+    for (const n of names) mapping[n] = null;
+
+    for (const entry of allEntries) {
+      for (const k of entry.envKeys) {
+        if (Object.prototype.hasOwnProperty.call(mapping, k.name) && mapping[k.name] === null) {
+          mapping[k.name] = entry.id;
+        }
+      }
+    }
+
+    const statuses: Record<string, string> = {};
+    for (const eid of Object.values(mapping)) {
+      if (typeof eid === "string") {
+        const inv = getInventoryStatus(db, eid);
+        statuses[eid] = inv?.status ?? "not-equipped";
+      }
+    }
+    return c.json({ ok: true, mapping, statuses });
+  });
+
   return route;
 }

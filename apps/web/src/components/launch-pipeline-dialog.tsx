@@ -8,6 +8,7 @@ import { ErrorBanner } from "./error-banner";
 import { StructuredInput } from "./structured-input";
 import { parseObjectType } from "../lib/parse-ts-object-type";
 import type { ApiDiagnostic } from "../lib/api-client";
+import { InventoryBanner } from "./inventory-banner";
 
 interface PortLike {
   name: string;
@@ -248,6 +249,7 @@ export const LaunchPipelineDialog = ({
               <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-400">
                 Secrets
               </h3>
+              <InventoryBanner envKeys={pipeline.envKeys} layout="full" />
               <p className="mb-2 text-xs text-zinc-500">
                 Required by this pipeline&rsquo;s MCP servers. Values are
                 forwarded to the kernel via <code className="font-mono">envValues</code> and
