@@ -110,6 +110,8 @@
     { "from": { "stage": "loadCurrent", "port": "failureBundle" }, "to": { "stage": "analyzeGap", "port": "failureBundle" } },
     { "from": { "source": "stage", "stage": "awaitingConfirm", "port": "__gate_feedback__" }, "to": { "stage": "analyzeGap", "port": "rejectionFeedback" } },
 
+    { "from": { "stage": "analyzeGap", "port": "proposedChangeOutline" }, "to": { "stage": "awaitingConfirm", "port": "__gate_signal" } },
+
     { "from": { "stage": "analyzeGap", "port": "gapAnalysis" }, "to": { "stage": "genPatch", "port": "gapAnalysis" } },
     { "from": { "stage": "analyzeGap", "port": "proposedChangeOutline" }, "to": { "stage": "genPatch", "port": "proposedChangeOutline" } },
     { "from": { "stage": "loadCurrent", "port": "currentIr" }, "to": { "stage": "genPatch", "port": "currentIr" } },
