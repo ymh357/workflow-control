@@ -22,6 +22,7 @@ import { buildDebugTools } from "./tools/debug.js";
 import { buildHotUpdateTools } from "./tools/hot-update.js";
 import { buildAdminTools } from "./tools/admin.js";
 import { buildMcpCatalogTools } from "./tools/mcp-catalog.js";
+import { buildGetPipelineDefinitionTools } from "./tools/get-pipeline-definition.js";
 import { BUILTIN_SCRIPT_IDS } from "../builtin-scripts/index.js";
 
 const MAX_VALUE_BYTES_DEFAULT = 65_536;
@@ -107,7 +108,9 @@ type ToolName =
   | "wait_for_task_event"
   // Phase 1 MCP supply-chain
   | "recommend_mcp_servers"
-  | "get_mcp_catalog_entry";
+  | "get_mcp_catalog_entry"
+  // 2026-04-27 pipeline-modifier
+  | "get_pipeline_definition";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "describe_pipeline", "propose_pipeline_change",
@@ -136,6 +139,8 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   // Phase 1 MCP supply-chain
   "recommend_mcp_servers",
   "get_mcp_catalog_entry",
+  // 2026-04-27 pipeline-modifier
+  "get_pipeline_definition",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
@@ -201,6 +206,7 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
       ...buildHotUpdateTools(deps),
       ...buildAdminTools(deps),
       ...buildMcpCatalogTools(deps),
+      ...buildGetPipelineDefinitionTools(deps),
   ];
 
   return createSdkMcpServer({
