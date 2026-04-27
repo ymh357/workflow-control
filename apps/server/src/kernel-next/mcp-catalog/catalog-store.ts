@@ -2,24 +2,16 @@ import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import {
   CatalogEntrySchema,
   type CatalogEntry,
-  type CatalogDiagnosticCode,
 } from "./schema.js";
-
-// Local diagnostic type using catalog-specific codes (not IR Diagnostic,
-// which has a closed enum that does not include catalog codes).
-type CatalogDiagnostic = {
-  code: CatalogDiagnosticCode;
-  message: string;
-  context?: Record<string, unknown>;
-};
+import type { Diagnostic } from "../ir/schema.js";
 
 type WriteResult =
   | { ok: true; entry: CatalogEntry }
-  | { ok: false; diagnostics: CatalogDiagnostic[] };
+  | { ok: false; diagnostics: Diagnostic[] };
 
 type DeleteResult =
   | { ok: true }
-  | { ok: false; diagnostics: CatalogDiagnostic[] };
+  | { ok: false; diagnostics: Diagnostic[] };
 
 type ListOpts = {
   source?: "builtin" | "custom" | "all";

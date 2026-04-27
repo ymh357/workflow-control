@@ -505,6 +505,12 @@ export const DiagnosticSchema = z.object({
     // 2026-04-26 F17 secret-gate
     "NO_PENDING_SECRET_GATE",
     "SECRET_KEY_NOT_REQUIRED",
+    // 2026-04-26 mcp-catalog subsystem (Phase 1)
+    "CATALOG_ENTRY_NOT_FOUND",
+    "CATALOG_ENTRY_ID_CONFLICT",
+    "CATALOG_INVALID_ENTRY",
+    "CATALOG_BUILTIN_NOT_WRITABLE",
+    "CATALOG_LLM_OVERLAY_UNAVAILABLE",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

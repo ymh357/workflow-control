@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Diagnostic as _GlobalDiagnostic } from "../ir/schema.js";
 
 const KEBAB_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
@@ -58,3 +59,11 @@ export const CATALOG_DIAGNOSTIC_CODES = [
 ] as const;
 
 export type CatalogDiagnosticCode = (typeof CATALOG_DIAGNOSTIC_CODES)[number];
+
+// Compile-time check: every catalog code must be a member of the global
+// Diagnostic.code enum. If you add a catalog code here, you MUST also add
+// it to DiagnosticSchema in ir/schema.ts.
+type _AssertCatalogCodesAreGlobal = CatalogDiagnosticCode extends _GlobalDiagnostic["code"]
+  ? true
+  : "ERROR: A catalog code is not in the global Diagnostic.code enum";
+const _catalogCodesCheck: _AssertCatalogCodesAreGlobal = true;
