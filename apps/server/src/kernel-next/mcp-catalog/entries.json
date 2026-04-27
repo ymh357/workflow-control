@@ -2,57 +2,6 @@
   "schemaVersion": "1",
   "entries": [
     {
-      "id": "etherscan",
-      "schemaVersion": "1",
-      "name": "Etherscan MCP",
-      "description": "查询以太坊及 L2 上的合约源码、tx、地址 holdings / Read Ethereum and L2 onchain data: contract source, tx, address holdings",
-      "useCases": [
-        "verify tx hash and contract source on Ethereum / 验证以太坊上的 tx 哈希和合约源码",
-        "read smart contract storage / 读取智能合约 storage",
-        "look up address ERC20 balances / 查询地址的 ERC20 余额"
-      ],
-      "tags": ["onchain-verification", "链上验证", "evm", "ethereum", "以太坊", "research"],
-      "homepage": "https://etherscan.io",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-etherscan"],
-      "packageName": "@modelcontextprotocol/server-etherscan",
-      "envKeys": [
-        {
-          "name": "ETHERSCAN_API_KEY",
-          "required": true,
-          "description": "Etherscan API key (free tier available)",
-          "obtainUrl": "https://etherscan.io/apis",
-          "obtainSteps": "1. 注册 Etherscan 账号\n2. 登录后进入 'API Keys' 页\n3. 点击 'Add' 创建新 key\n4. 复制 key 粘贴到此处"
-        }
-      ],
-      "healthCheckTimeoutMs": 15000
-    },
-    {
-      "id": "bscscan",
-      "schemaVersion": "1",
-      "name": "BscScan MCP",
-      "description": "查询 BSC 链上数据 / Read Binance Smart Chain onchain data",
-      "useCases": [
-        "verify contracts on BSC / 验证 BSC 上的合约",
-        "read BEP-20 token transfers / 读取 BEP-20 转账"
-      ],
-      "tags": ["onchain-verification", "链上验证", "bsc", "binance"],
-      "homepage": "https://bscscan.com",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-bscscan"],
-      "packageName": "@modelcontextprotocol/server-bscscan",
-      "envKeys": [
-        {
-          "name": "BSCSCAN_API_KEY",
-          "required": true,
-          "description": "BscScan API key",
-          "obtainUrl": "https://bscscan.com/apis",
-          "obtainSteps": "1. 注册 BscScan 账号\n2. 进入 'API Keys' 页\n3. 创建新 key 并复制粘贴"
-        }
-      ],
-      "healthCheckTimeoutMs": 15000
-    },
-    {
       "id": "github",
       "schemaVersion": "1",
       "name": "GitHub MCP",
@@ -62,10 +11,20 @@
         "search issues and PRs by keyword / 按关键词搜索 issue 和 PR",
         "list a repository's recent commits / 列出仓库的最近提交"
       ],
-      "tags": ["code-research", "代码研究", "github", "vcs", "git", "research"],
+      "tags": [
+        "code-research",
+        "代码研究",
+        "github",
+        "vcs",
+        "git",
+        "research"
+      ],
       "homepage": "https://github.com",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
       "packageName": "@modelcontextprotocol/server-github",
       "envKeys": [
         {
@@ -79,24 +38,6 @@
       "healthCheckTimeoutMs": 15000
     },
     {
-      "id": "fetch",
-      "schemaVersion": "1",
-      "name": "Fetch MCP",
-      "description": "通用 HTTP fetch,可读任意公开 URL / General HTTP fetch for arbitrary public URLs",
-      "useCases": [
-        "fetch a web page or API response by URL / 抓取任意 URL 的网页或 API 响应",
-        "read documentation pages from official websites / 读取官方文档页",
-        "verify claims by fetching primary sources / 通过抓取一手来源验证声明"
-      ],
-      "tags": ["web-research", "网页研究", "http", "fetch", "research"],
-      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-fetch"],
-      "packageName": "@modelcontextprotocol/server-fetch",
-      "envKeys": [],
-      "healthCheckTimeoutMs": 10000
-    },
-    {
       "id": "filesystem",
       "schemaVersion": "1",
       "name": "Filesystem MCP",
@@ -106,30 +47,20 @@
         "list directory contents / 列出目录内容",
         "search files by pattern / 按模式搜索文件"
       ],
-      "tags": ["filesystem", "文件系统", "local", "code-research"],
+      "tags": [
+        "filesystem",
+        "文件系统",
+        "local",
+        "code-research"
+      ],
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem"
+      ],
       "packageName": "@modelcontextprotocol/server-filesystem",
       "envKeys": [],
       "healthCheckTimeoutMs": 10000
-    },
-    {
-      "id": "arxiv",
-      "schemaVersion": "1",
-      "name": "arXiv MCP",
-      "description": "搜索 arXiv 论文摘要和元数据 / Search arXiv paper abstracts and metadata",
-      "useCases": [
-        "search academic papers by topic / 按主题搜索学术论文",
-        "fetch paper metadata for citations / 抓取论文元数据用于引用",
-        "find recent preprints in a field / 查找某领域最近的预印本"
-      ],
-      "tags": ["academic", "学术", "research", "arxiv", "papers"],
-      "homepage": "https://arxiv.org",
-      "command": "npx",
-      "args": ["-y", "@blazickjp/arxiv-mcp-server"],
-      "packageName": "@blazickjp/arxiv-mcp-server",
-      "envKeys": [],
-      "healthCheckTimeoutMs": 15000
     },
     {
       "id": "playwright",
@@ -141,10 +72,19 @@
         "test cross-chain bridge UX flows / 测试跨链桥的 UX 流程",
         "extract data from JS-rendered pages / 抓取 JS 渲染页的数据"
       ],
-      "tags": ["browser-automation", "浏览器自动化", "playwright", "testing", "research"],
+      "tags": [
+        "browser-automation",
+        "浏览器自动化",
+        "playwright",
+        "testing",
+        "research"
+      ],
       "homepage": "https://github.com/microsoft/playwright-mcp",
       "command": "npx",
-      "args": ["-y", "@playwright/mcp"],
+      "args": [
+        "-y",
+        "@playwright/mcp"
+      ],
       "packageName": "@playwright/mcp",
       "envKeys": [],
       "healthCheckTimeoutMs": 30000
@@ -158,10 +98,18 @@
         "search the web for recent news or articles / 搜索最近的新闻或文章",
         "find information across the public web / 在公网上查找信息"
       ],
-      "tags": ["web-search", "网页搜索", "research", "brave"],
+      "tags": [
+        "web-search",
+        "网页搜索",
+        "research",
+        "brave"
+      ],
       "homepage": "https://brave.com/search/api",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-brave-search"
+      ],
       "packageName": "@modelcontextprotocol/server-brave-search",
       "envKeys": [
         {
@@ -183,37 +131,20 @@
         "screenshot a web page / 给网页截图",
         "scrape JS-heavy sites / 抓取 JS 重的站点"
       ],
-      "tags": ["browser-automation", "浏览器自动化", "puppeteer", "research"],
+      "tags": [
+        "browser-automation",
+        "浏览器自动化",
+        "puppeteer",
+        "research"
+      ],
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-puppeteer"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-puppeteer"
+      ],
       "packageName": "@modelcontextprotocol/server-puppeteer",
       "envKeys": [],
       "healthCheckTimeoutMs": 30000
-    },
-    {
-      "id": "linear",
-      "schemaVersion": "1",
-      "name": "Linear MCP",
-      "description": "读写 Linear issues / Read and write Linear issues",
-      "useCases": [
-        "fetch open issues from a Linear team / 抓取 Linear team 的未关闭 issue",
-        "create issues from research findings / 从研究发现自动创建 issue"
-      ],
-      "tags": ["task-management", "issue-tracker", "linear"],
-      "homepage": "https://linear.app",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-linear"],
-      "packageName": "@modelcontextprotocol/server-linear",
-      "envKeys": [
-        {
-          "name": "LINEAR_API_KEY",
-          "required": true,
-          "description": "Linear personal API key",
-          "obtainUrl": "https://linear.app/settings/api",
-          "obtainSteps": "1. Linear Settings → API\n2. Create Personal API Key\n3. 复制粘贴"
-        }
-      ],
-      "healthCheckTimeoutMs": 15000
     },
     {
       "id": "slack",
@@ -224,10 +155,17 @@
         "search recent slack discussions / 搜索 Slack 上的最近讨论",
         "fetch a channel's recent messages / 抓取频道的最近消息"
       ],
-      "tags": ["communication", "slack", "messaging"],
+      "tags": [
+        "communication",
+        "slack",
+        "messaging"
+      ],
       "homepage": "https://slack.com",
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-slack"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-slack"
+      ],
       "packageName": "@modelcontextprotocol/server-slack",
       "envKeys": [
         {
@@ -249,9 +187,16 @@
         "run SELECT queries against a database / 对数据库跑 SELECT 查询",
         "explore database schema / 探索数据库 schema"
       ],
-      "tags": ["database", "postgres", "sql"],
+      "tags": [
+        "database",
+        "postgres",
+        "sql"
+      ],
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-postgres"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres"
+      ],
       "packageName": "@modelcontextprotocol/server-postgres",
       "envKeys": [
         {
