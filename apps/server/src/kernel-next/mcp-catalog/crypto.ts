@@ -13,6 +13,16 @@ function defaultKeyPath(): string {
   return join(homedir(), ".workflow-control", ".secret-key");
 }
 
+/**
+ * Check whether the default secret-key file exists, WITHOUT triggering
+ * key generation. The startup recovery guard uses this to detect the
+ * "key file lost but inventory non-empty" state before crypto.ts would
+ * silently auto-generate a fresh key.
+ */
+export function keyFileExists(path?: string): boolean {
+  return existsSync(path ?? defaultKeyPath());
+}
+
 let cachedKey: Buffer | null = null;
 
 function generateAndStoreKey(path: string): Buffer {

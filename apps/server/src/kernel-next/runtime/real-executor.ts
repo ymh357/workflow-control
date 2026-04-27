@@ -436,6 +436,9 @@ export class RealStageExecutor implements StageExecutor {
       if (stage.config.mcpServers && stage.config.mcpServers.length > 0) {
         const expanderDb = portRuntime.getDb();
         const taskEnv = loadTaskEnvValues(expanderDb, taskId);
+        // Phase 4: collect any MCP_INVENTORY_DECRYPT_FAILED that fires during
+        // resolution so we can include it in the secret-pending error message.
+        const decryptFailures: Array<{ entryId: string; envKey: string }> = [];
         const expandResult = expandMcpServers(stage.config.mcpServers, taskEnv, process.env, {
           resolveInventorySecret: (envKey) => {
             for (const decl of stage.config.mcpServers ?? []) {
@@ -444,14 +447,18 @@ export class RealStageExecutor implements StageExecutor {
               try {
                 const v = resolveSecret({ db: expanderDb }, entryId, envKey);
                 if (v !== null) return v;
-              } catch {
-                // TODO: surface MCP_INVENTORY_DECRYPT_FAILED to task diagnostics.
-                // Treating the decrypt error as "no value" lets the existing
-                // missingKeys → secret-gate flow prompt the operator to refill,
-                // but operationally a decrypt error on an *equipped* entry is
-                // different from a key that was never supplied — the operator
-                // will re-enter a value for a key they think is already saved.
-                // Spec §6.3 ("encryption key recovery") is the long-term fix.
+              } catch (e) {
+                const d = (e as { diagnostic?: { code?: string; context?: Record<string, unknown> } }).diagnostic;
+                if (d?.code === "MCP_INVENTORY_DECRYPT_FAILED") {
+                  decryptFailures.push({
+                    entryId: String(d.context?.entryId ?? entryId),
+                    envKey: String(d.context?.envKey ?? envKey),
+                  });
+                }
+                // Treat as "no value" — secret-gate flow will prompt the
+                // operator to refill. The augmented error message below
+                // tells them that this is a decrypt failure, not a never-set
+                // secret, so they know to re-equip via the catalog page.
               }
             }
             return null;
@@ -472,7 +479,10 @@ export class RealStageExecutor implements StageExecutor {
             JSON.stringify(expandResult.missingKeys),
             Date.now(),
           );
-          const errMsg = `MCP_ENV_MISSING: stage '${stage.name}' needs envKeys [${expandResult.missingKeys.join(", ")}]`;
+          const decryptHint = decryptFailures.length > 0
+            ? ` (${decryptFailures.length} stored secret${decryptFailures.length === 1 ? "" : "s"} unreadable: ${decryptFailures.map((f) => `MCP_INVENTORY_DECRYPT_FAILED for entry '${f.entryId}' envKey '${f.envKey}'`).join("; ")} — try re-equipping via /kernel-next/mcp-catalog)`
+            : "";
+          const errMsg = `MCP_ENV_MISSING: stage '${stage.name}' needs envKeys [${expandResult.missingKeys.join(", ")}]${decryptHint}`;
           writer.close({ terminationReason: "secret_pending" });
           abortController.abort();
           portRuntime.finishAttempt(attemptId, "secret_pending", errMsg, { silent: failSilently });

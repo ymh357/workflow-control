@@ -162,6 +162,22 @@ startPeriodicCleanup();
   installBuiltinPipelines();
 }
 
+// --- Recover from encryption key loss (spec §6.3) ---
+// MUST run before any crypto operation. If the key file is missing but
+// inventory has stored secrets, mark all equipped/pending rows unhealthy
+// before crypto.ts silently auto-generates a fresh key (which would make
+// every stored ciphertext undecryptable without warning).
+{
+  const { runSecretKeyRecovery } = await import("./kernel-next/mcp-catalog/key-recovery.js");
+  const r = runSecretKeyRecovery(getKernelNextDb());
+  if (r.recovered) {
+    logger.warn(
+      { affectedRows: r.affectedRows },
+      "[mcp-catalog] secret-key file missing — bulk-marked equipped inventory rows unhealthy. User must re-equip via /kernel-next/mcp-catalog.",
+    );
+  }
+}
+
 // --- Seed MCP catalog builtins ---
 {
   const { seedBuiltinFromJson } = await import("./kernel-next/mcp-catalog/seed.js");
