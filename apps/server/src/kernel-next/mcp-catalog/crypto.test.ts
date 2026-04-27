@@ -74,4 +74,10 @@ describe("mcp-catalog/crypto", () => {
   it("decrypt rejects too-short input", () => {
     expect(() => decryptValue("AAAA")).toThrow();
   });
+
+  it("loadKey rejects env value that decodes to wrong length", () => {
+    process.env.WORKFLOW_CONTROL_SECRET_KEY = randomBytes(16).toString("base64");
+    resetKeyCacheForTest();
+    expect(() => encryptValue("test")).toThrow(/32 bytes/);
+  });
 });

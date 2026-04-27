@@ -21,7 +21,11 @@ function generateAndStoreKey(path: string): Buffer {
   const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
   writeFileSync(tmp, key.toString("base64"), { mode: 0o600 });
   renameSync(tmp, path);
-  return key;
+  // If another process raced us and won the rename, the file on disk now
+  // holds *their* key, not ours. Always read back so every concurrent
+  // initializer ends up with the same key.
+  const raw = readFileSync(path, "utf8").trim();
+  return Buffer.from(raw, "base64");
 }
 
 function loadKey(): Buffer {
@@ -73,6 +77,7 @@ export function decryptValue(ciphertextB64: string): string {
   return pt.toString("utf8");
 }
 
+// Test-only helpers — not exported from index.ts.
 export function loadKeyForTest(): Buffer {
   return loadKey();
 }
