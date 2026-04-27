@@ -125,7 +125,7 @@ Do NOT wrap every script in its own review gate — that defeats the "scripts ar
 4. Identify branching: does execution split conditionally? If so, where are the guard predicates?
 5. Identify iteration: is there a list-over-items pattern? If so, which stage fans out over which port?
 6. Identify recursion: do you need a sub-pipeline? If so, give it a name and document its contract.
-7. (Optional) Search PulseMCP for relevant tools if the task benefits from specific MCPs.
+7. **Call `recommend_mcp_servers(topic=<a one-sentence keyword summary of the user's task>)` once.** Read the recommendations and decide which entries materially help this pipeline (an entry returned by the recommender is a candidate, not a mandate). For each accepted entry, write one row into `recommendedMcps` with the entry's id, name, command, args, env, envKeys verbatim from the recommender's response (or a follow-up `get_mcp_catalog_entry(id)` call if you need the full envKeys list — the recommender's response may omit some entry fields). Add a `reason` string explaining in one sentence why this entry helps the pipeline.
 8. Write a `stageDesign` (markdown) walking through the stages in execution order. Include branching / fanout / recursion in prose.
 9. Produce the structured `stageContracts` + optional `subPipelineContracts` (§ output schema below).
 
@@ -136,8 +136,8 @@ Do NOT wrap every script in its own review gate — that defeats the "scripts ar
 
 ## Available tools
 
-- PulseMCP (`mcps: [pulsemcp]`) — discover MCP servers relevant to the task. **Use this whenever the pipeline needs any external integration**. Your training data does not include MCP servers released or documented after your cutoff, and many vendors (Linear, Atlassian, Notion, Stripe, etc.) ship *remote HTTP* MCPs, not stdio packages. Do not fabricate server definitions from an imagined `@modelcontextprotocol/<service>` convention — that scope is narrow and does not auto-contain every third-party integration.
-- npm registry — when a candidate stdio MCP is identified via search, verify the package actually exists before emitting it in `recommendedMcps`. A `404 Not Found` on `npm view <pkg>` means you are hallucinating; drop it and fall back to a verified alternative or PulseMCP's remote-URL entry.
+- `recommend_mcp_servers(topic: string)` — query the local Flow catalog for MCP servers relevant to the task. **Call this whenever the pipeline needs any external integration.** Returns a ranked list of catalog entries with `id`, `name`, `command`, `args`, `env`, `envKeys`, `score`, and `evidence.matchedUseCases`. The catalog is pre-validated — entries returned here are known to work in this runtime; do not second-guess package names or args.
+- `get_mcp_catalog_entry(id: string)` — fetch the full detail for one catalog entry by its kebab-case id. Use this when `recommend_mcp_servers` returned a match but omitted some fields (e.g. `envKeys` was truncated or `env` was absent). Pass the `id` exactly as returned by the recommender.
 - User interaction (`interactive: true`) — you may ask clarifying questions via `AskUserQuestion` when the description is ambiguous. Record your assumptions in `assumptions` for later user review at `awaitingConfirm` gate.
 
 ## Workflow
@@ -181,7 +181,7 @@ Do NOT wrap every script in its own review gate — that defeats the "scripts ar
 ## Error handling
 
 - If `taskDescription` is empty or unreadable, emit a minimal design with `pipelineName="unknown"`, `pipelineId="unknown"`, `assumptions=["Task description was empty; produced placeholder design."]`, and a `stageDesign` that explains the gap.
-- If required MCPs/skills are not discoverable via PulseMCP, write what's found in `recommendedMcps` and explain the gap in `assumptions`.
+- If `recommend_mcp_servers` returns nothing relevant, leave `recommendedMcps` empty and record the gap in `assumptions` (e.g. "No on-chain verification MCP in the catalog; pipeline currently relies on free-text claims. User may add a custom catalog entry."). The user can then either add a custom entry via the catalog UI and re-run, or accept the gap.
 
 ## Output (via write_port)
 
@@ -196,7 +196,7 @@ Emit all of the following port values:
 - `estimatedStageCount: number` — total stage count including sub-pipeline stages.
 - `usesFanout: boolean` — whether any stage has fanout.
 - `usesSubPipelines: boolean` — whether any stage invokes run_pipeline.
-- `recommendedMcps: Array<{ name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[] }>` — structured MCP server definitions discovered via PulseMCP search (see §mcpServers format below).
+- `recommendedMcps: Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>` — structured MCP server definitions sourced from the Flow catalog via `recommend_mcp_servers` (see §mcpServers format below). `entryId` is the catalog id (kebab-case, used by `genSkeleton` to fetch the full entry). `reason` is a one-sentence rationale shown to the user at `awaitingConfirm` for review.
 - `recommendedSkills: string[]` — skills from external discovery.
 - `targetRepoName: string` — repository name if specified; empty string otherwise.
 - `assumptions: string[]` — assumptions made for user review.
@@ -211,53 +211,30 @@ Emit all of the following port values:
 
 ### mcpServers format (for `recommendedMcps` port)
 
-Each entry in `recommendedMcps` describes ONE external MCP server the pipeline may use. **Two transport patterns exist** — pick whichever the vendor actually ships. Do not force remote-only services into the stdio shape or vice versa.
-
-#### Sample A — stdio MCP with API-key auth
-
-For servers distributed as npm packages that speak MCP over stdio and authenticate via a static token:
+Each entry in `recommendedMcps` describes ONE MCP server from the Flow catalog. The fields you populate come straight from `recommend_mcp_servers`'s output — do not invent or alter them.
 
 ```json
 {
-  "name": "github",
+  "entryId": "etherscan",
+  "name": "etherscan",
   "command": "npx",
-  "args": ["-y", "@modelcontextprotocol/server-github"],
-  "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" },
-  "envKeys": ["GITHUB_TOKEN"]
+  "args": ["-y", "@scope/etherscan-mcp"],
+  "env": { "ETHERSCAN_API_KEY": "${ETHERSCAN_API_KEY}" },
+  "envKeys": ["ETHERSCAN_API_KEY"],
+  "reason": "Verifies on-chain transaction hashes and contract source against Ethereum mainnet — needed for the Web3 due-diligence stage."
 }
 ```
 
-#### Sample B — remote HTTP MCP via `mcp-remote` bridge
+#### Field rules
 
-Many enterprise vendors (Linear, Atlassian, Notion, Stripe, Cloudflare, GitHub's hosted MCP, …) publish their MCP as a **remote HTTP endpoint** with OAuth 2.1 / dynamic client registration. They have no stdio npm package to install. To consume such a server from a stdio-only client (including this runtime), proxy through the official `mcp-remote` bridge:
+- `entryId`: catalog id (kebab-case). Must equal what `recommend_mcp_servers` returned. `genSkeleton` will call `get_mcp_catalog_entry(entryId)` to fetch the full entry and place a `mcpServers` block on the appropriate downstream stage.
+- `name`, `command`, `args`, `env`, `envKeys`: verbatim from the catalog. The `recommend_mcp_servers` response may include only `id` + `score` + `evidence` — if so, follow up with `get_mcp_catalog_entry(id)` to get these fields.
+- `reason`: ONE sentence (60-200 chars) explaining why this MCP is in the recommendation. The user reviews this at `awaitingConfirm` and decides whether to accept the recommendation.
 
-```json
-{
-  "name": "linear",
-  "command": "npx",
-  "args": ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
-  "envKeys": []
-}
-```
+#### Discovery discipline
 
-For these OAuth-mediated servers:
-- Omit `env` entirely (or set to `{}`) — tokens are managed by `mcp-remote` (persisted under `~/.mcp-auth/`), not injected through environment.
-- `envKeys: []` — the user supplies nothing at `run_pipeline` time. On first use, `mcp-remote` opens a browser window for the vendor's OAuth consent screen. Note this behavior in `assumptions` so the user is not surprised.
-- The remote URL comes from the vendor's official MCP docs or PulseMCP's listing. Do not guess it.
-
-#### Field rules (applies to both samples)
-
-- `name`: short identifier matching `^[a-zA-Z_][a-zA-Z0-9_-]*$`. Names matching `__*__` are RESERVED (would shadow the kernel MCP) and MUST NOT be used. Examples of valid names: `github`, `notion`, `figma`, `context7`, `linear`, `gitlab`, `pulsemcp`.
-- `command`: executable (typically `npx` for both stdio npm packages and the `mcp-remote` bridge).
-- `args`: launch arguments — order matters. For stdio: the package spec. For remote-bridge: `["-y", "mcp-remote", "<remote-url>"]`.
-- `env`: optional — a map of environment-variable-name → value template. Use literal `${VAR_NAME}` placeholders for values the user must supply at runtime. OMIT for OAuth-mediated remote MCPs.
-- `envKeys`: list of env variable names the user must supply at `run_pipeline` time. MUST equal the set of `${VAR}` tokens inside `env` values; enumerate them explicitly so the runtime can warn on missing keys. Empty array (`[]`) for OAuth-mediated servers.
-
-#### Verification discipline
-
-1. **Search before you emit.** Run PulseMCP for the capability keyword. Inspect the top results' official docs (linked from PulseMCP) to confirm the actual transport (stdio package name vs remote URL) and auth model (API key vs OAuth).
-2. **Verify stdio package existence.** For any stdio candidate, mentally spot-check: is this package actually published? The `@modelcontextprotocol/server-*` scope contains only a small, hand-curated set (github, filesystem, fetch, memory, git, sequentialthinking, sqlite, time, slack, gdrive, puppeteer, brave-search, postgres, everart, everything). Any other integration under that scope is almost certainly a hallucination — use the vendor's own package or their remote HTTP endpoint.
-3. **Never guess the URL of a remote MCP.** Remote MCP endpoints follow no single convention — vendors use `mcp.<vendor>.app/mcp`, `<vendor>.com/api/mcp`, `mcp.<vendor>.com`, or entirely custom paths. Guessing from `api.<vendor>.com/mcp` or analogous patterns produces dead URLs. If PulseMCP's listing gives you the URL, copy it verbatim. If the vendor's docs are not immediately available, record the need in `assumptions` and leave the entry out of `recommendedMcps`. Better to ship a pipeline with a clear gap than a pipeline that crashes on first launch.
-4. **Do not derive URLs from brand names.** `<vendor>.com/mcp` is not a defensible default. Even well-known vendors (Linear, Notion, Atlassian, Stripe) each use different subdomain conventions; the *only* authority is the vendor's own MCP docs or PulseMCP's current listing.
-
-If PulseMCP search (or manual doc lookup) returns no matching server for a capability, emit what you found in `recommendedMcps` and describe the shortfall in `assumptions`. **Do NOT invent server definitions for non-existent MCPs.**
+1. **Call once.** `recommend_mcp_servers` is local + deterministic. One invocation per analyzing pass is enough.
+2. **Trust the catalog.** Entries returned by the recommender are pre-validated. Don't second-guess the package name or args. Don't run `npm view`.
+3. **Reject irrelevance.** A returned entry isn't always relevant — read its `evidence.matchedUseCases` to decide whether the match is real. Drop entries whose match is weak (the score reflects keyword overlap; a cosine-1.0 match on "fetch" doesn't mean the user wants HTTP fetching).
+4. **Never invent entries.** If the catalog has nothing relevant, the pipeline simply won't have MCPs for that capability. Record the gap in `assumptions`. Do not guess at server definitions from training data — Flow does not run servers that aren't equipped via the inventory.
+5. **The user can add custom catalog entries.** If `assumptions` notes a missing capability, the user has the option to add a custom entry (via the catalog's web UI) and re-run; this loop is the expected escape hatch, not a fallback to imagination.
