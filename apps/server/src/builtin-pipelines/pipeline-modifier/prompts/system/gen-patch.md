@@ -44,8 +44,22 @@ You MAY call only these tools. Calling anything else is a contract violation and
 - `mcp____kernel_next____dry_run_proposal` (REQUIRED, ≥1 call, ≤2 calls)
 - `mcp____kernel_next____write_port` (REQUIRED, exactly 5 calls)
 - `mcp____kernel_next____describe_pipeline` (optional; the IR is already in your inputs — usually unneeded)
+- `mcp____kernel_next____recommend_mcp_servers` (optional; only when the patch swaps or adds an `mcpServers` entry on an agent stage)
+- `mcp____kernel_next____get_mcp_catalog_entry` (optional; fetch full command/args/envKeys for an entry id you've decided to use)
+- `mcp____kernel_next____add_mcp_catalog_entry` (optional; only when the patch needs an MCP that isn't in the catalog — see "Catalog discovery" below for the discipline)
 
 Do NOT call `propose_pipeline_change`, `apply_pipeline_proposal`, `migrate_task`, `approve_proposal`, `reject_proposal`, `submit_pipeline`, `update_registry_pipeline`, the Bash tool, the Read tool, or any web/fetch tool. **You produce a candidate patch; you do not commit it.**
+
+## Catalog discovery (only when changing mcpServers)
+
+If the patch alters an agent stage's `mcpServers` list, the new entry MUST come from the catalog — same rule as pipeline-generator. Resolve in this order:
+
+1. **Look at currentIr first.** If the target pipeline already declares the MCP elsewhere, copy the verbatim `mcpServers` block from that stage. No tool call needed.
+2. **`recommend_mcp_servers(topic)`** for unfamiliar capabilities. Verify each candidate's `evidence.matchedUseCases` actually fits.
+3. **`get_mcp_catalog_entry(id)`** to fetch the full command/args/envKeys for any id you've selected.
+4. **`add_mcp_catalog_entry({entry})`** as a last resort, only when no recommendation works AND the pipeline genuinely needs the integration. Same discipline as pipeline-generator: pick a real, vendor-published or `@modelcontextprotocol/server-*` package; the healthcheck will reject typo-squats / hallucinations.
+
+Never hand-write an `mcpServers` block from training data. If after the four steps above you still can't get a working entry, leave the patch's mcpServers list unchanged and explain in `gapAnalysis.risks` (which analyzeGap already produced).
 
 ## Patch shape
 

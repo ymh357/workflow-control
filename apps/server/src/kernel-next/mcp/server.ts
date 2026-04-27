@@ -22,6 +22,7 @@ import { buildDebugTools } from "./tools/debug.js";
 import { buildHotUpdateTools } from "./tools/hot-update.js";
 import { buildAdminTools } from "./tools/admin.js";
 import { buildMcpCatalogTools } from "./tools/mcp-catalog.js";
+import { buildAddMcpCatalogEntryTools } from "./tools/add-mcp-catalog-entry.js";
 import { buildGetPipelineDefinitionTools } from "./tools/get-pipeline-definition.js";
 import { BUILTIN_SCRIPT_IDS } from "../builtin-scripts/index.js";
 
@@ -109,6 +110,7 @@ type ToolName =
   // Phase 1 MCP supply-chain
   | "recommend_mcp_servers"
   | "get_mcp_catalog_entry"
+  | "add_mcp_catalog_entry"
   | "get_pipeline_definition";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
@@ -138,6 +140,7 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   // Phase 1 MCP supply-chain
   "recommend_mcp_servers",
   "get_mcp_catalog_entry",
+  "add_mcp_catalog_entry",
   // 2026-04-27 pipeline-modifier
   "get_pipeline_definition",
 ]);
@@ -205,6 +208,7 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
       ...buildHotUpdateTools(deps),
       ...buildAdminTools(deps),
       ...buildMcpCatalogTools(deps),
+      ...buildAddMcpCatalogEntryTools(deps, options.catalogExec),
       ...buildGetPipelineDefinitionTools(deps),
   ];
 
