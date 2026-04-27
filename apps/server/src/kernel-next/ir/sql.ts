@@ -7,6 +7,7 @@
 
 import { DatabaseSync } from "node:sqlite";
 import { initCatalogSchema } from "../mcp-catalog/sql.js";
+import { initInventorySchema } from "../mcp-catalog/inventory-sql.js";
 
 export const KERNEL_NEXT_SCHEMA = `
 CREATE TABLE IF NOT EXISTS pipeline_versions (
@@ -495,6 +496,7 @@ export function initKernelNextSchema(db: DatabaseSync): void {
 
   db.exec(KERNEL_NEXT_SCHEMA);
   initCatalogSchema(db);
+  initInventorySchema(db);
 }
 
 // --- Insert helpers for a complete pipeline version (full snapshot strategy,

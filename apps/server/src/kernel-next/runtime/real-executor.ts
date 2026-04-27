@@ -60,6 +60,8 @@ import {
   type ExpandedMcpServer,
 } from "./mcp-servers-expander.js";
 import { loadTaskEnvValues } from "./task-env-values.js";
+import { lookupEntryByCommand } from "../mcp-catalog/catalog-store.js";
+import { resolveSecret } from "../mcp-catalog/inventory.js";
 import {
   shouldPause,
   rateLimitBackoffMs,
@@ -432,8 +434,29 @@ export class RealStageExecutor implements StageExecutor {
       // MCP tool resolves the row and resumes via the migration path.
       let externalMcpServers: Record<string, ExpandedMcpServer> | undefined;
       if (stage.config.mcpServers && stage.config.mcpServers.length > 0) {
-        const taskEnv = loadTaskEnvValues(portRuntime.getDb(), taskId);
-        const expandResult = expandMcpServers(stage.config.mcpServers, taskEnv);
+        const expanderDb = portRuntime.getDb();
+        const taskEnv = loadTaskEnvValues(expanderDb, taskId);
+        const expandResult = expandMcpServers(stage.config.mcpServers, taskEnv, process.env, {
+          resolveInventorySecret: (envKey) => {
+            for (const decl of stage.config.mcpServers ?? []) {
+              const entryId = lookupEntryByCommand(expanderDb, decl.command, decl.args);
+              if (!entryId) continue;
+              try {
+                const v = resolveSecret({ db: expanderDb }, entryId, envKey);
+                if (v !== null) return v;
+              } catch {
+                // TODO: surface MCP_INVENTORY_DECRYPT_FAILED to task diagnostics.
+                // Treating the decrypt error as "no value" lets the existing
+                // missingKeys → secret-gate flow prompt the operator to refill,
+                // but operationally a decrypt error on an *equipped* entry is
+                // different from a key that was never supplied — the operator
+                // will re-enter a value for a key they think is already saved.
+                // Spec §6.3 ("encryption key recovery") is the long-term fix.
+              }
+            }
+            return null;
+          },
+        });
         if (!expandResult.ok) {
           const db = portRuntime.getDb();
           const secretGateId = randomUUID();

@@ -511,6 +511,11 @@ export const DiagnosticSchema = z.object({
     "CATALOG_INVALID_ENTRY",
     "CATALOG_BUILTIN_NOT_WRITABLE",
     "CATALOG_LLM_OVERLAY_UNAVAILABLE",
+    // 2026-04-27 mcp-catalog Phase 2 — inventory + provisioning
+    "MCP_PROVISION_ENVKEY_MISSING",
+    "MCP_PROVISION_PACKAGE_NOT_FOUND",
+    "MCP_PROVISION_HEALTHCHECK_TIMEOUT",
+    "MCP_INVENTORY_DECRYPT_FAILED",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

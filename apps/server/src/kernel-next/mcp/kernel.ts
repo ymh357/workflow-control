@@ -47,6 +47,8 @@ import {
   type StatsInput,
   type StatsOutput,
 } from "../hot-update/stats.js";
+import { equipEntry } from "../mcp-catalog/inventory.js";
+import type { ExecFn } from "../mcp-catalog/healthcheck.js";
 
 // Stage 5B — per-task migration lock now lives in
 // hot-update/migration-orchestrator.ts. The test hooks below forward to
@@ -296,6 +298,13 @@ export interface KernelServiceOptions {
    * runs or tests that don't exercise the script-registry path.
    */
   allowedScriptModuleIds?: ReadonlySet<string>;
+  /**
+   * MCP supply chain — exec override used by provideTaskSecrets persistAs
+   * to run the health-check after writing inventory secrets. Defaults to
+   * the OS spawn path (same as equipEntry's default). Override in tests to
+   * avoid real network/filesystem calls.
+   */
+  catalogExec?: ExecFn;
 }
 
 export class KernelService {
@@ -1422,6 +1431,7 @@ export class KernelService {
   async provideTaskSecrets(
     taskId: string,
     secrets: Record<string, string>,
+    options: { persistAs?: Record<string, { entryId: string }> } = {},
   ): Promise<
     | { ok: true; resolved: true }
     | { ok: true; resolved: false; stillMissing: string[] }
@@ -1532,6 +1542,24 @@ export class KernelService {
 
     if (aggregatedStillMissing.size > 0 && resolvedStages.size === 0) {
       return { ok: true, resolved: false, stillMissing: Array.from(aggregatedStillMissing).sort() };
+    }
+
+    // Best-effort: persist secrets to inventory so future tasks can reuse them
+    // without prompting again. Failures are swallowed — the gate is already
+    // resolved by the task_env_values write above; inventory persistence is a bonus.
+    if (options.persistAs) {
+      for (const [envKey, target] of Object.entries(options.persistAs)) {
+        const value = secrets[envKey];
+        if (typeof value !== "string" || value.length === 0) continue;
+        try {
+          await equipEntry(
+            { db: this.db, exec: this.opts.catalogExec, processEnv: process.env },
+            { entryId: target.entryId, envValues: { [envKey]: value } },
+          );
+        } catch {
+          // Best-effort: persistence failure must not invalidate the gate resolve.
+        }
+      }
     }
 
     // Dispatch one retry per distinct unblocked stage. A task may have
