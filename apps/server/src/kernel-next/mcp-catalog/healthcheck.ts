@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, type ExecFileException } from "node:child_process";
 import type { Diagnostic } from "../ir/schema.js";
 
 export type HealthCheckResult =
@@ -38,17 +38,11 @@ export type ExecFn = (cmd: string, argv: string[], opts: { timeoutMs: number }) 
 }>;
 
 const defaultExec: ExecFn = (cmd, argv, opts) => new Promise((resolve) => {
-  const child = execFile(cmd, argv, { timeout: opts.timeoutMs }, (err, stdout, stderr) => {
-    const code = err && typeof err === "object" && "code" in err && typeof (err as { code: unknown }).code === "number"
-      ? (err as { code: number }).code
-      : err
-        ? 1
-        : 0;
-    const timedOut = err !== null && (err as { killed?: boolean }).killed === true
-      && (err as { signal?: string }).signal === "SIGTERM";
+  execFile(cmd, argv, { timeout: opts.timeoutMs }, (err: ExecFileException | null, stdout, stderr) => {
+    const code = typeof err?.code === "number" ? err.code : err ? 1 : 0;
+    const timedOut = err?.killed === true && err?.signal === "SIGTERM";
     resolve({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), timedOut });
   });
-  child.on("error", () => {});
 });
 
 export async function checkPackage(args: {
