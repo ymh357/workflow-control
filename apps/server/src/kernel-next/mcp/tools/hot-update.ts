@@ -38,6 +38,14 @@ export function buildHotUpdateTools(deps: ToolsDeps): ToolDef[] {
           "flips proposal to 'approved' in same tx. Structural patches " +
           "ignore this flag and stay pending.",
         ),
+        prompts: z.record(z.string(), z.string()).optional().describe(
+          "Phase 6 audit — optional prompt overrides. Each (promptRef -> " +
+          "content) entry lands on the proposed version's pipeline_prompt_refs " +
+          "in place of the base version's entry for that ref. Refs absent " +
+          "from this map are carried forward from the base version unchanged. " +
+          "Required when the patch introduces a new promptRef that does not " +
+          "exist on the base version.",
+        ),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       handler: async (args: any) => {
@@ -61,6 +69,14 @@ export function buildHotUpdateTools(deps: ToolsDeps): ToolDef[] {
               : Array.isArray(args.migrateRunningTasks)
                 ? args.migrateRunningTasks.map((x: unknown) => String(x))
                 : undefined;
+          const prompts: Record<string, string> | undefined =
+            args.prompts && typeof args.prompts === "object" && !Array.isArray(args.prompts)
+              ? Object.fromEntries(
+                  Object.entries(args.prompts as Record<string, unknown>)
+                    .filter(([, v]) => typeof v === "string")
+                    .map(([k, v]) => [String(k), String(v)]),
+                )
+              : undefined;
           return jsonResponse(
             kernel.propose({
               currentVersion: String(args.currentVersion),
@@ -69,6 +85,7 @@ export function buildHotUpdateTools(deps: ToolsDeps): ToolDef[] {
               rerunFrom,
               migrateRunningTasks,
               autoApprove: typeof args.autoApprove === "boolean" ? args.autoApprove : undefined,
+              prompts,
             }),
           );
         } catch (err) {

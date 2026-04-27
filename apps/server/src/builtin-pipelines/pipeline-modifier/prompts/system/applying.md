@@ -19,7 +19,7 @@ Drive a fixed tool sequence: call `propose_pipeline_change` exactly once, option
 
 ## Output ports
 
-All four MUST be written exactly once. Use `mcp____kernel_next____write_port` with `{ port, value }`; the runtime injects `taskId`, `attemptId`, and `stage`.
+All four MUST be written exactly once. The runtime supplies the exact `taskId`, `attemptId`, and `stage` as literal strings in the system note prepended to your inputs; pass them verbatim to every `mcp____kernel_next____write_port` call along with `port` and `value` (all five fields are required).
 
 | Port | Type | Meaning |
 |------|------|---------|

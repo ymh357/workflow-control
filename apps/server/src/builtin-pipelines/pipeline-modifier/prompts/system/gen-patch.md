@@ -27,7 +27,7 @@ Drive a tool sequence: build a draft patch, run `dry_run_proposal`, optionally s
 
 ## Output ports
 
-All five MUST be written exactly once. Use `mcp____kernel_next____write_port` with `{ port, value }`; the runtime injects `taskId`, `attemptId`, and `stage`.
+All five MUST be written exactly once. The runtime supplies the exact `taskId`, `attemptId`, and `stage` as literal strings in the system note prepended to your inputs; pass them verbatim to every `mcp____kernel_next____write_port` call along with `port` and `value` (all five fields are required).
 
 | Port | Type | Meaning |
 |------|------|---------|
@@ -110,10 +110,15 @@ Changes a single port's type string. **Always structural** (port-shape change).
 Shallow-merges `configPatch` into `stage.config`. The accepted keys depend on the target stage's `type`:
 
 - `type: "agent"` → `promptRef`, `subAgents`, `mcpServers`, `cross_segment_resume_from`
-- `type: "script"` → `moduleId`, `retry`
+- `type: "script"` → see ScriptStage discriminated union below
 - `type: "gate"` → `question`, `routing`, `timeout_minutes`
 
-Any key outside its variant's allowed set raises `PATCH_APPLY_ERROR`. Variant switches (e.g. agent → gate, or script `source: "registry"` ↔ `"inline"`) are NOT supported by `update_stage_config`; they require `remove_stage` + `add_stage`.
+ScriptStage `config` is a discriminated union keyed by `source`:
+
+- `source: "registry"` → `{ source: "registry", moduleId, retry? }`. Use `moduleId` to point at a registered ScriptModule.
+- `source: "inline"` → `{ source: "inline", moduleSource, sampleInputs?, retry? }`. Use `moduleSource` for inline TypeScript and `sampleInputs` for the submit-time contract test.
+
+Do not mix keys across variants in a single `update_stage_config` op (e.g. patching `moduleSource` onto a registry stage, or `moduleId` onto an inline stage, raises `PATCH_APPLY_ERROR`). Any key outside its variant's allowed set raises `PATCH_APPLY_ERROR`. Variant switches (e.g. agent → gate, or script `source: "registry"` ↔ `"inline"`) are NOT supported by `update_stage_config`; they require `remove_stage` + `add_stage`.
 
 This op is the most common one for prompt-only modifications: bumping `promptRef` to point at new prompt content, while shipping the new content via the `prompts` output port. A pure `update_stage_config` op that only touches `promptRef` is classified `promptOnly` (not structural) and is expected to be `"safe"`.
 
