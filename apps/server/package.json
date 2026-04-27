@@ -27,6 +27,7 @@
   "dependencies": {
     "@workflow-control/shared": "workspace:*",
     "@anthropic-ai/claude-agent-sdk": "^0.2.63",
+    "@anthropic-ai/sdk": "^0.91.1",
     "@hono/node-server": "^1.19.9",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "expr-eval": "^2.0.2",

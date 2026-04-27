@@ -1,3 +1,4 @@
+import Anthropic from "@anthropic-ai/sdk";
 import type { z } from "zod";
 
 /**
@@ -30,30 +31,12 @@ let defaultClient: AnthropicLikeClient | null = null;
 
 function getDefaultClient(): AnthropicLikeClient {
   if (defaultClient) return defaultClient;
-
-  try {
-    // Lazy import: only required if no client is injected at call time.
-    // If ANTHROPIC_API_KEY is not set, this will throw; that is expected behavior.
-    const Anthropic = require("@anthropic-ai/sdk").default;
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) {
-      throw new Error("ANTHROPIC_API_KEY not set; cannot run LLM-overlay");
-    }
-    defaultClient = new Anthropic({ apiKey }) as unknown as AnthropicLikeClient;
-    return defaultClient;
-  } catch (err) {
-    if (
-      err instanceof Error &&
-      err.message.includes("ANTHROPIC_API_KEY")
-    ) {
-      throw err;
-    }
-    // If module not found or other import error, provide helpful message
-    throw new Error(
-      `Failed to load Anthropic SDK: ${err instanceof Error ? err.message : String(err)}. ` +
-        `Install @anthropic-ai/sdk or provide a client via the client parameter.`,
-    );
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    throw new Error("ANTHROPIC_API_KEY not set; cannot run LLM-overlay");
   }
+  defaultClient = new Anthropic({ apiKey }) as unknown as AnthropicLikeClient;
+  return defaultClient;
 }
 
 export async function simpleJsonCompletion<T>(
@@ -88,7 +71,6 @@ export async function simpleJsonCompletion<T>(
 }
 
 function stripMarkdownAndParseJson(text: string): unknown {
-  // Models often wrap JSON in ```json ... ``` fences. Strip them.
   const fenced = text.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
   const body = fenced ? fenced[1] : text;
   return JSON.parse(body.trim());
