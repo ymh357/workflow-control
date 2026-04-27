@@ -6,6 +6,7 @@
 // merge with main workflow.db is a post-spike decision (§11 OQ #1).
 
 import { DatabaseSync } from "node:sqlite";
+import { initCatalogSchema } from "../mcp-catalog/sql.js";
 
 export const KERNEL_NEXT_SCHEMA = `
 CREATE TABLE IF NOT EXISTS pipeline_versions (
@@ -493,6 +494,7 @@ export function initKernelNextSchema(db: DatabaseSync): void {
   }
 
   db.exec(KERNEL_NEXT_SCHEMA);
+  initCatalogSchema(db);
 }
 
 // --- Insert helpers for a complete pipeline version (full snapshot strategy,
