@@ -117,7 +117,8 @@ export function unequipTransaction(db: DatabaseSync, entryId: string): void {
     deleteAllSecrets(db, entryId);
     db.exec("COMMIT");
   } catch (e) {
-    db.exec("ROLLBACK");
+    // Wrap ROLLBACK so a "no transaction active" error doesn't mask the real one.
+    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
     throw e;
   }
 }
