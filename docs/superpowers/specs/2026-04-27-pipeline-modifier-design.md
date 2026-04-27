@@ -45,30 +45,34 @@ Per roadmap §2.4, pipeline-ization is justified when the task is multi-stage + 
 ## 5. Stages
 
 ```
-loadCurrent (script)
+loadCurrent (agent)
   → analyzeGap (agent)
   → awaitingConfirm (gate)
   → genPatch (agent)
   → applying (agent)
 ```
 
-### 5.1 `loadCurrent` (ScriptStage)
+**Note on loadCurrent stage type:** Originally drafted as ScriptStage for determinism. Changed to AgentStage after investigation revealed `ScriptModuleContext` does not expose a database handle (apps/server/src/kernel-next/runtime/script-module-resolver.ts:29-43). Threading `db` into the script context would touch every script callsite — out of scope for this feature. AgentStage with a tightly-scoped prompt (call exactly N MCP tools, emit fixed schema) is the next-best deterministic surface.
 
-Pure deterministic — script, not agent.
+### 5.1 `loadCurrent` (AgentStage)
+
+Tightly-scoped agent stage. Prompt instructs the model to call a fixed sequence of MCP tools and emit a fixed-shape JSON via `write_port`. No room for "creative" exploration.
 
 **Inputs:** `targetPipelineName`, `failureContext?`
 **Outputs:** `currentVersionHash`, `currentIr`, `currentPromptsMap`, `failureBundle?`
 
-**Behavior:**
-1. Reject if `targetPipelineName === "pipeline-modifier"` (self-modification not supported).
-2. `getLatestVersionHashByName(db, targetPipelineName)` → fail-fast diagnostic if not found.
-3. `getPipelineIR(db, versionHash)` → returns IR + prompts map.
-4. If `failureContext?.taskId` provided, query in-process:
-   - `stage_attempts` filtered by `taskId` → newest failed attempt
-   - `execution_records` row keyed by attemptId → agent execution detail (prompt, tool calls, last text)
-   - `port_values` for that taskId → upstream port snapshot
-   Assemble into `failureBundle = { failedStage, agentExecution, lineageSummary }`. If taskId not found or expired, set `failureBundle = null` (do not fail the stage; treat as proactive-improvement mode).
-5. No MCP calls — direct in-process kernel function calls (cheaper, deterministic).
+**Required tool sequence (encoded in the system prompt):**
+1. If `targetPipelineName === "pipeline-modifier"` → emit diagnostic `MODIFIER_SELF_MODIFY_REJECTED` via `write_port` to a `loadError` port and stop. (Stage marks itself failed via diagnostic.)
+2. Call **`get_pipeline_definition({ name: targetPipelineName })`** (NEW MCP tool — see §7) → expect `{ ok, versionHash, ir, prompts }`. If `ok=false`, emit diagnostic `MODIFIER_TARGET_UNKNOWN` and stop.
+3. Write `currentVersionHash`, `currentIr`, `currentPromptsMap` to ports.
+4. If `failureContext?.taskId` is non-null:
+   a. Call `get_task_status({ taskId })` to confirm task exists; if not, emit `failureBundle = null` and finish.
+   b. Call `query_lineage({ taskId, versionHash: currentVersionHash, stage: failureContext.failedStageName ?? <auto-detect via get_task_status>, port: <each output port> })` to retrieve port previews.
+   c. Call `wait_for_task_event({ taskId, events: ["stage_error", "terminal"], timeoutMs: 0 })` (timeoutMs=0 means non-blocking peek of latest event) — extract `stage`, `reason`, `message`.
+   d. Assemble `failureBundle = { failedStage, errorMessage, lineagePreview }` and write to port.
+5. If `failureContext` is null entirely → write `failureBundle = null`.
+
+**Why an agent for what looks deterministic:** because step 4b/4c involve choosing which ports to query when `failedStageName` isn't given (need to look up failed stage from task status first, then enumerate its outputs). Pure script with hardcoded SQL would work but requires `db` access scripts don't have. Agent is the cheapest path that respects current contracts.
 
 ### 5.2 `analyzeGap` (AgentStage)
 
@@ -144,14 +148,36 @@ This is the mandatory human (or upstream agent) checkpoint. Per roadmap §2.4, "
 | `migrate_task` errors after auto-apply | applying | record in `migrationResult.errors`, `outcome="auto-applied"` (proposal still applied; migration is best-effort) |
 | Gate rejection loop > N times | n/a | not defended this iteration; matches pipeline-generator current behavior |
 
-## 7. MCP tool surface — no new tools
+## 7. MCP tool surface — one new tool required
 
-All tools needed already exist on `__kernel_next__` combined surface (confirmed by investigation 2026-04-27):
+### 7.1 New tool: `get_pipeline_definition`
 
-- Read: `getLatestVersionHashByName` (in-process, not MCP), `getPipelineIR` (in-process), `query_lineage`, `compare_runs`, `read_port`, `describe_pipeline`
-- Write: `dry_run_proposal`, `propose_pipeline_change`, `migrate_task`
+`describe_pipeline` returns the IR shape but strips out prompt content (only returns `promptRef` names). For `loadCurrent` and `analyzeGap` to reason about the target pipeline's current behavior, the prompts' markdown text is essential — otherwise the agent has to guess what each stage actually does.
 
-Builtin scripts can call kernel functions directly via dispatcher; no MCP overhead for `loadCurrent`.
+```typescript
+{
+  name: "get_pipeline_definition",
+  inputSchema: {
+    name: z.string().optional(),
+    versionHash: z.string().optional(),
+  },
+  handler: returns
+    | { ok: true; versionHash: string; ir: PipelineIR; prompts: Record<string, string> }
+    | { ok: false; diagnostics: Diagnostic[] }
+}
+```
+
+Resolution:
+- If both `name` and `versionHash` given → `versionHash` wins.
+- If only `name` → `getLatestVersionHashByName`, then `getPipelineIR`.
+- Prompts: query `getPromptsByVersion(db, versionHash)` (already exists in `apps/server/src/kernel-next/ir/sql.ts:637-652`).
+- Returned on `combined` and `external` surfaces.
+
+### 7.2 Existing tools used (no changes)
+
+- `get_task_status`, `query_lineage`, `wait_for_task_event` — failure context retrieval in `loadCurrent`
+- `dry_run_proposal` — required pre-check in `genPatch`
+- `propose_pipeline_change`, `migrate_task` — `applying` stage write path
 
 ## 8. Observability
 
@@ -181,22 +207,25 @@ No new tables. No new metrics.
 apps/server/src/builtin-pipelines/pipeline-modifier/
 ├── pipeline.ir.json
 ├── pipeline.ir.test.ts
-├── prompts/
-│   └── system/
-│       ├── analyze-gap.md
-│       ├── gen-patch.md
-│       └── applying.md
-├── scripts/
-│   ├── load-current.ts
-│   └── load-current.test.ts
-└── e2e/
-    ├── happy-path.test.ts
-    ├── structural-patch.test.ts
-    ├── migrate-on-failure.test.ts
-    └── self-modify-rejected.test.ts
-```
+└── prompts/system/
+    ├── load-current.md
+    ├── analyze-gap.md
+    ├── gen-patch.md
+    └── applying.md
 
-The plan will reference exact paths.
+apps/server/src/kernel-next/mcp/tools/
+└── get-pipeline-definition.ts                 (NEW MCP tool)
+
+apps/server/src/kernel-next/mcp/tools/get-pipeline-definition.test.ts   (NEW)
+apps/server/src/builtin-pipelines/pipeline-modifier/e2e.happy-path.test.ts          (NEW)
+apps/server/src/builtin-pipelines/pipeline-modifier/e2e.structural.test.ts          (NEW)
+apps/server/src/builtin-pipelines/pipeline-modifier/e2e.migrate-on-failure.test.ts  (NEW)
+apps/server/src/builtin-pipelines/pipeline-modifier/e2e.self-modify-rejected.test.ts (NEW)
+
+apps/server/src/routes/kernel-run.ts:135-139   (modify — append "pipeline-modifier")
+apps/server/src/kernel-next/mcp/server.ts      (modify — register new tool on combined + external surfaces)
+apps/server/src/kernel-next/ir/schema.ts       (modify — add MODIFIER_TARGET_UNKNOWN + MODIFIER_SELF_MODIFY_REJECTED to DiagnosticSchema enum)
+```
 
 ## 12. Open question deferred to plan stage
 
@@ -208,4 +237,4 @@ The plan will reference exact paths.
 - All 6 tests in §9 pass.
 - A manual dogfood scenario: trigger a failed `smoke-test` task → call `pipeline-modifier` with that taskId → either an auto-applied non-structural fix or a `pending-approval` proposalId is returned.
 - `query_hot_update_stats({ actor: "pipeline-modifier" })` returns non-zero counts after the dogfood scenario.
-- No new tables. No new MCP tools. No changes to existing pipelines except adding pipeline-modifier as a sibling under `builtin-pipelines/`.
+- No new tables. **One new MCP tool** (`get_pipeline_definition` — see §7.1). No changes to existing pipelines except adding pipeline-modifier as a sibling under `builtin-pipelines/` and registering its name in `apps/server/src/routes/kernel-run.ts:135-139` alongside the existing 5 builtins.
