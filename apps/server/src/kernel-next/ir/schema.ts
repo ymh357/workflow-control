@@ -516,6 +516,9 @@ export const DiagnosticSchema = z.object({
     "MCP_PROVISION_PACKAGE_NOT_FOUND",
     "MCP_PROVISION_HEALTHCHECK_TIMEOUT",
     "MCP_INVENTORY_DECRYPT_FAILED",
+    // 2026-04-27 pipeline-modifier builtin
+    "MODIFIER_TARGET_UNKNOWN",
+    "MODIFIER_SELF_MODIFY_REJECTED",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),
