@@ -35,9 +35,13 @@ export function listEntries(db: DatabaseSync, opts: ListOpts = {}): CatalogEntry
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-  const sql = `SELECT entry_json FROM mcp_catalog ${where} ORDER BY id ASC`;
-  const rows = db.prepare(sql).all(...params) as { entry_json: string }[];
-  return rows.map((r) => CatalogEntrySchema.parse(JSON.parse(r.entry_json)));
+  const sql = `SELECT entry_json, deprecated_at FROM mcp_catalog ${where} ORDER BY id ASC`;
+  const rows = db.prepare(sql).all(...params) as { entry_json: string; deprecated_at: number | null }[];
+  return rows.map((r) => {
+    const obj = JSON.parse(r.entry_json);
+    if (r.deprecated_at != null) obj.deprecatedAt = r.deprecated_at;
+    return CatalogEntrySchema.parse(obj);
+  });
 }
 
 export function getEntry(
@@ -46,11 +50,13 @@ export function getEntry(
   opts: GetOpts = {},
 ): CatalogEntry | null {
   const sql = opts.includeDeprecated
-    ? "SELECT entry_json FROM mcp_catalog WHERE id = ?"
-    : "SELECT entry_json FROM mcp_catalog WHERE id = ? AND deprecated_at IS NULL";
-  const row = db.prepare(sql).get(id) as { entry_json: string } | undefined;
+    ? "SELECT entry_json, deprecated_at FROM mcp_catalog WHERE id = ?"
+    : "SELECT entry_json, deprecated_at FROM mcp_catalog WHERE id = ? AND deprecated_at IS NULL";
+  const row = db.prepare(sql).get(id) as { entry_json: string; deprecated_at: number | null } | undefined;
   if (!row) return null;
-  return CatalogEntrySchema.parse(JSON.parse(row.entry_json));
+  const obj = JSON.parse(row.entry_json);
+  if (row.deprecated_at != null) obj.deprecatedAt = row.deprecated_at;
+  return CatalogEntrySchema.parse(obj);
 }
 
 export function upsertCustomEntry(db: DatabaseSync, entry: CatalogEntry): WriteResult {
