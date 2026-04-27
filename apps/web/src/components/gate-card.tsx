@@ -6,6 +6,7 @@
 // /answer); this component is a pure render + click-forward.
 
 import { useState } from "react";
+import { RecommendedMcpsCard, type RecommendedMcpEntry } from "./recommended-mcps-card";
 
 export interface GateAnswerOption {
   value: string;
@@ -94,6 +95,17 @@ export function GateCard({ context, onAnswer }: Props) {
   // regenerating agent reads it via a wire to decide what to change.
   const [comment, setComment] = useState<string>("");
 
+  const recommendedMcps: RecommendedMcpEntry[] = (() => {
+    for (const u of context.upstreams) {
+      for (const out of u.outputs) {
+        if (out.port === "recommendedMcps" && Array.isArray(out.value)) {
+          return out.value as RecommendedMcpEntry[];
+        }
+      }
+    }
+    return [];
+  })();
+
   const click = async (answer: string) => {
     setSubmitting(answer);
     setErrorMsg(null);
@@ -147,6 +159,8 @@ export function GateCard({ context, onAnswer }: Props) {
           </details>
         ))
       )}
+
+      <RecommendedMcpsCard recommendedMcps={recommendedMcps} />
 
       <div className="mt-4">
         <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-zinc-400">
