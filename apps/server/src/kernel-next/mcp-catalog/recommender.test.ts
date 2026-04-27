@@ -2,7 +2,8 @@ import { describe, it, expect, beforeEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { initCatalogSchema } from "./sql.js";
 import { insertBuiltinEntry } from "./catalog-store.js";
-import { recommendForTopicLocal } from "./recommender.js";
+import { recommendForTopicLocal, recommendForTopicWithLLM } from "./recommender.js";
+import type { LlmOverlayClient } from "./recommender.js";
 import type { CatalogEntry } from "./schema.js";
 
 function entry(overrides: Partial<CatalogEntry> = {}): CatalogEntry {
@@ -148,5 +149,110 @@ describe("recommendForTopicLocal", () => {
     // the description's spaces, producing a false positive.
     expect(recommendForTopicLocal(db, "   ").length).toBe(0);
     expect(recommendForTopicLocal(db, " a b ").length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe("recommendForTopicWithLLM", () => {
+  let db: DatabaseSync;
+
+  beforeEach(() => {
+    db = new DatabaseSync(":memory:");
+    initCatalogSchema(db);
+  });
+
+  function fakeOverlay(jsonText: string): LlmOverlayClient {
+    return {
+      simpleJsonCompletion: async () => {
+        const parsed = JSON.parse(jsonText);
+        return parsed;
+      },
+    };
+  }
+
+  it("attaches llmReason to results when LLM succeeds", async () => {
+    insertBuiltinEntry(db, entry({
+      id: "etherscan",
+      useCases: ["verify tx hash on ethereum"],
+      tags: ["onchain-verification"],
+    }));
+
+    const overlay = fakeOverlay(JSON.stringify({
+      recommendations: [
+        {
+          id: "etherscan",
+          llmReason: "Etherscan reads contract source on Ethereum",
+          citedEvidence: {
+            tags: ["onchain-verification"],
+            useCases: ["verify tx hash on ethereum"],
+          },
+        },
+      ],
+    }));
+
+    const r = await recommendForTopicWithLLM(db, "verify tx hash", { llmClient: overlay });
+    expect(r.warnings).toBeUndefined();
+    expect(r.recommendations[0].id).toBe("etherscan");
+    expect(r.recommendations[0].llmReason).toMatch(/Etherscan/);
+  });
+
+  it("drops LLM result whose id is not in candidates", async () => {
+    insertBuiltinEntry(db, entry({
+      id: "etherscan",
+      useCases: ["verify tx hash on ethereum"],
+      tags: [],
+    }));
+
+    const overlay = fakeOverlay(JSON.stringify({
+      recommendations: [
+        {
+          id: "fabricated-id",
+          llmReason: "I made this up",
+          citedEvidence: {},
+        },
+      ],
+    }));
+
+    const r = await recommendForTopicWithLLM(db, "verify tx hash", { llmClient: overlay });
+    expect(r.recommendations.find((x) => x.id === "fabricated-id")).toBeUndefined();
+  });
+
+  it("drops LLM result whose citedEvidence is not a subset of candidate evidence", async () => {
+    insertBuiltinEntry(db, entry({
+      id: "etherscan",
+      useCases: ["verify tx hash"],
+      tags: ["onchain-verification"],
+    }));
+
+    const overlay = fakeOverlay(JSON.stringify({
+      recommendations: [
+        {
+          id: "etherscan",
+          llmReason: "...",
+          citedEvidence: { tags: ["does-not-exist"] },
+        },
+      ],
+    }));
+
+    const r = await recommendForTopicWithLLM(db, "verify tx hash", { llmClient: overlay });
+    // Falls back to local result (no llmReason) for that id.
+    expect(r.recommendations.find((x) => x.id === "etherscan")?.llmReason).toBeUndefined();
+  });
+
+  it("returns Layer 1 results + warning when LLM throws", async () => {
+    insertBuiltinEntry(db, entry({
+      id: "etherscan",
+      useCases: ["verify tx hash"],
+      tags: [],
+    }));
+
+    const failingOverlay: LlmOverlayClient = {
+      simpleJsonCompletion: async () => { throw new Error("network failed"); },
+    };
+
+    const r = await recommendForTopicWithLLM(db, "verify tx hash", { llmClient: failingOverlay });
+    expect(r.recommendations[0].id).toBe("etherscan");
+    expect(r.recommendations[0].llmReason).toBeUndefined();
+    expect(r.warnings).toBeDefined();
+    expect(r.warnings![0].code).toBe("CATALOG_LLM_OVERLAY_UNAVAILABLE");
   });
 });
