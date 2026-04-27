@@ -1,0 +1,126 @@
+{
+  "externalInputs": [
+    {
+      "name": "targetPipelineName",
+      "type": "string",
+      "description": "Name of the existing pipeline to modify."
+    },
+    {
+      "name": "modificationGoal",
+      "type": "string",
+      "description": "Natural-language description of the change."
+    },
+    {
+      "name": "failureContext",
+      "type": "unknown",
+      "description": "Optional { taskId?, failedStageName?, errorMessage?, executionRecordId? } for failure-driven modification. Pass null if proactive."
+    }
+  ],
+  "name": "pipeline-modifier",
+  "stages": [
+    {
+      "type": "agent",
+      "name": "loadCurrent",
+      "config": { "promptRef": "system/load-current" },
+      "inputs": [
+        { "name": "targetPipelineName", "type": "string" },
+        { "name": "failureContext", "type": "unknown" }
+      ],
+      "outputs": [
+        { "name": "currentVersionHash", "type": "string" },
+        { "name": "currentIr", "type": "unknown" },
+        { "name": "currentPromptsMap", "type": "unknown" },
+        { "name": "failureBundle", "type": "unknown" }
+      ]
+    },
+    {
+      "type": "agent",
+      "name": "analyzeGap",
+      "config": { "promptRef": "system/analyze-gap" },
+      "inputs": [
+        { "name": "currentIr", "type": "unknown" },
+        { "name": "currentPromptsMap", "type": "unknown" },
+        { "name": "modificationGoal", "type": "string" },
+        { "name": "failureBundle", "type": "unknown" },
+        { "name": "rejectionFeedback", "type": "string" }
+      ],
+      "outputs": [
+        { "name": "gapAnalysis", "type": "unknown" },
+        { "name": "proposedChangeOutline", "type": "string" },
+        { "name": "expectedSafeRange", "type": "string" }
+      ]
+    },
+    {
+      "type": "gate",
+      "name": "awaitingConfirm",
+      "config": {
+        "question": { "text": "Approve this proposed pipeline modification?" },
+        "routing": { "routes": { "approve": "genPatch", "reject": "analyzeGap" } }
+      },
+      "inputs": [{ "name": "__gate_signal", "type": "unknown" }],
+      "outputs": []
+    },
+    {
+      "type": "agent",
+      "name": "genPatch",
+      "config": { "promptRef": "system/gen-patch" },
+      "inputs": [
+        { "name": "gapAnalysis", "type": "unknown" },
+        { "name": "proposedChangeOutline", "type": "string" },
+        { "name": "currentIr", "type": "unknown" },
+        { "name": "currentPromptsMap", "type": "unknown" },
+        { "name": "currentVersionHash", "type": "string" },
+        { "name": "failureBundle", "type": "unknown" }
+      ],
+      "outputs": [
+        { "name": "patch", "type": "unknown" },
+        { "name": "rerunFrom", "type": "string" },
+        { "name": "migrateRunningTasks", "type": "unknown" },
+        { "name": "prompts", "type": "unknown" },
+        { "name": "dryRunVerdict", "type": "string" }
+      ]
+    },
+    {
+      "type": "agent",
+      "name": "applying",
+      "config": { "promptRef": "system/applying" },
+      "inputs": [
+        { "name": "patch", "type": "unknown" },
+        { "name": "rerunFrom", "type": "string" },
+        { "name": "migrateRunningTasks", "type": "unknown" },
+        { "name": "currentVersionHash", "type": "string" },
+        { "name": "dryRunVerdict", "type": "string" },
+        { "name": "prompts", "type": "unknown" }
+      ],
+      "outputs": [
+        { "name": "proposalId", "type": "string" },
+        { "name": "proposedVersion", "type": "string" },
+        { "name": "outcome", "type": "string" },
+        { "name": "migrationResult", "type": "unknown" }
+      ]
+    }
+  ],
+  "wires": [
+    { "from": { "source": "external", "port": "targetPipelineName" }, "to": { "stage": "loadCurrent", "port": "targetPipelineName" } },
+    { "from": { "source": "external", "port": "failureContext" }, "to": { "stage": "loadCurrent", "port": "failureContext" } },
+
+    { "from": { "stage": "loadCurrent", "port": "currentIr" }, "to": { "stage": "analyzeGap", "port": "currentIr" } },
+    { "from": { "stage": "loadCurrent", "port": "currentPromptsMap" }, "to": { "stage": "analyzeGap", "port": "currentPromptsMap" } },
+    { "from": { "source": "external", "port": "modificationGoal" }, "to": { "stage": "analyzeGap", "port": "modificationGoal" } },
+    { "from": { "stage": "loadCurrent", "port": "failureBundle" }, "to": { "stage": "analyzeGap", "port": "failureBundle" } },
+
+    { "from": { "stage": "analyzeGap", "port": "gapAnalysis" }, "to": { "stage": "genPatch", "port": "gapAnalysis" } },
+    { "from": { "stage": "analyzeGap", "port": "proposedChangeOutline" }, "to": { "stage": "genPatch", "port": "proposedChangeOutline" } },
+    { "from": { "stage": "loadCurrent", "port": "currentIr" }, "to": { "stage": "genPatch", "port": "currentIr" } },
+    { "from": { "stage": "loadCurrent", "port": "currentPromptsMap" }, "to": { "stage": "genPatch", "port": "currentPromptsMap" } },
+    { "from": { "stage": "loadCurrent", "port": "currentVersionHash" }, "to": { "stage": "genPatch", "port": "currentVersionHash" } },
+    { "from": { "stage": "loadCurrent", "port": "failureBundle" }, "to": { "stage": "genPatch", "port": "failureBundle" } },
+
+    { "from": { "stage": "genPatch", "port": "patch" }, "to": { "stage": "applying", "port": "patch" } },
+    { "from": { "stage": "genPatch", "port": "rerunFrom" }, "to": { "stage": "applying", "port": "rerunFrom" } },
+    { "from": { "stage": "genPatch", "port": "migrateRunningTasks" }, "to": { "stage": "applying", "port": "migrateRunningTasks" } },
+    { "from": { "stage": "loadCurrent", "port": "currentVersionHash" }, "to": { "stage": "applying", "port": "currentVersionHash" } },
+    { "from": { "stage": "genPatch", "port": "dryRunVerdict" }, "to": { "stage": "applying", "port": "dryRunVerdict" } },
+    { "from": { "stage": "genPatch", "port": "prompts" }, "to": { "stage": "applying", "port": "prompts" } }
+  ]
+}
