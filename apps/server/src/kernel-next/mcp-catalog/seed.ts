@@ -6,7 +6,7 @@ import { insertBuiltinEntry, markBuiltinDeprecated } from "./catalog-store.js";
 
 const SeedFileSchema = z.object({
   schemaVersion: z.literal("1"),
-  entries: z.array(CatalogEntrySchema.omit({ source: true })),
+  entries: z.array(CatalogEntrySchema.omit({ source: true, deprecatedAt: true })),
 });
 
 export type SeedResult =

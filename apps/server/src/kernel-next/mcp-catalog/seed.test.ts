@@ -77,6 +77,7 @@ describe("seedBuiltinFromJson", () => {
       ],
     }));
     const r = seedBuiltinFromJson(db, path);
+    expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.inserted).toBe(0);
       expect(r.updated).toBe(1);
@@ -102,6 +103,7 @@ describe("seedBuiltinFromJson", () => {
       ],
     }));
     const r = seedBuiltinFromJson(db, fullPath);
+    expect(r.ok).toBe(true);
     if (r.ok) {
       expect(r.deprecated).toBe(1);
     }
@@ -143,6 +145,22 @@ describe("seedBuiltinFromJson", () => {
       schemaVersion: "1",
       entries: [
         { id: "INVALID UPPERCASE", schemaVersion: "1", name: "x", description: "x", useCases: ["a"], tags: [], command: "npx", args: [], envKeys: [], healthCheckTimeoutMs: 1000 },
+      ],
+    });
+    const r = seedBuiltinFromJson(db, path);
+    expect(r.ok).toBe(false);
+  });
+
+  it("rejects entries.json that includes deprecatedAt field", () => {
+    const path = writeJson({
+      schemaVersion: "1",
+      entries: [
+        {
+          id: "x", schemaVersion: "1", name: "X", description: "x",
+          useCases: ["use x"], tags: [], command: "npx", args: [],
+          envKeys: [], healthCheckTimeoutMs: 1000,
+          deprecatedAt: 12345,
+        },
       ],
     });
     const r = seedBuiltinFromJson(db, path);
