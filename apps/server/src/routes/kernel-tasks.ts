@@ -156,6 +156,10 @@ kernelTasksRoute.post("/kernel/tasks/:taskId/cancel", async (c) => {
 //   SECRET_KEY_NOT_REQUIRED  → 400
 const secretsBodySchema = z.object({
   secrets: z.record(z.string().min(1), z.string().min(1)),
+  persistAs: z.record(
+    z.string().min(1),
+    z.object({ entryId: z.string().min(1) }).strict(),
+  ).optional(),
 }).strict();
 
 kernelTasksRoute.post("/kernel/tasks/:taskId/secrets", async (c) => {
@@ -180,7 +184,9 @@ kernelTasksRoute.post("/kernel/tasks/:taskId/secrets", async (c) => {
   }
 
   const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
-  const result = await svc.provideTaskSecrets(taskId, parsed.data.secrets);
+  const result = await svc.provideTaskSecrets(taskId, parsed.data.secrets, {
+    persistAs: parsed.data.persistAs,
+  });
   if (result.ok) return c.json(result);
   const code = result.diagnostics[0]?.code;
   const status =
