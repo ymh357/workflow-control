@@ -125,7 +125,15 @@ Do NOT wrap every script in its own review gate — that defeats the "scripts ar
 4. Identify branching: does execution split conditionally? If so, where are the guard predicates?
 5. Identify iteration: is there a list-over-items pattern? If so, which stage fans out over which port?
 6. Identify recursion: do you need a sub-pipeline? If so, give it a name and document its contract.
-7. **Call `recommend_mcp_servers(topic=<a one-sentence keyword summary of the user's task>)` once.** Read the recommendations and decide which entries materially help this pipeline (an entry returned by the recommender is a candidate, not a mandate). For each accepted entry, write one row into `recommendedMcps` with the entry's id, name, command, args, env, envKeys verbatim from the recommender's response (or a follow-up `get_mcp_catalog_entry(id)` call if you need the full envKeys list — the recommender's response may omit some entry fields). Add a `reason` string explaining in one sentence why this entry helps the pipeline.
+7. **Discover & lock down MCP entries.** Two-pass procedure:
+
+   a. **Recommend pass.** Call `recommend_mcp_servers(topic=<a one-sentence keyword summary of the user's task>)` once. For each external integration the pipeline genuinely needs (Notion, Linear, GitHub, etc.), check whether the recommender returned a fitting entry — read `evidence.matchedUseCases` to verify relevance, not just keyword overlap.
+
+   b. **Add-on-miss pass.** For each integration without a fitting recommendation: call `add_mcp_catalog_entry({entry: {...}, skipPackageCheck: false})` with a real, vendor-published or `@modelcontextprotocol/server-*` package. Healthcheck will reject hallucinated package names; if it does, try one alternative name (e.g. `@<vendor>/mcp-server` vs `@modelcontextprotocol/server-<vendor>`) before giving up. After a successful add, the new id is immediately retrievable via `get_mcp_catalog_entry`.
+
+   c. **Verbatim-fetch pass (REQUIRED, non-negotiable).** For EVERY entry id you intend to put in `recommendedMcps` — both builtins returned by the recommender AND custom entries you just added — call `get_mcp_catalog_entry(id)` and copy `command`, `args`, `env`, `envKeys` **verbatim** from the response. **Never fill these fields from memory / training data.** The catalog is the source of truth; your training data is stale. Add only the `reason` string yourself (one sentence explaining why this entry helps the pipeline).
+
+   d. The order matters. Skipping (c) — i.e. writing `recommendedMcps` rows from `recommend_mcp_servers` evidence alone, or from training-data recall — is a contract violation that produces broken pipelines.
 8. Write a `stageDesign` (markdown) walking through the stages in execution order. Include branching / fanout / recursion in prose.
 9. Produce the structured `stageContracts` + optional `subPipelineContracts` (§ output schema below).
 
