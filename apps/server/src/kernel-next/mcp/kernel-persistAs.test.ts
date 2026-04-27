@@ -102,4 +102,36 @@ describe("KernelService.provideTaskSecrets — persistAs", () => {
     expect(r.ok).toBe(true);
     expect(hasSecret(db, "etherscan", "ETHERSCAN_API_KEY")).toBe(false);
   });
+
+  it("equipEntry failure during persistAs → gate still resolves ok:true", async () => {
+    const db = newDb();
+    insertBuiltinEntry(db, ETHERSCAN);
+
+    // Patch the encrypt path to throw. The test exercises the catch in
+    // provideTaskSecrets's persistAs block: if equipEntry throws (any reason),
+    // the gate resolve must not be invalidated.
+    //
+    // Simplest reliable break: temporarily set WORKFLOW_CONTROL_SECRET_KEY to
+    // a malformed value AFTER setting up the gate-seeding, then reset the
+    // crypto cache. encryptValue → loadKey will throw on length mismatch.
+
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    await seedGate(db, svc, "t4");
+
+    process.env.WORKFLOW_CONTROL_SECRET_KEY = "not-32-bytes-base64";
+    resetKeyCacheForTest();
+
+    const r = await svc.provideTaskSecrets(
+      "t4",
+      { ETHERSCAN_API_KEY: "secret-recover" },
+      { persistAs: { ETHERSCAN_API_KEY: { entryId: "etherscan" } } },
+    );
+
+    expect(r.ok).toBe(true);
+    expect(hasSecret(db, "etherscan", "ETHERSCAN_API_KEY")).toBe(false);
+
+    // Restore the cache for downstream tests in the same worker.
+    process.env.WORKFLOW_CONTROL_SECRET_KEY = Buffer.alloc(32, 9).toString("base64");
+    resetKeyCacheForTest();
+  });
 });
