@@ -99,7 +99,16 @@ export function GateCard({ context, onAnswer }: Props) {
     for (const u of context.upstreams) {
       for (const out of u.outputs) {
         if (out.port === "recommendedMcps" && Array.isArray(out.value)) {
-          return out.value as RecommendedMcpEntry[];
+          // Defensive filter: a malformed pipeline could write a non-conforming
+          // array; reject any element missing the keys we depend on rather than
+          // letting it crash useEffect / render.
+          return (out.value as unknown[]).filter(
+            (e): e is RecommendedMcpEntry =>
+              e !== null
+              && typeof e === "object"
+              && typeof (e as RecommendedMcpEntry).entryId === "string"
+              && Array.isArray((e as RecommendedMcpEntry).envKeys),
+          );
         }
       }
     }
