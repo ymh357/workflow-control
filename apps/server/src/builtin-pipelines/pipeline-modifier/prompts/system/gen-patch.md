@@ -52,14 +52,15 @@ Do NOT call `propose_pipeline_change`, `apply_pipeline_proposal`, `migrate_task`
 
 ## Catalog discovery (only when changing mcpServers)
 
-If the patch alters an agent stage's `mcpServers` list, the new entry MUST come from the catalog — same rule as pipeline-generator. Resolve in this order:
+If the patch alters an agent stage's `mcpServers` list, the new entry MUST come from a verbatim source — same rule as pipeline-generator, with one extra source (currentIr). Resolve in this order:
 
-1. **Look at currentIr first.** If the target pipeline already declares the MCP elsewhere, copy the verbatim `mcpServers` block from that stage. No tool call needed.
-2. **`recommend_mcp_servers(topic)`** for unfamiliar capabilities. Verify each candidate's `evidence.matchedUseCases` actually fits.
-3. **`get_mcp_catalog_entry(id)`** to fetch the full command/args/envKeys for any id you've selected.
-4. **`add_mcp_catalog_entry({entry})`** as a last resort, only when no recommendation works AND the pipeline genuinely needs the integration. Same discipline as pipeline-generator: pick a real, vendor-published or `@modelcontextprotocol/server-*` package; the healthcheck will reject typo-squats / hallucinations.
+1. **Verbatim from currentIr.** If the target pipeline already declares the MCP elsewhere (in another stage's `mcpServers`), copy that block byte-for-byte. No tool call needed; the field values are already authoritative.
+2. **Recommend pass.** Call `recommend_mcp_servers(topic)` for unfamiliar capabilities. Read each candidate's `evidence.matchedUseCases` to verify relevance — keyword overlap alone is not a fit.
+3. **Add-on-miss pass.** When no recommendation fits an integration the patch genuinely needs, call `add_mcp_catalog_entry({entry, skipPackageCheck: false})`. Pick a real, vendor-published or `@modelcontextprotocol/server-*` package. If the first attempt's healthcheck fails, try ONE alternative name (e.g. `@<vendor>/mcp-server` vs `@modelcontextprotocol/server-<vendor>`) before giving up.
+4. **Verbatim-fetch pass (REQUIRED, non-negotiable).** For every entry id you intend to put into the patch's `mcpServers` block — both ids returned by recommend AND ids you just added — call `get_mcp_catalog_entry(id)` and copy `command`, `args`, `env`, `envKeys` **verbatim** from the response. **Never fill these fields from memory / training data.** The catalog row is the source of truth; your training data is stale. Source 1 (currentIr verbatim) is the only path that skips this step, because the IR fields are already verbatim by construction.
+5. **Otherwise leave it.** If after steps 2-4 you still can't get a working entry, leave the patch's mcpServers list unchanged and explain in your final reasoning that `gapAnalysis.risks` flagged it.
 
-Never hand-write an `mcpServers` block from training data. If after the four steps above you still can't get a working entry, leave the patch's mcpServers list unchanged and explain in `gapAnalysis.risks` (which analyzeGap already produced).
+Never hand-write an `mcpServers` block from training data — even when you're confident you remember the right package name. The `recommend → add → verbatim-fetch` chain is the only way the patched pipeline will actually run.
 
 ## Patch shape
 
