@@ -57,7 +57,7 @@ describe("get_pipeline_definition MCP tool", () => {
     expect(data.ok).toBe(true);
     expect(data.versionHash).toBe(versionHash);
     expect(data.ir.name).toBe("test-pipeline");
-    expect(data.prompts["system/p1"]).toBe("# Test prompt content for s1");
+    expect(data.prompts["system/p1"]).toBe("# Test prompt content for s1\n");
   });
 
   it("returns IR + prompts when versionHash is given (overrides name)", async () => {

@@ -109,7 +109,6 @@ type ToolName =
   // Phase 1 MCP supply-chain
   | "recommend_mcp_servers"
   | "get_mcp_catalog_entry"
-  // 2026-04-27 pipeline-modifier
   | "get_pipeline_definition";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([

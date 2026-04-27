@@ -64,9 +64,7 @@ export function buildGetPipelineDefinitionTools(deps: ToolsDeps): ToolDef[] {
           });
         }
 
-        const rawPrompts = getPromptsByVersion(db, resolvedHash);
-        const prompts: Record<string, string> = {};
-        for (const [k, v] of Object.entries(rawPrompts)) prompts[k] = v.trimEnd();
+        const prompts = getPromptsByVersion(db, resolvedHash);
         return jsonResponse({ ok: true, versionHash: resolvedHash, ir, prompts });
       },
     },
