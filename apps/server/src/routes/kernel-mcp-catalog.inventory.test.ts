@@ -5,6 +5,7 @@ import { createKernelMcpCatalogRoute } from "./kernel-mcp-catalog.js";
 import { initCatalogSchema } from "../kernel-next/mcp-catalog/sql.js";
 import { initInventorySchema } from "../kernel-next/mcp-catalog/inventory-sql.js";
 import { insertBuiltinEntry } from "../kernel-next/mcp-catalog/catalog-store.js";
+import { resetKeyCacheForTest } from "../kernel-next/mcp-catalog/crypto.js";
 
 const FETCH_ENTRY = {
   id: "fetch", source: "builtin" as const, schemaVersion: "1" as const,
@@ -23,12 +24,13 @@ const ETHERSCAN_ENTRY = {
 };
 
 function makeApp(envExec: { code: number } = { code: 0 }) {
+  process.env.WORKFLOW_CONTROL_SECRET_KEY = Buffer.alloc(32, 1).toString("base64");
+  resetKeyCacheForTest();
   const db = new DatabaseSync(":memory:");
   initCatalogSchema(db);
   initInventorySchema(db);
   insertBuiltinEntry(db, FETCH_ENTRY);
   insertBuiltinEntry(db, ETHERSCAN_ENTRY);
-  process.env.WORKFLOW_CONTROL_SECRET_KEY = Buffer.alloc(32, 1).toString("base64");
 
   const app = new Hono();
   app.route("/api", createKernelMcpCatalogRoute(() => db, {

@@ -26,6 +26,16 @@ const recommendBodySchema = z.object({
   maxResults: z.number().int().positive().max(50).optional(),
 }).strict();
 
+const equipBodySchema = z.object({
+  entryId: z.string().min(1),
+  envValues: z.record(z.string(), z.string()).optional(),
+  healthCheckTimeoutMs: z.number().int().positive().optional(),
+}).strict();
+
+const entryIdBodySchema = z.object({
+  entryId: z.string().min(1),
+}).strict();
+
 function badRequest(c: Context, code: string, message: string, context?: Record<string, unknown>) {
   return c.json({ ok: false, diagnostics: [{ code, message, ...(context ? { context } : {}) }] }, 400);
 }
@@ -207,16 +217,6 @@ export function createKernelMcpCatalogRoute(
     return c.json({ ok: true, recommendations: recs });
   });
 
-  const equipBodySchema = z.object({
-    entryId: z.string().min(1),
-    envValues: z.record(z.string(), z.string()).optional(),
-    healthCheckTimeoutMs: z.number().int().positive().optional(),
-  }).strict();
-
-  const entryIdBodySchema = z.object({
-    entryId: z.string().min(1),
-  }).strict();
-
   const buildDeps = () => ({
     db: getDb(),
     exec: options.exec,
@@ -263,6 +263,10 @@ export function createKernelMcpCatalogRoute(
     return c.json(result);
   });
 
+  // Idempotent: unequipping an already-not-equipped entry returns ok:true.
+  // This matches the user-mental-model "make sure this is unequipped" rather
+  // than a strict resource lifecycle. Distinct from DELETE /entries/:id which
+  // returns 404 for unknown ids.
   route.post("/kernel/mcp-catalog/unequip", async (c) => {
     const raw = await c.req.text();
     if (raw.trim().length === 0) return badRequest(c, "INVALID_REQUEST_BODY", "request body required");
