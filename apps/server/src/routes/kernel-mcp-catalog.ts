@@ -9,6 +9,15 @@ import {
 import { CatalogEntrySchema } from "../kernel-next/mcp-catalog/schema.js";
 import { recommendForTopicLocal, recommendForTopicWithLLM } from "../kernel-next/mcp-catalog/recommender.js";
 import { z } from "zod";
+import {
+  listInventory,
+  getInventoryStatus,
+  listSecretReadoutsPublic,
+  equipEntry,
+  unequipEntry,
+  recheckEntry,
+} from "../kernel-next/mcp-catalog/inventory.js";
+import type { ExecFn } from "../kernel-next/mcp-catalog/healthcheck.js";
 
 const recommendBodySchema = z.object({
   topic: z.string().min(1).max(4096),
@@ -25,7 +34,15 @@ function badRequest(c: Context, code: string, message: string, context?: Record<
  * Factory so tests can inject a custom DB getter.
  * In production, getKernelNextDb is used.
  */
-export function createKernelMcpCatalogRoute(getDb: () => DatabaseSync): Hono {
+export interface KernelMcpCatalogRouteOptions {
+  exec?: ExecFn;
+  processEnv?: NodeJS.ProcessEnv;
+}
+
+export function createKernelMcpCatalogRoute(
+  getDb: () => DatabaseSync,
+  options: KernelMcpCatalogRouteOptions = {},
+): Hono {
   const route = new Hono();
 
   route.get("/kernel/mcp-catalog/entries", (c) => {
@@ -188,6 +205,93 @@ export function createKernelMcpCatalogRoute(getDb: () => DatabaseSync): Hono {
       maxResults: parsed.data.maxResults,
     });
     return c.json({ ok: true, recommendations: recs });
+  });
+
+  const equipBodySchema = z.object({
+    entryId: z.string().min(1),
+    envValues: z.record(z.string(), z.string()).optional(),
+    healthCheckTimeoutMs: z.number().int().positive().optional(),
+  }).strict();
+
+  const entryIdBodySchema = z.object({
+    entryId: z.string().min(1),
+  }).strict();
+
+  const buildDeps = () => ({
+    db: getDb(),
+    exec: options.exec,
+    processEnv: options.processEnv,
+  });
+
+  route.get("/kernel/mcp-catalog/inventory", (c) => {
+    const db = getDb();
+    const rows = listInventory(db);
+    const readouts: Record<string, ReturnType<typeof listSecretReadoutsPublic>> = {};
+    for (const r of rows) {
+      readouts[r.entryId] = listSecretReadoutsPublic(db, r.entryId);
+    }
+    return c.json({ ok: true, rows, readouts });
+  });
+
+  route.get("/kernel/mcp-catalog/inventory/:entryId", (c) => {
+    const db = getDb();
+    const entryId = c.req.param("entryId");
+    const row = getInventoryStatus(db, entryId);
+    const readouts = listSecretReadoutsPublic(db, entryId);
+    return c.json({ ok: true, row, readouts });
+  });
+
+  route.post("/kernel/mcp-catalog/equip", async (c) => {
+    const raw = await c.req.text();
+    if (raw.trim().length === 0) return badRequest(c, "INVALID_REQUEST_BODY", "request body required");
+    let body: unknown;
+    try { body = JSON.parse(raw); } catch { return badRequest(c, "INVALID_JSON_BODY", "invalid JSON"); }
+    const parsed = equipBodySchema.safeParse(body);
+    if (!parsed.success) return badRequest(c, "INVALID_REQUEST_BODY",
+      parsed.error.issues[0]?.message ?? "bad request");
+
+    const result = await equipEntry(buildDeps(), {
+      entryId: parsed.data.entryId,
+      envValues: parsed.data.envValues ?? {},
+      healthCheckTimeoutMs: parsed.data.healthCheckTimeoutMs,
+    });
+    if (!result.ok) {
+      const code = result.diagnostics[0].code;
+      const status = code === "CATALOG_ENTRY_NOT_FOUND" ? 404 : 400;
+      return c.json(result, status);
+    }
+    return c.json(result);
+  });
+
+  route.post("/kernel/mcp-catalog/unequip", async (c) => {
+    const raw = await c.req.text();
+    if (raw.trim().length === 0) return badRequest(c, "INVALID_REQUEST_BODY", "request body required");
+    let body: unknown;
+    try { body = JSON.parse(raw); } catch { return badRequest(c, "INVALID_JSON_BODY", "invalid JSON"); }
+    const parsed = entryIdBodySchema.safeParse(body);
+    if (!parsed.success) return badRequest(c, "INVALID_REQUEST_BODY",
+      parsed.error.issues[0]?.message ?? "bad request");
+
+    const result = unequipEntry(getDb(), parsed.data.entryId);
+    return c.json(result);
+  });
+
+  route.post("/kernel/mcp-catalog/recheck", async (c) => {
+    const raw = await c.req.text();
+    if (raw.trim().length === 0) return badRequest(c, "INVALID_REQUEST_BODY", "request body required");
+    let body: unknown;
+    try { body = JSON.parse(raw); } catch { return badRequest(c, "INVALID_JSON_BODY", "invalid JSON"); }
+    const parsed = entryIdBodySchema.safeParse(body);
+    if (!parsed.success) return badRequest(c, "INVALID_REQUEST_BODY",
+      parsed.error.issues[0]?.message ?? "bad request");
+
+    const result = await recheckEntry(buildDeps(), parsed.data.entryId);
+    if (!result.ok) {
+      const code = result.diagnostics[0].code;
+      const status = code === "CATALOG_ENTRY_NOT_FOUND" ? 404 : 400;
+      return c.json(result, status);
+    }
+    return c.json(result);
   });
 
   return route;
