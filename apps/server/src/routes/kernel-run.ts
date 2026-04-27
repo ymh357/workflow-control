@@ -137,3 +137,4 @@ void seedBuiltinPipelineByName("tech-research-collector");
 void seedBuiltinPipelineByName("tech-research-writer");
 void seedBuiltinPipelineByName("pipeline-generator");
 void seedBuiltinPipelineByName("pr-description-generator");
+void seedBuiltinPipelineByName("pipeline-modifier");
