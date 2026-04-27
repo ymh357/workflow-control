@@ -44,4 +44,14 @@ describe("initCatalogSchema", () => {
       ).run("x", "custom", "{}", 2);
     }).toThrow(/UNIQUE constraint failed/);
   });
+
+  it("creates both indexes", () => {
+    const db = new DatabaseSync(":memory:");
+    initCatalogSchema(db);
+    const names = (db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mcp_catalog' ORDER BY name"
+    ).all() as { name: string }[]).map((r) => r.name);
+    expect(names).toContain("idx_mc_source");
+    expect(names).toContain("idx_mc_deprecated");
+  });
 });
