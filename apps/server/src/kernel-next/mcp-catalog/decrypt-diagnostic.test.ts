@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { expandMcpServers } from "../runtime/mcp-servers-expander.js";
 import type { McpServerDecl } from "../ir/schema.js";
@@ -66,6 +66,15 @@ describe("expander — caller can collect inventory decrypt diagnostics", () => 
 });
 
 describe("expander integration — corrupt ciphertext surfaces decrypt diagnostic", () => {
+  let prevEnv: string | undefined;
+  beforeEach(() => {
+    prevEnv = process.env.WORKFLOW_CONTROL_SECRET_KEY;
+  });
+  afterEach(() => {
+    if (prevEnv === undefined) delete process.env.WORKFLOW_CONTROL_SECRET_KEY;
+    else process.env.WORKFLOW_CONTROL_SECRET_KEY = prevEnv;
+  });
+
   it("collects MCP_INVENTORY_DECRYPT_FAILED into a side channel when ciphertext is malformed", () => {
     const db = new DatabaseSync(":memory:");
     initCatalogSchema(db);

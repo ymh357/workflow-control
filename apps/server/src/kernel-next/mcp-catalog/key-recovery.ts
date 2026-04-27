@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { keyFileExists as defaultKeyFileExists } from "./crypto.js";
+import { logger } from "../../lib/logger.js";
 
 const ENV_OVERRIDE = "WORKFLOW_CONTROL_SECRET_KEY";
 
@@ -90,9 +91,9 @@ export function runSecretKeyRecovery(
     return { recovered: true, affectedRows: affected };
   } catch (e) {
     // Never crash startup, but DO log so an operator has a breadcrumb.
-    console.warn(
-      "[mcp-catalog] key-recovery guard failed — falling back to decrypt-time error path:",
-      e instanceof Error ? e.message : String(e),
+    logger.warn(
+      { err: e instanceof Error ? e.message : String(e) },
+      "[mcp-catalog] key-recovery guard failed — falling back to decrypt-time error path",
     );
     return { recovered: false, reason: "no-tables", affectedRows: 0 };
   }
