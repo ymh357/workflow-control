@@ -240,63 +240,60 @@ If any check fails, fix or emit diagnostics in your own thinking and try again b
 
 ## Wiring `recommendedMcps` into agent stages
 
-After producing each agent stage, determine which MCPs from the `recommendedMcps` input port it needs (read the stage's `Purpose` / `Inputs` / `Outputs` against the capability each MCP provides). Attach that subset to the stage's `config.mcpServers`.
+The `analyzing` stage produced `recommendedMcps` — an array of `{ entryId, name, command, args, env?, envKeys, reason }` entries from the Flow catalog. For each agent stage you emit, decide whether the stage needs any of these MCPs (read the stage's purpose / inputs / outputs against each entry's `reason` and capability). Attach the matching subset to the stage's `config.mcpServers`.
 
-`recommendedMcps` is **authoritative**. The upstream `analyzing` stage has already decided which servers exist, what transport they use (stdio vs `mcp-remote` bridge), which envKeys each requires, and verified package existence. **Your job here is propagation, not re-design.**
+`recommendedMcps` is **authoritative for capability**. The user already approved these entries at the `awaitingConfirm` gate; you are merely deciding which stage uses which.
 
-Two shapes are possible — either the stdio + API-key form or the remote HTTP + `mcp-remote` bridge form. Copy whichever came through from `recommendedMcps`.
+### Procedure
 
-Stdio + API-key example:
+For each entry you decide to use:
+
+1. Call `get_mcp_catalog_entry(entryId)` once. The full catalog entry has `command`, `args`, `envKeys[].name` etc.; the version inside `recommendedMcps` may be a slim copy.
+2. Construct the IR `McpServerEntry` block:
+   ```json
+   {
+     "name": "<entry.name>",
+     "command": "<entry.command>",
+     "args": [<...entry.args...>],
+     "env": { "<envKey>": "${<envKey>}" },
+     "envKeys": ["<envKey>", "..."]
+   }
+   ```
+   The `env` field maps each declared envKey to the runtime `${VAR}` placeholder pattern. The kernel's expander (with the user's inventory layer, Phase 2) will resolve these at run time.
+3. Attach the block to the agent stage's `config.mcpServers`. If two stages need the same entry, attach the SAME object to both.
+
+### Rules
+
+- **`entryId` is internal** to the analyzing-design path. Do NOT include `entryId` or `reason` in the IR's `McpServerEntry` — those are pipeline-design metadata only.
+- **Do not invent entries.** If a stage needs a capability that is not in `recommendedMcps`, that's a gap — note it in `warnings` (a downstream port if your IR carries one; otherwise just leave the stage without `mcpServers`). Do not fabricate a server definition.
+- **Omit `mcpServers` entirely** when a stage needs no external MCPs — do not emit an empty array.
+- **Do not mutate `command` / `args` / `envKeys`** per-stage. The catalog entry is the source of truth.
+- **Reserved names**: `name` matching `__*__` is reserved. The catalog enforces kebab-case ids that don't collide; verify by inspection if you're unsure.
+- **No PulseMCP, no npm view, no scope-guessing.** Phase 2 deprecated those paths.
+
+### Example
+
+If `recommendedMcps` contains `{ entryId: "etherscan", reason: "verify on-chain claims" }` and your design has a stage `verifyOnchain` whose purpose is "validate transaction hashes against Ethereum mainnet", you'd attach:
 
 ```json
 {
-  "name": "fetchIssues",
+  "name": "verifyOnchain",
   "type": "agent",
-  "inputs": [{ "name": "repo", "type": "string" }],
-  "outputs": [{ "name": "issues", "type": "object[]" }],
   "config": {
-    "promptRef": "fetch-issues",
+    "promptRef": "system/verifyOnchain",
     "mcpServers": [
       {
-        "name": "github",
+        "name": "etherscan",
         "command": "npx",
-        "args": ["-y", "@modelcontextprotocol/server-github"],
-        "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" },
-        "envKeys": ["GITHUB_TOKEN"]
+        "args": ["-y", "@flow/mcp-etherscan"],
+        "env": { "ETHERSCAN_API_KEY": "${ETHERSCAN_API_KEY}" },
+        "envKeys": ["ETHERSCAN_API_KEY"]
       }
     ]
-  }
+  },
+  ...
 }
 ```
-
-Remote HTTP via `mcp-remote` bridge example (OAuth-mediated, no envKeys):
-
-```json
-{
-  "name": "fetchTasks",
-  "type": "agent",
-  "inputs": [{ "name": "filterPrefs", "type": "object" }],
-  "outputs": [{ "name": "tasks", "type": "object[]" }],
-  "config": {
-    "promptRef": "fetch-tasks",
-    "mcpServers": [
-      {
-        "name": "linear",
-        "command": "npx",
-        "args": ["-y", "mcp-remote", "https://mcp.linear.app/mcp"],
-        "envKeys": []
-      }
-    ]
-  }
-}
-```
-
-Rules:
-- Omit `mcpServers` entirely when a stage needs no external MCPs (do not emit an empty array).
-- **Re-use the exact object shape from `recommendedMcps[i]`**. Do not mutate `command`, `args`, `env`, or `envKeys` per stage. Do not substitute package names you think are more canonical — the analyzing stage has already verified the published name. If two stages use the same server (same `name`), both attach the SAME JSON subtree.
-- Do NOT invent new server entries here. If a stage needs a capability that is not in `recommendedMcps`, that's a gap — note it in `warnings` and leave the stage without `mcpServers`; do not fabricate a server definition.
-- Do NOT emit `mcpServers` entries with `name` matching `__*__` (reserved).
-- The user supplies each server's `envKeys` at `run_pipeline` time via the `envValues` argument. OAuth-mediated servers (`envKeys: []`) get no user-supplied values; their tokens are managed by the `mcp-remote` bridge.
 
 ## `session_mode`
 
