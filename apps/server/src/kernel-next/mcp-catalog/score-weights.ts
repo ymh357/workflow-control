@@ -7,6 +7,8 @@ export const SCORE_WEIGHTS = {
 export const MIN_SCORE = 0.1;
 
 export const DEFAULT_MAX_RESULTS = 5;
+// Used by recommendForTopicWithLLM in T7 (LLM-overlay rerank). Held here
+// alongside other tunable scoring constants.
 export const LLM_OVERLAY_CANDIDATE_LIMIT = 10;
 
 const STOP_WORDS_EN = new Set([

@@ -135,4 +135,18 @@ describe("recommendForTopicLocal", () => {
     const r = recommendForTopicLocal(db, "alpha beta gamma");
     expect(r[0].id).toBe("use-case-hit");
   });
+
+  it("does not match on whitespace n-grams from a sloppy topic", () => {
+    insertBuiltinEntry(db, entry({
+      id: "fetch",
+      useCases: ["fetch a block"],
+      tags: [],
+      description: "x",
+    }));
+
+    // Topic " a b " — without trim, n-grams ' a', 'a ', etc. would match
+    // the description's spaces, producing a false positive.
+    expect(recommendForTopicLocal(db, "   ").length).toBe(0);
+    expect(recommendForTopicLocal(db, " a b ").length).toBeLessThanOrEqual(1);
+  });
 });

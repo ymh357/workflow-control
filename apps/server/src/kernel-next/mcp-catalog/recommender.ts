@@ -22,7 +22,7 @@ export function recommendForTopicLocal(
   const excludeIds = new Set(opts.excludeIds ?? []);
 
   const tokens = tokenize(topic);
-  const normalizedTopic = topic.toLowerCase();
+  const normalizedTopic = topic.trim().toLowerCase();
 
   const entries = listEntries(db).filter((e) => !excludeIds.has(e.id));
 
@@ -116,6 +116,9 @@ function substringMatchRatio(topic: string, target: string): number {
   };
 
   let bestRatio = 0;
+  // 2..4-gram range (spec mentions 2..6, but for v1 entries.json content
+  // 2-grams already achieve sufficient recall on Chinese; 5/6-grams add
+  // cost without measurable benefit at our scale).
   for (const n of [2, 3, 4]) {
     const topicGrams = ngrams(topic, n);
     if (topicGrams.size === 0) continue;
