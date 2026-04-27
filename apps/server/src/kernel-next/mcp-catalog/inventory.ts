@@ -188,6 +188,15 @@ export async function recheckEntry(
   return { ok: true, status: "equipped" };
 }
 
+/**
+ * Throws a `Error & { diagnostic: Diagnostic }` with code `MCP_INVENTORY_DECRYPT_FAILED`
+ * when the underlying decrypt call fails (corrupt ciphertext, wrong key, etc.).
+ * Returns null when no row exists. Returns plaintext on success.
+ *
+ * Callers (mcp-servers-expander, REST routes) must catch this and surface
+ * the diagnostic; the kernel currently has no graceful path to "key lost"
+ * recovery (see spec §6.3 — deferred).
+ */
 export function resolveSecret(
   deps: { db: DatabaseSync; decrypt?: (s: string) => string },
   entryId: string,
@@ -196,5 +205,18 @@ export function resolveSecret(
   const row = readSecretRow(deps.db, entryId, envKey);
   if (!row) return null;
   const decrypt = deps.decrypt ?? decryptValue;
-  return decrypt(row.encryptedValue);
+  try {
+    return decrypt(row.encryptedValue);
+  } catch (e) {
+    const cause = e instanceof Error ? e.message : String(e);
+    const err = new Error(
+      `MCP_INVENTORY_DECRYPT_FAILED: failed to decrypt secret '${envKey}' for entry '${entryId}': ${cause}`,
+    ) as Error & { diagnostic: Diagnostic };
+    err.diagnostic = {
+      code: "MCP_INVENTORY_DECRYPT_FAILED",
+      message: `failed to decrypt secret for entry '${entryId}', envKey '${envKey}'`,
+      context: { entryId, envKey },
+    };
+    throw err;
+  }
 }

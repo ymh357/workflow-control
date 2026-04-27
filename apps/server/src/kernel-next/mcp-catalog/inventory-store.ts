@@ -40,15 +40,25 @@ export function readAllInventoryRows(db: DatabaseSync): InventoryRow[] {
   return rows.map(rowToInventory);
 }
 
+type WriteInventoryStatusArgs =
+  | { status: "not-equipped" | "pending-secret" | "equipped" }
+  | { status: "unhealthy"; unhealthyReason: string };
+
 export function writeInventoryStatus(
   db: DatabaseSync,
   entryId: string,
   status: InventoryStatus,
-  opts: { unhealthyReason?: string } = {},
+  opts: Partial<{ unhealthyReason: string }> = {},
 ): void {
+  if (status === "unhealthy" && !opts.unhealthyReason) {
+    throw new Error("writeInventoryStatus: 'unhealthy' status requires opts.unhealthyReason");
+  }
+  // The discriminated union type is exported below for callers that want
+  // compile-time enforcement of the reason on unhealthy writes; the existing
+  // 4-arg signature remains the runtime contract for backwards compatibility.
   const now = Date.now();
   const unhealthyAt = status === "unhealthy" ? now : null;
-  const unhealthyReason = status === "unhealthy" ? (opts.unhealthyReason ?? null) : null;
+  const unhealthyReason = status === "unhealthy" ? opts.unhealthyReason! : null;
   db.prepare(`
     INSERT INTO mcp_inventory
       (entry_id, status, last_status_change_at, last_unhealthy_at, last_unhealthy_reason)
@@ -60,6 +70,8 @@ export function writeInventoryStatus(
       last_unhealthy_reason = excluded.last_unhealthy_reason
   `).run(entryId, status, now, unhealthyAt, unhealthyReason);
 }
+
+export type { WriteInventoryStatusArgs };
 
 export function deleteInventoryRow(db: DatabaseSync, entryId: string): void {
   db.prepare("DELETE FROM mcp_inventory WHERE entry_id = ?").run(entryId);

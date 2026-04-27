@@ -11,6 +11,7 @@ import {
   getInventoryStatus,
   hasSecret,
   resolveSecret,
+  listSecretReadoutsPublic,
 } from "./inventory.js";
 import type { CatalogEntry } from "./schema.js";
 
@@ -221,5 +222,64 @@ describe("inventory.resolveSecret", () => {
     ).run("etherscan", "ETHERSCAN_API_KEY", "GARBAGE_NOT_ENC", Date.now());
 
     expect(() => resolveSecret({ db, decrypt: fakeDecrypt }, "etherscan", "ETHERSCAN_API_KEY")).toThrow();
+  });
+});
+
+describe("inventory.listInventory + listSecretReadoutsPublic", () => {
+  it("listInventory returns all rows sorted by entryId", async () => {
+    const db = newDb();
+    insertBuiltinEntry(db, ETHERSCAN);
+    insertBuiltinEntry(db, FETCH);
+    await equipEntry(
+      { db, encrypt: fakeEncrypt, decrypt: fakeDecrypt,
+        exec: async () => ({ code: 0, stdout: "v", stderr: "", timedOut: false }),
+        processEnv: {} },
+      { entryId: "fetch", envValues: {} },
+    );
+    await equipEntry(
+      { db, encrypt: fakeEncrypt, decrypt: fakeDecrypt,
+        exec: async () => ({ code: 0, stdout: "v", stderr: "", timedOut: false }),
+        processEnv: {} },
+      { entryId: "etherscan", envValues: { ETHERSCAN_API_KEY: "k" } },
+    );
+    const rows = listInventory(db);
+    expect(rows.map((r) => r.entryId)).toEqual(["etherscan", "fetch"]);
+  });
+
+  it("listSecretReadoutsPublic returns metadata only, never plaintext", async () => {
+    const db = newDb();
+    insertBuiltinEntry(db, ETHERSCAN);
+    await equipEntry(
+      { db, encrypt: fakeEncrypt, decrypt: fakeDecrypt,
+        exec: async () => ({ code: 0, stdout: "v", stderr: "", timedOut: false }),
+        processEnv: {} },
+      { entryId: "etherscan", envValues: { ETHERSCAN_API_KEY: "secret-zzz" } },
+    );
+    const readouts = listSecretReadoutsPublic(db, "etherscan");
+    expect(readouts.length).toBe(1);
+    expect(readouts[0].envKey).toBe("ETHERSCAN_API_KEY");
+    expect(readouts[0].hasValue).toBe(true);
+    expect(JSON.stringify(readouts)).not.toContain("secret-zzz");
+  });
+});
+
+describe("inventory.resolveSecret — decrypt failure carries diagnostic", () => {
+  it("thrown error has .diagnostic with MCP_INVENTORY_DECRYPT_FAILED", async () => {
+    const db = newDb();
+    insertBuiltinEntry(db, ETHERSCAN);
+    db.prepare(
+      `INSERT INTO mcp_inventory_secrets (entry_id, env_key, encrypted_value, last_updated_at)
+       VALUES (?, ?, ?, ?)`,
+    ).run("etherscan", "ETHERSCAN_API_KEY", "GARBAGE_NOT_ENC", Date.now());
+
+    let caught: unknown;
+    try {
+      resolveSecret({ db, decrypt: fakeDecrypt }, "etherscan", "ETHERSCAN_API_KEY");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const diag = (caught as Error & { diagnostic?: { code: string } }).diagnostic;
+    expect(diag?.code).toBe("MCP_INVENTORY_DECRYPT_FAILED");
   });
 });
