@@ -39,4 +39,13 @@ describe("pipeline-generator IR", () => {
     expect(distinctTypes.size).toBe(1);
     expect([...distinctTypes][0]).toBe(expectedType);
   });
+
+  it("store_schema['analyzing.recommendedMcps'].type matches the port type", () => {
+    const irFull = JSON.parse(readFileSync(irPath, "utf8")) as {
+      store_schema?: Record<string, { type: string }>;
+    };
+    const entry = irFull.store_schema?.["analyzing.recommendedMcps"];
+    expect(entry).toBeDefined();
+    expect(entry?.type).toBe(expectedType);
+  });
 });

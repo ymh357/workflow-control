@@ -1081,8 +1081,8 @@
       }
     },
     "analyzing.recommendedMcps": {
-      "type": "object[]",
-      "description": "Structured MCP server declarations emitted by analyzing stage (name/command/args/env/envKeys).",
+      "type": "Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>",
+      "description": "Structured MCP server declarations from the Flow catalog (entryId/name/command/args/env/envKeys/reason). Sourced via recommend_mcp_servers MCP tool.",
       "produced_by": {
         "stage": "analyzing",
         "port": "recommendedMcps"
