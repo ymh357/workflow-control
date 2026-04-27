@@ -52,6 +52,11 @@ export default function McpCatalogPage() {
 
       {error && <ErrorBanner diagnostics={[{ code: "FETCH_ERROR", message: error }]} />}
 
+      {/* Phase 2: "Recommended for this pipeline" appears when launcher links here
+          with ?neededByPipelineHash=...; the launcher banner (Task 11) populates
+          the link. This empty placeholder section reserves the layout slot so a
+          later patch can fill it without restructuring the page. */}
+
       <ul className="space-y-3">
         {entries.map((e) => (
           <EntryCard

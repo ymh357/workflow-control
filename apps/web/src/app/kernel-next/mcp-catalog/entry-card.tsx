@@ -32,7 +32,7 @@ export const EntryCard = ({ entry, inventory, readouts, onChanged }: Props) => {
     const r = await equip(entry.id, values);
     setSubmitting(false);
     if (!r.ok) {
-      toast.error(r.diagnostics[0].message);
+      toast.error(r.diagnostics[0]?.message ?? "equip failed");
       return;
     }
     toast.success(`${entry.name}: ${r.data.status}`);
@@ -43,13 +43,13 @@ export const EntryCard = ({ entry, inventory, readouts, onChanged }: Props) => {
 
   const onUnequip = async () => {
     const r = await unequip(entry.id);
-    if (!r.ok) toast.error(r.diagnostics[0].message);
+    if (!r.ok) toast.error(r.diagnostics[0]?.message ?? "unequip failed");
     else { toast.success(`${entry.name}: unequipped`); onChanged(); }
   };
 
   const onRecheck = async () => {
     const r = await recheck(entry.id);
-    if (!r.ok) toast.error(r.diagnostics[0].message);
+    if (!r.ok) toast.error(r.diagnostics[0]?.message ?? "recheck failed");
     else { toast.success(`${entry.name}: ${r.data.status}`); onChanged(); }
   };
 
