@@ -3,7 +3,10 @@
 // Pure expander for ${VAR} placeholders in stage.config.mcpServers declarations.
 // Feeds into real-executor-sdk-options.ts → SDK options.mcpServers.
 //
-// Precedence: taskEnv (from task_env_values table) > processEnv.
+// Precedence (Phase 2): taskEnv (from task_env_values) > mcp_inventory_secrets
+//   (decrypted on demand via the resolveInventorySecret callback) > processEnv.
+//   Layer 2 is omitted when the caller doesn't pass options.resolveInventorySecret,
+//   preserving the legacy 3-arg call form.
 //
 // 2026-04-26 F17 (secret-gate): expander now returns a discriminated-union
 // result. On missing variable(s), it ENUMERATES ALL of them rather than

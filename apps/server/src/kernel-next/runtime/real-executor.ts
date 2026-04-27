@@ -434,8 +434,8 @@ export class RealStageExecutor implements StageExecutor {
       // MCP tool resolves the row and resumes via the migration path.
       let externalMcpServers: Record<string, ExpandedMcpServer> | undefined;
       if (stage.config.mcpServers && stage.config.mcpServers.length > 0) {
-        const taskEnv = loadTaskEnvValues(portRuntime.getDb(), taskId);
         const expanderDb = portRuntime.getDb();
+        const taskEnv = loadTaskEnvValues(expanderDb, taskId);
         const expandResult = expandMcpServers(stage.config.mcpServers, taskEnv, process.env, {
           resolveInventorySecret: (envKey) => {
             for (const decl of stage.config.mcpServers ?? []) {
@@ -445,10 +445,13 @@ export class RealStageExecutor implements StageExecutor {
                 const v = resolveSecret({ db: expanderDb }, entryId, envKey);
                 if (v !== null) return v;
               } catch {
-                // Decrypt failure is logged via the diagnostic but we treat
-                // it as "no value" here so the expander can still report a
-                // crisp missingKeys list (the secret-gate flow then prompts
-                // the user to refill).
+                // TODO: surface MCP_INVENTORY_DECRYPT_FAILED to task diagnostics.
+                // Treating the decrypt error as "no value" lets the existing
+                // missingKeys → secret-gate flow prompt the operator to refill,
+                // but operationally a decrypt error on an *equipped* entry is
+                // different from a key that was never supplied — the operator
+                // will re-enter a value for a key they think is already saved.
+                // Spec §6.3 ("encryption key recovery") is the long-term fix.
               }
             }
             return null;
