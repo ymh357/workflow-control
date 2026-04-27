@@ -97,11 +97,12 @@ describe("RecommendResultSchema", () => {
 });
 
 describe("CATALOG_DIAGNOSTIC_CODES", () => {
-  it("includes the 4 codes used by Phase 1 endpoints", () => {
+  it("includes all diagnostic codes for the catalog subsystem", () => {
     expect(CATALOG_DIAGNOSTIC_CODES).toContain("CATALOG_ENTRY_NOT_FOUND");
     expect(CATALOG_DIAGNOSTIC_CODES).toContain("CATALOG_ENTRY_ID_CONFLICT");
     expect(CATALOG_DIAGNOSTIC_CODES).toContain("CATALOG_INVALID_ENTRY");
     expect(CATALOG_DIAGNOSTIC_CODES).toContain("CATALOG_BUILTIN_NOT_WRITABLE");
-    expect(CATALOG_DIAGNOSTIC_CODES.length).toBe(4);
+    expect(CATALOG_DIAGNOSTIC_CODES).toContain("CATALOG_LLM_OVERLAY_UNAVAILABLE");
+    expect(CATALOG_DIAGNOSTIC_CODES.length).toBe(5);
   });
 });
