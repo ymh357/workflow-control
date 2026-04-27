@@ -60,6 +60,8 @@ import {
   type ExpandedMcpServer,
 } from "./mcp-servers-expander.js";
 import { loadTaskEnvValues } from "./task-env-values.js";
+import { lookupEntryByCommand } from "../mcp-catalog/catalog-store.js";
+import { resolveSecret } from "../mcp-catalog/inventory.js";
 import {
   shouldPause,
   rateLimitBackoffMs,
@@ -433,7 +435,25 @@ export class RealStageExecutor implements StageExecutor {
       let externalMcpServers: Record<string, ExpandedMcpServer> | undefined;
       if (stage.config.mcpServers && stage.config.mcpServers.length > 0) {
         const taskEnv = loadTaskEnvValues(portRuntime.getDb(), taskId);
-        const expandResult = expandMcpServers(stage.config.mcpServers, taskEnv);
+        const expanderDb = portRuntime.getDb();
+        const expandResult = expandMcpServers(stage.config.mcpServers, taskEnv, process.env, {
+          resolveInventorySecret: (envKey) => {
+            for (const decl of stage.config.mcpServers ?? []) {
+              const entryId = lookupEntryByCommand(expanderDb, decl.command, decl.args);
+              if (!entryId) continue;
+              try {
+                const v = resolveSecret({ db: expanderDb }, entryId, envKey);
+                if (v !== null) return v;
+              } catch {
+                // Decrypt failure is logged via the diagnostic but we treat
+                // it as "no value" here so the expander can still report a
+                // crisp missingKeys list (the secret-gate flow then prompts
+                // the user to refill).
+              }
+            }
+            return null;
+          },
+        });
         if (!expandResult.ok) {
           const db = portRuntime.getDb();
           const secretGateId = randomUUID();

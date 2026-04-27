@@ -47,17 +47,26 @@ export type ExpandResult =
 
 const VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
+export interface ExpanderOptions {
+  resolveInventorySecret?: (envKey: string) => string | null;
+}
+
 function expandValueCollecting(
   raw: string,
   serverName: string,
   fieldKey: string,
   taskEnv: Record<string, string>,
   processEnv: NodeJS.ProcessEnv,
+  inventory: ((envKey: string) => string | null) | undefined,
   missing: MissingKeyDetail[],
 ): string {
   return raw.replace(VAR_RE, (_m, v: string) => {
     const fromTask = taskEnv[v];
     if (fromTask !== undefined) return fromTask;
+    if (inventory) {
+      const fromInv = inventory(v);
+      if (fromInv !== null && fromInv !== undefined) return fromInv;
+    }
     const fromProc = processEnv[v];
     if (fromProc !== undefined) return fromProc;
     missing.push({ server: serverName, fieldKey, key: v });
@@ -69,19 +78,21 @@ export function expandMcpServers(
   decls: McpServerDecl[],
   taskEnv: Record<string, string>,
   processEnv: NodeJS.ProcessEnv = process.env,
+  options: ExpanderOptions = {},
 ): ExpandResult {
   const missing: MissingKeyDetail[] = [];
   const out: Record<string, ExpandedMcpServer> = {};
+  const inv = options.resolveInventorySecret;
   for (const d of decls) {
     const server: ExpandedMcpServer = {
       type: "stdio",
-      command: expandValueCollecting(d.command, d.name, "command", taskEnv, processEnv, missing),
-      args: d.args.map((a, i) => expandValueCollecting(a, d.name, `args[${i}]`, taskEnv, processEnv, missing)),
+      command: expandValueCollecting(d.command, d.name, "command", taskEnv, processEnv, inv, missing),
+      args: d.args.map((a, i) => expandValueCollecting(a, d.name, `args[${i}]`, taskEnv, processEnv, inv, missing)),
     };
     if (d.env) {
       const env: Record<string, string> = {};
       for (const [k, v] of Object.entries(d.env)) {
-        env[k] = expandValueCollecting(v, d.name, `env.${k}`, taskEnv, processEnv, missing);
+        env[k] = expandValueCollecting(v, d.name, `env.${k}`, taskEnv, processEnv, inv, missing);
       }
       server.env = env;
     }
