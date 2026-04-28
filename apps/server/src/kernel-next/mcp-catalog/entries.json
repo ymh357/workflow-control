@@ -102,35 +102,6 @@
       "healthCheckTimeoutMs": 15000
     },
     {
-      "id": "fetch",
-      "schemaVersion": "1",
-      "name": "Fetch MCP",
-      "description": "通用 HTTP 抓取与 YouTube transcript / General-purpose HTTP fetch and YouTube transcript",
-      "useCases": [
-        "fetch a public webpage as HTML or Markdown / 抓取公开网页 (HTML 或 Markdown)",
-        "extract YouTube video transcript / 抽取 YouTube 视频字幕",
-        "scrape simple JSON APIs / 抓取简单 JSON API"
-      ],
-      "tags": [
-        "fetch",
-        "http",
-        "web",
-        "scrape",
-        "youtube",
-        "抓取",
-        "网页"
-      ],
-      "homepage": "https://www.npmjs.com/package/fetch-mcp",
-      "command": "npx",
-      "args": [
-        "-y",
-        "fetch-mcp"
-      ],
-      "packageName": "fetch-mcp",
-      "envKeys": [],
-      "healthCheckTimeoutMs": 15000
-    },
-    {
       "id": "filesystem",
       "schemaVersion": "1",
       "name": "Filesystem MCP",
@@ -235,7 +206,8 @@
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-postgres"
+        "@modelcontextprotocol/server-postgres",
+        "${POSTGRES_CONNECTION_STRING}"
       ],
       "packageName": "@modelcontextprotocol/server-postgres",
       "envKeys": [
@@ -301,6 +273,13 @@
           "description": "Slack bot token (xoxb-...)",
           "obtainUrl": "https://api.slack.com/apps",
           "obtainSteps": "1. 创建 Slack app\n2. 启用 Bot Token Scopes (channels:history, channels:read 等)\n3. Install app to workspace\n4. 复制 Bot User OAuth Token"
+        },
+        {
+          "name": "SLACK_TEAM_ID",
+          "required": true,
+          "description": "Slack workspace team ID (T...) — viewable in Workspace Admin URL",
+          "obtainUrl": "https://app.slack.com/admin",
+          "obtainSteps": "1. Sign in to https://app.slack.com/admin\n2. URL bar shows /admin/T<TEAM_ID> — copy the T... value\n3. Paste here"
         }
       ],
       "healthCheckTimeoutMs": 15000
