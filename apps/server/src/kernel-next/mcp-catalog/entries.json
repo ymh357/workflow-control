@@ -143,6 +143,33 @@
       "healthCheckTimeoutMs": 15000
     },
     {
+      "id": "memory",
+      "schemaVersion": "1",
+      "name": "Memory MCP",
+      "description": "基于知识图谱的持久化记忆 / Persistent knowledge-graph memory across sessions",
+      "useCases": [
+        "store entities and relations across runs / 跨会话存储实体与关系",
+        "build a knowledge graph from agent observations / 从 agent 观察构建知识图谱",
+        "search and recall facts the agent learned earlier / 搜索 agent 之前学到的事实"
+      ],
+      "tags": [
+        "memory",
+        "知识图谱",
+        "knowledge-graph",
+        "persistence",
+        "official"
+      ],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
+      "packageName": "@modelcontextprotocol/server-memory",
+      "envKeys": [],
+      "healthCheckTimeoutMs": 15000
+    },
+    {
       "id": "playwright",
       "schemaVersion": "1",
       "name": "Playwright MCP",
@@ -224,6 +251,32 @@
       "packageName": "@modelcontextprotocol/server-puppeteer",
       "envKeys": [],
       "healthCheckTimeoutMs": 30000
+    },
+    {
+      "id": "sequential-thinking",
+      "schemaVersion": "1",
+      "name": "Sequential Thinking MCP",
+      "description": "把复杂推理拆成可审计的思考步骤 / Decompose complex reasoning into auditable thinking steps",
+      "useCases": [
+        "make agent reasoning explicit and reviewable / 让 agent 推理显式可审计",
+        "structure multi-step problem solving / 结构化多步骤问题求解",
+        "reduce hallucination via stepwise verification / 通过逐步验证降低幻觉"
+      ],
+      "tags": [
+        "reasoning",
+        "推理",
+        "thinking",
+        "official"
+      ],
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
+      "packageName": "@modelcontextprotocol/server-sequential-thinking",
+      "envKeys": [],
+      "healthCheckTimeoutMs": 15000
     },
     {
       "id": "slack",
