@@ -1,261 +1,234 @@
-# Handoff — Catalog Auto-Discovery Loop + Live Dogfood
+# Handoff — Catalog Auto-Discovery Loop + Live LLM Dogfood (Full Session)
 
-**Session window**: 2026-04-27 ~23:00 → 2026-04-28 ~00:40
-**Branch**: `main` (724 commits ahead of `origin/main`, never pushed)
-**Status**: clean tree, all tests passing locally except known flakes
-unrelated to this work
+**Session window**: 2026-04-27 ~22:00 → 2026-04-28 ~11:30
+**Branch**: `main` (734 commits ahead of `origin/main`, never pushed)
+**Status**: clean tree, 2057+ tests passing locally except 3 known
+cross-session flakes (`spawn-utils.adversarial`, `publish`,
+`compile-inline-script` — all unrelated to this session's work)
+
+This handoff replaces the earlier session-1 + session-2 partial
+handoffs. It is self-contained.
 
 ## What this session shipped
 
-A self-contained slice that closes the AI-driven catalog discovery
-loop and validates it under live LLM, plus the bugs that surfaced.
+A self-contained slice closing the AI-driven catalog discovery loop,
+hardening it under live LLM, and building a 5-rung supply-chain test
+ladder for catalog entries.
 
-### 5 commits, in order
+### Commit chain (16 commits this session, in order)
 
 | sha | summary |
 |---|---|
-| `b793233` | feat(mcp-catalog): `add_mcp_catalog_entry` MCP tool — close the auto-discovery loop |
-| `1617027` | fix(pipeline-generator): force two-pass MCP discovery from dogfood findings |
-| `865961d` | fix(pipeline-modifier): apply same dogfood-driven prompt discipline to gen-patch |
-| `60568ec` | fix(catalog): remove 5 builtin entries with non-existent npm packages |
-| `3b78d10` | docs(dogfood): augment findings with Bug 4-5 + Step 6-9 verification table |
+| `b793233` | feat(mcp-catalog): `add_mcp_catalog_entry` MCP tool |
+| `1617027` | fix(generator): two-pass MCP discovery + verbatim-fetch |
+| `865961d` | fix(modifier): same prompt discipline for gen-patch |
+| `60568ec` | fix(catalog): delete 5 broken builtin entries |
+| `3b78d10` | docs: augment findings with Bug 4–5 |
+| `5ea2361` | docs: handoff session 1 (now superseded) |
+| `371c036` | fix(rot-guard): boot/CI healthcheck + gen-skeleton verbatim |
+| `a8a6766` | fix(dashboard): task header state badge reads /status |
+| `805bdfd` | fix(dashboard): gate decision summary + collapse 17-port |
+| `f7ae92d` | docs: modifier dogfood + Bugs 7–8 |
+| `0d86be9` | fix(ir): add_external_input / remove_external_input ops |
+| `88c26a7` | fix(ir): externalInputs[].optional flag (3 layers) |
+| `eedd14a` | fix(canonical): include port.optional in version hash |
+| `c9c9b97` | docs: session 2 mid-handoff (now superseded) |
+| `7c33dc6` | feat(catalog): replenish etherscan + fetch + arxiv |
+| `8d39ada` | fix(rot-guard): spawn-test mode-2 + slack/postgres args |
+| `00d5355` | docs: Bug 9 (npm-view existence ≠ runnable) |
+| `05be361` | fix(catalog): remove arxiv (Bug 10 SDK-too-slow) |
+| `89503c7` | docs: Bug 10 |
+| `f3b2256` | fix(rot-guard): split-budget spawn-test |
+| `416ddcc` | fix(catalog): filesystem args + envKey |
+| `4eb6c14` | fix(rot-guard): tools/list verification + Bug 11 |
 
-### What changed
+(plus the 4 prior-session commits `be7de63 → 1614be7` that pre-existed
+and that the first session built on)
 
-**1. `add_mcp_catalog_entry` MCP tool** (commit `b793233`):
-- `apps/server/src/kernel-next/mcp/tools/add-mcp-catalog-entry.ts` (new)
-- `apps/server/src/kernel-next/mcp/tools/add-mcp-catalog-entry.test.ts` (new, 6 tests)
-- Wraps `upsertCustomEntry` + optional `npm view <pkg>` healthcheck
-  via existing `checkPackage` helper
-- Source forced to "custom"; cannot overwrite builtin ids
-- Exposed on EXTERNAL surface; tool counts: 33→34 / 34→35
-
-**2. Generator prompt discipline rewrite** (commit `1617027`):
-- `apps/server/src/builtin-pipelines/pipeline-generator/prompts/system/analysis.md`
-- Step 7 rewritten as a 4-substep procedure: recommend → add-on-miss
-  → **verbatim-fetch (REQUIRED, non-negotiable)** → ordering rationale
-- Discovery discipline rules 4-6 rewritten so "add" is a permitted
-  path with discipline (real package only, healthcheck-gated, try
-  one alternative on miss before giving up)
-- Old rule 4 ("Never invent entries") flipped to "adding is supported"
-  + new rule 5 ("never hand-write `recommendedMcps` rows from training
-  data — go through recommend or add")
-
-**3. Modifier prompt mirror** (commit `865961d`):
-- `apps/server/src/builtin-pipelines/pipeline-modifier/prompts/system/gen-patch.md`
-- "Catalog discovery" section added with the same 5-step chain plus
-  one extra source (currentIr verbatim copy)
-
-**4. Catalog rot fix** (commit `60568ec`):
-- `apps/server/src/kernel-next/mcp-catalog/entries.json` — deleted 5 of 12 entries:
-  - `etherscan`, `bscscan`, `fetch`, `arxiv`, `linear` — packages 404 on npm
-- `apps/server/src/kernel-next/mcp-catalog/e2e.test.ts` — adjusted assertions
-- `docs/superpowers/dogfood-2026-04-28/findings.md` (new)
-- `docs/superpowers/dogfood-2026-04-28/ux-findings.md` (new)
-- `docs/superpowers/dogfood-2026-04-28/01-gate-fullpage.png` (new)
-- `docs/superpowers/dogfood-2026-04-28/02-gate-viewport.png` (new)
-
-**5. Dogfood findings augmented** (commit `3b78d10`):
-- Bug 4 (CHECK constraint old DB) + Bug 5 (header state badge) documented
-- Step 6-9 verification table added
-- Two more screenshots: `03-secret-gate-viewport.png`, `04-secret-gate-fresh-db.png`
-
-## What still works after this session
-
-```bash
-cd /Users/minghao/workflow-control/apps/server
-npx tsc --noEmit                 # clean
-npx vitest run                   # 2053 passed / 4 skipped, no new fails
-                                 #   (3-4 known flakes in spawn-utils,
-                                 #    publish, start-pipeline-run.worktree
-                                 #    are pre-existing)
-```
-
-## Live dogfood: 6 real bugs surfaced
-
-Documented in `docs/superpowers/dogfood-2026-04-28/findings.md`. Quick
-summary for the next session:
+## Bug score: 11 distinct, 10 fixed, 1 deeper
 
 | # | Severity | What | Status |
 |---|---|---|---|
-| 1 | P0 (blocker) | 5/12 builtin catalog packages 404 on npm | **fixed** in `60568ec` |
-| 2 | P2 | `gen-skeleton` slug-rewrites mcpServers.name (`Fetch MCP` → `fetch-mcp`) | **documented**, follow-up |
-| 3 | P2 (UX) | gate panel `<details open>` defaults open → 17-port table dominates first viewport, approve/reject buttons off-screen | **documented**, follow-up |
+| 1 | P0 | 5/12 builtin packages 404 on npm | **fixed** `60568ec` + rot-guard test `371c036` |
+| 2 | P2 | gen-skeleton silently slug-rewrites mcpServers.name | **fixed** `371c036` (later refined: name uses entry.id, not entry.name) |
+| 3 | P2 (UX) | gate `<details open>` + 17-port table off-screen | **fixed** `805bdfd` (decision summary card + collapse-when-large) |
 | 4 | P1 | stage_attempts CHECK on legacy DBs missing `secret_pending` | **documented** — per CLAUDE.md §8.1 wipe DB, no migration |
-| 5 | P2 (UX) | dashboard task header badge reads `state: completed` while body shows secret-gate panel | **documented**, follow-up |
-| 6 (round 1) | P1 prompt | analyzing agent skipped add-on-miss + hallucinated builtin package names | **fixed** in `1617027` (prompt discipline rewrite) |
+| 5 | P2 (UX) | dashboard state badge reads SSE event, says "completed" while in secret-gate | **fixed** `a8a6766` |
+| 6 | P1 prompt | analyzing agent skipped add-on-miss + hallucinated builtin packages | **fixed** `1617027` |
+| 7 | P1 | externalInputs has no optional flag — modifier rejected with SEED_VALUES_MISSING_KEY | **fixed** `88c26a7` + `eedd14a` (3 code layers + canonical hash) |
+| 8a | P0 | IRPatchOpSchema missing `add_external_input` / `remove_external_input` | **fixed** `0d86be9` |
+| 8b | P1 | Modifier silently submits `ops:[]` with `dryRunVerdict:"safe"` after dry-run failure | **fixed** `0d86be9` (prompt rule) |
+| 9 | P0 | npm-view existence ≠ runnable (fetch-mcp@0.0.5 broken imports; postgres args incomplete; slack envKeys incomplete) | **fixed** `8d39ada` + spawn-test mode-2 |
+| 10 | P1 | spawn-test pass ≠ SDK-runnable (arxiv 25s init too slow) | **fixed** `05be361` (remove arxiv) + `f3b2256` (split-budget catches it) |
+| 11 | P2 | tools/list-passing ≠ SDK-runnable (playwright fails MCP_STARTUP_FAILED in real SDK despite handshake passing) | **partially fixed** `4eb6c14` — tools/list check added; SDK-side gap deferred |
 
-## Live dogfood Step 6-9 status
+## The 5-rung supply-chain test ladder
 
-| Step | Status | Notes |
+The session's main meta-deliverable. Each rung catches what the previous can't:
+
+| rung | test | catches |
 |---|---|---|
-| 6 — `run_pipeline { name }` resolves to versionHash + starts task | ✅ | Verified twice (Hacker News attempt + GitHub Issues Lister) |
-| 7 — secret-gate triggers when MCP envKey missing | ✅ | `requiredKeys=[GITHUB_PERSONAL_ACCESS_TOKEN]`, `stillMissing=[same]` |
-| 8 — user provides secret + (optional) save to inventory | ❌ | Not exercised: CLAUDE.md secret rule forbids tokens in chat; no shell access to set `process.env` out-of-band |
-| 9 — task continues, real MCP runs, output produced | ❌ | Blocked by 8 |
+| 1. schema | unit test (zod) | malformed entries.json fields |
+| 2. npm view | mode-1 rot-guard (`RUN_NPM_HEALTHCHECKS=1`) | packages that 404 (Bug 1) |
+| 3. spawn + initialize | mode-2 split-budget | broken module imports (Bug 9 fetch-mcp); too-slow startup (Bug 10 arxiv) |
+| 4. spawn + tools/list | mode-2 enhanced | servers that handshake but advertise 0 tools |
+| 5. SDK runtime | live LLM dogfood | the last mile — anything the standalone JSON-RPC probe doesn't replicate (Bug 11 playwright) |
 
-So real-runtime verification stopped at "secret-gate panel renders
-correctly with `Save to inventory as <id>` checkbox". Steps 8-9 need
-a session where the user exports a real `GITHUB_PERSONAL_ACCESS_TOKEN`
-in their shell and starts the server, OR a fully scoped token
-provided through `task_env_values` directly to `run_pipeline`.
+## Live dogfood Step 6-9 verification
 
-## Session 2 final (2026-04-28 ~08:30 → 09:40)
+| Step | Status |
+|---|---|
+| 6 — `run_pipeline { name }` resolves to versionHash + starts task | ✅ verified across 4+ generator runs |
+| 7 — secret-gate triggers when MCP envKey missing | ✅ verified (GitHub Issues Lister) |
+| 8 — user provides secret + saves to inventory | ❌ not exercised — CLAUDE.md secret rule + no out-of-band shell |
+| 9 — task continues, real MCP runs, output produced | ❌ tried twice (HN fetch-mcp Bug 9; playwright Bug 11) — both surfaced new supply-chain layers; eventual success blocked on Bug 11's deeper SDK gap |
 
-**8 commits in this session**:
-- `371c036` rot guard + gen-skeleton verbatim
-- `a8a6766` dashboard state badge fix
-- `805bdfd` gate card decision summary + collapse
-- `f7ae92d` modifier dogfood + bugs 7-8 docs
-- `0d86be9` add_external_input / remove_external_input patch ops
-- `88c26a7` externalInputs.optional flag
-- `eedd14a` canonical hash includes optional
-- (this session's earlier `60568ec` and prior session)
+## State at handoff
 
-**Bug fix score**: 7 fixed, 1 documented (Bug 4 per CLAUDE.md §8.1 wipe policy).
+- **Catalog**: 8 entries, all pass rot-guard mode-1 + most of mode-2.
+  - Public (no envKey): `playwright`, `puppeteer`
+  - With envKey: `github`, `etherscan`, `brave-search`, `slack`,
+    `postgres`, `filesystem`
+- **Server / DB / Browser**: any leftover dev process can be killed
+  with `pkill -f "tsx.*src/index.ts"`. DB `/tmp/workflow-control-data/`
+  has the latest schema; wipe if you need a fresh boot. Chrome devtools
+  MCP profile at `/tmp/chrome-e2e-profile` may have stale Singleton
+  locks — `rm /tmp/chrome-e2e-profile/Singleton*` to clear.
+- **Test suite**: 2057 passing locally outside known flakes.
+  - `RUN_NPM_HEALTHCHECKS=1` for fast catalog smoke (~20s).
+  - `RUN_NPM_HEALTHCHECKS=2` for spawn + tools/list (~3min, sequential).
 
-**End-to-end re-dogfood verification (2026-04-28 09:34→09:38)**:
-After all fixes landed and server restarted with reseeded IR
-(version_hash 9510456c..., new — old e851202f... had no `optional`
-flag because canonical hash didn't include it), reran the same
-modifier task that originally failed:
+## Open issues for next session
 
-  Round 1 (broken): patch `{"ops": []}`, outcome `"failed"`,
-                    proposalId `""`, 156s + $0.16 wasted.
-  Round 2 (fixed):  patch with 4 ops (add_external_input + add_stage
-                    + 2× add_wire), outcome `"pending-approval"`,
-                    proposalId `868af035-...`, dryRunVerdict
-                    `"structural"`, proposedVersion `75421c60...`.
+### High value
 
-Bug 7 + Bug 8a + Bug 8b all closed under live LLM. Modifier
-end-to-end works.
+1. **Bug 11 follow-through**: investigate why playwright passes
+   spawn-test mode-2 (initialize + tools/list both ≤10s) but fails
+   `MCP_STARTUP_FAILED` in real SDK runtime. Likely candidates:
+   protocol-version negotiation, Claude Agent SDK's MCP transport
+   framing differences vs raw JSON-RPC. May need to instrument
+   `apps/server/src/kernel-next/runtime/real-executor.ts` SDK call
+   site to log `tools/list` reply seen by SDK, OR build a closer
+   approximation of the SDK's transport in spawn-test.
 
-## Session 2 progress (2026-04-28 ~08:30 → 09:00)
+2. **Step 8-9 real verification**: needs a public no-envKey MCP
+   that survives Bug 11. Options:
+   - Find a different browser-automation MCP that passes the SDK
+     (puppeteer is also untested in dogfood).
+   - Use `brave-search` if the user can `export BRAVE_API_KEY=...`
+     before server boot (CLAUDE.md secret rule allows this — it's
+     out-of-band).
+   - Use `etherscan` likewise (free-tier `ETHERSCAN_API_KEY`).
 
-Continued the dogfood follow-ups + ran live-LLM modifier for the first time.
+3. **Bug 8b kernel-side guard**: `applying` stage should fail-fast
+   when `genPatch.patch.ops` is empty AND
+   `gapAnalysis.intendedChanges.length > 0`. Today the prompt rule
+   alone forbids the empty-patch fallback; a defense-in-depth kernel
+   check would catch any future agent slip-up. Touches
+   `apps/server/src/kernel-next/runtime/composite-stage-executor.ts`
+   or wherever the applying stage's pre-validation lives.
 
-**3 commits added:**
-- `371c036` — fix(mcp-catalog): rot guard + gen-skeleton verbatim discipline
-- `a8a6766` — fix(dashboard): task header state badge reads canonical /status
-- `805bdfd` — fix(dashboard): gate card decision summary + collapse 17-port table
+### Medium
 
-**Bugs fixed:** 2 (catalog rot guard, gen-skeleton verbatim), 3 (gate UI density), 5 (state badge drift). All verified live in browser.
+4. **Replenish more catalog entries**. After fetch-mcp removal we're
+   down to 8. Candidates that would broaden coverage:
+   - HTTP fetch (need a vendor-published MCP that actually works —
+     spawn-test rejected fetch-mcp@0.0.5; investigate alternatives).
+   - Notion (custom-add path verified during Notion → Linear
+     dogfood; rot-guard now exists to vet candidates before
+     committing).
+   - Linear (was deleted; the official path is `mcp-remote
+     https://mcp.linear.app/mcp` — different topology, schema
+     supports it via the `mcp-remote` command pattern).
+   Each new entry must pass rot-guard mode-2 with tools/list before
+   landing.
 
-**New bugs surfaced:**
-- **Bug 7** — kernel rejects optional externalInputs as missing seed values (modifier's `failureContext` only optional in description)
-- **Bug 8** (CRITICAL) — pipeline-modifier silently emits empty patch when patch DSL can't express the need (`add_external_input` op missing from `IRPatchOpSchema`); agent then submits empty patch with `dryRunVerdict: "safe"` after seeing dry_run diagnostics, masking the failure
+5. **CI integration of rot-guard**. Currently opt-in only.
+   `RUN_NPM_HEALTHCHECKS=1` is fast (~20s) and catches 80% of rot;
+   running it on every catalog change would prevent regressions.
+   Mode-2 is too slow for every commit; should run weekly or on
+   catalog-touching PRs.
 
-See `findings.md` for full bug 7+8 writeup.
+### Lower priority
 
-## Open issues for next session (priority order)
+6. **Per-entry `obtainSteps` quality audit**. Many existing entries
+   have rough Chinese-language obtainSteps copied from training
+   data; should be reviewed for factual accuracy + bilingual
+   consistency.
 
-### High value, can pick up immediately
-
-0. **Bug 8 — patch DSL gap + agent silent empty-patch fallback** ✅ DONE
-   `0d86be9`. Schema gets add_external_input / remove_external_input;
-   patch.ts gets two new switch cases; gen-patch.md gets ops 7+8 plus
-   a hard rule against submitting `ops: []` with `dryRunVerdict: "safe"`
-   after a non-empty draft hit `ok: false`. Verified end-to-end above.
-
-0b. **Bug 7 — externalInputs `optional` flag** ✅ DONE
-    `88c26a7` + `eedd14a`. PortIR.optional ripples through three
-    layers: schema, runner.ts seed validation, ir-to-machine.ts
-    initial portValues, AND canonical.ts hash input. All four needed
-    or the runtime fix never reaches a fresh boot. Verified via
-    re-dogfood with hash 9510456c....
-
-1. **Add boot-time / CI healthcheck for entries.json** ✅ DONE
-   commit `371c036`. New
-   `apps/server/src/kernel-next/mcp-catalog/entries-rot-guard.test.ts`
-   uses `checkPackage` against every builtin. Default skipped; opt-in
-   with `RUN_NPM_HEALTHCHECKS=1`. 7/7 surviving entries verified.
-
-2. **Repopulate the 5 deleted entries with real packages**.
-   Initial probe found candidates:
-   - `etherscan` → `@everimbaq/etherscan-mcp@1.0.3`
-   - `fetch` → `fetch-mcp@0.0.5`
-   - `arxiv` → `@fre4x/arxiv@1.0.64`
-   - `bscscan` → no plausible npm package found (defer)
-   - `linear` → no plausible npm package found, `mcp-remote
-     https://mcp.linear.app/mcp` works as a remote MCP per
-     `mcp-remote-preflight.test.ts:224` (different pattern)
-   Each candidate needs (a) `npm view` confirms, (b) check the
-   package's docs / repo for envKeys + args + a working
-   description, (c) write to `entries.json`, (d) reseed DB.
-
-3. **Apply the verbatim-fetch discipline to `gen-skeleton.md`** ✅ DONE
-   commit `371c036`. Step 1 marked REQUIRED non-negotiable; Step 2
-   enumerates forbidden transformations on `name`. Not yet
-   re-dogfooded (next generator run will reveal whether the slug
-   rewrite is actually fixed under live LLM).
-
-4. **Fix dashboard state badge** (Bug 5) ✅ DONE
-   commit `a8a6766`. Status poller now drives topState; TopLevelState
-   union extended to include gated/secret_pending/cancelled/orphaned.
-   Verified live: header reads `state: secret_pending` matching gate
-   panel.
-
-5. **Default `<details open={false}>` + decision summary card** (Bug 3) ✅ DONE
-   commit `805bdfd`. Decision summary card (pipelineName +
-   pipelineDescription + dataFlowSummary, truncated 600 chars)
-   rendered above the details wrapper for any upstream that emits
-   the triple. Details `open={up.outputs.length <= 5}` — small
-   upstreams stay open, fat ones (the 17-port analyzing) collapse.
-   Verified live in browser.
-
-6. **Dogfood pipeline-modifier under live LLM** ✅ DONE
-   Surfaced Bugs 7 + 8 (see top of section). The modifier prompt
-   discipline alone wasn't enough — kernel patch DSL is missing
-   ops the modifier provably needs.
-
-### Still open
-
-7. **Replenish deleted catalog entries with verified packages**.
-   Candidates from prior probing:
-   - `etherscan` → `@everimbaq/etherscan-mcp@1.0.3`
-   - `fetch` → `fetch-mcp@0.0.5`
-   - `arxiv` → `@fre4x/arxiv@1.0.64`
-   - `bscscan` → no plausible npm package found
-   - `linear` → no plausible npm package found; `mcp-remote
-     https://mcp.linear.app/mcp` works as a remote MCP per
-     `mcp-remote-preflight.test.ts:224`
-   Each candidate needs (a) `npm view` confirms (or use the new
-   rot-guard test), (b) review the package's docs for envKeys + args
-   + a working description, (c) write to entries.json, (d) reseed.
-
-## Server / dashboard state at handoff
-
-- **Server**: pid varies, last started by `pnpm dev:server` against
-  fresh DB after Bug 4 wipe. If you `pkill -f "tsx.*src/index.ts"` and
-  restart, it'll reseed the 7 surviving builtin entries.
-- **Dashboard**: pid varies, started with `pnpm dev:web` on port 3004.
-- **DB**: `/tmp/workflow-control-data/kernel-next.db` — currently has
-  the fresh post-wipe schema with `secret_pending` in the CHECK.
-  Contains a few orphaned dogfood tasks; not critical.
-- **Browser**: chrome-devtools-mcp instance was spawned during this
-  session — if locks accumulate, `pkill -f "chrome-devtools-mcp"`
-  + `rm /tmp/chrome-e2e-profile/Singleton*` clears them.
+7. **Spawn-test cold-cache vs warm-cache distinction**. Currently
+   the test pre-warms via the mode-1 `npm view` that always runs
+   first, masking real first-run cold-start time. A separate "fresh
+   user, no cache" smoke test could be useful but adds complexity.
 
 ## Things NOT to do
 
-- **Do not** propose adding a YAML migration for the CHECK constraint
-  drift. CLAUDE.md §8.1 explicitly says "no migrations during R&D;
-  wipe data_dir."
-- **Do not** restore the 5 deleted entries to entries.json without
-  first probing `npm view <pkg> version` and confirming a publisher.
-  This is exactly the rot the dogfood caught.
-- **Do not** propose to mutate IR via `propose_pipeline_change` to
-  remove a `mcpServers` block as a workaround for missing envKey.
-  Per CLAUDE.md, that corrupts pipeline-author intent. Secret-gate
-  is the recovery path.
+- **Do not** add YAML migration for the CHECK constraint drift.
+  CLAUDE.md §8.1 explicitly says "no migrations during R&D; wipe
+  data_dir." Bug 4 is the canonical instance.
+- **Do not** restore deleted entries to `entries.json` without
+  passing rot-guard mode-2 (`RUN_NPM_HEALTHCHECKS=2`). The
+  test exists precisely so this rot doesn't recur.
+- **Do not** propose to mutate IR via `propose_pipeline_change`
+  to remove a `mcpServers` block as a workaround for missing
+  envKey. Per CLAUDE.md, that corrupts pipeline-author intent.
+  Secret-gate is the recovery path.
+- **Do not** skip the verbatim-fetch discipline in any new
+  prompt that writes IR `mcpServers` blocks. The session's
+  hard lesson is that LLMs will slug-rewrite, hallucinate from
+  training data, and silently swap field semantics whenever the
+  prompt allows it. `entry.id` for `name`; everything else
+  byte-equal from `get_mcp_catalog_entry`.
 
 ## Key files for fast onboarding
 
-- `apps/server/src/kernel-next/mcp-catalog/` — catalog subsystem
-- `apps/server/src/kernel-next/mcp/tools/` — every MCP tool, including
-  the new `add-mcp-catalog-entry.ts`
-- `apps/server/src/builtin-pipelines/pipeline-generator/prompts/system/` —
-  the prompts dogfood drove changes into
-- `docs/superpowers/dogfood-2026-04-28/findings.md` — the
-  authoritative dogfood writeup; read this before working on the
-  follow-ups
+- **Catalog subsystem**: `apps/server/src/kernel-next/mcp-catalog/`
+  - `entries.json` — the 8-entry source of truth
+  - `entries-rot-guard.test.ts` — 5-rung ladder rungs 2–4
+  - `seed.ts` / `catalog-store.ts` — DB bridge
+  - `healthcheck.ts` — npm view + spawn helpers
+- **MCP tools**: `apps/server/src/kernel-next/mcp/tools/`
+  - `mcp-catalog.ts` — recommend / get
+  - `add-mcp-catalog-entry.ts` — write path
+- **Generator prompts**:
+  `apps/server/src/builtin-pipelines/pipeline-generator/prompts/system/`
+  - `analysis.md` — two-pass MCP discovery
+  - `gen-skeleton.md` — verbatim-fetch + entry.id-as-name
+- **Modifier prompts**:
+  `apps/server/src/builtin-pipelines/pipeline-modifier/prompts/system/`
+  - `analyze-gap.md` — produces patch outline
+  - `gen-patch.md` — translates outline to IRPatchOp[] with
+    discipline against empty-patch fallback
+- **IR schema**: `apps/server/src/kernel-next/ir/schema.ts`
+  - `IRPatchOpSchema` — 8 ops including the two new external-input
+    ops
+  - `PortIRSchema.optional` — Bug 7 flag
+- **Canonical hash**: `apps/server/src/kernel-next/ir/canonical.ts`
+  - includes `port.optional` (Bug 7c, eedd14a)
+- **Dashboard**:
+  - `apps/web/src/app/kernel-next/[taskId]/page.tsx` — task page,
+    state badge reads /status (Bug 5)
+  - `apps/web/src/components/gate-card.tsx` — decision summary +
+    collapse-when-large (Bug 3)
+- **Findings doc**:
+  `docs/superpowers/dogfood-2026-04-28/findings.md` — full bug
+  catalogue with reproduction details and remediation links
+
+## The session's meta-lesson
+
+Each dogfood iteration peeled one layer deeper. Counting unit
+tests (none of which caught any of these 11 bugs) vs live LLM
+runs (caught all 11):
+
+| layer | what it produces | how many bugs in this session it caught |
+|---|---|---|
+| Unit test (in-memory SQLite + mocked SDK) | API contract + invariants | 0 |
+| Static lint / TS check | structural drift | 0 |
+| Spawn-test rot-guard (after building it) | 1 / 9 / 10 / part of 11 | 4 (after each new rung was built) |
+| Live LLM dogfood | 6 / 7 / 8 / Bug 4 (DB) / Bug 5 (UX) / Bug 11 (last mile) | 6 |
+
+The 6 dogfood-only bugs span: prompt drift (6, 8b), schema gap
+(7, 8a), DB drift (4), UX inconsistency (5), and SDK runtime
+opacity (11). None of them are unit-testable. None.
+
+That's the case for dogfood. It's not optional.
