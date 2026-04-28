@@ -2,6 +2,160 @@
   "schemaVersion": "1",
   "entries": [
     {
+      "id": "arxiv",
+      "schemaVersion": "1",
+      "name": "arXiv MCP",
+      "description": "搜索与检索 arXiv 学术论文 / Search and retrieve arXiv academic papers",
+      "useCases": [
+        "search papers by keyword, author, or category / 按关键词/作者/分类搜索论文",
+        "fetch full metadata for arXiv IDs / 通过 arXiv ID 获取完整元数据",
+        "list papers in cs.LG / cs.AI / q-fin.* / 列出某分类下的论文"
+      ],
+      "tags": [
+        "arxiv",
+        "research",
+        "papers",
+        "academic",
+        "学术",
+        "论文"
+      ],
+      "homepage": "https://arxiv.org",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@fre4x/arxiv"
+      ],
+      "packageName": "@fre4x/arxiv",
+      "envKeys": [],
+      "healthCheckTimeoutMs": 15000
+    },
+    {
+      "id": "brave-search",
+      "schemaVersion": "1",
+      "name": "Brave Search MCP",
+      "description": "基于 Brave 引擎的网页搜索 / Web search powered by Brave Search engine",
+      "useCases": [
+        "search the web for recent news or articles / 搜索最近的新闻或文章",
+        "find information across the public web / 在公网上查找信息"
+      ],
+      "tags": [
+        "web-search",
+        "网页搜索",
+        "research",
+        "brave"
+      ],
+      "homepage": "https://brave.com/search/api",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-brave-search"
+      ],
+      "packageName": "@modelcontextprotocol/server-brave-search",
+      "envKeys": [
+        {
+          "name": "BRAVE_API_KEY",
+          "required": true,
+          "description": "Brave Search API key (2k queries/month free tier)",
+          "obtainUrl": "https://api.search.brave.com/app/keys",
+          "obtainSteps": "1. 注册 Brave Search API 账号\n2. 进入 keys 页面\n3. Subscribe to free tier (2k queries/month)\n4. 复制 API key"
+        }
+      ],
+      "healthCheckTimeoutMs": 15000
+    },
+    {
+      "id": "etherscan",
+      "schemaVersion": "1",
+      "name": "Etherscan MCP",
+      "description": "查询以太坊及 60+ EVM 链的链上数据 / Query Ethereum and 60+ EVM chain on-chain data",
+      "useCases": [
+        "verify a transaction hash on Ethereum / 验证以太坊交易哈希",
+        "fetch a verified contract's source / 获取已验证合约源码",
+        "list ERC20 / NFT transfers for an address / 查询地址的 ERC20/NFT 转账记录",
+        "switch chain via chainId for L2s (Arbitrum/Optimism/Base/...) / 通过 chainId 切换 L2 链"
+      ],
+      "tags": [
+        "blockchain",
+        "ethereum",
+        "evm",
+        "etherscan",
+        "onchain",
+        "区块链",
+        "链上",
+        "research"
+      ],
+      "homepage": "https://etherscan.io",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@everimbaq/etherscan-mcp"
+      ],
+      "packageName": "@everimbaq/etherscan-mcp",
+      "envKeys": [
+        {
+          "name": "ETHERSCAN_API_KEY",
+          "required": true,
+          "description": "Etherscan API key (free tier sufficient for most reads)",
+          "obtainUrl": "https://etherscan.io/myapikey",
+          "obtainSteps": "1. 访问 https://etherscan.io/register 注册账号\n2. 登录后前往 https://etherscan.io/myapikey\n3. Create a new API Key\n4. 复制 key 粘贴到此处"
+        }
+      ],
+      "healthCheckTimeoutMs": 15000
+    },
+    {
+      "id": "fetch",
+      "schemaVersion": "1",
+      "name": "Fetch MCP",
+      "description": "通用 HTTP 抓取与 YouTube transcript / General-purpose HTTP fetch and YouTube transcript",
+      "useCases": [
+        "fetch a public webpage as HTML or Markdown / 抓取公开网页 (HTML 或 Markdown)",
+        "extract YouTube video transcript / 抽取 YouTube 视频字幕",
+        "scrape simple JSON APIs / 抓取简单 JSON API"
+      ],
+      "tags": [
+        "fetch",
+        "http",
+        "web",
+        "scrape",
+        "youtube",
+        "抓取",
+        "网页"
+      ],
+      "homepage": "https://www.npmjs.com/package/fetch-mcp",
+      "command": "npx",
+      "args": [
+        "-y",
+        "fetch-mcp"
+      ],
+      "packageName": "fetch-mcp",
+      "envKeys": [],
+      "healthCheckTimeoutMs": 15000
+    },
+    {
+      "id": "filesystem",
+      "schemaVersion": "1",
+      "name": "Filesystem MCP",
+      "description": "本地文件系统读写 / Local filesystem read/write",
+      "useCases": [
+        "read files from a local directory / 读取本地目录下的文件",
+        "list directory contents / 列出目录内容",
+        "search files by pattern / 按模式搜索文件"
+      ],
+      "tags": [
+        "filesystem",
+        "文件系统",
+        "local",
+        "code-research"
+      ],
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem"
+      ],
+      "packageName": "@modelcontextprotocol/server-filesystem",
+      "envKeys": [],
+      "healthCheckTimeoutMs": 10000
+    },
+    {
       "id": "github",
       "schemaVersion": "1",
       "name": "GitHub MCP",
@@ -38,31 +192,6 @@
       "healthCheckTimeoutMs": 15000
     },
     {
-      "id": "filesystem",
-      "schemaVersion": "1",
-      "name": "Filesystem MCP",
-      "description": "本地文件系统读写 / Local filesystem read/write",
-      "useCases": [
-        "read files from a local directory / 读取本地目录下的文件",
-        "list directory contents / 列出目录内容",
-        "search files by pattern / 按模式搜索文件"
-      ],
-      "tags": [
-        "filesystem",
-        "文件系统",
-        "local",
-        "code-research"
-      ],
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem"
-      ],
-      "packageName": "@modelcontextprotocol/server-filesystem",
-      "envKeys": [],
-      "healthCheckTimeoutMs": 10000
-    },
-    {
       "id": "playwright",
       "schemaVersion": "1",
       "name": "Playwright MCP",
@@ -90,34 +219,32 @@
       "healthCheckTimeoutMs": 30000
     },
     {
-      "id": "brave-search",
+      "id": "postgres",
       "schemaVersion": "1",
-      "name": "Brave Search MCP",
-      "description": "基于 Brave 引擎的网页搜索 / Web search powered by Brave Search engine",
+      "name": "PostgreSQL MCP",
+      "description": "Postgres 数据库只读查询 / Read-only PostgreSQL queries",
       "useCases": [
-        "search the web for recent news or articles / 搜索最近的新闻或文章",
-        "find information across the public web / 在公网上查找信息"
+        "run SELECT queries against a database / 对数据库跑 SELECT 查询",
+        "explore database schema / 探索数据库 schema"
       ],
       "tags": [
-        "web-search",
-        "网页搜索",
-        "research",
-        "brave"
+        "database",
+        "postgres",
+        "sql"
       ],
-      "homepage": "https://brave.com/search/api",
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-brave-search"
+        "@modelcontextprotocol/server-postgres"
       ],
-      "packageName": "@modelcontextprotocol/server-brave-search",
+      "packageName": "@modelcontextprotocol/server-postgres",
       "envKeys": [
         {
-          "name": "BRAVE_API_KEY",
+          "name": "POSTGRES_CONNECTION_STRING",
           "required": true,
-          "description": "Brave Search API key (2k queries/month free tier)",
-          "obtainUrl": "https://api.search.brave.com/app/keys",
-          "obtainSteps": "1. 注册 Brave Search API 账号\n2. 进入 keys 页面\n3. Subscribe to free tier (2k queries/month)\n4. 复制 API key"
+          "description": "Postgres connection string (postgresql://user:pass@host/db)",
+          "obtainUrl": "https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING",
+          "obtainSteps": "1. 从你的数据库管理面板拿到 connection string\n2. 形如 'postgresql://user:password@host:5432/dbname'"
         }
       ],
       "healthCheckTimeoutMs": 15000
@@ -174,37 +301,6 @@
           "description": "Slack bot token (xoxb-...)",
           "obtainUrl": "https://api.slack.com/apps",
           "obtainSteps": "1. 创建 Slack app\n2. 启用 Bot Token Scopes (channels:history, channels:read 等)\n3. Install app to workspace\n4. 复制 Bot User OAuth Token"
-        }
-      ],
-      "healthCheckTimeoutMs": 15000
-    },
-    {
-      "id": "postgres",
-      "schemaVersion": "1",
-      "name": "PostgreSQL MCP",
-      "description": "Postgres 数据库只读查询 / Read-only PostgreSQL queries",
-      "useCases": [
-        "run SELECT queries against a database / 对数据库跑 SELECT 查询",
-        "explore database schema / 探索数据库 schema"
-      ],
-      "tags": [
-        "database",
-        "postgres",
-        "sql"
-      ],
-      "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-postgres"
-      ],
-      "packageName": "@modelcontextprotocol/server-postgres",
-      "envKeys": [
-        {
-          "name": "POSTGRES_CONNECTION_STRING",
-          "required": true,
-          "description": "Postgres connection string (postgresql://user:pass@host/db)",
-          "obtainUrl": "https://www.postgresql.org/docs/current/libpq-connect.html#LIBPQ-CONNSTRING",
-          "obtainSteps": "1. 从你的数据库管理面板拿到 connection string\n2. 形如 'postgresql://user:password@host:5432/dbname'"
         }
       ],
       "healthCheckTimeoutMs": 15000
