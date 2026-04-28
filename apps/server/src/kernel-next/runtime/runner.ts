@@ -1120,7 +1120,17 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
             // terminal). The run appears as `failed` internally but no
             // terminal row is committed; provide_task_secrets will resume
             // the task via retryTaskFromStage.
+            //
+            // Bug 12 (dogfood-2026-04-28): secret-pending dwell is human-
+            // input think-time, not pipeline execution time. Pause the
+            // budget — symmetric with the gate-stage pause at L1307. In
+            // the common case (non-fanout) runPipeline exits within ms of
+            // this point and the pause is moot, but in fanout scenarios
+            // a parallel stage may still be running while this stage
+            // waits for secrets, and the pause prevents that wall-time
+            // from eroding the pipeline's timeout budget.
             secretPendingObserved = true;
+            pauseBudget();
             dispatcher.send({
               type: "STAGE_FAILED",
               stage: input.stageName,
@@ -1547,7 +1557,10 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
                   // `executing` and the parallel-region final lets
                   // runOneAttempt resolve. The provideTaskSecrets MCP
                   // tool resumes via retryTaskFromStage as usual.
+                  // Bug 12: also pause the watchdog — see the matching
+                  // comment block at the non-fanout path above.
                   secretPendingObserved = true;
+                  pauseBudget();
                   dispatcher.send({
                     type: "STAGE_FAILED",
                     stage: stageName,
