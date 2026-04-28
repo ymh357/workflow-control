@@ -357,6 +357,44 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
   const publishedStageExecuting = new Set<string>();
   const publishedStageFinal = new Set<string>();
 
+  // Cross-region cancellation. A stage that enters its `error` final
+  // (executor_failed or no_active_wire) leaves every transitive
+  // downstream region waiting for inbound wires that will never
+  // deliver. Without propagation, parallel.onDone never fires and the
+  // run hangs until the wall-clock budget. We compute the transitive
+  // downstream set lazily on first failure and dispatch STAGE_CANCELLED
+  // for each not-yet-finalized downstream so its region can move to
+  // its `error` final and parallel.onDone resolves.
+  // The set is per-attempt (cleared on retry-rebuild via the same
+  // mechanism that clears publishedStageFinal — see the rollback path)
+  // so a retry that re-runs the failed upstream gets a clean slate.
+  const cancelledByPropagation = new Set<string>();
+  const computeTransitiveDownstreams = (failedStage: string): string[] => {
+    // BFS over ir.wires from failedStage. Each wire whose `from.stage`
+    // is in the frontier adds its `to.stage` to the downstream set.
+    // Match on "stage-sourced" wires: schema preprocess defaults
+    // missing source to "stage", but tests / fixtures often skip the
+    // preprocess and pass `from: { stage, port }` without source. Mirror
+    // mock-executor.ts:69's logic (treat anything not explicitly
+    // "external" as stage-sourced) so downstream computation matches
+    // wire-delivery semantics.
+    const downstream = new Set<string>();
+    const frontier = [failedStage];
+    while (frontier.length > 0) {
+      const cur = frontier.pop()!;
+      for (const w of opts.ir.wires) {
+        if (w.from.source === "external") continue;
+        const fromStage = (w.from as { stage?: string }).stage;
+        if (fromStage !== cur) continue;
+        const next = w.to.stage;
+        if (downstream.has(next) || next === failedStage) continue;
+        downstream.add(next);
+        frontier.push(next);
+      }
+    }
+    return [...downstream];
+  };
+
   // ---- Retry-preserved context (read by next compileIRToMachine) ----
   let persistentPortValues: Record<string, unknown> =
     buildInitialPortValuesRunner(opts.ir, opts.seedValues);
@@ -1395,6 +1433,24 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
                     reason: "executor_failed",
                   },
                 });
+              } else if (reason === "upstream_cancelled") {
+                // A downstream region just transitioned to error after
+                // receiving STAGE_CANCELLED. We surface a stage_error
+                // event so the dashboard knows the stage will not run,
+                // but with a different reason so the UI can distinguish
+                // "this stage failed" from "an upstream stage failed".
+                publish({
+                  type: "stage_error",
+                  taskId: opts.taskId,
+                  timestamp: isoNow(),
+                  data: {
+                    stage: stageName,
+                    message:
+                      `Cancelled because a transitive upstream stage entered its 'error' final. ` +
+                      `See the upstream's stage_error event for the root cause.`,
+                    reason: "upstream_cancelled",
+                  },
+                });
               } else {
                 const err = buildNoActiveWireError(stageName, stageMeta, ctx2.portValues);
                 publish({
@@ -1410,6 +1466,32 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
                 });
               }
             }
+
+            // Cross-region propagation: a stage just entered its error
+            // final via executor_failed or no_active_wire (NOT via
+            // upstream_cancelled — that's the propagation itself, no
+            // need to fan out twice). Dispatch STAGE_CANCELLED to every
+            // transitive downstream that hasn't already finalized in
+            // this attempt. Idempotent: cancelledByPropagation guards
+            // against re-dispatch, and the region's transition guard
+            // matches stage===self so each region only reacts to its
+            // own cancellation.
+            if (
+              outcome === "error" &&
+              (reason === "executor_failed" || reason === "no_active_wire")
+            ) {
+              const downstreams = computeTransitiveDownstreams(stageName);
+              for (const ds of downstreams) {
+                if (cancelledByPropagation.has(ds)) continue;
+                if (publishedStageFinal.has(ds)) continue;
+                cancelledByPropagation.add(ds);
+                dispatcher.send({
+                  type: "STAGE_CANCELLED",
+                  stage: ds,
+                  upstreamStage: stageName,
+                });
+              }
+            }
           }
         }
 
@@ -1421,6 +1503,12 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
             if (dispatched.has(entry.name)) continue;
             dispatched.add(entry.name);
             if (entry.reason === "executor_failed") continue;
+            // upstream_cancelled is a propagation outcome — the
+            // root-cause stage already has its own stageErrors entry
+            // (executor_failed or no_active_wire). Skip to avoid
+            // double-counting cancelled stages as failures of their
+            // own.
+            if (entry.reason === "upstream_cancelled") continue;
             stageErrors.push(
               buildNoActiveWireError(entry.name, stageMeta, ctx2.portValues),
             );
@@ -1453,7 +1541,15 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
             dispatched.add(stageName);
             const ctx2 = snapshot.context as MachineContext;
             const finalized = ctx2.finalizedStages.find((f) => f.name === stageName);
-            if (finalized?.reason !== "executor_failed") {
+            // executor_failed: handled by the executor IIFE which already
+            // pushed to stageErrors. upstream_cancelled: the root-cause
+            // stage owns the error message; cancellation is propagation,
+            // not an independent failure. Both skip; only no_active_wire
+            // (or undefined reason) lands a structured failedWires diag.
+            if (
+              finalized?.reason !== "executor_failed" &&
+              finalized?.reason !== "upstream_cancelled"
+            ) {
               stageErrors.push(
                 buildNoActiveWireError(stageName, stageMeta, ctx2.portValues),
               );

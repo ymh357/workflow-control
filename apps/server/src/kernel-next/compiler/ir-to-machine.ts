@@ -73,11 +73,17 @@ export interface MachineContext {
   //     attaches the structured failedWires[] payload.
   //   - "executor_failed" — agent/script executor returned status=error
   //     or rejected; runner reads the concrete message from stageErrors.
+  //   - "upstream_cancelled" — a transitive upstream stage entered its
+  //     `error` final, so this stage's inbound wires can never deliver.
+  //     Raised by runner-side propagation (see runner.ts subscribe loop)
+  //     dispatching STAGE_CANCELLED to every transitive downstream of
+  //     the failing stage. Lets the parallel region's onDone fire (a
+  //     waiting region would otherwise hang forever).
   // `outcome === "done"` always has reason === undefined.
   finalizedStages: {
     name: string;
     outcome: "done" | "error";
-    reason?: "no_active_wire" | "executor_failed";
+    reason?: "no_active_wire" | "executor_failed" | "upstream_cancelled";
   }[];
   // Slice C (Task C1): per-stage retry counter. Keyed by the failing
   // stage name (the ScriptStage whose executor errored). Read by the
@@ -91,6 +97,15 @@ export type MachineEvent =
   | { type: "START" }
   | { type: "PORT_WRITTEN"; key: string; value: unknown }
   | { type: "STAGE_FAILED"; stage: string; error: string }
+  // Cross-region cancellation. Raised by the runner (subscribe loop in
+  // runner.ts) when a stage enters its `error` final, addressed at every
+  // transitive downstream stage. The downstream region's waiting/executing
+  // STAGE_CANCELLED handler fires when event.stage equals its own name,
+  // moving the region to its `error` final with reason="upstream_cancelled"
+  // so the parallel onDone can resolve. Without this event, a region
+  // waiting on inbound wires from a failed upstream stays in `waiting`
+  // forever and the run hangs until wall-clock budget.
+  | { type: "STAGE_CANCELLED"; stage: string; upstreamStage: string }
   | { type: "GATE_ANSWERED"; gateId: string; stageName: string; answer: string; targetStage: string | string[] }
   // A2.3.3 — external interrupt for a specific running stage. Carried on
   // the root TaskMachine event bus; individual agent stage regions match
@@ -687,12 +702,42 @@ function buildStageRegion(
       ]
     : [errorFinalTransition];
 
+  // Cross-region cancellation transition for the `executing` state.
+  // Same shape as the waiting-state STAGE_CANCELLED handler: a stage
+  // already running can still be cancelled if a parallel-sibling
+  // upstream entered its `error` final after this region's invoke
+  // started. The runner forwards INTERRUPT separately so the in-flight
+  // executor aborts; the cancellation transition handles the region's
+  // state-machine side (transition to `error` final so parallel onDone
+  // can resolve). Both must coexist — INTERRUPT addresses the executor
+  // child, STAGE_CANCELLED addresses the region itself.
+  const executingStageCancelledTransition = {
+    target: "error",
+    guard: ({ event }: { event: MachineEvent }) =>
+      event.type === "STAGE_CANCELLED" && event.stage === stageName,
+    actions: assign({
+      log: ({ context }: { context: MachineContext }) => [
+        ...context.log,
+        `${stageName}:cancelled`,
+      ],
+      finalizedStages: ({ context }: { context: MachineContext }) => [
+        ...context.finalizedStages,
+        {
+          name: stageName,
+          outcome: "error" as const,
+          reason: "upstream_cancelled" as const,
+        },
+      ],
+    }),
+  };
+
   const executingBody: Record<string, unknown> = {
     entry: assign({
       log: ({ context }) => [...context.log, `${stageName}:executing`],
     }),
     on: {
       STAGE_FAILED: stageFailedTransitions,
+      STAGE_CANCELLED: [executingStageCancelledTransition],
     },
   };
 
@@ -859,6 +904,29 @@ function buildStageRegion(
                     name: stageName,
                     outcome: "error" as const,
                     reason: "executor_failed" as const,
+                  },
+                ],
+              }),
+            },
+          ],
+          // Cross-region cancellation. The runner dispatches STAGE_CANCELLED
+          // for each transitive downstream of a stage that just entered its
+          // `error` final. We match on stage === self so each region only
+          // reacts to its own cancellation, even though the same event is
+          // observable by every parallel sibling.
+          STAGE_CANCELLED: [
+            {
+              target: "error",
+              guard: ({ event }: { event: MachineEvent }) =>
+                event.type === "STAGE_CANCELLED" && event.stage === stageName,
+              actions: assign({
+                log: ({ context }) => [...context.log, `${stageName}:cancelled`],
+                finalizedStages: ({ context }) => [
+                  ...context.finalizedStages,
+                  {
+                    name: stageName,
+                    outcome: "error" as const,
+                    reason: "upstream_cancelled" as const,
                   },
                 ],
               }),

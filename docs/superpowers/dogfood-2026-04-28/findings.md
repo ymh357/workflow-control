@@ -299,6 +299,17 @@ not-future-proofing" CLAUDE.md rule. The stage-layer contract test
 is sufficient proof the guard works; runner improvements would lift
 it to a clean e2e later.
 
+**Update (continuation 3)**: cross-region cancellation landed. New
+`STAGE_CANCELLED` event + per-region transition + runner-side
+propagation lets parallel.onDone resolve when a stage enters error
+final. The Bug-8b e2e regression (`e2e.bug8b-guard.test.ts`) now
+drives the full pipeline-modifier IR through the failure path and
+asserts: validatePatch raises Bug 8b error, applying never starts
+(stage_attempts row absent), runPipeline resolves in <1s (vs prior
+hang-until-budget). Stage-layer contract test
+(`validate-patch-stage.test.ts`) retained as a faster guard against
+the script-module logic regressing without involving the runner.
+
 **Score update**: Bug 8b moves from "deferred (prompt-only)" to
 "closed (kernel guard)". The prompt rule from `865961d` and
 `0d86be9` stays in place as belt-plus-suspenders.

@@ -296,7 +296,7 @@ f2658fe docs(dogfood): Bug 11 root cause located — kernel discards SDK status 
 | # | Status | Notes |
 |---|---|---|
 | 1-7, 8a, 9, 10 | ✅ closed pre-session | (carried over from 815ee7f) |
-| 8b | ✅ closed (kernel guard, continuation 2) | 新加 builtin script `validate_patch_vs_intent` + IR 插入 `validatePatch` script stage 在 `genPatch` 与 `applying` 之间. 看到 silent-no-op (`intendedChanges 非空 ∧ ops:[] ∧ verdict:"safe"`) 直接 throw → STAGE_FAILED. Prompt rule `865961d/0d86be9` 留为 belt-plus-suspenders. 8 unit + 4 stage-integration 测试; 反向移除 guard 测试立刻 fail. 详情见 findings.md §Bug 8b kernel guard landed. |
+| 8b | ✅ closed (kernel guard + e2e, continuation 2/3) | 新加 builtin script `validate_patch_vs_intent` + IR 插入 `validatePatch` script stage 在 `genPatch` 与 `applying` 之间. 看到 silent-no-op (`intendedChanges 非空 ∧ ops:[] ∧ verdict:"safe"`) 直接 throw → STAGE_FAILED. Prompt rule `865961d/0d86be9` 留为 belt-plus-suspenders. 8 unit + 4 stage-integration + 1 promoted e2e 测试. continuation 3 又落了 cross-region cancel 让 e2e 在 <1s 内 resolve. 详情见 findings.md §Bug 8b kernel guard landed. |
 | 11 | ✅ closed (3-step root cause fix) | (1) `99201a1` SDK stderr 接入; (2) `6a5f042` 改 read `mcp_servers[].status`; (3) `14ae290` rot-guard mode-3 冷缓存. 详情见 findings.md. |
 | 12 | ✅ closed (root cause fix) | (1) `ed8eb6b` watchdog pauseBudget; (2) `822a3d5` suppress run_final on secret_pending exit. UI 残影根因消除. |
 | 13 | reclassified — not a product bug | `fade2ef`. Test-infra footgun: 强杀 chrome-e2e-profile 后 mojo network state 损坏. 不是 Next.js / kernel 问题, 不修. |
@@ -352,7 +352,9 @@ f2658fe docs(dogfood): Bug 11 root cause located — kernel discards SDK status 
 
 2. **Replenish more catalog entries**. 现 10 条. 候选: Notion / Linear (走 mcp-remote pattern) / HTTP fetch (找一个 vendor 维护的没坏的). 每条加之前必跑 mode-2.
 
-3. **Runner cross-region cancellation**. Bug 8b 收尾时浮现的架构限制: pipeline machine 的 `parallel.onDone` 只在所有 region final 时 fire; 一个 region 进 error final, 下游 region 仍 waiting → run 不能 resolve 直到 wall-clock budget 触发. 短期影响: validatePatch fail 的 task 卡 running 直到 timeout (默认 10min). 修法方向: 一个 region 进 error final 时 dispatch task-level cancel, 让 sibling region 也 final. 不阻塞当前 dogfood 的修复, 但下次有 fail-fast 用例时该一起做.
+### ✅ Closed in continuation 3
+
+3. ~~**Runner cross-region cancellation**~~ — closed. New `STAGE_CANCELLED` event + per-region waiting/executing transitions + runner subscribe-loop propagation. When a stage enters its `error` final via `executor_failed` / `no_active_wire`, runner BFS over `ir.wires` and dispatches `STAGE_CANCELLED` to every transitive downstream not yet finalized. Each region matches `event.stage === self` so cancellation is targeted. New finalizedStages reason `upstream_cancelled` (not surfaced to stageErrors — the root-cause stage owns the message). 4 unit tests + 1 promoted e2e (validatePatch fail → applying never starts → run resolves in <1s vs prior 10-min timeout).
 
 ### Lower priority
 
@@ -378,6 +380,11 @@ f2658fe docs(dogfood): Bug 11 root cause located — kernel discards SDK status 
 - `apps/server/src/builtin-pipelines/pipeline-modifier/pipeline.ir.json` — IR 多了 validatePatch script stage 在 genPatch 与 applying 间
 - `apps/server/src/builtin-pipelines/pipeline-modifier/validate-patch-stage.test.ts` — Bug 8b 4 个 stage-integration 测试
 - `apps/server/src/builtin-pipelines/pipeline-modifier/test-utils.ts` — `buildModifierTestExecutor` 给 e2e 用 CompositeStageExecutor 同时挂 mock-agent + real-script
+- `apps/server/src/kernel-next/compiler/ir-to-machine.ts:90-128` — `STAGE_CANCELLED` event + `finalizedStages.reason` extended with `"upstream_cancelled"`
+- `apps/server/src/kernel-next/compiler/ir-to-machine.ts:waiting/executing` — `STAGE_CANCELLED` transition handlers per region (cross-region cancellation)
+- `apps/server/src/kernel-next/runtime/runner.ts:cancelledByPropagation` — runner-side BFS over wires + dispatch loop
+- `apps/server/src/kernel-next/runtime/runner.cross-region-cancel.test.ts` — 4 propagation regression tests
+- `apps/server/src/builtin-pipelines/pipeline-modifier/e2e.bug8b-guard.test.ts` — full e2e regression for Bug 8b (runs in <1s thanks to cross-region cancel)
 - `apps/server/scratch-step89-real.mjs` (gitignored) — SDK end-to-end probe template
 - `apps/server/scratch-bug11-repro.mjs` (gitignored) — minimal SDK reproducer
 - `apps/server/scratch-vet-mcp.mjs` (gitignored) — catalog candidate vetter
@@ -387,6 +394,7 @@ f2658fe docs(dogfood): Bug 11 root cause located — kernel discards SDK status 
 - runtime suite: 75 files / 518 tests (vs 73 / 511 之前). +5 测试覆盖本次 6 个 commit 的代码改动.
 - 每个 fix commit 都带回归测试 + 反向验证可证伪.
 - continuation 2 (Bug 8b kernel guard): +12 测试 (8 unit on `validate_patch_vs_intent`, 4 stage-integration on `validatePatch` IR stage), +1 IR-snapshot 断言, 共 +13. server 全套 2090/2090 substantive (1 flaky `spawn-utils.adversarial.test.ts` 单跑 26/26 绿, 与 Bug 8b 无关).
+- continuation 3 (cross-region cancellation + Bug 8b e2e promotion): +5 测试 (4 unit `runner.cross-region-cancel.test.ts` 覆盖 direct/transitive/sibling/SSE-event, 1 promoted e2e `e2e.bug8b-guard.test.ts`). server 全套 2094/2094 substantive (同一个 flaky 单独跑过, 不算回归). pipeline-modifier 子套 16/16 全绿 (含新 e2e).
 
 ## The session's meta-lesson (additions)
 

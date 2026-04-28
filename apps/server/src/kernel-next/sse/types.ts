@@ -77,7 +77,12 @@ export interface StageErrorData {
   // failure without string-matching `message`. Absent on legacy
   // emitters that pre-date this field; consumers should treat absence
   // as `no_active_wire` for backwards compatibility.
-  reason?: "no_active_wire" | "executor_failed";
+  // - "upstream_cancelled" — a transitive upstream stage entered its
+  //   `error` final. Runner propagates this via STAGE_CANCELLED so
+  //   parallel.onDone can resolve. UI should de-emphasise these (they
+  //   share a root cause with another stage_error event in the same
+  //   run).
+  reason?: "no_active_wire" | "executor_failed" | "upstream_cancelled";
   // Opaque payload for rich errors (e.g. NO_ACTIVE_WIRE's
   // failedWires[] from runner.buildNoActiveWireError). Kept as
   // `unknown` so callers don't accidentally couple to the internal
