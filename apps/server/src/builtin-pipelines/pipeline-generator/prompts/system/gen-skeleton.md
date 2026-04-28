@@ -248,19 +248,25 @@ The `analyzing` stage produced `recommendedMcps` — an array of `{ entryId, nam
 
 For each entry you decide to use:
 
-1. Call `get_mcp_catalog_entry(entryId)` once. The full catalog entry has `command`, `args`, `envKeys[].name` etc.; the version inside `recommendedMcps` may be a slim copy.
-2. Construct the IR `McpServerEntry` block:
+1. **Verbatim-fetch pass (REQUIRED, non-negotiable).** Call `get_mcp_catalog_entry(entryId)` once. The catalog row is the source of truth for `name`, `command`, `args`, `env`, `envKeys`. **Do NOT skip this call** — the `recommendedMcps` array from analyzing may be a slim copy and your training data is stale. Your job here is plumbing, not authoring.
+2. **Construct the IR `McpServerEntry` block by copying VERBATIM from the get_mcp_catalog_entry response:**
    ```json
    {
-     "name": "<entry.name>",
-     "command": "<entry.command>",
-     "args": [<...entry.args...>],
+     "name": "<copy entry.name verbatim — do NOT slugify, do NOT lowercase, do NOT replace spaces with hyphens>",
+     "command": "<copy entry.command verbatim>",
+     "args": [<copy every element of entry.args verbatim, in order>],
      "env": { "<envKey>": "${<envKey>}" },
-     "envKeys": ["<envKey>", "..."]
+     "envKeys": [<copy every entry.envKeys[*].name verbatim>]
    }
    ```
-   The `env` field maps each declared envKey to the runtime `${VAR}` placeholder pattern. The kernel's expander (with the user's inventory layer, Phase 2) will resolve these at run time.
-3. Attach the block to the agent stage's `config.mcpServers`. If two stages need the same entry, attach the SAME object to both.
+   The `env` field is the only field you compose: for each `envKey` in the catalog entry, emit `"<envKey>": "${<envKey>}"`. The kernel's expander (Phase 2 inventory layer) resolves the `${VAR}` placeholders at run time.
+
+   **Specifically forbidden transformations on `name`:**
+   - "Fetch MCP" → "fetch-mcp" (kebab-case slug) ❌
+   - "GitHub MCP" → "github" (id form) ❌
+   - "Linear" → "linear-mcp" (suffix invention) ❌
+   The IR's `name` must equal the catalog entry's `name` field byte-for-byte. The downstream `lookupEntryByCommand(command, args)` reverse lookup compares command+args, but other tooling (audit logs, dashboards, supply-chain reports) keys off `name`. Any drift creates ghost entries in those views.
+3. **Attach the block to the agent stage's `config.mcpServers`.** If two stages need the same entry, attach the SAME object (or two structurally-identical copies — both are fine; what matters is that command/args/env/envKeys are byte-equal between them).
 
 ### Rules
 
