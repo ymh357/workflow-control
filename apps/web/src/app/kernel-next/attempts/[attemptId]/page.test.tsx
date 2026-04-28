@@ -22,6 +22,9 @@ describe("AttemptDetailsPage", () => {
               { type: "text", text: "hello" },
               { type: "thinking", text: "hmm" },
               { type: "thinking", text: "more" },
+              // Bug 11 (2026-04-28) — SDK stderr lines must NOT bleed into
+              // the messages tab; their own tab keeps them auditable.
+              { type: "sdk_stderr", text: "Connection failed after 1234ms" },
             ],
             compactEvents: [],
             subAgents: [],
@@ -50,11 +53,15 @@ describe("AttemptDetailsPage", () => {
 
   it("renders tab bar with counts partitioned by stream type", async () => {
     render(<AttemptDetailsPage />);
-    // Messages = non-thinking agentStream entries = 1;
-    // Thinking = thinking entries = 2.
+    // Messages = text-only agentStream entries = 1 (the sdk_stderr entry
+    // must NOT count here, otherwise the assistant transcript drowns in
+    // diagnostics — see Bug 11);
+    // Thinking = thinking entries = 2;
+    // SDK Stderr = sdk_stderr entries = 1.
     expect(await screen.findByText(/Tool Calls \(1\)/)).toBeInTheDocument();
     expect(await screen.findByText(/Messages \(1\)/)).toBeInTheDocument();
     expect(await screen.findByText(/Thinking \(2\)/)).toBeInTheDocument();
+    expect(await screen.findByText(/SDK Stderr \(1\)/)).toBeInTheDocument();
     expect(await screen.findByText(/Status Timeline \(1\)/)).toBeInTheDocument();
   });
 

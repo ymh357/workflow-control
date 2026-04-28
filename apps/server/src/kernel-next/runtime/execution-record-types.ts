@@ -15,7 +15,13 @@ export interface ToolCallRecord {
 }
 
 export interface AgentStreamEvent {
-  type: "text" | "thinking";
+  // "text" → assistant-visible output
+  // "thinking" → reasoning blocks
+  // "sdk_stderr" → diagnostic line filtered from the SDK's stderr callback
+  //   (currently: only MCP "Connection failed after Xms" lines, see Bug 11
+  //   in dogfood-2026-04-28/findings.md). Stored on the same stream so we
+  //   can correlate it timestamp-wise with the surrounding text events.
+  type: "text" | "thinking" | "sdk_stderr";
   text: string;
   timestamp: string;
 }

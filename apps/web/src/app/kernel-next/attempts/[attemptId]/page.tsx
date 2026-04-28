@@ -21,7 +21,7 @@ import { useParams } from "next/navigation";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
-type Tab = "tool-calls" | "messages" | "thinking" | "status" | "usage";
+type Tab = "tool-calls" | "messages" | "thinking" | "sdk-stderr" | "status" | "usage";
 
 // Mirrors AttemptDetailsPayload from the server route. Duplicated
 // locally so the web app doesn't reach across workspaces for types.
@@ -86,16 +86,26 @@ export default function AttemptDetailsPage(): React.JSX.Element {
     return () => controller.abort();
   }, [attemptId]);
 
-  // Partition the agent stream into "messages" (assistant text) and
-  // "thinking" (reasoning blocks) so the tabs line up with the task's
+  // Partition the agent stream into "messages" (assistant text),
+  // "thinking" (reasoning blocks), and "sdk_stderr" (SDK diagnostics —
+  // currently MCP handshake failures, see Bug 11 in
+  // dogfood-2026-04-28/findings.md) so the tabs line up with the task's
   // intended UX. The discriminator is the event.type field emitted by
-  // the kernel-next executor.
+  // the kernel-next executor. messages excludes BOTH non-text types so
+  // sdk_stderr noise doesn't pollute the assistant transcript.
   const messages = useMemo(
-    () => (details?.agentStream ?? []).filter((e) => e.type !== "thinking"),
+    () =>
+      (details?.agentStream ?? []).filter(
+        (e) => e.type !== "thinking" && e.type !== "sdk_stderr",
+      ),
     [details],
   );
   const thinking = useMemo(
     () => (details?.agentStream ?? []).filter((e) => e.type === "thinking"),
+    [details],
+  );
+  const sdkStderr = useMemo(
+    () => (details?.agentStream ?? []).filter((e) => e.type === "sdk_stderr"),
     [details],
   );
 
@@ -152,6 +162,7 @@ export default function AttemptDetailsPage(): React.JSX.Element {
             ["tool-calls", `Tool Calls (${details.toolCalls.length})`],
             ["messages", `Messages (${messages.length})`],
             ["thinking", `Thinking (${thinking.length})`],
+            ["sdk-stderr", `SDK Stderr (${sdkStderr.length})`],
             ["status", `Status Timeline (${details.statusHistory.length})`],
             ["usage", "Usage"],
           ] as Array<[Tab, string]>
@@ -182,6 +193,12 @@ export default function AttemptDetailsPage(): React.JSX.Element {
       )}
       {tab === "thinking" && (
         <JsonPanel items={thinking} emptyLabel="No thinking blocks" />
+      )}
+      {tab === "sdk-stderr" && (
+        <JsonPanel
+          items={sdkStderr}
+          emptyLabel="No SDK stderr captured (clean run)"
+        />
       )}
       {tab === "status" && (
         <StatusPanel

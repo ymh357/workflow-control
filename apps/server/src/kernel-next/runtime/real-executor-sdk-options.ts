@@ -31,6 +31,14 @@ export interface BuildSdkBaseOptionsArgs {
    * path before calling finishAttempt.
    */
   abortController?: AbortController;
+  /**
+   * Bug 11 (2026-04-28) — capture the SDK's stderr stream so MCP
+   * "Connection failed after Xms: <reason>" lines are preserved instead
+   * of being silently dropped. The caller is responsible for filtering
+   * (we don't want every line of cli.js debug output flooding the
+   * attempt log) and forwarding the kept lines to the writer.
+   */
+  stderr?: (chunk: string) => void;
 }
 
 export function buildSdkBaseOptions(args: BuildSdkBaseOptionsArgs): SdkOptions {
@@ -60,6 +68,7 @@ export function buildSdkBaseOptions(args: BuildSdkBaseOptionsArgs): SdkOptions {
     ...(args.abortController !== undefined
       ? { abortController: args.abortController }
       : {}),
+    ...(args.stderr !== undefined ? { stderr: args.stderr } : {}),
   };
 }
 

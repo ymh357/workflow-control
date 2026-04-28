@@ -266,4 +266,37 @@ describe("real-executor-sdk-options: buildSdkBaseOptions", () => {
     });
     expect(opts.abortController).toBeUndefined();
   });
+
+  // Bug 11 (2026-04-28) — SDK stderr callback plumbing.
+  it("passes stderr through to options.stderr when provided (Bug 11)", () => {
+    const cb = (_: string): void => {};
+    const opts = buildSdkBaseOptions({
+      systemPromptAppend: "",
+      kernelMcp: Symbol() as unknown as never,
+      model: undefined,
+      maxTurns: 5,
+      maxBudgetUsd: undefined,
+      claudePath: undefined,
+      childEnv: {},
+      subAgents: undefined,
+      workspaceDir: undefined,
+      stderr: cb,
+    });
+    expect(opts.stderr).toBe(cb);
+  });
+
+  it("omits stderr from options when not provided (backwards compat)", () => {
+    const opts = buildSdkBaseOptions({
+      systemPromptAppend: "",
+      kernelMcp: Symbol() as unknown as never,
+      model: undefined,
+      maxTurns: 5,
+      maxBudgetUsd: undefined,
+      claudePath: undefined,
+      childEnv: {},
+      subAgents: undefined,
+      workspaceDir: undefined,
+    });
+    expect(opts.stderr).toBeUndefined();
+  });
 });

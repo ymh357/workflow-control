@@ -511,6 +511,7 @@ export class RealStageExecutor implements StageExecutor {
         workspaceDir: this.workspaceDir,
         externalMcpServers,
         abortController,
+        stderr: (chunk) => filterAndAppendSdkStderr(chunk, writer),
       });
       // Plumb the resume session_id (M-R5 per-stage OR single-session
       // segment continuation; segment wins per §6.2). queryFn failure
@@ -1093,6 +1094,41 @@ function buildChildEnv(): Record<string, string> {
   inherited.CLAUDECODE = "";
   inherited.CI = "true";
   return inherited;
+}
+
+// Bug 11 (2026-04-28): patterns that mark a stderr line as "operationally
+// relevant" — the kind of failure operators need to see in the attempt
+// log. Everything else (the SDK's verbose React/ink debug output, undici
+// HTTP traces, telemetry) is dropped to keep agent_stream_json from
+// ballooning. Adjust here when you discover a new useful signal.
+const SDK_STDERR_INCLUDE_PATTERNS: RegExp[] = [
+  /Connection failed after \d+ms/i, // MCP handshake failed (Bug 11 root)
+  /MCP server .* failed/i,           // generic SDK MCP failure
+  /Failed to connect SDK MCP server/i,
+  /Authentication.*failed/i,         // OAuth flow died
+  /MCPB.*(?:invalid|failed|error|missing)/i,
+];
+
+export function filterAndAppendSdkStderr(
+  chunk: string,
+  writer: ExecutionRecordWriter,
+): void {
+  // SDK delivers stderr in arbitrary chunks; split on \n so each meaningful
+  // line is recorded (and timestamped) on its own.
+  for (const rawLine of chunk.split("\n")) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    if (!SDK_STDERR_INCLUDE_PATTERNS.some((re) => re.test(line))) continue;
+    try {
+      writer.appendAgentStream({
+        type: "sdk_stderr",
+        text: line,
+        timestamp: new Date().toISOString(),
+      });
+    } catch {
+      // Writer may already be closed during teardown — discard silently.
+    }
+  }
 }
 
 function safeJson(v: unknown, maxChars: number): string {
