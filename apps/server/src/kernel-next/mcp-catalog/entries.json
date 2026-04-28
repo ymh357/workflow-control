@@ -2,34 +2,6 @@
   "schemaVersion": "1",
   "entries": [
     {
-      "id": "arxiv",
-      "schemaVersion": "1",
-      "name": "arXiv MCP",
-      "description": "搜索与检索 arXiv 学术论文 / Search and retrieve arXiv academic papers",
-      "useCases": [
-        "search papers by keyword, author, or category / 按关键词/作者/分类搜索论文",
-        "fetch full metadata for arXiv IDs / 通过 arXiv ID 获取完整元数据",
-        "list papers in cs.LG / cs.AI / q-fin.* / 列出某分类下的论文"
-      ],
-      "tags": [
-        "arxiv",
-        "research",
-        "papers",
-        "academic",
-        "学术",
-        "论文"
-      ],
-      "homepage": "https://arxiv.org",
-      "command": "npx",
-      "args": [
-        "-y",
-        "@fre4x/arxiv"
-      ],
-      "packageName": "@fre4x/arxiv",
-      "envKeys": [],
-      "healthCheckTimeoutMs": 15000
-    },
-    {
       "id": "brave-search",
       "schemaVersion": "1",
       "name": "Brave Search MCP",
