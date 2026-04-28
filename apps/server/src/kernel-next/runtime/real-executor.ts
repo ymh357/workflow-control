@@ -696,42 +696,64 @@ export class RealStageExecutor implements StageExecutor {
                 // up what sid to pass to options.resume.
                 writer.updateSessionId(sid);
               }
-              // Bug-3 (dogfood): validate that every declared external
-              // MCP server surfaced at least one tool. If the SDK spawned
-              // the MCP subprocess but it died during initialization (bad
-              // URL for mcp-remote, OAuth prompt without TTY, wrong
-              // package name, etc.), the SDK silently ships zero tools
-              // for that server. Without this check the agent runs with
-              // an incomplete toolset, confabulates completion, and the
-              // stage ends success=true with no real work done. Surface
-              // a hard error instead so the caller sees exactly which
-              // MCP never came up. Thrown errors propagate via
-              // stream-pump → real-executor catch.
+              // Bug-3 (dogfood) + Bug 11 (dogfood-2026-04-28): validate
+              // that every declared external MCP server actually came up.
+              // Earlier versions reverse-engineered status from the
+              // tools[] prefix scan; the SDK's `mcp_servers[].status`
+              // field is the authoritative signal — read it directly.
+              //
+              // status values: "connected" | "failed" | "needs-auth" |
+              // "pending" | "disabled". We treat:
+              //   - failed     → throw MCP_STARTUP_FAILED (handshake broken)
+              //   - needs-auth → throw MCP_NEEDS_AUTH (distinct: operator
+              //                  needs to complete OAuth, not retry)
+              //   - missing    → throw MCP_STARTUP_FAILED (server entry
+              //                  absent from init means SDK couldn't even
+              //                  enumerate it — typically a config error)
+              //   - pending    → tolerate; init message is the wrong
+              //                  place to fail-fast on transient state.
+              //                  Subsequent stream messages will reveal
+              //                  the eventual outcome via tool calls
+              //                  succeeding or other failure paths.
+              //   - connected/disabled → ok.
               if (externalMcpServers && Object.keys(externalMcpServers).length > 0) {
-                const toolsList = (msg as { tools?: unknown }).tools;
-                const advertised = Array.isArray(toolsList)
-                  ? (toolsList as unknown[]).filter((t): t is string => typeof t === "string")
-                  : [];
+                const mcpServersList = (msg as {
+                  mcp_servers?: Array<{ name?: unknown; status?: unknown }>;
+                }).mcp_servers ?? [];
+                const declared = Object.keys(externalMcpServers);
+                const failed: string[] = [];
+                const needsAuth: string[] = [];
                 const missing: string[] = [];
-                for (const declaredName of Object.keys(externalMcpServers)) {
-                  // SDK prefixes MCP tools as `mcp__<serverName>__<tool>`
-                  // (Claude Agent SDK convention; our kernel MCP shows
-                  // up as `mcp____kernel_next____*`, double underscore
-                  // around an empty hyphen-group because our name has
-                  // leading/trailing underscores — but external servers
-                  // use the single-underscore form around the name).
-                  const prefix = `mcp__${declaredName}__`;
-                  const found = advertised.some((t) => t.startsWith(prefix));
-                  if (!found) missing.push(declaredName);
+                for (const name of declared) {
+                  const entry = mcpServersList.find(
+                    (s) => typeof s.name === "string" && s.name === name,
+                  );
+                  if (!entry) {
+                    missing.push(name);
+                    continue;
+                  }
+                  const status = typeof entry.status === "string" ? entry.status : "unknown";
+                  if (status === "failed") failed.push(name);
+                  else if (status === "needs-auth") needsAuth.push(name);
                 }
-                if (missing.length > 0) {
+                if (needsAuth.length > 0) {
                   throw new Error(
-                    `MCP_STARTUP_FAILED: declared external MCP server(s) ${missing
+                    `MCP_NEEDS_AUTH: declared external MCP server(s) ${needsAuth
                       .map((n) => `'${n}'`)
-                      .join(", ")} did not advertise any tools at session init. ` +
+                      .join(", ")} require operator authentication (OAuth or token). ` +
+                      `Complete the auth flow and re-run; this is not a retryable failure.`,
+                  );
+                }
+                if (failed.length > 0 || missing.length > 0) {
+                  const allDead = [...failed, ...missing];
+                  throw new Error(
+                    `MCP_STARTUP_FAILED: declared external MCP server(s) ${allDead
+                      .map((n) => `'${n}'`)
+                      .join(", ")} did not connect at session init ` +
+                      `(${failed.length} failed, ${missing.length} not enumerated by SDK). ` +
                       `Likely causes: wrong URL for mcp-remote, npm package not found, ` +
-                      `OAuth flow failed, or server crashed during handshake. ` +
-                      `Re-run with verified MCP config or check the SDK stderr stream.`,
+                      `server crashed during handshake, or cold-cache spawn exceeding SDK timeout. ` +
+                      `Check the attempt's "SDK Stderr" tab for the upstream "Connection failed after Xms" line.`,
                   );
                 }
               }
