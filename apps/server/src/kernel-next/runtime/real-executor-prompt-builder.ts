@@ -62,23 +62,57 @@ export function buildSystemPromptAppend(
       : resolvedPrompt;
   // Build a port-name -> source-stage map from ir.wires so
   // formatInputLine can name the right upstream without reimplementing
-  // the lookup. External-source wires contribute no stage entry — for
-  // those the fallback to stage.name is still wrong but less common
-  // (externals are seeded once and typically small).
+  // the lookup. External-source wires map to the synthetic
+  // "__external__" stage where the seed phase actually wrote the port
+  // value (PortRuntime.startAttempt({ stageName: "__external__" })),
+  // so a downstream agent receiving the large-value fetch hint reads
+  // back through read_port({ stage: "__external__", port: "<srcPort>" })
+  // and gets the seeded value. Pre-fix the fallback was stage.name —
+  // wrong for externals; the prior comment ("but less common, externals
+  // are seeded once and typically small") was wishful: a 7KB taskDescription
+  // crossed the 1KB inline limit and triggered the broken read_port
+  // hint, yielding port_not_declared and a placeholder design.
   const inputSourceStage = new Map<string, string>();
   if (ir) {
     for (const w of ir.wires) {
       if (w.to.stage !== stage.name) continue;
       const fromStage = wireFromStage(w);
-      if (fromStage === null) continue;
+      if (fromStage === null) {
+        // External-source wire: PortRuntime wrote to "__external__".
+        // Also remap port name to the externalInputs side: w.from.port
+        // names the external input (taskDescription), not the local
+        // port (taskText). The to-side port name is what the agent
+        // sees in its inputs map; we need the from-side for the
+        // read_port stage+port pair.
+        inputSourceStage.set(w.to.port, "__external__");
+        continue;
+      }
       inputSourceStage.set(w.to.port, fromStage);
+    }
+  }
+  // Build a separate to-port → from-port map so formatInputLine can
+  // emit the correct read_port `port` argument when the source is
+  // external (the local port name differs from the external input
+  // name). For stage-source wires they're typically the same but the
+  // map is authoritative either way.
+  const inputSourcePort = new Map<string, string>();
+  if (ir) {
+    for (const w of ir.wires) {
+      if (w.to.stage !== stage.name) continue;
+      inputSourcePort.set(w.to.port, w.from.port);
     }
   }
   const inputDump = Object.keys(inputs).length === 0
     ? "  (no inputs)"
     : Object.entries(inputs)
         .map(([k, v]) =>
-          formatInputLine(k, v, inputSourceStage.get(k) ?? stage.name, ctx))
+          formatInputLine(
+            k,
+            v,
+            inputSourceStage.get(k) ?? stage.name,
+            inputSourcePort.get(k) ?? k,
+            ctx,
+          ))
         .join("\n");
 
   // Per-port write_port call examples grounded in the actual IDs.
@@ -234,7 +268,8 @@ export function exampleValueFor(tsType: string): string {
 function formatInputLine(
   portName: string,
   value: unknown,
-  stageName: string,
+  sourceStageName: string,
+  sourcePortName: string,
   ctx: { taskId: string; attemptId: string },
 ): string {
   let serialized: string;
@@ -247,11 +282,17 @@ function formatInputLine(
   if (serialized.length <= INLINE_PORT_VALUE_CHAR_LIMIT) {
     return `  - ${portName} = ${serialized}`;
   }
-  // Large value: emit summary + explicit fetch instruction.
+  // Large value: emit summary + explicit fetch instruction. The
+  // read_port arguments must address the SOURCE stage and port, not
+  // the local stage's input port — port_values rows are keyed by
+  // (source_stage, source_port). External-source inputs read from
+  // the synthetic "__external__" stage with the externalInputs port
+  // name (handled by inputSourceStage / inputSourcePort lookup at the
+  // call site).
   const typeLabel = typeOfValueForHuman(value);
   return (
     `  - ${portName} [large; ${serialized.length} chars as JSON; type: ${typeLabel}]\n` +
-    `      Call mcp____kernel_next____read_port with { taskId: "${ctx.taskId}", stage: "${stageName}", port: "${portName}" }\n` +
+    `      Call mcp____kernel_next____read_port with { taskId: "${ctx.taskId}", stage: "${sourceStageName}", port: "${sourcePortName}" }\n` +
     `      to fetch the full value. (Inlining would cost ~${Math.round(serialized.length / 4)} tokens.)`
   );
 }
