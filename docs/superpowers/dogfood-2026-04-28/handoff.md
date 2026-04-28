@@ -163,11 +163,21 @@ The session's main meta-deliverable. Each rung catches what the previous can't:
    Each new entry must pass rot-guard mode-2 with tools/list before
    landing.
 
-5. **CI integration of rot-guard**. Currently opt-in only.
-   `RUN_NPM_HEALTHCHECKS=1` is fast (~20s) and catches 80% of rot;
-   running it on every catalog change would prevent regressions.
-   Mode-2 is too slow for every commit; should run weekly or on
-   catalog-touching PRs.
+5. **CI integration of rot-guard** — **N/A in this repo (2026-04-28)**.
+   Repo has no CI: it's single-user / single-machine per
+   `CLAUDE.md` ("local, single-user workflow engine. One engineer,
+   one machine, one server process"). The mitigation is a
+   developer-side pre-commit / pre-release habit:
+   - `RUN_NPM_HEALTHCHECKS=1 npx vitest run src/kernel-next/mcp-catalog/entries-rot-guard.test.ts`
+     before merging anything that touches `entries.json`. ~25s,
+     catches the 41% rot rate that bit Bug 1.
+   - `RUN_NPM_HEALTHCHECKS=2` before adding a NEW entry the first
+     time — needed because "package exists on npm" is necessary
+     but not sufficient (Bug 9).
+   - `RUN_NPM_HEALTHCHECKS=3` only when new entry is download-heavy.
+   If this repo ever grows to multi-user, drop a
+   `.github/workflows/rot-guard.yml` running mode 1 on PRs that
+   change `entries.json`.
 
 ### Lower priority
 
