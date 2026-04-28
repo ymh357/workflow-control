@@ -377,10 +377,62 @@ the standalone `npx` JSON-RPC probe doesn't replicate. Tracked
 as a future investigation; the 5-rung supply-chain test ladder
 holds for everything except this last mile.
 
+**Update 2026-04-28 (continuation session) — root cause located**:
+Wrote `apps/server/scratch-bug11-repro.mjs` (gitignored) — a minimal
+SDK reproducer that mounts playwright as the only stdio MCP and
+captures the system/init message + stderr callback. Findings:
+
+1. `system/init.mcp_servers[]` has the shape
+   `{ name, status }` where `status ∈ {"connected","failed","needs-auth","pending","disabled"}`.
+   This is the SDK's authoritative signal — it tells the kernel *exactly* whether each declared MCP came up.
+2. `apps/server/src/kernel-next/runtime/real-executor.ts:709-736`
+   (the Bug-3 / MCP_STARTUP_FAILED detector) **does not read this
+   field**. It infers status indirectly by checking whether the
+   `tools[]` array contains any `mcp__<name>__*` entry. Indirect
+   inference loses information: `needs-auth` and `failed` are both
+   "no tools" but they need different operator messages.
+3. The SDK ALSO emits "Connection failed after Xms: <reason>" debug
+   lines when an MCP fails to handshake (proven by grep of
+   `cli.js`: `Connection failed after ${_}ms: ${w...}`). These flow
+   through the SDK's `stderr` callback option. real-executor never
+   passes a `stderr` callback to `buildSdkBaseOptions`, so this
+   diagnostic stream is silently discarded.
+4. In the playwright case specifically: when I reproduced with
+   warm npm + playwright caches, status came back `"connected"`
+   and 22 tools advertised — so the original Bug 11 was likely a
+   **cold-cache spawn failure** that exceeded SDK's internal MCP
+   timeout (the 43s "orphaned" measurement aligns with `npx`
+   download + Chromium download on first run). The catalog
+   `healthCheckTimeoutMs: 30000` for playwright is shorter than
+   the cold-start path but the spawn-test pre-warms cache so it
+   never sees the cold path.
+
+**Concrete fix path (proposed, not yet implemented)**:
+1. **real-executor.ts**: replace the tools[]-prefix scan with a
+   status-field scan. For each declared external server, look up
+   `mcp_servers.find(s => s.name === declaredName).status`. Throw
+   only when status === "failed"; emit a distinct warning when
+   status === "needs-auth"; treat "pending" as transient and
+   re-check on the next assistant message instead of failing the
+   attempt immediately.
+2. **buildSdkBaseOptions**: add a `stderr` callback that funnels
+   SDK debug output into the per-attempt agent log (writer.appendStderr).
+   Then "Connection failed after Xms: <reason>" is preserved and
+   surfaced in the dashboard's Logs tab — operator no longer needs
+   to guess why an MCP didn't come up.
+3. **rot-guard mode-3 (optional)**: simulate cold-cache by clearing
+   `~/.npm/_npx/<hash>` and `~/Library/Caches/ms-playwright`
+   before the spawn-test, with a 60s budget that matches SDK's
+   real timeout. Mode-2 stays as the cheap "warm-cache sanity"
+   check; mode-3 is the pre-release "would-this-survive-a-fresh-
+   machine" check.
+
 **Lesson (extends Bug 9 + 10)**: each MCP protocol method is its
 own supply-chain test. Initialize alone is not enough; the SDK
 expects the full {initialize, tools/list, ...} sequence to
-complete in budget.
+complete in budget. AND: the SDK already gives us the exact
+status — read it directly instead of reverse-engineering it from
+the tools list.
 
 ## Step verification summary
 

@@ -92,3 +92,4 @@ apps/server/config/claude-md/*.md
 !apps/server/config/claude-md/global.md
 apps/server/config/system-prompts/
 apps/server/config/claude-commands/
+apps/server/scratch-*.mjs
