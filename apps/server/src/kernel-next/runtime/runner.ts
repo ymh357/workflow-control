@@ -334,10 +334,15 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
   // actor, cancels its child invokes, and discards their rejections
   // during the cleanup of the prior attempt.)
   const drainErrors: Array<{ stage: string | null; message: string }> = [];
-  // Stage errors captured from executor results. On retry we drop
-  // entries for stages being reset so the final RunResult only
-  // contains errors from the terminal attempt.
-  const stageErrors: Array<{ stage: string; message: string; context?: StageErrorContext }> = [];
+  // Continuation-3 Issue #2 — stageErrors used to be a runner-side
+  // array maintained in parallel with MachineContext.finalizedStages.
+  // It is now derived from finalizedStages at the points where it is
+  // read (SSE diagnostics, RunResult, finalState, task_finals detail
+  // string). The push sites that used to mirror compiler-driven
+  // transitions are gone; only no_active_wire context is computed
+  // by the runner because it depends on stageMeta which is not in
+  // MachineContext. See deriveStageErrors() below.
+  type StageError = { stage: string; message: string; context?: StageErrorContext };
 
   // F17 secret-gate: tracks whether any stage paused waiting for secrets.
   // When true, runner skips the task_finals write (the task is paused, not
@@ -395,6 +400,16 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
     }
     return [...downstream];
   };
+
+  // Continuation-3 Issue #2 — stageMeta lifted to outer scope so the
+  // finally block + post-loop derivation can build NO_ACTIVE_WIRE
+  // diagnostics from finalizedStages without depending on
+  // runOneAttempt's local destructure. Each runOneAttempt overwrites
+  // it with its own compile; the IR is invariant across retries
+  // (hot-update writes a new task, not a new attempt) so the latest
+  // assignment is the right value to read at finalize time.
+  // eslint-disable-next-line prefer-const
+  let outerStageMeta: Map<string, StageMeta> = new Map();
 
   // ---- Retry-preserved context (read by next compileIRToMachine) ----
   let persistentPortValues: Record<string, unknown> =
@@ -724,12 +739,6 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
           const stageName = entry.slice(0, colonIdx);
           return !affected.has(stageName);
         });
-        // stageErrors: drop entries for affected stages.
-        const preservedStageErrors = stageErrors.filter(
-          (e) => !affected.has(e.stage),
-        );
-        stageErrors.length = 0;
-        stageErrors.push(...preservedStageErrors);
         // SSE dedupe + dispatched sets: clear entries for affected stages
         // so their stage_executing / stage_done / stage_error events can
         // re-emit on the rebuilt actor.
@@ -809,13 +818,10 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       persistentGateAuthorized = [...retryCtx.gateAuthorizedTargets];
       persistentGateSkipped = [...retryCtx.gateSkippedTargets];
 
-      // stageErrors: keep entries for stages NOT being reset (they
-      // won't re-run and so are terminal in their own right).
-      const preservedStageErrors = stageErrors.filter(
-        (e) => !toReset.has(e.stage),
-      );
-      stageErrors.length = 0;
-      stageErrors.push(...preservedStageErrors);
+      // Continuation-3 Issue #2 — stageErrors filter used to live here.
+      // Now it derives from finalizedStages at output time, and
+      // finalizedStages is already filtered above (line 800), so this
+      // step is redundant.
 
       // SSE dedupe sets: clear entries for reset stages.
       for (const name of toReset) {
@@ -846,6 +852,37 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
     if (activeTimer !== null) clearTimeout(activeTimer);
     if (currentActor) {
       try { currentActor.stop(); } catch { /* ignore */ }
+    }
+    // Continuation-3 Issue #2 — derive stageErrors from finalizedStages
+    // BEFORE the task_finals upsert so this block can read it. Uses the
+    // last observed snapshot context. When finalOutcome is null (e.g.
+    // we threw out of runOneAttempt), there is no authoritative
+    // finalizedStages list — finalsErrors stays empty and the
+    // termination-classification branch falls through to the
+    // "no outcome" / timeout / interrupted paths instead. We do NOT
+    // run the same-actor-success reconciliation here (it depends on
+    // DB state that may still be settling); the second derivation
+    // after the finally block applies that filter for the public
+    // RunResult and SSE diagnostics.
+    const finalsErrors: StageError[] = [];
+    if (finalOutcome?.snapshot) {
+      const fctx = (finalOutcome.snapshot as { context?: MachineContext }).context;
+      if (fctx) {
+        for (const entry of fctx.finalizedStages) {
+          if (entry.outcome !== "error") continue;
+          if (entry.reason === "upstream_cancelled") continue;
+          if (entry.reason === "executor_failed") {
+            finalsErrors.push({
+              stage: entry.name,
+              message: entry.message ?? "stage executor failed",
+            });
+          } else {
+            finalsErrors.push(
+              buildNoActiveWireError(entry.name, outerStageMeta, fctx.portValues),
+            );
+          }
+        }
+      }
     }
     // Stage 5B — signal termination reason before unregister so
     // awaitTermination waiters (migration orchestrator) can distinguish
@@ -880,11 +917,11 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       // dogfood (2026-04-25): MCP_STARTUP check marked the only stage
       // as `error`, yet task_finals read `completed/natural`. Treat any
       // outstanding stageErrors as authoritative.
-      if (stageErrors.length > 0) {
-        const firstErr = stageErrors[0]!;
-        const detail = stageErrors.length === 1
+      if (finalsErrors.length > 0) {
+        const firstErr = finalsErrors[0]!;
+        const detail = finalsErrors.length === 1
           ? `stage '${firstErr.stage}': ${firstErr.message}`
-          : `${stageErrors.length} stage error(s); first: '${firstErr.stage}': ${firstErr.message}`;
+          : `${finalsErrors.length} stage error(s); first: '${firstErr.stage}': ${firstErr.message}`;
         terminationReason = { kind: "error", detail };
         finalsRow = { state: "failed", reason: "error", detail };
       } else {
@@ -1009,11 +1046,39 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
        AND sa.status = 'success'`,
   ).all(opts.taskId) as Array<{ stage_name: string }>;
   for (const row of succeededRows) succeededStages.add(row.stage_name);
-  const reconciledStageErrors = stageErrors.filter(
-    (e) => !succeededStages.has(e.stage),
-  );
-  stageErrors.length = 0;
-  stageErrors.push(...reconciledStageErrors);
+
+  // Continuation-3 Issue #2 — derive stageErrors from finalizedStages.
+  // Reasons:
+  //   - executor_failed: use entry.message (set by the STAGE_FAILED
+  //     transition action); no context.
+  //   - no_active_wire: build structured failedWires diagnostic from
+  //     stageMeta + portValues (depends on runner-side data, not on
+  //     anything the machine context could carry).
+  //   - upstream_cancelled: skip — propagation is bookkeeping, the
+  //     root-cause stage's entry already covers the failure.
+  //   - done: skip.
+  // After the per-entry derivation, drop entries for stages whose
+  // LATEST DB attempt status='success' (same-actor retry reached
+  // success after the prior failure entered finalizedStages — the
+  // context is still authoritative until the success row replaces it).
+  const stageErrors: StageError[] = [];
+  for (const entry of ctx.finalizedStages) {
+    if (entry.outcome !== "error") continue;
+    if (succeededStages.has(entry.name)) continue;
+    if (entry.reason === "upstream_cancelled") continue;
+    if (entry.reason === "executor_failed") {
+      stageErrors.push({
+        stage: entry.name,
+        message: entry.message ?? "stage executor failed",
+      });
+    } else {
+      // no_active_wire (or undefined reason — legacy IR / pre-Slice C
+      // shape). Construct the structured diagnostic.
+      stageErrors.push(
+        buildNoActiveWireError(entry.name, outerStageMeta, ctx.portValues),
+      );
+    }
+  }
 
   const finalState: "completed" | "failed" =
     snapshot.value === "failed" ||
@@ -1091,7 +1156,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
     // portValues / retryCounts / gate authorizations; first-attempt
     // path leaves initialContext undefined so the existing seedValues
     // → buildInitialPortValues codepath still runs.
-    const { machine, stageMeta } = compileIRToMachine(opts.ir, {
+    const compiled = compileIRToMachine(opts.ir, {
       taskId: opts.taskId,
       seedValues: opts.seedValues,
       initialContext: isRetryRebuild
@@ -1105,6 +1170,9 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
           }
         : undefined,
     });
+    const { machine, stageMeta } = compiled;
+    // Continuation-3 Issue #2 — sync outer reference for finally block.
+    outerStageMeta = stageMeta;
 
     // Per-attempt executor-promises array. On retry, the outer loop
     // abandons the attempt and merges any drain-time messages into
@@ -1167,7 +1235,9 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
             segmentContinuation: segmentContinuationFor(opts, input.stageName, input.taskId, opts.ir, segments),
           });
           if (result.status === "error") {
-            stageErrors.push({ stage: input.stageName, message: result.error ?? "unspecified" });
+            // Continuation-3 Issue #2 — STAGE_FAILED transition action
+            // captures result.error into finalizedStages.entry.message;
+            // no parallel runner-side push needed.
             dispatcher.send({
               type: "STAGE_FAILED",
               stage: input.stageName,
@@ -1211,7 +1281,8 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          stageErrors.push({ stage: input.stageName, message });
+          // Continuation-3 Issue #2 — STAGE_FAILED transition action
+          // captures error into finalizedStages.entry.message.
           dispatcher.send({
             type: "STAGE_FAILED",
             stage: input.stageName,
@@ -1456,14 +1527,18 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
               publishTaskCost();
             } else {
               if (reason === "executor_failed") {
-                const stageErr = stageErrors.find((e) => e.stage === stageName);
                 publish({
                   type: "stage_error",
                   taskId: opts.taskId,
                   timestamp: isoNow(),
                   data: {
                     stage: stageName,
-                    message: stageErr?.message ?? "stage executor failed",
+                    // Continuation-3 Issue #2 — message is now carried
+                    // on finalizedStages.entry.message (set by the
+                    // STAGE_FAILED transition action), no longer
+                    // looked up via the parallel runner-side
+                    // stageErrors array.
+                    message: entry.message ?? "stage executor failed",
                     reason: "executor_failed",
                   },
                 });
@@ -1532,20 +1607,14 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
         if ((snapshot.value === "completed" || snapshot.value === "failed") && !attemptEnded) {
           attemptEnded = true;
           const ctx2 = snapshot.context as MachineContext;
+          // Continuation-3 Issue #2 — used to push NO_ACTIVE_WIRE
+          // entries into stageErrors here. Now derived at output time
+          // from finalizedStages + stageMeta + portValues. We still
+          // mark dispatched so other paths skip duplicate processing.
           for (const entry of ctx2.finalizedStages) {
             if (entry.outcome !== "error") continue;
             if (dispatched.has(entry.name)) continue;
             dispatched.add(entry.name);
-            if (entry.reason === "executor_failed") continue;
-            // upstream_cancelled is a propagation outcome — the
-            // root-cause stage already has its own stageErrors entry
-            // (executor_failed or no_active_wire). Skip to avoid
-            // double-counting cancelled stages as failures of their
-            // own.
-            if (entry.reason === "upstream_cancelled") continue;
-            stageErrors.push(
-              buildNoActiveWireError(entry.name, stageMeta, ctx2.portValues),
-            );
           }
           // Persist context for the outer loop's finalization + retry
           // rebuild. These are harmless for the terminal attempt
@@ -1573,21 +1642,11 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
         for (const [stageName, substate] of Object.entries(running)) {
           if (substate === "error" && !dispatched.has(stageName)) {
             dispatched.add(stageName);
-            const ctx2 = snapshot.context as MachineContext;
-            const finalized = ctx2.finalizedStages.find((f) => f.name === stageName);
-            // executor_failed: handled by the executor IIFE which already
-            // pushed to stageErrors. upstream_cancelled: the root-cause
-            // stage owns the error message; cancellation is propagation,
-            // not an independent failure. Both skip; only no_active_wire
-            // (or undefined reason) lands a structured failedWires diag.
-            if (
-              finalized?.reason !== "executor_failed" &&
-              finalized?.reason !== "upstream_cancelled"
-            ) {
-              stageErrors.push(
-                buildNoActiveWireError(stageName, stageMeta, ctx2.portValues),
-              );
-            }
+            // Continuation-3 Issue #2 — stageErrors no longer pushed
+            // here. The reason classification stays in finalizedStages
+            // (set by the compiler's transition action); deriveStageErrors
+            // at output time uses stageMeta + portValues to construct
+            // the NO_ACTIVE_WIRE diagnostic.
             continue;
           }
           if (substate === "executing" && !dispatched.has(stageName)) {
@@ -1686,7 +1745,8 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
                 executor,
               }).then((result) => {
                 if (result.status === "error") {
-                  stageErrors.push({ stage: stageName, message: result.error });
+                  // Continuation-3 Issue #2 — STAGE_FAILED transition
+                  // captures result.error into finalizedStages.entry.message.
                   dispatcher.send({
                     type: "STAGE_FAILED",
                     stage: stageName,

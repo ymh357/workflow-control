@@ -84,6 +84,18 @@ export interface MachineContext {
     name: string;
     outcome: "done" | "error";
     reason?: "no_active_wire" | "executor_failed" | "upstream_cancelled";
+    // Continuation-3 Issue #2 — concrete error message captured at the
+    // moment the region transitioned to its `error` final. For
+    // `executor_failed` it is the executor's status.error string
+    // (mock-executor handler throw / real-executor SDK error / script
+    // module throw). For `no_active_wire` and `upstream_cancelled` it
+    // stays undefined; the runner derives a structured message from
+    // stageMeta / upstream identity at output time. Centralising the
+    // message here removes the parallel runner-side stageErrors[]
+    // array that used to mirror finalizedStages and required
+    // out-of-band sync via dispatched / publishedStageFinal /
+    // cancelledByPropagation guards.
+    message?: string;
   }[];
   // Slice C (Task C1): per-stage retry counter. Keyed by the failing
   // stage name (the ScriptStage whose executor errored). Read by the
@@ -623,12 +635,22 @@ function buildStageRegion(
         ...context.log,
         `${stageName}:error`,
       ],
-      finalizedStages: ({ context }: { context: MachineContext }) => [
+      finalizedStages: ({
+        context,
+        event,
+      }: {
+        context: MachineContext;
+        event: MachineEvent;
+      }) => [
         ...context.finalizedStages,
         {
           name: stageName,
           outcome: "error" as const,
           reason: "executor_failed" as const,
+          // Continuation-3 Issue #2 — capture executor's error string in
+          // context so the runner derives stageErrors at the end without
+          // a parallel push-array.
+          message: event.type === "STAGE_FAILED" ? event.error : undefined,
         },
       ],
     }),
@@ -898,12 +920,13 @@ function buildStageRegion(
               // reason = executor_failed.
               actions: assign({
                 log: ({ context }) => [...context.log, `${stageName}:error`],
-                finalizedStages: ({ context }) => [
+                finalizedStages: ({ context, event }) => [
                   ...context.finalizedStages,
                   {
                     name: stageName,
                     outcome: "error" as const,
                     reason: "executor_failed" as const,
+                    message: event.type === "STAGE_FAILED" ? event.error : undefined,
                   },
                 ],
               }),

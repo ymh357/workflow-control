@@ -367,6 +367,19 @@ the closed list below.)
 
 6. ~~**Wire from-stage extraction duplicated in 14 sites with subtle drift**~~ — closed (`d66559e`). New `kernel-next/ir/wire-helpers.ts`: `wireFromStage`, `isStageSourcedWire`, `wireSourceKeyPrefix`. Refactored runner / mock-executor / real-executor / script-executor / inline-script-executor / runner-fanout / segment-planner / topo-downstream / real-executor-prompt-builder / ir/sql / hot-update/divergence + wire-reachable / validator/dag + structural. Three sites intentionally NOT migrated (impact.ts has its own port-aware helper, diff.ts wireKey builds a different format, mcp/patch.ts does pair-tuple uniqueness — orthogonal patterns). Found and fixed via this work: cross-region BFS was using `source !== "stage"` which silently skipped wires whose source was `undefined` (raw test fixture path), where the runtime treats undefined as stage-sourced.
 
+7. ~~**Runner-side stageErrors[] mirrored MachineContext.finalizedStages with out-of-band sync**~~ — closed. Two parallel sources of truth for "which stages failed" required a mesh of guards (`dispatched` / `publishedStageFinal` / `cancelledByPropagation`) to keep them aligned. Adding cross-region cancellation in continuation 3 immediately surfaced this: the cancellation path needed to push to dispatched but skip stageErrors, and the per-stage substate scan had to filter `reason === "upstream_cancelled"` to avoid double-counting. Each new finalize reason would risk the same kind of bug.
+
+   Fix: extend `MachineContext.finalizedStages` with `message?: string` so the executor's concrete error string flows through the machine. The `STAGE_FAILED` transition action (compiler) reads `event.error` and writes it into the entry. Runner-side `stageErrors[]` is gone; a single derive function builds `RunResult.stageErrors` from `finalizedStages + stageMeta + portValues` at output time. Reasons:
+   - `executor_failed` → use `entry.message`
+   - `no_active_wire` → call `buildNoActiveWireError` (depends on stageMeta which isn't in machine context)
+   - `upstream_cancelled` → skip (propagation)
+   - `done` → skip
+   The same-actor-success reconciliation (terminal DB row replaces a prior failure entry) becomes a single `if (succeededStages.has(entry.name)) continue` instead of a separate filter pass.
+
+   Side-effect: 7 `stageErrors.push` sites deleted in runner; 2 retry/rollback filter blocks deleted (finalizedStages already filtered, stageErrors derives from it); 1 SSE message lookup at L1459 swapped to read `entry.message` directly. Also lifted `stageMeta` to outer-scope `outerStageMeta` so the finally block (which writes `task_finals.detail`) can derive without re-running compileIRToMachine.
+
+   server runtime suite: 524/524. validator + hot-update + ir + builtin-pipelines: 308/308. No tests changed — the public RunResult shape is unchanged, the change is structural.
+
 ### Considered + deferred (continuation 3)
 
 7. **Kernel guard for mcpServers verbatim-fetch enforcement** — considered, deferred. The pipeline-generator + pipeline-modifier prompts require new mcpServers blocks to come verbatim from the catalog (recommend → add → get_mcp_catalog_entry). Adding a kernel-side check at submit() / propose() time would catch prompt regressions in the same way Bug 8b's validatePatch does. Deferred because: (a) hand-written user IRs that reference non-catalog MCP servers (e.g. a local-only MCP) are a legitimate use case in the single-user-local model that the guard would block; (b) no actual silent regression has been observed (unlike Bug 8b). The asymmetry vs Bug 8b is that Bug 8b had no legitimate use case for empty-ops + safe-verdict + non-empty-intent; mcpServers-not-in-catalog has many. Right path is probably a soft-warning diagnostic when added (`MCP_SERVER_NOT_IN_CATALOG`, severity=warning) rather than hard fail. The current Diagnostic shape has no severity; introducing one is a wider change than this issue justifies. Tracked in case real silent regressions emerge.
@@ -414,6 +427,7 @@ the closed list below.)
 - continuation 2 (Bug 8b kernel guard): +12 测试 (8 unit on `validate_patch_vs_intent`, 4 stage-integration on `validatePatch` IR stage), +1 IR-snapshot 断言, 共 +13. server 全套 2090/2090 substantive (1 flaky `spawn-utils.adversarial.test.ts` 单跑 26/26 绿, 与 Bug 8b 无关).
 - continuation 3 (cross-region cancellation + Bug 8b e2e promotion): +5 测试 (4 unit `runner.cross-region-cancel.test.ts` 覆盖 direct/transitive/sibling/SSE-event, 1 promoted e2e `e2e.bug8b-guard.test.ts`). server 全套 2094/2094 substantive (同一个 flaky 单独跑过, 不算回归). pipeline-modifier 子套 16/16 全绿 (含新 e2e).
 - continuation 3 architecture pass (`792c897` + `d66559e`): +1 测试 `runner.timeout-reject.test.ts` (wall-clock reject regression with 10s reverse-verify on baseline). `wire-helpers.ts` refactor touches 14 files but adds 0 new tests — relies on the existing 832 tests around the touched modules to catch behavior change. Server runtime + validator + hot-update + ir + builtin-pipelines suites: 832/832 passing.
+- continuation 3 architecture pass (#2 finalizedStages-as-source-of-truth): 0 new tests; relies on the existing 524 runtime + 308 surrounding suite tests catching shape regression. RunResult.stageErrors public shape unchanged; only the internal derivation path moved.
 
 ## The session's meta-lesson (additions)
 
