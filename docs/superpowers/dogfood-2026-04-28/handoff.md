@@ -348,11 +348,11 @@ f2658fe docs(dogfood): Bug 11 root cause located — kernel discards SDK status 
 
 ### Medium
 
-1. **inventory persistAs 路径未实测**. 上面 Step 8 收尾标注. 不阻塞任何东西.
-
-2. **Replenish more catalog entries**. 现 10 条. 候选: Notion / Linear (走 mcp-remote pattern) / HTTP fetch (找一个 vendor 维护的没坏的). 每条加之前必跑 mode-2.
+1. **Replenish more catalog entries**. 现 10 条. 候选: Notion / Linear (走 mcp-remote pattern) / HTTP fetch (找一个 vendor 维护的没坏的). 每条加之前必跑 mode-2.
 
 ### ✅ Closed in continuation 3
+
+2. ~~**inventory persistAs 路径未实测**~~ — closed. New `secret-gate-persist-as.test.ts` (1 e2e, ~7s): provideTaskSecrets with `persistAs: { ENV_KEY: { entryId } }` writes mcp_inventory + mcp_inventory_secrets rows; second pipeline run with same envKey resolves from inventory without raising a fresh secret_gate (no re-prompt). Stub catalog exec so npm-view healthcheck doesn't hit the network. End-to-end loop now covered alongside Step 8's "inline only" verification.
 
 3. ~~**Runner cross-region cancellation**~~ — closed. New `STAGE_CANCELLED` event + per-region waiting/executing transitions + runner subscribe-loop propagation. When a stage enters its `error` final via `executor_failed` / `no_active_wire`, runner BFS over `ir.wires` and dispatches `STAGE_CANCELLED` to every transitive downstream not yet finalized. Each region matches `event.stage === self` so cancellation is targeted. New finalizedStages reason `upstream_cancelled` (not surfaced to stageErrors — the root-cause stage owns the message). 4 unit tests + 1 promoted e2e (validatePatch fail → applying never starts → run resolves in <1s vs prior 10-min timeout).
 
