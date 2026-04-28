@@ -141,8 +141,49 @@ export function GateCard({ context, onAnswer }: Props) {
           (no stage upstream; gate is fed by external inputs only)
         </p>
       ) : (
-        context.upstreams.map((up) => (
-          <details key={up.stage} className="mb-3 rounded border border-zinc-800 bg-zinc-950/50" open>
+        context.upstreams.map((up) => {
+          // Bug 3 from 2026-04-28 dogfood: when an upstream emits many ports
+          // (pipeline-generator's analyzing emits 17), defaulting <details>
+          // open=true pushes approve/reject below the fold. For decision
+          // purposes the user usually only needs the high-level summary.
+          //
+          // Strategy:
+          //  1. Default open only for small upstreams (<=5 ports); otherwise
+          //     start collapsed and let the user expand on demand.
+          //  2. When the upstream carries the pipeline-generator triple
+          //     (pipelineName + pipelineDescription + dataFlowSummary),
+          //     render it inline above the details element so the decision
+          //     signal is visible without expanding.
+          const summaryPorts = (() => {
+            const map = new Map(up.outputs.map((o) => [o.port, o.value] as const));
+            const name = map.get("pipelineName");
+            const description = map.get("pipelineDescription");
+            const dataFlow = map.get("dataFlowSummary");
+            if (typeof name !== "string" || typeof description !== "string") return null;
+            return {
+              name,
+              description,
+              dataFlow: typeof dataFlow === "string" ? dataFlow : null,
+            };
+          })();
+          const detailsOpenByDefault = up.outputs.length <= 5;
+          return (
+          <div key={up.stage}>
+          {summaryPorts && (
+            <div className="mb-3 rounded border border-zinc-700 bg-zinc-900/60 p-3 text-sm">
+              <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">Decision summary</div>
+              <div className="mb-2 font-semibold text-zinc-100">{summaryPorts.name}</div>
+              <p className="mb-2 text-zinc-300">{summaryPorts.description}</p>
+              {summaryPorts.dataFlow && (
+                <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-zinc-400">
+                  {summaryPorts.dataFlow.length > 600
+                    ? summaryPorts.dataFlow.slice(0, 600) + " …"
+                    : summaryPorts.dataFlow}
+                </pre>
+              )}
+            </div>
+          )}
+          <details className="mb-3 rounded border border-zinc-800 bg-zinc-950/50" open={detailsOpenByDefault}>
             <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-zinc-200 hover:bg-zinc-900/50">
               {up.stage} <span className="text-xs font-normal text-zinc-500">({up.outputs.length} outputs)</span>
             </summary>
@@ -166,7 +207,9 @@ export function GateCard({ context, onAnswer }: Props) {
               </tbody>
             </table>
           </details>
-        ))
+          </div>
+          );
+        })
       )}
 
       <RecommendedMcpsCard recommendedMcps={recommendedMcps} />
