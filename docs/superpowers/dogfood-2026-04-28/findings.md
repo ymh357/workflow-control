@@ -561,20 +561,31 @@ contributing factors are now addressed or accepted:
      broadcaster keeps a per-task history ring; on dashboard
      reload the SSE stream replays everything. If a stale
      run_final landed during the original ~2h dwell, the dashboard
-     UI surfaces the LAST run_final unconditionally. The fix would
-     be either: (a) suppress run_final on secret_pending exit so
-     no premature run_final lands, (b) have the dashboard render
-     `task_finals` (DB ground-truth) instead of the most-recent
-     SSE event, or (c) write a "secret_gate_pending" event into
-     the history that callers know to displace stale run_finals.
-     Not in scope for this commit — the underlying watchdog now
-     pauses correctly, and the DB ground truth (`task_finals`
-     row = completed/natural) is right.
+     UI surfaces the LAST run_final unconditionally.
 
-The 2h timestamp gap (06:06 → 08:08, NOT 90min) is unexplained
-but consistent with macOS process throttling under prolonged
-inactivity: setTimeout wakeups can be delayed when Node.js sits
-idle in a power-saving state. Not investigated further.
+     **Root-cause fix landed** (commit "fix(runtime): suppress
+     run_final on secret_pending exit"): the runner's finalize
+     block had been emitting run_final on every snapshot terminal,
+     including the secret_pending exit path where snapshot.value
+     is `failed` because STAGE_FAILED was dispatched to unstick
+     the parallel region. The task itself is paused, not failed.
+     Gated the publish on `!secretPendingObserved` so the misleading
+     event no longer reaches the ring buffer in the first place.
+     Regression test extends secret-pending-budget-pause.test.ts
+     with a broadcaster instance that captures the per-task history
+     and asserts runFinals.length === 0 on the secret_pending exit.
+     Verified the test fails when the guard is removed.
+
+     This eliminates ALL three previously-listed fix options
+     ((a)/(b)/(c)): no premature event = nothing for the dashboard
+     to be confused by. The DB ground truth (task_finals row =
+     completed/natural) was already correct; now the SSE history
+     agrees.
+
+The 2h timestamp gap (06:06 → 08:08, NOT 90min) becomes moot —
+no run_final is published from the secret_pending exit, so no
+event sits in the ring at any timestamp. (Original observation
+was consistent with macOS process throttling; no longer relevant.)
 
 **Bug 13 (test-infra, not a product bug) — chrome network stack
 broken after force-kill of chrome-e2e-profile**:
