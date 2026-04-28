@@ -3,20 +3,29 @@
 // the JSON-RPC `initialize` handshake. The npm-existence check catches Bug 1
 // (entries pointing at packages that 404). The spawn check catches Bug 9
 // (packages that exist on npm but throw at module-resolve / start time —
-// e.g. fetch-mcp@0.0.5 had a broken `get-stream` import).
+// e.g. fetch-mcp@0.0.5 had a broken `get-stream` import). Mode 3 runs the
+// spawn check from a wiped ~/.npm/_npx cache to catch Bug 11 (cold-start
+// download path exceeding the SDK's internal MCP timeout).
 //
 // SKIPPED by default to keep CI offline-clean.
 //   RUN_NPM_HEALTHCHECKS=1  → npm view only (~2s/entry, ~20s total)
 //   RUN_NPM_HEALTHCHECKS=2  → npm view + MCP initialize handshake (~30s/entry,
 //                              several minutes total — only run before catalog bumps)
+//   RUN_NPM_HEALTHCHECKS=3  → mode 2 + wipe ~/.npm/_npx between entries so each
+//                              spawn pays the full cold-start cost (npm tarball
+//                              download). Catches Bug 11 (SDK MCP_STARTUP_FAILED
+//                              when cold-start exceeds SDK's MCP timeout). NEVER
+//                              run on a CI/shared box — it nukes the npx cache.
 //
 // Owner workflow: at minimum run mode 1 whenever entries.json changes; run
 // mode 2 before adding a NEW entry the first time, since "package exists on
-// npm" is necessary but not sufficient.
+// npm" is necessary but not sufficient. Run mode 3 before a release if a new
+// entry is suspected to be download-heavy (browser binaries, native modules).
 
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { z } from "zod";
 import { checkPackage, resolvePackageName } from "./healthcheck.js";
@@ -28,8 +37,19 @@ const SeedFileSchema = z.object({
 });
 
 const MODE = process.env.RUN_NPM_HEALTHCHECKS;
-const NPM_VIEW_ENABLED = MODE === "1" || MODE === "2";
-const SPAWN_ENABLED = MODE === "2";
+const NPM_VIEW_ENABLED = MODE === "1" || MODE === "2" || MODE === "3";
+const SPAWN_ENABLED = MODE === "2" || MODE === "3";
+const COLD_CACHE_ENABLED = MODE === "3";
+
+const NPX_CACHE_DIR = join(homedir(), ".npm", "_npx");
+
+function wipeNpxCache(): void {
+  if (!existsSync(NPX_CACHE_DIR)) return;
+  // recursive + force — directory may have nested package.json that npx
+  // owns; we want a clean slate so the next `npx -y <pkg>` does the
+  // full tarball download path.
+  rmSync(NPX_CACHE_DIR, { recursive: true, force: true });
+}
 
 (NPM_VIEW_ENABLED ? describe : describe.skip)("entries.json rot guard (live npm)", () => {
   const path = join(import.meta.dirname, "entries.json");
@@ -97,6 +117,14 @@ const SPAWN_TOTAL_BUDGET_MS = 60000;
       // can't usefully verify them without sample credentials.
       if (entry.args.some((a) => /\$\{[A-Z_][A-Z0-9_]*\}/.test(a))) {
         return;
+      }
+
+      // Bug 11 (mode 3 only): wipe ~/.npm/_npx so this entry must do the
+      // full tarball-download cold-start path. mode-2's pre-warm makes
+      // every spawn near-instantaneous, which silently passes packages
+      // that fail under SDK's real-world MCP timeout.
+      if (COLD_CACHE_ENABLED) {
+        wipeNpxCache();
       }
 
       const env: Record<string, string> = { ...process.env } as Record<string, string>;

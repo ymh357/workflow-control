@@ -427,6 +427,19 @@ captures the system/init message + stderr callback. Findings:
    check; mode-3 is the pre-release "would-this-survive-a-fresh-
    machine" check.
 
+   **Implementation status (2026-04-28 continuation)**: mode-3
+   landed in `entries-rot-guard.test.ts` — gated on
+   `RUN_NPM_HEALTHCHECKS=3`, wipes `~/.npm/_npx` between entries
+   so each spawn pays the full cold-start tarball-download cost.
+   Same 60s budget as mode-2. **Never run on a CI/shared box** —
+   the wipe nukes the cache for all packages. Run it manually on
+   a developer machine before catalog releases when an entry is
+   suspected to be download-heavy (browser binaries, native
+   modules). Currently does NOT also wipe Chromium / Firefox
+   caches; if a future entry's first-run downloads a browser
+   binary it should self-describe a `browserCacheDir` for the
+   test to clear.
+
 **Lesson (extends Bug 9 + 10)**: each MCP protocol method is its
 own supply-chain test. Initialize alone is not enough; the SDK
 expects the full {initialize, tools/list, ...} sequence to
