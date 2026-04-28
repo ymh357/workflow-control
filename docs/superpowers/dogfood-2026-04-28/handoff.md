@@ -120,13 +120,33 @@ The session's main meta-deliverable. Each rung catches what the previous can't:
      out-of-band).
    - Use `etherscan` likewise (free-tier `ETHERSCAN_API_KEY`).
 
-3. **Bug 8b kernel-side guard**: `applying` stage should fail-fast
-   when `genPatch.patch.ops` is empty AND
-   `gapAnalysis.intendedChanges.length > 0`. Today the prompt rule
-   alone forbids the empty-patch fallback; a defense-in-depth kernel
-   check would catch any future agent slip-up. Touches
-   `apps/server/src/kernel-next/runtime/composite-stage-executor.ts`
-   or wherever the applying stage's pre-validation lives.
+3. **Bug 8b kernel-side guard** — **investigated 2026-04-28 (continuation), deferred**:
+   The naïve idea ("applying stage refuses empty patch when intent
+   is non-empty") doesn't fit the current IR: applying's inputs are
+   `{patch, rerunFrom, migrateRunningTasks, currentVersionHash, dryRunVerdict, prompts}`
+   — gapAnalysis flows ONLY into analyzeGap → genPatch and never
+   reaches applying, so applying can't compare ops vs. intent.
+
+   Three possible paths, all heavier than expected:
+   - **(a) Extend applying inputs**: add a wire
+     `analyzeGap.gapAnalysis → applying.gapAnalysis`. Then applying's
+     prompt could read both, but that's still prompt-level — not the
+     kernel guard the handoff line implies.
+   - **(b) Insert a script stage between genPatch and applying**:
+     pure validator that reads {gapAnalysis, patch, dryRunVerdict}
+     and either passes through or fails the pipeline. This is the
+     real kernel-side guard — but it's a new stage in a builtin
+     pipeline + new wires + IR migration.
+   - **(c) Make `propose_pipeline_change` MCP tool reject the empty-
+     ops + verdict-safe combo unconditionally**: simplest, but
+     punishes the legitimate "no-op patch + verdict=safe" case
+     (which IS valid in some workflows).
+
+   Recommendation: do (b) when next adding any guard to a builtin
+   pipeline (the IR-migration overhead amortises). Until then the
+   prompt rule in `gen-patch.md` is the only line of defence; it
+   has held across the dogfood sessions but is one prompt regression
+   away from re-opening the bug. Tracked, not blocking.
 
 ### Medium
 
