@@ -92,10 +92,18 @@
       "command": "npx",
       "args": [
         "-y",
-        "@modelcontextprotocol/server-filesystem"
+        "@modelcontextprotocol/server-filesystem",
+        "${FILESYSTEM_ALLOWED_DIR}"
       ],
       "packageName": "@modelcontextprotocol/server-filesystem",
-      "envKeys": [],
+      "envKeys": [
+        {
+          "name": "FILESYSTEM_ALLOWED_DIR",
+          "required": true,
+          "description": "Absolute path the MCP server is allowed to read/write. The server is sandboxed to this directory tree.",
+          "obtainSteps": "Provide an absolute path you trust the agent to read/write under, e.g. /Users/me/projects/work-area. The server cannot read or modify files outside this directory."
+        }
+      ],
       "healthCheckTimeoutMs": 10000
     },
     {
