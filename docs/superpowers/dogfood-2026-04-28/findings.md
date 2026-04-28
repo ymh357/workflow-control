@@ -239,6 +239,59 @@ no error banner, no diagnostic — the only signal is `outcome:
      non-zero entries, the applying stage should fail-fast rather
      than write `outcome: "failed"` silently.
 
+## Bug 9 (P0) — npm-view existence ≠ runnable
+
+**Discovery**: After replenishing 3 catalog entries (etherscan, fetch,
+arxiv) in commit `7c33dc6`, ran the freshly-generated "Hacker News
+Top Stories" pipeline as Step 6-9 verification. Pipeline orphaned
+in 12s with no useful diagnostic — exactly the same shape as Bug 1
+on entries that DO pass the mode-1 rot-guard.
+
+**Root cause**: `fetch-mcp@0.0.5` exists on npm and `npm view` returns
+its version, but `npx -y fetch-mcp` immediately throws
+`ERR_PACKAGE_PATH_NOT_EXPORTED` because its `cacheable-request`
+dependency tries to import `get-stream` from a path the published
+package didn't export. The MCP server never starts; the SDK gets
+a process exit before initialize.
+
+**Two earlier entries also had latent issues that mode-1 missed:**
+
+  - **postgres**: `npx @modelcontextprotocol/server-postgres` errored
+    "Please provide a database URL as a command-line argument" —
+    catalog `args` was `["-y", "@modelcontextprotocol/server-postgres"]`
+    but the server expects the connection string as `args[2]`.
+  - **slack**: server errored "Please set SLACK_BOT_TOKEN and
+    SLACK_TEAM_ID" — catalog `envKeys` only listed `SLACK_BOT_TOKEN`,
+    missing the `SLACK_TEAM_ID` requirement.
+
+**Pattern**: every catalog supply-chain bug looks the same to the user
+("orphaned with stage_executor failed"). Mode-1 (npm view) only
+catches the "package doesn't exist" tier. The deeper tier — "package
+exists but can't actually start as an MCP server" — needs a real spawn
++ initialize handshake.
+
+**Fix (commit `8d39ada`):**
+
+  1. Remove fetch entry from catalog (no working alternative found
+     this session).
+  2. Fix postgres args: add `${POSTGRES_CONNECTION_STRING}` placeholder.
+  3. Fix slack envKeys: add SLACK_TEAM_ID with obtainSteps.
+  4. Extend rot-guard test with `RUN_NPM_HEALTHCHECKS=2` mode that
+     `npx -y` spawns each entry and waits for the JSON-RPC initialize
+     result. Sequential (parallel npx hits npm mutex contention),
+     60s timeout, skip entries with `${VAR}` placeholder args,
+     mark arxiv as known-flaky (works standalone, times out in vitest
+     worker, low confidence in cause).
+
+**Lesson**: every layer of the supply chain needs a different test:
+  - schema validation → unit test (zod)
+  - package exists → npm view (mode-1)
+  - package starts → spawn + initialize (mode-2)
+  - package authenticates → impossible without real creds; manual
+  - package satisfies the agent's needs → live LLM dogfood
+
+Each layer catches something the layers above it can't.
+
 ## Step verification summary
 
 | Step | Status |
