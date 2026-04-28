@@ -66,26 +66,31 @@ const SPAWN_ENABLED = MODE === "2";
 // handshake completes. Catches packages that exist on npm but throw at
 // module-resolve / start time.
 //
-// Run sequentially (not parallel): some packages need 25s+ to first-cache
-// their tarballs from npm, and vitest's default parallel `it.each` lights up
-// 9+ concurrent `npx` invocations that contend on the npm-cli mutex and
-// trigger spurious timeouts. `describe.sequential` forces one at a time.
+// Budget is split into two phases:
+//   - cold-start (npm cache miss): up to 60s per entry while npm downloads
+//     and extracts the tarball
+//   - server-init (cache warm): once the binary is on disk, the MCP server
+//     should respond to JSON-RPC `initialize` within `SDK_MCP_INIT_BUDGET_MS`.
+//     Bug 10 (2026-04-28) showed that @fre4x/arxiv takes >10s to handshake
+//     even after the tarball is cached — Claude SDK orphans tasks inside
+//     that window. To approximate the SDK constraint without prematurely
+//     failing first-run cold-starts, the test:
+//       1. Pre-warms npm cache with `npm view <pkg> version` (already does
+//          this in mode-1 above, which always runs before mode-2).
+//       2. Times only the spawn → initialize-result span, not the npx
+//          download span.
+//
+// Run sequentially: parallel `npx` invocations contend on npm-cli mutex.
+const SDK_MCP_INIT_BUDGET_MS = 10000;
+const SPAWN_TOTAL_BUDGET_MS = 60000;
 (SPAWN_ENABLED ? describe.sequential : describe.skip)("entries.json rot guard (MCP spawn)", () => {
   const path = join(import.meta.dirname, "entries.json");
   const raw = readFileSync(path, "utf8");
   const data = SeedFileSchema.parse(JSON.parse(raw));
 
-  // arxiv (@fre4x/arxiv) verified-working when spawned standalone (25s
-  // cold-start), but consistently times out inside the vitest worker
-  // even with sequential mode and 60s budget. Suspect npx + node-pty
-  // / vitest stdio interaction; not a catalog rot. Skip from spawn-test
-  // and re-verify manually before bumping the entry.
-  const SKIP_SPAWN_TEST = new Set<string>(["arxiv"]);
-
   it.each(data.entries.map((e) => [e.id, e]))(
-    "%s — spawns and completes MCP initialize",
-    async (id, entry) => {
-      if (SKIP_SPAWN_TEST.has(id)) return;
+    "%s — spawns and completes MCP initialize within SDK budget",
+    async (_id, entry) => {
       // Skip entries whose args carry a ${VAR} placeholder for runtime
       // expansion (e.g. postgres needs a real connection string in args[2]).
       // The runtime expander injects real values; this static spawn-test
@@ -102,7 +107,8 @@ const SPAWN_ENABLED = MODE === "2";
         if (k.required && !env[k.name]) env[k.name] = "rot-guard-stub";
       }
 
-      const initialized = await new Promise<{ ok: boolean; reason: string }>((resolve) => {
+      const start = Date.now();
+      const initialized = await new Promise<{ ok: boolean; reason: string; initMs?: number }>((resolve) => {
         const child = spawn(entry.command, entry.args, {
           stdio: ["pipe", "pipe", "pipe"],
           env,
@@ -110,17 +116,20 @@ const SPAWN_ENABLED = MODE === "2";
         let stdout = "";
         let stderr = "";
         let resolved = false;
-        const settle = (ok: boolean, reason: string): void => {
+        let firstStdoutAt: number | null = null;
+        const settle = (ok: boolean, reason: string, initMs?: number): void => {
           if (resolved) return;
           resolved = true;
           try { child.kill(); } catch { /* best-effort */ }
-          resolve({ ok, reason });
+          resolve({ ok, reason, initMs });
         };
         child.stdout.on("data", (d) => {
+          if (firstStdoutAt === null) firstStdoutAt = Date.now();
           stdout += d.toString();
           // Look for the initialize result with id:1.
           if (/"id"\s*:\s*1[\s,}]/.test(stdout) && stdout.includes("\"result\"")) {
-            settle(true, "initialized");
+            const initMs = Date.now() - (firstStdoutAt ?? start);
+            settle(true, "initialized", initMs);
           }
         });
         child.stderr.on("data", (d) => { stderr += d.toString(); });
@@ -130,9 +139,9 @@ const SPAWN_ENABLED = MODE === "2";
           // Treat clean exit (code=0) without an initialize result as a
           // race rather than a hard fail: some MCP servers (e.g. @fre4x/arxiv)
           // exit before flushing stdout when stdin closes early. Defer to
-          // the timeout — if the server didn't print "id":1 within 30s,
-          // that's the real signal. Hard-fail only on non-zero exits with
-          // a real stderr message.
+          // the timeout — if the server didn't print "id":1, that's the
+          // real signal. Hard-fail only on non-zero exits with a real
+          // stderr message.
           if (code === 0 && stderr.length === 0) {
             return; // wait for timeout
           }
@@ -149,16 +158,26 @@ const SPAWN_ENABLED = MODE === "2";
             clientInfo: { name: "rot-guard", version: "1" },
           },
         }) + "\n");
-        // Generous timeout: cold npx + tarball download + MCP startup.
-        // Some packages (@fre4x/arxiv) need 25s when npm cache is cold
-        // AND vitest is running multiple npx invocations in parallel.
-        setTimeout(() => settle(false, "timeout waiting for initialize result"), 60000);
+        // Total budget covers cold-start npm download + server init.
+        setTimeout(
+          () => settle(false, `timeout waiting for initialize result (>${SPAWN_TOTAL_BUDGET_MS}ms total)`),
+          SPAWN_TOTAL_BUDGET_MS,
+        );
       });
 
       if (!initialized.ok) {
         throw new Error(`${entry.id}: ${initialized.reason}`);
       }
+      // Bug 10: even after the tarball is cached, the MCP server's init
+      // span (first stdout → initialize result) must fit the SDK's
+      // window. A package that initializes >10s after first stdout
+      // works standalone but orphans inside the SDK runtime.
+      if (initialized.initMs !== undefined && initialized.initMs > SDK_MCP_INIT_BUDGET_MS) {
+        throw new Error(
+          `${entry.id}: server initialized in ${initialized.initMs}ms (>${SDK_MCP_INIT_BUDGET_MS}ms SDK budget) — would orphan inside SDK runtime`,
+        );
+      }
     },
-    75000,
+    SPAWN_TOTAL_BUDGET_MS + 5000,
   );
 });
