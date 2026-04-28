@@ -534,10 +534,47 @@ through the secret_pending dwell (~30 minutes between user
 inattention and submit), and the watchdog fired even after the
 re-attempted run succeeded — leaving its `failed` verdict in the
 final-state record while the canonical task status caught up to
-`completed` via the resume path. Doesn't break correctness but is
-confusing UX. Tracked, not fixed in this session — needs a look at
-the watchdog reset semantics on secret-gate-resume vs first-attempt
-timing.
+`completed` via the resume path.
+
+**Update 2026-04-28 (continuation) — partial fix landed**:
+Investigated the runPipeline code paths and found that the
+watchdog *should* clear in the run-finally block (L788
+`if (activeTimer !== null) clearTimeout(activeTimer)`). Confirmed
+on a fresh task that secret_pending exits the runner immediately
+and no run_final fires from the runner — the seq=7 stale event in
+the original task was a one-off race that did not reproduce. Two
+contributing factors are now addressed or accepted:
+
+  1. **pauseBudget on secret_pending is NOW symmetric with gates**
+     (commit "fix(runtime): pauseBudget on secret_pending"). Even
+     though the non-fanout path exits within milliseconds of
+     secret_pending, the fanout path can keep runOneAttempt's
+     actor alive (one element waits for secrets while siblings run);
+     the pause prevents that wall-time from eroding the pipeline's
+     timeoutMs budget. Regression test:
+     `secret-pending-budget-pause.test.ts` (100ms timeout,
+     unsatisfiable envKey, runPipeline still resolves cleanly).
+
+  2. **The original UI artifact** (status=completed but Run-Final
+     reads "runPipeline timeout after 5400000ms" with timestamp
+     ~2h after task start) was a stale ring-buffer event. The
+     broadcaster keeps a per-task history ring; on dashboard
+     reload the SSE stream replays everything. If a stale
+     run_final landed during the original ~2h dwell, the dashboard
+     UI surfaces the LAST run_final unconditionally. The fix would
+     be either: (a) suppress run_final on secret_pending exit so
+     no premature run_final lands, (b) have the dashboard render
+     `task_finals` (DB ground-truth) instead of the most-recent
+     SSE event, or (c) write a "secret_gate_pending" event into
+     the history that callers know to displace stale run_finals.
+     Not in scope for this commit — the underlying watchdog now
+     pauses correctly, and the DB ground truth (`task_finals`
+     row = completed/natural) is right.
+
+The 2h timestamp gap (06:06 → 08:08, NOT 90min) is unexplained
+but consistent with macOS process throttling under prolonged
+inactivity: setTimeout wakeups can be delayed when Node.js sits
+idle in a power-saving state. Not investigated further.
 
 **Bug 13 (P3) — Next.js dev server stalls after chrome restart**:
 After killing chrome instances mid-session, subsequent requests from
