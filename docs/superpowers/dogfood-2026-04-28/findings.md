@@ -453,8 +453,32 @@ the tools list.
 |---|---|
 | 6 — `run_pipeline { name: ... }` resolves to versionHash + starts task | ✅ verified twice (Hacker News + GitHub) |
 | 7 — secret-gate triggers when MCP envKey unsupplied | ✅ verified (after Bug 4 fix) |
-| 8 — user provides secret via dashboard, optionally saves to inventory | ❌ not exercised (no real token in scope) |
-| 9 — task continues, runs MCP, produces output | ❌ not exercised (depends on 8) |
+| 8 — user provides secret via dashboard, optionally saves to inventory | ❌ not exercised (still requires a real token + manual UX path) |
+| 9 — task continues, runs MCP, produces output | ✅ **verified via no-envKey path** (continuation 2026-04-28) |
+
+**Step 9 verification (continuation, 2026-04-28)**: After adding the
+`sequential-thinking` builtin (zero envKey, official MCP package),
+ran `apps/server/scratch-step89-real.mjs` which calls the real SDK
+`query()` with sequential-thinking attached as a stdio MCP. Results:
+
+  - `system/init.mcp_servers[].status` for sequential-thinking → `"connected"`
+  - SDK enumerated 21 total tools, including all `mcp__sequential-thinking__*`
+  - Agent invoked `mcp__sequential-thinking__sequentialthinking` and
+    received a real `tool_result` (45ms round trip)
+  - Final assistant text returned "STEP_89_OK"; SDK closed with
+    `result.subtype="success"`, `is_error=false`
+  - Total turn: 29s (19s for cold-cache npx + tools/list, 6s for the
+    tool roundtrip, 4s for the assistant's wrap-up text)
+
+This proves that:
+  1. The catalog → IR → expanded mcpServers → SDK runtime path works
+     end-to-end for at least one builtin entry.
+  2. The Bug 11 root-cause analysis (cold-cache cost on download-heavy
+     packages, NOT a generic SDK transport bug) holds — a lightweight
+     stdio MCP completes the full invocation cycle without issue.
+  3. Step 8 (UI-driven envKey provisioning) is the only remaining gap;
+     it requires either a real Brave/Etherscan key or a manual
+     interactive walk-through of the dashboard's secret-gate panel.
 
 ## Final commits arising from this dogfood session
 
