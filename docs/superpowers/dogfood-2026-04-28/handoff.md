@@ -444,3 +444,67 @@ the closed list below.)
 1. **"todo list 完成 ≠ 系统到位"**. 用户问"还有哪些待办", 我先回了"全闭合"——把 dogfood 那张 issues list 划完误当成"产品完美". 用户立刻反诘"架构和 pipeline-generator 都完美了吗?", 我才停下来真做 architecture pass: timer reject path bug + 14 处 wire-source 漂移. 这两个都是 dogfood 期间发现但没回去修的 deferred 工作, 跟 issue list 上的 medium / lower 是不同维度的事. 永远区分"清单划完" vs "系统正确".
 
 2. **subscribe-callback-as-only-control-path 是 anti-pattern**. runner 的 timer / interrupt / GATE_REJECTED 都依赖 actor.subscribe 触发——只要 actor 自己不再 emit snapshot, 任何外部信号都进不去. cross-region cancellation 那时是因为 timer fire 后没 reject 才直接看到这个 bug; 修了之后回头看, 同型问题在 GATE_REJECTED + INTERRUPT 路径都隐藏 (都通过 dispatcher.send → actor.send → 期望产生 snapshot → subscribe 内分支). 没有同类 reproducer 之前不动它, 但记下来——下次见到 "runner 莫名不返回" 先看 dispatch + subscribe 是否 race.
+
+---
+
+## Continuation 4: web3-tech-research dogfood — generator + runtime bug surfacing
+
+**目标**: 用 pipeline-generator 重新生成 web3-tech-research (旧版是 hand-written 的 13-stage YAML, 见 `github.com/ymh357/workflow-control-registry/tree/main/packages/web3-tech-research`). 设计意图: 砍 13→8 stages, citation 5 层 (L1 onchain / L2 official / L3 aggregator / L4 third-party-named / L5 unverified), tier 由 verify script 自动赋予 (L1-L3) 或用户 gate confirm (L4-L5), echo-chamber 防御靠 verify-as-you-go 而非末端 fact-check, agent 必须先写 What/Why/How 教程作为 quality gate 才能写技术报告. dogfood 主题: 0G 跨链桥 (信息源冲突: LayerZero OFT vs Chainlink CCIP, 旧版 prompt 自承在该主题踩坑写废 8 文件 200 行).
+
+**关键设计反复**: 我前后两次走偏:
+1. 先想"hand-write 7 stages 跟 6 个 builtin scripts" — 用户反驳: pipeline-generator 在哪儿, 应该用 generator. 调整: spec.md → generator.
+2. 又想"为 web3 verify 沉淀 builtin scripts" — 用户反问"为什么 generator 要为 web3 服务". 调整: generator 完全 generic, web3 知识只活在 modificationGoal 文档里; 6 个 verify 用 inline ScriptStage 让 generator 自己 emit, 不沉淀 builtin (CLAUDE.md "design for present, do not pre-spend" 的标准应用——只有一个 pipeline 用就 inline, 等多个 pipeline 用同一脚本再抽).
+
+最终 modificationGoal 见 `/tmp/web3-tech-research-mod-goal.md` (临时文件, 用完即弃; **不**作为 spec.md 持久化, 因为正常用户调用 web3-tech-research 时输入只是 topic, 不是这种长 prompt — 这种 prompt 是 day-1 设计 phase 一次性的事).
+
+### dogfood 实战暴露的 3 个 bug + commits
+
+#### `analysis.md` prompt 的 placeholder-path 误诱发 (本 commit `a53c50e` 同步修)
+
+旧 prompt L192: "If `taskDescription` is empty or unreadable, emit a minimal design with pipelineName='unknown'". analyzing 接口的 input port 实际叫 `taskText` (renamed from legacy taskDescription). agent 看到 prompt 里"taskDescription" 关键词 + 自己输入区有 `taskText` 大值就走 read_port 拉, 拉错 stage/port → got `port_not_declared` → 走 placeholder-path 输出 "kernel bug" 之类. 我加了一段引导明说"input 在 prompt input section 里, 不要 read_port".
+
+#### `real-executor-prompt-builder.ts` external-source 大 input 给错 read_port 提示 (commit `a53c50e`)
+
+`INLINE_PORT_VALUE_CHAR_LIMIT = 1024`. 任何 input 超 1024 字符走 large-value 分支, agent 收到 "用 read_port 拉" 提示. 但 prompt-builder 给的 stage/port 参数错: external-source 大 input 给的是 consuming-stage.name + local-port-name, 实际 port_values 在 `__external__.<external-port-name>`. 注释自承"还是错的, 但 externals 通常很小". dogfood 时 7KB 任务描述立刻撞.
+
+修法: 加 `inputSourcePort` map 用 wire-derived 真 source port 名字, external-wire 显式映射到 `__external__` stage. read_port 支持 `__external__` 读 (仅 write_port 拒绝), 已验. +2 regression test, reverse-verified.
+
+#### `compile-inline-script` ESM `require` undefined (commit `4c942e7`)
+
+apps/server `"type": "module"`, 全局 `require` 不存在. inline-script 编译成 CommonJS, 用 `new Function('module','exports','require', js)` 注入. 注入的 `restrictedRequire` 内部调真的 `require(id)` — ReferenceError under ESM. 任何 inline script 引 node:* builtin 都 fail (即使在 RUNTIME_REQUIRE_ALLOWLIST 内).
+
+修法: `createRequire(import.meta.url)`. 同步改 contract-check.ts (Layer 3 提交校验) + inline-script-executor.ts (运行时执行) 两路, 注释强制两路同步. +1 regression test (forbid "require is not defined" diagnostic message).
+
+### web3-tech-research 提交结果
+
+generator 经过两次 reject (第一次缺关键 ports, reject 走 analysis 重跑, 第二次写齐) → approve → genSkeleton + genPrompts + persisting. **persisting fail** (不写 pipelineId — generator 的另一个 bug, 留作后续修), 但 IR + prompts 已在 store, 我手动 submit:
+
+- 第一次 submit fail with `GATE_TARGET_SHARED`: scope_confirm 跟 claim_review_gate 都把 claim_collection 当 routing target. scope_confirm 实际是 no-op gate (用户填完 externalInputs 就好, gate 只是 "confirm" 一下), 它的 routing 是反模式. 手动 patch IR 删掉 scope_confirm 整个 stage, 23 wires 重 wire.
+- 第二次 submit fail: SCRIPT_IMPORT_ERROR `require is not defined`. 修 ESM bug 后 submit 成功. versionHash `c2e2f8253c5194b...`, 8 stages, 23 wires, 全 4 个 inline script (claim_verify / tutorial_validate / report_validate / publish) contract test 通过.
+
+实际 IR 落在 DB, 名为 `web3-tech-research`. 还没真跑过一个 task. 留待 continuation 5.
+
+### web3-tech-research v1 待修问题
+
+1. **L4 claim 经用户 gate 后 success-flip 机制缺**: claim_verify 把 L4 candidate 标 success=false, 但用户在 review_gate approve 后没有 stage 翻转 success 标志, 导致 tutorial_synthesis 强 filter `success===true` 时 L4 全丢. 需加一个 script stage 在 review_gate 之后, 读 gate comment 解析"用户接受了哪些 L4 ids", 把那些 success 改 true.
+2. **eth_getCode 单独不能验合约 inheritance**: claim_verify L1 路径需要 etherscan source code API 而非仅 RPC eth_getCode. 这是 inline script 实现细节, 在 prompts 里没暴露的. 真跑 0G 桥时如果 verify 不出 LayerZero/CCIP 真相再加.
+3. **persisting stage bug**: generator 自己的 persisting agent 没写 pipelineId port, 卡 "schema non-compliant" fail. 临时绕过靠手动 submit_pipeline. 长期看 persisting prompt 需要修 — 同 Bug 8b 类型(prompt 自由度过大), 该让 inline script 强制每个 declared output 都 write 而非 agent 自管 (kernel-next 已有 schema validation 机制可用).
+
+### 下一步 (continuation 5)
+
+- 用 pipeline-modifier 修上面 #1 (L4 success-flip script stage)
+- 用 web3-tech-research 真跑 0G 跨链桥, 看实际 verify LayerZero vs CCIP 真相能不能拿到
+- 视情况修 #2 (etherscan source code API)
+- persisting bug (#3) 单独立项, 跟 web3-tech-research 不绑
+
+### 测试
+
+- prompt-builder: 4 → 6 测试 (+2 large-input + external/stage source 路径)
+- inline-script: 5 → 7 测试 (+1 ESM require regression, +1 跑过外部 cwd 失败 — 是 vitest cwd 问题不影响 prod)
+- runtime + script-compile suite: 546/546 passing from server cwd (跟 generator/web3 commit 无关的 ~6 flaky 仅在 root cwd 跑, 单跑都过)
+
+### 元教训
+
+**dogfood 的真实价值不在最后跑 deliverable, 在跑过程中暴露的副作用 bug**. 这次本来是要造 web3-tech-research, 副产物是修了 prompt-builder 跟 inline-script 两个真 bug. 生产代码里 7K+ external input + 任意 type:module 引 node:* 的 inline script 都会撞这两个——但单元测试都没覆盖. dogfood 让它们在第一次 real prompt 第一次 real script 里立刻显形.
+
+**hand-written → generator-emitted 的代价是首次校验失败可能性高**. 旧版 hand-written YAML 13 stages 多年迭代过, 不会撞 GATE_TARGET_SHARED. generator 第一次 emit 8-stage IR 就撞了. 这是必然代价, 但因此 generator 自己变更 robust (validator 暴露的每个错误都让 generator 下次少错). **三个 builtin pipeline 互相 dogfood** 的闭环确实跑起来了——modifier 改 generator, generator 出 web3-tech-research, web3-tech-research 跑后再 modifier 改自己.
