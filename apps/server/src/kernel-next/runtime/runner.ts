@@ -538,12 +538,33 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
   let remainingBudgetMs = timeoutMs;
   let activeSinceMs = Date.now();
   let gateInFlight = 0;
-  let activeTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+
+  // Continuation-3 (Issue #1) — attempt-scoped rejecter exposed to outer
+  // scope so the wall-clock timer can reject runPipeline directly,
+  // without depending on `actor.subscribe` firing a snapshot. Without
+  // this, a stuck or stopped actor that never emits more snapshots
+  // leaves runPipeline pending until the test harness's own timeout
+  // (observed during cross-region cancellation work pre-fix). Each
+  // runOneAttempt's Promise constructor reassigns this; the outer
+  // resolveOuter wrapper clears it on terminal verdicts.
+  let currentRejectAttempt: ((err: Error) => void) | null = null;
+
+  const fireTimedOut = (): void => {
     timedOut = true;
-    // Attempt in flight will observe via currentActor.stop() when the
-    // outer loop unwinds; we surface as a thrown error on the outer
-    // runPipeline promise.
-  }, remainingBudgetMs);
+    // Reject the in-flight attempt synchronously. If no attempt is
+    // active (between attempts), the outer while-loop will observe
+    // timedOut on the next iteration entry.
+    if (currentRejectAttempt) {
+      const reject = currentRejectAttempt;
+      currentRejectAttempt = null;
+      reject(new Error(`runPipeline timeout after ${timeoutMs}ms`));
+    }
+  };
+
+  let activeTimer: ReturnType<typeof setTimeout> | null = setTimeout(
+    fireTimedOut,
+    remainingBudgetMs,
+  );
   const pauseBudget = (): void => {
     if (activeTimer !== null) {
       clearTimeout(activeTimer);
@@ -555,9 +576,7 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
   const resumeBudget = (): void => {
     if (activeTimer === null && !timedOut) {
       activeSinceMs = Date.now();
-      activeTimer = setTimeout(() => {
-        timedOut = true;
-      }, remainingBudgetMs);
+      activeTimer = setTimeout(fireTimedOut, remainingBudgetMs);
     }
   };
 
@@ -1219,7 +1238,21 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       actors: { execute_stage: executeStageLogic },
     });
 
-    return new Promise<AttemptVerdict>((resolveAttempt, rejectAttempt) => {
+    return new Promise<AttemptVerdict>((rawResolveAttempt, rawRejectAttempt) => {
+      // Continuation-3 (Issue #1) — wrap reject/resolve so the outer
+      // wall-clock timer can fire reject directly. Clearing
+      // currentRejectAttempt on either path makes a late timer fire
+      // a no-op when the attempt has already resolved naturally.
+      const rejectAttempt = (err: Error): void => {
+        currentRejectAttempt = null;
+        rawRejectAttempt(err);
+      };
+      const resolveAttempt = (v: AttemptVerdict): void => {
+        currentRejectAttempt = null;
+        rawResolveAttempt(v);
+      };
+      currentRejectAttempt = rejectAttempt;
+
       // Attempt-scoped retry-triggered flag. Prevents double-resolution
       // if another snapshot landed between RETRY_TO_STAGE inspection and
       // the outer while-loop re-entering runOneAttempt.
