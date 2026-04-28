@@ -239,6 +239,70 @@ no error banner, no diagnostic — the only signal is `outcome:
      non-zero entries, the applying stage should fail-fast rather
      than write `outcome: "failed"` silently.
 
+### Bug 8b — kernel guard landed (2026-04-28, continuation 2)
+
+Recommendation #3 above is now the canonical fix. Implemented as a
+new builtin script module + a new IR stage:
+
+- **Script module** `validate_patch_vs_intent` in
+  `apps/server/src/kernel-next/builtin-scripts/index.ts` — pure
+  function over `{gapAnalysis, patch, dryRunVerdict}`. Throws iff the
+  silent-no-op pattern holds:
+  `intendedChanges.length > 0 && ops.length === 0 && verdict === "safe"`.
+  Throw → ScriptStageExecutor finishes attempt with `status='error'` →
+  STAGE_FAILED dispatched → run cannot complete.
+
+- **IR change** `apps/server/src/builtin-pipelines/pipeline-modifier/pipeline.ir.json` —
+  inserted `validatePatch` ScriptStage between `genPatch` and
+  `applying`. New wires: `analyzeGap.gapAnalysis` /
+  `genPatch.patch` / `genPatch.dryRunVerdict` → `validatePatch`;
+  `validatePatch.{patch,dryRunVerdict}` → `applying`. Other applying
+  inputs (`rerunFrom`, `migrateRunningTasks`, `prompts`, `currentVersionHash`)
+  unchanged. Stage count 5 → 6, wire count 19 → 23.
+
+- **Prompt note** `prompts/system/gen-patch.md` — opening paragraph
+  now tells the genPatch agent that a downstream kernel guard
+  enforces the same invariant. Defence-in-depth: prompt rule still
+  there (`865961d`), but the kernel guard is now the load-bearing
+  enforcement.
+
+**Tests**:
+
+- `builtin-scripts/index.test.ts` (8 new cases, ~120ms): module
+  contract — fail / pass / passthrough across all input combinations
+  + reject malformed inputs.
+- `builtin-pipelines/pipeline-modifier/validate-patch-stage.test.ts`
+  (4 cases, ~200ms): real pipeline-modifier IR + real
+  ScriptStageExecutor + real BUILTIN_SCRIPT_MODULES — verifies the
+  contract end-to-end at the stage layer including
+  `script_execution_details` rows.
+- `pipeline-modifier/pipeline.ir.test.ts`: snapshot updated to 6
+  stages + new "validatePatch is a registry-script stage" assertion.
+- `pipeline-modifier/test-utils.ts`: shared helper builds a
+  `CompositeStageExecutor` with `MockStageExecutor` for agent stages
+  + real `ScriptStageExecutor` for the new script stage. Used by
+  all 4 existing e2e tests so the validatePatch stage runs for real
+  without breaking the mock-handler ergonomics.
+
+**What's NOT covered (by design)**: a full e2e regression that drives
+runPipeline through the failure path. The pipeline machine's
+`parallel.onDone` only fires once every region final-states; when
+`validatePatch` enters its `error` final, the downstream `applying`
+region is still `waiting` for inbound wires the failed region never
+wrote, so the run cannot resolve through normal completion. That
+quirk is documented at `runner.test.ts:195-198` (the
+"handler throws → finalState='failed'" test passes only because its
+IR has no downstream stage on the failed region). Cross-region
+cancellation is a runner-level architectural improvement orthogonal
+to Bug 8b; deferring it is consistent with the "for-now-design,
+not-future-proofing" CLAUDE.md rule. The stage-layer contract test
+is sufficient proof the guard works; runner improvements would lift
+it to a clean e2e later.
+
+**Score update**: Bug 8b moves from "deferred (prompt-only)" to
+"closed (kernel guard)". The prompt rule from `865961d` and
+`0d86be9` stays in place as belt-plus-suspenders.
+
 ## Bug 9 (P0) — npm-view existence ≠ runnable
 
 **Discovery**: After replenishing 3 catalog entries (etherscan, fetch,

@@ -212,3 +212,108 @@ describe("http_fetch / http_request placeholder expansion", () => {
     expect(capturedBody).toBe("raw-text");
   });
 });
+
+describe("validate_patch_vs_intent (Bug 8b kernel guard)", () => {
+  const mod = BUILTIN_SCRIPT_MODULES.validate_patch_vs_intent!;
+
+  it("FAILS when intent non-empty AND ops empty AND verdict safe", async () => {
+    await expect(
+      mod.run(
+        {
+          gapAnalysis: {
+            intendedChanges: [
+              { stage: "x", kind: "modify", description: "change y" },
+            ],
+          },
+          patch: { ops: [] },
+          dryRunVerdict: "safe",
+        },
+        ctx(),
+      ),
+    ).rejects.toThrow(/Bug 8b guard:/);
+  });
+
+  it("PASSES when intent empty AND ops empty AND verdict safe (legitimate no-op)", async () => {
+    const out = await mod.run(
+      {
+        gapAnalysis: { intendedChanges: [] },
+        patch: { ops: [] },
+        dryRunVerdict: "safe",
+      },
+      ctx(),
+    );
+    expect(out).toEqual({ patch: { ops: [] }, dryRunVerdict: "safe" });
+  });
+
+  it("PASSES when ops non-empty regardless of intent (real patch)", async () => {
+    const patch = {
+      ops: [{ op: "update_stage_config", stage: "x", configPatch: { promptRef: "y" } }],
+    };
+    const out = await mod.run(
+      {
+        gapAnalysis: { intendedChanges: [{ stage: "x", kind: "modify" }] },
+        patch,
+        dryRunVerdict: "safe",
+      },
+      ctx(),
+    );
+    expect(out.patch).toBe(patch);
+    expect(out.dryRunVerdict).toBe("safe");
+  });
+
+  it("PASSES when verdict 'unsafe' even with empty ops + non-empty intent (agent surfaced failure)", async () => {
+    const out = await mod.run(
+      {
+        gapAnalysis: { intendedChanges: [{ stage: "x", kind: "modify" }] },
+        patch: { ops: [] },
+        dryRunVerdict: "unsafe",
+      },
+      ctx(),
+    );
+    expect(out.dryRunVerdict).toBe("unsafe");
+  });
+
+  it("PASSES when verdict 'structural' even with empty ops + non-empty intent", async () => {
+    const out = await mod.run(
+      {
+        gapAnalysis: { intendedChanges: [{ stage: "x", kind: "modify" }] },
+        patch: { ops: [] },
+        dryRunVerdict: "structural",
+      },
+      ctx(),
+    );
+    expect(out.dryRunVerdict).toBe("structural");
+  });
+
+  it("PASSES when gapAnalysis is malformed object missing intendedChanges (treat as no-intent)", async () => {
+    const out = await mod.run(
+      { gapAnalysis: {}, patch: { ops: [] }, dryRunVerdict: "safe" },
+      ctx(),
+    );
+    expect(out.dryRunVerdict).toBe("safe");
+  });
+
+  it("THROWS when patch.ops is missing or non-array (input contract)", async () => {
+    await expect(
+      mod.run(
+        { gapAnalysis: { intendedChanges: [] }, patch: { ops: "nope" }, dryRunVerdict: "safe" },
+        ctx(),
+      ),
+    ).rejects.toThrow(/patch\.ops must be an array/);
+    await expect(
+      mod.run(
+        { gapAnalysis: { intendedChanges: [] }, patch: {}, dryRunVerdict: "safe" },
+        ctx(),
+      ),
+    ).rejects.toThrow(/patch\.ops must be an array/);
+  });
+
+  it("THROWS when dryRunVerdict is not a string", async () => {
+    await expect(
+      mod.run(
+        { gapAnalysis: { intendedChanges: [] }, patch: { ops: [] }, dryRunVerdict: null },
+        ctx(),
+      ),
+    ).rejects.toThrow(/dryRunVerdict must be a string/);
+  });
+});

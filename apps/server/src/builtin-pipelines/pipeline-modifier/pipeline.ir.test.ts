@@ -22,13 +22,14 @@ describe("pipeline-modifier IR", () => {
     expect(names).toContain("failureContext");
   });
 
-  it("has 5 stages in the documented order", () => {
+  it("has 6 stages in the documented order", () => {
     const stageNames = ir.stages.map((s) => s.name);
     expect(stageNames).toEqual([
       "loadCurrent",
       "analyzeGap",
       "awaitingConfirm",
       "genPatch",
+      "validatePatch",
       "applying",
     ]);
   });
@@ -44,6 +45,16 @@ describe("pipeline-modifier IR", () => {
   it("awaitingConfirm is a gate stage", () => {
     const gate = ir.stages.find((s) => s.name === "awaitingConfirm");
     expect(gate?.type).toBe("gate");
+  });
+
+  it("validatePatch is a registry-script stage bound to validate_patch_vs_intent (Bug 8b kernel guard)", () => {
+    const stage = ir.stages.find((s) => s.name === "validatePatch") as
+      | { type: string; config: { source: string; moduleId: string } }
+      | undefined;
+    expect(stage).toBeDefined();
+    expect(stage!.type).toBe("script");
+    expect(stage!.config.source).toBe("registry");
+    expect(stage!.config.moduleId).toBe("validate_patch_vs_intent");
   });
 
   it("submits successfully via KernelService", async () => {

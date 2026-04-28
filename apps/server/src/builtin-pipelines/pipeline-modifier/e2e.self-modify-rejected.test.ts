@@ -42,6 +42,7 @@ import { initKernelNextSchema } from "../../kernel-next/ir/sql.js";
 import { KernelService } from "../../kernel-next/mcp/kernel.js";
 import { loadBuiltinPipelineIR } from "../../kernel-next/runtime/load-builtin-pipeline.js";
 import { runPipeline } from "../../kernel-next/runtime/runner.js";
+import { buildModifierTestExecutor } from "./test-utils.js";
 import { taskRegistry } from "../../kernel-next/runtime/task-registry.js";
 import type { StageHandlerMap } from "../../kernel-next/runtime/mock-executor.js";
 
@@ -201,6 +202,7 @@ describe("pipeline-modifier e2e self-modify rejected", () => {
             taskId,
             versionHash: modRes.versionHash,
             handlers,
+            executor: buildModifierTestExecutor(handlers),
             seedValues: {
               targetPipelineName: "pipeline-modifier",
               modificationGoal: "Add a stage",

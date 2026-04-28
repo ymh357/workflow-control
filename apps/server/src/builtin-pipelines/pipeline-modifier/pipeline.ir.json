@@ -82,6 +82,20 @@
       ]
     },
     {
+      "type": "script",
+      "name": "validatePatch",
+      "config": { "source": "registry", "moduleId": "validate_patch_vs_intent" },
+      "inputs": [
+        { "name": "gapAnalysis", "type": "unknown" },
+        { "name": "patch", "type": "unknown" },
+        { "name": "dryRunVerdict", "type": "string" }
+      ],
+      "outputs": [
+        { "name": "patch", "type": "unknown" },
+        { "name": "dryRunVerdict", "type": "string" }
+      ]
+    },
+    {
       "type": "agent",
       "name": "applying",
       "config": { "promptRef": "system/applying" },
@@ -120,11 +134,15 @@
     { "from": { "stage": "loadCurrent", "port": "currentVersionHash" }, "to": { "stage": "genPatch", "port": "currentVersionHash" } },
     { "from": { "stage": "loadCurrent", "port": "failureBundle" }, "to": { "stage": "genPatch", "port": "failureBundle" } },
 
-    { "from": { "stage": "genPatch", "port": "patch" }, "to": { "stage": "applying", "port": "patch" } },
+    { "from": { "stage": "analyzeGap", "port": "gapAnalysis" }, "to": { "stage": "validatePatch", "port": "gapAnalysis" } },
+    { "from": { "stage": "genPatch", "port": "patch" }, "to": { "stage": "validatePatch", "port": "patch" } },
+    { "from": { "stage": "genPatch", "port": "dryRunVerdict" }, "to": { "stage": "validatePatch", "port": "dryRunVerdict" } },
+
+    { "from": { "stage": "validatePatch", "port": "patch" }, "to": { "stage": "applying", "port": "patch" } },
     { "from": { "stage": "genPatch", "port": "rerunFrom" }, "to": { "stage": "applying", "port": "rerunFrom" } },
     { "from": { "stage": "genPatch", "port": "migrateRunningTasks" }, "to": { "stage": "applying", "port": "migrateRunningTasks" } },
     { "from": { "stage": "loadCurrent", "port": "currentVersionHash" }, "to": { "stage": "applying", "port": "currentVersionHash" } },
-    { "from": { "stage": "genPatch", "port": "dryRunVerdict" }, "to": { "stage": "applying", "port": "dryRunVerdict" } },
+    { "from": { "stage": "validatePatch", "port": "dryRunVerdict" }, "to": { "stage": "applying", "port": "dryRunVerdict" } },
     { "from": { "stage": "genPatch", "port": "prompts" }, "to": { "stage": "applying", "port": "prompts" } }
   ]
 }

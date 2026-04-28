@@ -241,6 +241,75 @@ const env_resolve: ScriptModule = {
   },
 };
 
+// ---------- pipeline-modifier guard ----------
+
+// validate_patch_vs_intent — kernel-side guard for pipeline-modifier
+// (dogfood-2026-04-28 Bug 8b). The agent stage `genPatch` is allowed to
+// emit `{ ops: [] }` only when the upstream `gapAnalysis.intendedChanges`
+// is itself empty (legitimate no-op intent, e.g. description-only edits)
+// or when the dry-run came back non-safe (the agent must surface the
+// real failure, not paper over it). This script enforces that contract
+// in code so a future prompt regression cannot reintroduce the silent
+// "empty patch + safe verdict" failure mode.
+//
+// Inputs:
+//   gapAnalysis    — analyzeGap output; expected shape includes
+//                    `intendedChanges: Array<unknown>` per gen-patch.md.
+//   patch          — genPatch output; expected `{ ops: Array<unknown> }`.
+//   dryRunVerdict  — genPatch output; one of "safe" | "unsafe" | "structural".
+//
+// Outputs (passthroughs to applying — kept here so this stage owns the
+// authoritative wire and applying does not have to read from genPatch
+// directly when the guard is engaged):
+//   patch, dryRunVerdict
+//
+// Failure mode: throws on the contradiction. Script-stage runner
+// catches the throw and marks the stage as `error`, which surfaces to
+// the user as a stage_failed event with this exact message — no silent
+// success on contradictory intent + empty patch.
+const validate_patch_vs_intent: ScriptModule = {
+  async run(inputs) {
+    const gapAnalysis = inputs.gapAnalysis;
+    const patch = inputs.patch;
+    const verdict = inputs.dryRunVerdict;
+
+    const intendedChanges =
+      gapAnalysis && typeof gapAnalysis === "object" && !Array.isArray(gapAnalysis)
+        ? (gapAnalysis as { intendedChanges?: unknown }).intendedChanges
+        : undefined;
+    const intendedNonEmpty = Array.isArray(intendedChanges) && intendedChanges.length > 0;
+
+    const ops =
+      patch && typeof patch === "object" && !Array.isArray(patch)
+        ? (patch as { ops?: unknown }).ops
+        : undefined;
+    if (!Array.isArray(ops)) {
+      throw new Error(
+        `validate_patch_vs_intent: patch.ops must be an array (got ${typeof ops})`,
+      );
+    }
+    const opsEmpty = ops.length === 0;
+
+    if (typeof verdict !== "string") {
+      throw new Error(
+        `validate_patch_vs_intent: dryRunVerdict must be a string (got ${typeof verdict})`,
+      );
+    }
+
+    if (intendedNonEmpty && opsEmpty && verdict === "safe") {
+      throw new Error(
+        `Bug 8b guard: gapAnalysis.intendedChanges has ${(intendedChanges as unknown[]).length} entries ` +
+          `but patch.ops is empty and dryRunVerdict='safe'. This is the silent-no-op failure mode: the ` +
+          `agent observed a non-empty intent, failed to author a working patch, and submitted an empty ` +
+          `patch with a safe verdict to mask the failure. Re-run genPatch and either author a real ` +
+          `patch (any non-empty ops[]) or emit dryRunVerdict='unsafe' with the last non-empty draft.`,
+      );
+    }
+
+    return { patch, dryRunVerdict: verdict };
+  },
+};
+
 // ---------- registry ----------
 
 export const BUILTIN_SCRIPT_MODULES: Readonly<Record<string, ScriptModule>> = Object.freeze({
@@ -253,6 +322,7 @@ export const BUILTIN_SCRIPT_MODULES: Readonly<Record<string, ScriptModule>> = Ob
   json_parse,
   json_stringify,
   env_resolve,
+  validate_patch_vs_intent,
 });
 
 export const BUILTIN_SCRIPT_IDS: ReadonlySet<string> = new Set(

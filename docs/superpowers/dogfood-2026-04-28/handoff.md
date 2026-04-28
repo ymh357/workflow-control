@@ -57,7 +57,7 @@ and that the first session built on)
 | 6 | P1 prompt | analyzing agent skipped add-on-miss + hallucinated builtin packages | **fixed** `1617027` |
 | 7 | P1 | externalInputs has no optional flag — modifier rejected with SEED_VALUES_MISSING_KEY | **fixed** `88c26a7` + `eedd14a` (3 code layers + canonical hash) |
 | 8a | P0 | IRPatchOpSchema missing `add_external_input` / `remove_external_input` | **fixed** `0d86be9` |
-| 8b | P1 | Modifier silently submits `ops:[]` with `dryRunVerdict:"safe"` after dry-run failure | **fixed** `0d86be9` (prompt rule) |
+| 8b | P1 | Modifier silently submits `ops:[]` with `dryRunVerdict:"safe"` after dry-run failure | **fixed** `0d86be9` (prompt rule) + **kernel guard** (continuation 2): new `validate_patch_vs_intent` script stage in pipeline-modifier IR raises STAGE_FAILED on the silent-no-op pattern |
 | 9 | P0 | npm-view existence ≠ runnable (fetch-mcp@0.0.5 broken imports; postgres args incomplete; slack envKeys incomplete) | **fixed** `8d39ada` + spawn-test mode-2 |
 | 10 | P1 | spawn-test pass ≠ SDK-runnable (arxiv 25s init too slow) | **fixed** `05be361` (remove arxiv) + `f3b2256` (split-budget catches it) |
 | 11 | P2 | tools/list-passing ≠ SDK-runnable (playwright fails MCP_STARTUP_FAILED in real SDK despite handshake passing) | **partially fixed** `4eb6c14` — tools/list check added; SDK-side gap deferred |
@@ -296,12 +296,12 @@ f2658fe docs(dogfood): Bug 11 root cause located — kernel discards SDK status 
 | # | Status | Notes |
 |---|---|---|
 | 1-7, 8a, 9, 10 | ✅ closed pre-session | (carried over from 815ee7f) |
-| 8b | 📝 investigated → deferred | 三选项写入 §Open issues; 都需要 IR migration. |
+| 8b | ✅ closed (kernel guard, continuation 2) | 新加 builtin script `validate_patch_vs_intent` + IR 插入 `validatePatch` script stage 在 `genPatch` 与 `applying` 之间. 看到 silent-no-op (`intendedChanges 非空 ∧ ops:[] ∧ verdict:"safe"`) 直接 throw → STAGE_FAILED. Prompt rule `865961d/0d86be9` 留为 belt-plus-suspenders. 8 unit + 4 stage-integration 测试; 反向移除 guard 测试立刻 fail. 详情见 findings.md §Bug 8b kernel guard landed. |
 | 11 | ✅ closed (3-step root cause fix) | (1) `99201a1` SDK stderr 接入; (2) `6a5f042` 改 read `mcp_servers[].status`; (3) `14ae290` rot-guard mode-3 冷缓存. 详情见 findings.md. |
 | 12 | ✅ closed (root cause fix) | (1) `ed8eb6b` watchdog pauseBudget; (2) `822a3d5` suppress run_final on secret_pending exit. UI 残影根因消除. |
 | 13 | reclassified — not a product bug | `fade2ef`. Test-infra footgun: 强杀 chrome-e2e-profile 后 mojo network state 损坏. 不是 Next.js / kernel 问题, 不修. |
 
-总计：12 个原始 bug + 1 误归类。**11 个 bug 全闭合，1 deferred**。
+总计：12 个原始 bug + 1 误归类。**12 个 bug 全闭合**。
 
 ## What landed this session
 
@@ -346,16 +346,13 @@ f2658fe docs(dogfood): Bug 11 root cause located — kernel discards SDK status 
 
 ## Open issues for next session
 
-### High value
-
-1. **Bug 8b kernel-side guard** (deferred, see §Bug score updates).
-   不简单——applying stage 不持有 gapAnalysis (在 genPatch 上游), 三条修法都需 IR 重构. 当前由 prompt rule 顶住, dogfood 内未复发. 等下次有 builtin pipeline IR 改动时一并做.
-
 ### Medium
 
-2. **inventory persistAs 路径未实测**. 上面 Step 8 收尾标注. 不阻塞任何东西.
+1. **inventory persistAs 路径未实测**. 上面 Step 8 收尾标注. 不阻塞任何东西.
 
-3. **Replenish more catalog entries**. 现 10 条. 候选: Notion / Linear (走 mcp-remote pattern) / HTTP fetch (找一个 vendor 维护的没坏的). 每条加之前必跑 mode-2.
+2. **Replenish more catalog entries**. 现 10 条. 候选: Notion / Linear (走 mcp-remote pattern) / HTTP fetch (找一个 vendor 维护的没坏的). 每条加之前必跑 mode-2.
+
+3. **Runner cross-region cancellation**. Bug 8b 收尾时浮现的架构限制: pipeline machine 的 `parallel.onDone` 只在所有 region final 时 fire; 一个 region 进 error final, 下游 region 仍 waiting → run 不能 resolve 直到 wall-clock budget 触发. 短期影响: validatePatch fail 的 task 卡 running 直到 timeout (默认 10min). 修法方向: 一个 region 进 error final 时 dispatch task-level cancel, 让 sibling region 也 final. 不阻塞当前 dogfood 的修复, 但下次有 fail-fast 用例时该一起做.
 
 ### Lower priority
 
@@ -377,6 +374,10 @@ f2658fe docs(dogfood): Bug 11 root cause located — kernel discards SDK status 
 - `apps/server/src/kernel-next/runtime/real-executor.mcp-status-detector.test.ts` — Bug 11 status detector 五分支测试
 - `apps/server/src/kernel-next/runtime/real-executor-stderr-filter.test.ts` — SDK stderr filter 测试
 - `apps/server/src/kernel-next/mcp-catalog/entries-rot-guard.test.ts` — mode 1/2/3 完整供应链测试梯子
+- `apps/server/src/kernel-next/builtin-scripts/index.ts` (validate_patch_vs_intent) — Bug 8b kernel guard module
+- `apps/server/src/builtin-pipelines/pipeline-modifier/pipeline.ir.json` — IR 多了 validatePatch script stage 在 genPatch 与 applying 间
+- `apps/server/src/builtin-pipelines/pipeline-modifier/validate-patch-stage.test.ts` — Bug 8b 4 个 stage-integration 测试
+- `apps/server/src/builtin-pipelines/pipeline-modifier/test-utils.ts` — `buildModifierTestExecutor` 给 e2e 用 CompositeStageExecutor 同时挂 mock-agent + real-script
 - `apps/server/scratch-step89-real.mjs` (gitignored) — SDK end-to-end probe template
 - `apps/server/scratch-bug11-repro.mjs` (gitignored) — minimal SDK reproducer
 - `apps/server/scratch-vet-mcp.mjs` (gitignored) — catalog candidate vetter
@@ -385,6 +386,7 @@ f2658fe docs(dogfood): Bug 11 root cause located — kernel discards SDK status 
 
 - runtime suite: 75 files / 518 tests (vs 73 / 511 之前). +5 测试覆盖本次 6 个 commit 的代码改动.
 - 每个 fix commit 都带回归测试 + 反向验证可证伪.
+- continuation 2 (Bug 8b kernel guard): +12 测试 (8 unit on `validate_patch_vs_intent`, 4 stage-integration on `validatePatch` IR stage), +1 IR-snapshot 断言, 共 +13. server 全套 2090/2090 substantive (1 flaky `spawn-utils.adversarial.test.ts` 单跑 26/26 绿, 与 Bug 8b 无关).
 
 ## The session's meta-lesson (additions)
 

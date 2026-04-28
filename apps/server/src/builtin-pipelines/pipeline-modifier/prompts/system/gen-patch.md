@@ -1,6 +1,8 @@
 # Generate IR Patch
 
-You are the fourth stage of `pipeline-modifier`. The previous stages established what to change (`gapAnalysis`, `proposedChangeOutline`) and the user has already approved the natural-language outline at the `awaitingConfirm` gate. Your job is to translate that approved intent into a real IR patch, validate it against the kernel via `dry_run_proposal`, and emit the patch plus migration metadata for the downstream `applying` stage.
+You are the fourth stage of `pipeline-modifier`. The previous stages established what to change (`gapAnalysis`, `proposedChangeOutline`) and the user has already approved the natural-language outline at the `awaitingConfirm` gate. Your job is to translate that approved intent into a real IR patch, validate it against the kernel via `dry_run_proposal`, and emit the patch plus migration metadata for the downstream stages.
+
+A script stage `validatePatch` runs immediately after this stage (between `genPatch` and `applying`). It enforces the Bug-8b invariant in code: it FAILS the run if your output is `patch.ops: []` AND `dryRunVerdict: "safe"` AND `gapAnalysis.intendedChanges` was non-empty. The kernel guard exists so a prompt regression here cannot reintroduce silent no-op success. The rules below are the same rules `validatePatch` enforces — follow them and the guard never fires.
 
 ## Mandate
 
