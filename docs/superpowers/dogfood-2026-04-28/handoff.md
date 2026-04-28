@@ -100,6 +100,36 @@ a session where the user exports a real `GITHUB_PERSONAL_ACCESS_TOKEN`
 in their shell and starts the server, OR a fully scoped token
 provided through `task_env_values` directly to `run_pipeline`.
 
+## Session 2 final (2026-04-28 ~08:30 → 09:40)
+
+**8 commits in this session**:
+- `371c036` rot guard + gen-skeleton verbatim
+- `a8a6766` dashboard state badge fix
+- `805bdfd` gate card decision summary + collapse
+- `f7ae92d` modifier dogfood + bugs 7-8 docs
+- `0d86be9` add_external_input / remove_external_input patch ops
+- `88c26a7` externalInputs.optional flag
+- `eedd14a` canonical hash includes optional
+- (this session's earlier `60568ec` and prior session)
+
+**Bug fix score**: 7 fixed, 1 documented (Bug 4 per CLAUDE.md §8.1 wipe policy).
+
+**End-to-end re-dogfood verification (2026-04-28 09:34→09:38)**:
+After all fixes landed and server restarted with reseeded IR
+(version_hash 9510456c..., new — old e851202f... had no `optional`
+flag because canonical hash didn't include it), reran the same
+modifier task that originally failed:
+
+  Round 1 (broken): patch `{"ops": []}`, outcome `"failed"`,
+                    proposalId `""`, 156s + $0.16 wasted.
+  Round 2 (fixed):  patch with 4 ops (add_external_input + add_stage
+                    + 2× add_wire), outcome `"pending-approval"`,
+                    proposalId `868af035-...`, dryRunVerdict
+                    `"structural"`, proposedVersion `75421c60...`.
+
+Bug 7 + Bug 8a + Bug 8b all closed under live LLM. Modifier
+end-to-end works.
+
 ## Session 2 progress (2026-04-28 ~08:30 → 09:00)
 
 Continued the dogfood follow-ups + ran live-LLM modifier for the first time.
@@ -121,22 +151,18 @@ See `findings.md` for full bug 7+8 writeup.
 
 ### High value, can pick up immediately
 
-0. **(NEW from session 2) Bug 8 — patch DSL gap + agent silent empty-patch fallback**.
-   Most urgent. Two coupled fixes:
-   - Schema: add `add_external_input` + `remove_external_input` to
-     `IRPatchOpSchema` (`apps/server/src/kernel-next/ir/schema.ts:375`),
-     extend `applyPatchOps` in `apps/server/src/kernel-next/mcp/patch.ts`,
-     update `dry_run_proposal` validators if any.
-   - Prompt: gen-patch.md must reject "submit empty patch on dry_run
-     diagnostic" — agent must either fix the patch or fail-stage with
-     structured gapAnalysis.risks. Consider kernel-side guard: if
-     `gapAnalysis.intendedChanges.length > 0` and `genPatch.patch.ops.length === 0`,
-     applying should fail-fast.
+0. **Bug 8 — patch DSL gap + agent silent empty-patch fallback** ✅ DONE
+   `0d86be9`. Schema gets add_external_input / remove_external_input;
+   patch.ts gets two new switch cases; gen-patch.md gets ops 7+8 plus
+   a hard rule against submitting `ops: []` with `dryRunVerdict: "safe"`
+   after a non-empty draft hit `ok: false`. Verified end-to-end above.
 
-0b. **(NEW from session 2) Bug 7 — externalInputs `optional` flag**.
-    Smaller, mechanical. Add `optional?: boolean` to `externalInputs[]`
-    schema, default false, plumb through `startPipelineRun`'s
-    seed-validation. Backward-compatible.
+0b. **Bug 7 — externalInputs `optional` flag** ✅ DONE
+    `88c26a7` + `eedd14a`. PortIR.optional ripples through three
+    layers: schema, runner.ts seed validation, ir-to-machine.ts
+    initial portValues, AND canonical.ts hash input. All four needed
+    or the runtime fix never reaches a fresh boot. Verified via
+    re-dogfood with hash 9510456c....
 
 1. **Add boot-time / CI healthcheck for entries.json** ✅ DONE
    commit `371c036`. New
