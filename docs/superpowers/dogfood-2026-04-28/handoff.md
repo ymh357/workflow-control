@@ -100,17 +100,49 @@ a session where the user exports a real `GITHUB_PERSONAL_ACCESS_TOKEN`
 in their shell and starts the server, OR a fully scoped token
 provided through `task_env_values` directly to `run_pipeline`.
 
+## Session 2 progress (2026-04-28 ~08:30 → 09:00)
+
+Continued the dogfood follow-ups + ran live-LLM modifier for the first time.
+
+**3 commits added:**
+- `371c036` — fix(mcp-catalog): rot guard + gen-skeleton verbatim discipline
+- `a8a6766` — fix(dashboard): task header state badge reads canonical /status
+- `805bdfd` — fix(dashboard): gate card decision summary + collapse 17-port table
+
+**Bugs fixed:** 2 (catalog rot guard, gen-skeleton verbatim), 3 (gate UI density), 5 (state badge drift). All verified live in browser.
+
+**New bugs surfaced:**
+- **Bug 7** — kernel rejects optional externalInputs as missing seed values (modifier's `failureContext` only optional in description)
+- **Bug 8** (CRITICAL) — pipeline-modifier silently emits empty patch when patch DSL can't express the need (`add_external_input` op missing from `IRPatchOpSchema`); agent then submits empty patch with `dryRunVerdict: "safe"` after seeing dry_run diagnostics, masking the failure
+
+See `findings.md` for full bug 7+8 writeup.
+
 ## Open issues for next session (priority order)
 
 ### High value, can pick up immediately
 
-1. **Add boot-time / CI healthcheck for entries.json**.
-   Right now nothing prevents another rot. Smallest viable: a vitest
-   that uses the real (mockable) `checkPackage` against every builtin
-   entry, with a way to skip it in CI when offline. Even better: a
-   preflight check at server boot that warns (not fails) on rot.
-   Touches `apps/server/src/kernel-next/mcp-catalog/seed.ts` +
-   a new test file.
+0. **(NEW from session 2) Bug 8 — patch DSL gap + agent silent empty-patch fallback**.
+   Most urgent. Two coupled fixes:
+   - Schema: add `add_external_input` + `remove_external_input` to
+     `IRPatchOpSchema` (`apps/server/src/kernel-next/ir/schema.ts:375`),
+     extend `applyPatchOps` in `apps/server/src/kernel-next/mcp/patch.ts`,
+     update `dry_run_proposal` validators if any.
+   - Prompt: gen-patch.md must reject "submit empty patch on dry_run
+     diagnostic" — agent must either fix the patch or fail-stage with
+     structured gapAnalysis.risks. Consider kernel-side guard: if
+     `gapAnalysis.intendedChanges.length > 0` and `genPatch.patch.ops.length === 0`,
+     applying should fail-fast.
+
+0b. **(NEW from session 2) Bug 7 — externalInputs `optional` flag**.
+    Smaller, mechanical. Add `optional?: boolean` to `externalInputs[]`
+    schema, default false, plumb through `startPipelineRun`'s
+    seed-validation. Backward-compatible.
+
+1. **Add boot-time / CI healthcheck for entries.json** ✅ DONE
+   commit `371c036`. New
+   `apps/server/src/kernel-next/mcp-catalog/entries-rot-guard.test.ts`
+   uses `checkPackage` against every builtin. Default skipped; opt-in
+   with `RUN_NPM_HEALTHCHECKS=1`. 7/7 surviving entries verified.
 
 2. **Repopulate the 5 deleted entries with real packages**.
    Initial probe found candidates:
@@ -125,30 +157,45 @@ provided through `task_env_values` directly to `run_pipeline`.
    package's docs / repo for envKeys + args + a working
    description, (c) write to `entries.json`, (d) reseed DB.
 
-3. **Apply the verbatim-fetch discipline to `gen-skeleton.md`**.
-   Bug 2: skeleton silently slug-rewrites `mcpServers.name`.
-   Mirror the `analysis.md` change: require `get_mcp_catalog_entry`
-   call before placing any `mcpServers` block in the IR; copy
-   `name`/`command`/`args`/`env`/`envKeys` verbatim. File:
-   `apps/server/src/builtin-pipelines/pipeline-generator/prompts/system/gen-skeleton.md`.
+3. **Apply the verbatim-fetch discipline to `gen-skeleton.md`** ✅ DONE
+   commit `371c036`. Step 1 marked REQUIRED non-negotiable; Step 2
+   enumerates forbidden transformations on `name`. Not yet
+   re-dogfooded (next generator run will reveal whether the slug
+   rewrite is actually fixed under live LLM).
 
-4. **Fix dashboard state badge** (Bug 5). Read from `/api/kernel/tasks/:id/status`
-   instead of the most recent `task_state` SSE event. Touches
-   `apps/web/src/app/kernel-next/[taskId]/...` (find the component
-   that renders the `state: <X>` line near the task header).
+4. **Fix dashboard state badge** (Bug 5) ✅ DONE
+   commit `a8a6766`. Status poller now drives topState; TopLevelState
+   union extended to include gated/secret_pending/cancelled/orphaned.
+   Verified live: header reads `state: secret_pending` matching gate
+   panel.
 
-### Lower priority
+5. **Default `<details open={false}>` + decision summary card** (Bug 3) ✅ DONE
+   commit `805bdfd`. Decision summary card (pipelineName +
+   pipelineDescription + dataFlowSummary, truncated 600 chars)
+   rendered above the details wrapper for any upstream that emits
+   the triple. Details `open={up.outputs.length <= 5}` — small
+   upstreams stay open, fat ones (the 17-port analyzing) collapse.
+   Verified live in browser.
 
-5. **Default `<details open={false}>` for the gate analyzing port table**
-   (Bug 3). Optional improvement: render a 3-line exec summary
-   (pipelineName / pipelineDescription / dataFlowSummary) above the
-   collapsed details so users have decision-relevant info without
-   expanding.
+6. **Dogfood pipeline-modifier under live LLM** ✅ DONE
+   Surfaced Bugs 7 + 8 (see top of section). The modifier prompt
+   discipline alone wasn't enough — kernel patch DSL is missing
+   ops the modifier provably needs.
 
-6. **Dogfood pipeline-modifier under live LLM**. Modifier got the
-   same prompt discipline as generator (commit `865961d`) but never
-   ran against a real LLM. The modifier-specific bugs would only
-   show up there.
+### Still open
+
+7. **Replenish deleted catalog entries with verified packages**.
+   Candidates from prior probing:
+   - `etherscan` → `@everimbaq/etherscan-mcp@1.0.3`
+   - `fetch` → `fetch-mcp@0.0.5`
+   - `arxiv` → `@fre4x/arxiv@1.0.64`
+   - `bscscan` → no plausible npm package found
+   - `linear` → no plausible npm package found; `mcp-remote
+     https://mcp.linear.app/mcp` works as a remote MCP per
+     `mcp-remote-preflight.test.ts:224`
+   Each candidate needs (a) `npm view` confirms (or use the new
+   rot-guard test), (b) review the package's docs for envKeys + args
+   + a working description, (c) write to entries.json, (d) reseed.
 
 ## Server / dashboard state at handoff
 

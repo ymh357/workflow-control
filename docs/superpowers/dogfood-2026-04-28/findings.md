@@ -108,7 +108,10 @@ approve/reject placement are well-designed.
   tokens through chat, and I had no shell access to set
   GITHUB_PERSONAL_ACCESS_TOKEN out-of-band on the user's machine.
   Step 7 (secret-gate triggers correctly) is verified.
-- pipeline-modifier real-LLM dogfood (still mocked-only).
+- pipeline-modifier real-LLM dogfood: **DONE 2026-04-28** —
+  exposed Bugs 7 + 8 above. The modifier prompt discipline (commit
+  `865961d`) doesn't help when the kernel patch DSL itself can't
+  express the change.
 
 ## Bug 4 (Critical) — stage_attempts.status CHECK constraint missed `secret_pending`
 
@@ -152,6 +155,89 @@ that reflects gate vs terminal state), not from the most recent
 `finalState` of the prior run-to-gate cycle.
 
 Lower priority than Bugs 1+4. Doesn't block usage; just confusing.
+
+## Bug 7 (P1) — kernel rejects optional externalInputs as missing seed values
+
+**Discovery**: First attempt to invoke pipeline-modifier failed at
+submit time with `SEED_VALUES_MISSING_KEY: external input
+'failureContext' has no seed value`. The modifier IR declares
+`failureContext` with description starting "Optional", but
+`startPipelineRun` checks every `externalInputs[]` member as
+required regardless of any optionality hint.
+
+**Root cause**: `externalInputs` schema has no `optional` /
+`required` boolean. The kernel cannot distinguish "must supply" from
+"may omit, default to undefined". NL hints in `description` are
+ignored by the validator, so any pipeline-modifier caller without
+`failureContext: null` in seedValues hits this.
+
+**Workaround**: caller passes `failureContext: null` explicitly.
+
+**Fix direction (follow-up)**: extend `externalInputs[].optional?: boolean`
+in IR schema; `startPipelineRun` defaults missing optional inputs
+to `null` / `undefined` instead of erroring. Backward compatible
+because absence == required (current behavior).
+
+## Bug 8 (CRITICAL) — pipeline-modifier silently produces an empty patch when dry-run fails
+
+**Discovery**: Live dogfood of pipeline-modifier against the
+GitHub Issues Lister pipeline. Asked it to add a `filterByLabel`
+stage + a new external input `requiredLabel`. analyzeGap stage
+produced an excellent gap analysis with the right intent. genPatch
+ran for 154s, $0.16 cost, terminated `natural_completion`. Final
+output: `patch: {"ops": []}`, `outcome: "failed"`, no proposal
+created. Three dry_run_proposal calls inside genPatch:
+
+  - dry_run #1: 3 ops (add_stage + 2 add_wire). Result:
+    `WIRE_EXTERNAL_SOURCE_PORT_MISSING: Wire external source
+    'requiredLabel' is not declared in externalInputs[]`.
+    Agent correctly recognises it needs to add the external input.
+  - dry_run #2: 4 ops (add_external_input + add_stage + 2 add_wire).
+    Result: `ZOD_PARSE_ERROR: patch.ops.0.op: Invalid input`.
+  - dry_run #3: 0 ops. Result: `safe`. Agent submits the empty
+    patch and writes `dryRunVerdict: "safe"` to fool the applying
+    stage into a no-op pass.
+
+**Two underlying bugs**:
+
+  **8a — schema gap.** `IRPatchOpSchema` (`apps/server/src/kernel-next/ir/schema.ts:375`)
+  has 6 ops: add_stage, remove_stage, add_wire, remove_wire,
+  update_port_type, update_stage_config. It has NO
+  `add_external_input` / `remove_external_input` op. Adding a new
+  external input to an existing pipeline is unrepresentable in the
+  patch DSL. Yet the modifier's gen-patch.md doesn't restrict the
+  agent away from this need; the agent invented the op name on
+  intuition.
+
+  **8b — agent gives up on dry_run failure by submitting an empty patch.**
+  Modifier's gen-patch.md doesn't require the agent to either fix
+  the patch or fail the stage with diagnostics. An empty patch is
+  legal (prompts-only changes), so the kernel accepts it as
+  `safe` and the agent writes the empty patch with
+  `dryRunVerdict: "safe"`, hiding the actual failure from the
+  applying stage. The user sees "modifier completed" with $0.16
+  spent and zero output.
+
+**Why this is critical**: any modifier task that genuinely needs a
+new external input (a common modification pattern) silently fails
+this way. The dashboard task page would show `state: completed` with
+no error banner, no diagnostic — the only signal is `outcome:
+"failed"` buried in the applying stage's port outputs.
+
+**Fix direction (follow-up)**: 
+  1. Add `add_external_input` + `remove_external_input` to
+     `IRPatchOpSchema` and patch.ts apply logic.
+  2. Update gen-patch.md: when dry_run #N fails with diagnostics,
+     the agent MUST either (a) emit a non-empty patch that addresses
+     the diagnostic, OR (b) fail the stage with a structured
+     `gapAnalysis.risks` extension explaining why the change is
+     unrepresentable. Submitting an empty patch with
+     `dryRunVerdict: "safe"` after seeing diagnostics is a contract
+     violation.
+  3. Consider adding a kernel-side rejection: if `genPatch.patch`
+     has 0 ops AND the upstream `gapAnalysis.intendedChanges` has
+     non-zero entries, the applying stage should fail-fast rather
+     than write `outcome: "failed"` silently.
 
 ## Step verification summary
 
