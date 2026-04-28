@@ -49,6 +49,13 @@ export const PortIRSchema = z.object({
   // user. Persisted through canonicalisation so it's part of
   // version_hash (changing port semantics = new version).
   description: z.string().optional(),
+  // 2026-04-28 (Bug 7): for top-level externalInputs[] only. When true,
+  // startPipelineRun seeds null when the caller omits the key instead of
+  // raising SEED_VALUES_MISSING_KEY. Pre-Bug-7 IRs default to false
+  // (current behaviour: every externalInput is required). Stage-internal
+  // input/output ports ignore this flag — it's a seed-validation policy,
+  // not a wire/contract one.
+  optional: z.boolean().optional(),
 });
 
 // --- Fanout / gate supporting shapes ---

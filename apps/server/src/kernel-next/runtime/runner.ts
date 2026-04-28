@@ -532,6 +532,13 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
     const seedValues = opts.seedValues ?? {};
     for (const port of externalInputs) {
       if (!(port.name in seedValues)) {
+        // Bug 7 (2026-04-28): externalInputs[].optional === true means
+        // the caller MAY omit the seed value; the runner seeds null
+        // instead of failing the run. Required (default) inputs still
+        // raise SEED_VALUES_MISSING_KEY as before. This unblocks
+        // pipelines like pipeline-modifier whose `failureContext` is
+        // semantically optional but was previously rejected.
+        if (port.optional === true) continue;
         if (activeTimer !== null) clearTimeout(activeTimer);
         taskRegistry.signalTermination(opts.taskId, {
           kind: "error",
@@ -563,11 +570,17 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       suppressHooks: true,
     });
     for (const port of externalInputs) {
+      // Bug 7: optional inputs that the caller omitted are seeded as
+      // null so downstream wires resolve to a determinate value. Stages
+      // wiring from these ports must read their input as `T | null`.
+      const value = port.name in seedValues
+        ? seedValues[port.name]
+        : (port.optional === true ? null : undefined);
       portRuntime.writePort({
         attemptId,
         stageName: "__external__",
         portName: port.name,
-        value: seedValues[port.name],
+        value,
       });
     }
     portRuntime.finishAttempt(attemptId, "success");

@@ -13,7 +13,8 @@
     {
       "name": "failureContext",
       "type": "unknown",
-      "description": "Optional { taskId?, failedStageName?, errorMessage?, executionRecordId? } for failure-driven modification. Pass null if proactive."
+      "description": "Optional { taskId?, failedStageName?, errorMessage?, executionRecordId? } for failure-driven modification. Pass null if proactive.",
+      "optional": true
     }
   ],
   "name": "pipeline-modifier",

@@ -271,10 +271,16 @@ function buildInitialPortValues(
       out[`${stage.name}.__gate_feedback__`] = "";
     }
   }
-  if (seedValues && ir.externalInputs && ir.externalInputs.length > 0) {
+  if (ir.externalInputs && ir.externalInputs.length > 0) {
+    const seeds = seedValues ?? {};
     for (const port of ir.externalInputs) {
-      if (port.name in seedValues) {
-        out[`__external__.${port.name}`] = seedValues[port.name];
+      if (port.name in seeds) {
+        out[`__external__.${port.name}`] = seeds[port.name];
+      } else if (port.optional === true) {
+        // Bug 7 (2026-04-28 dogfood): optional input the caller omitted
+        // gets null in initial portValues so downstream wires resolve
+        // (matches runner.ts's seed-phase write of null).
+        out[`__external__.${port.name}`] = null;
       }
     }
   }

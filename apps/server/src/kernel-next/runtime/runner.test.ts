@@ -1457,6 +1457,60 @@ describe("runPipeline seedValues (Task 1.8)", () => {
     db.close();
   });
 
+  // Bug 7 (2026-04-28 dogfood): externalInputs[].optional skips
+  // SEED_VALUES_MISSING_KEY and seeds null when the caller omits the key.
+  it("seeds null for an optional externalInput omitted by the caller", async () => {
+    const db = makeDb();
+    const ir: PipelineIR = {
+      name: "seed-optional-missing",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [{ name: "ctx", type: "unknown" }],
+          outputs: [{ name: "done", type: "boolean" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      externalInputs: [{ name: "ctx", type: "unknown", optional: true }],
+      wires: [
+        { from: { source: "external", port: "ctx" }, to: { stage: "A", port: "ctx" } },
+      ],
+    };
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+
+    let observedCtx: unknown = "not-observed";
+    let handlerCalled = 0;
+    const result = await runPipeline({
+      db,
+      ir,
+      taskId: "opt-t",
+      versionHash: hash,
+      handlers: {
+        A: (inputs) => {
+          handlerCalled += 1;
+          observedCtx = inputs.ctx;
+          return { done: true };
+        },
+      },
+      seedValues: {}, // ctx omitted; should NOT throw
+    });
+    expect(result.finalState).toBe("completed");
+    expect(observedCtx).toBeNull();
+
+    // Seed value should be null in port_values.
+    const seedRow = db
+      .prepare(
+        "SELECT port_name, value_json FROM port_values WHERE stage_name = ? AND port_name = ?",
+      )
+      .get("__external__", "ctx") as { port_name: string; value_json: string } | undefined;
+    expect(seedRow).toBeDefined();
+    expect(JSON.parse(seedRow!.value_json)).toBeNull();
+
+    db.close();
+  });
+
   it("passes seedValues to compiler for initial portValues so downstream sees the value", async () => {
     const db = makeDb();
     const ir: PipelineIR = {
