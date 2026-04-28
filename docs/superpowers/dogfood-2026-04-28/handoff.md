@@ -346,15 +346,20 @@ f2658fe docs(dogfood): Bug 11 root cause located — kernel discards SDK status 
 
 ## Open issues for next session
 
-### Medium
-
-1. **Replenish more catalog entries**. 现 10 条. 候选: Notion / Linear (走 mcp-remote pattern) / HTTP fetch (找一个 vendor 维护的没坏的). 每条加之前必跑 mode-2.
+(All medium-priority issues from continuation 2 are now closed; see
+the closed list below.)
 
 ### ✅ Closed in continuation 3
 
+1. ~~**Runner cross-region cancellation**~~ — closed. New `STAGE_CANCELLED` event + per-region waiting/executing transitions + runner subscribe-loop propagation. When a stage enters its `error` final via `executor_failed` / `no_active_wire`, runner BFS over `ir.wires` and dispatches `STAGE_CANCELLED` to every transitive downstream not yet finalized. Each region matches `event.stage === self` so cancellation is targeted. New finalizedStages reason `upstream_cancelled` (not surfaced to stageErrors — the root-cause stage owns the message). 4 unit tests + 1 promoted e2e (validatePatch fail → applying never starts → run resolves in <1s vs prior 10-min timeout).
+
 2. ~~**inventory persistAs 路径未实测**~~ — closed. New `secret-gate-persist-as.test.ts` (1 e2e, ~7s): provideTaskSecrets with `persistAs: { ENV_KEY: { entryId } }` writes mcp_inventory + mcp_inventory_secrets rows; second pipeline run with same envKey resolves from inventory without raising a fresh secret_gate (no re-prompt). Stub catalog exec so npm-view healthcheck doesn't hit the network. End-to-end loop now covered alongside Step 8's "inline only" verification.
 
-3. ~~**Runner cross-region cancellation**~~ — closed. New `STAGE_CANCELLED` event + per-region waiting/executing transitions + runner subscribe-loop propagation. When a stage enters its `error` final via `executor_failed` / `no_active_wire`, runner BFS over `ir.wires` and dispatches `STAGE_CANCELLED` to every transitive downstream not yet finalized. Each region matches `event.stage === self` so cancellation is targeted. New finalizedStages reason `upstream_cancelled` (not surfaced to stageErrors — the root-cause stage owns the message). 4 unit tests + 1 promoted e2e (validatePatch fail → applying never starts → run resolves in <1s vs prior 10-min timeout).
+3. ~~**Replenish more catalog entries**~~ — closed by re-evaluation, not by adding. Continuation 3 vetted the candidate pool (Notion / Linear / HTTP fetch). Findings:
+   - **Notion / Linear**: official path is `mcp-remote https://mcp.{linear,notion}.app/mcp` — OAuth-gated remote transport, NOT stdio. Vetter (`scratch-vet-mcp.mjs`) only handles stdio handshakes; rot-guard mode-2 only knows the spawn-test ladder. Adding an mcp-remote entry would need a separate vetting path + a way to document the OAuth flow that doesn't ship a token. Both are bigger than "add 3 entries".
+   - **HTTP fetch**: no vendor-published stdio fetch MCP. The Python `mcp-server-fetch` runs via uvx, not npx; entries.json schema is `command: string + args: string[]` so uvx is technically expressible, but exposes a different healthcheck story (uvx vs npm view). The other candidates (`@modelcontextprotocol/server-pdf` / `-map` / `-transcript` / `-threejs`) are all HTTP-transport demo apps, not stdio.
+   - **`@modelcontextprotocol/server-everything`**: passes mode-2 (13 tools, 18ms init), but it's a reference / demo MCP — adding it bloats the catalog without giving real workflows new capability.
+   The 10 existing entries cover the actual dogfood workflows. Per CLAUDE.md "design for the present problem, do not pre-spend": adding entries with no immediate user is predictive infrastructure. New entries land when a real workflow needs them, with the rot-guard mode-2 + scratch-vet-mcp.mjs pair already in place to gate them.
 
 ### Lower priority
 
