@@ -262,3 +262,136 @@ The 6 dogfood-only bugs span: prompt drift (6, 8b), schema gap
 opacity (11). None of them are unit-testable. None.
 
 That's the case for dogfood. It's not optional.
+
+---
+
+# Continuation session — 2026-04-28 (after 815ee7f)
+
+15 commits. Closed every "high value" item from §Open issues except
+Step 8 UI walk (which the user authorised + provided a token for).
+Two new P3 bugs surfaced and one was traced to a misattribution.
+
+## Commit chain (15)
+
+```
+4fc7778 docs(dogfood): Bug 12 fully closed
+822a3d5 fix(runtime): suppress run_final on secret_pending exit (Bug 12 root cause)
+fade2ef docs(dogfood): correct Bug 13 framing — chrome profile artifact, not product bug
+c91c8c5 docs(dogfood): Bug 12 partial-fix writeup + ring-buffer hypothesis
+ed8eb6b fix(runtime): pauseBudget on secret_pending — symmetric with gate-pause (Bug 12)
+9ba99fa docs(dogfood): Step 8 verified end-to-end with real GitHub PAT
+715deb1 docs(dogfood): Step 9 verified via sequential-thinking SDK end-to-end run
+f162216 feat(catalog): add memory + sequential-thinking builtin entries
+d7500d7 docs(handoff): #5 (CI rot-guard) is N/A — repo is single-user per CLAUDE.md
+69c0fcd docs(handoff): Bug 8b investigated — defense-in-depth needs IR migration, deferred
+14ae290 test(rot-guard): add mode-3 cold-cache spawn-test for Bug 11 catalog releases
+6a5f042 fix(runtime): read mcp_servers[].status directly instead of reverse-engineering it
+99201a1 feat(runtime): capture SDK stderr — preserve MCP 'Connection failed' diagnostics
+f2658fe docs(dogfood): Bug 11 root cause located — kernel discards SDK status field
+1e8b7d0 fix(prompts): use entry.id (kebab-case) for IR mcpServers[].name
+```
+
+## Bug score updates
+
+| # | Status | Notes |
+|---|---|---|
+| 1-7, 8a, 9, 10 | ✅ closed pre-session | (carried over from 815ee7f) |
+| 8b | 📝 investigated → deferred | 三选项写入 §Open issues; 都需要 IR migration. |
+| 11 | ✅ closed (3-step root cause fix) | (1) `99201a1` SDK stderr 接入; (2) `6a5f042` 改 read `mcp_servers[].status`; (3) `14ae290` rot-guard mode-3 冷缓存. 详情见 findings.md. |
+| 12 | ✅ closed (root cause fix) | (1) `ed8eb6b` watchdog pauseBudget; (2) `822a3d5` suppress run_final on secret_pending exit. UI 残影根因消除. |
+| 13 | reclassified — not a product bug | `fade2ef`. Test-infra footgun: 强杀 chrome-e2e-profile 后 mojo network state 损坏. 不是 Next.js / kernel 问题, 不修. |
+
+总计：12 个原始 bug + 1 误归类。**11 个 bug 全闭合，1 deferred**。
+
+## What landed this session
+
+### 新功能 / 改进
+
+1. **SDK stderr capture** (`99201a1`): `buildSdkBaseOptions` 加可选 `stderr` callback, real-executor 注册 `filterAndAppendSdkStderr` 把"Connection failed after Xms / MCP server failed / Authentication failed / MCPB invalid|failed" 这类关键诊断行写到 `agent_stream_json` (新加 `type: "sdk_stderr"`). 前端加独立 "SDK Stderr" tab. 不再丢失 SDK 内部 MCP 握手失败的原始信号.
+
+2. **MCP status detector rewrite** (`6a5f042`): real-executor.ts:709-736 不再反向扫 `tools[]` 数组找 `mcp__<name>__*` 前缀, 改读 SDK 直接给的 `system/init.mcp_servers[].status` 字段. 三个分支:
+   - `failed` → `MCP_STARTUP_FAILED` (保留 token 触发 F22 retry budget)
+   - `needs-auth` → **新错误码** `MCP_NEEDS_AUTH` (不重试, 走 OAuth)
+   - `pending` → 容忍 (init 时还在握手, 后续消息里可能转 connected)
+   - `connected`/`disabled` → 通过
+
+3. **rot-guard mode-3** (`14ae290`): `RUN_NPM_HEALTHCHECKS=3` 在每个 entry 测前 wipe `~/.npm/_npx`, 强制冷启动路径. 60s budget. 默认 skip, 仅手动跑. 不能在 CI / shared box 用 (会 nuke 所有 npx 缓存).
+
+4. **catalog +2 entries** (`f162216`): `memory` (9 工具知识图谱) + `sequential-thinking` (1 工具推理辅助). 都是官方 `@modelcontextprotocol/server-*`, 零 envKey, mode-2 全过. `server-pdf` 因 HTTP transport 与 catalog stdio schema 不符被否决 (commit message 标记).
+
+5. **secret_pending watchdog pause** (`ed8eb6b`): 在 secret_pending 触发的两处 (非 fanout L1133 + fanout L1551) 调 `pauseBudget()`, 与 gate-pause 对称. fanout 场景下 sibling stage 仍跑时不再因 human input 拖累 timeout budget. 单测 `secret-pending-budget-pause.test.ts` 100ms timeout + 不可满足 envKey 验证 runPipeline clean resolve.
+
+6. **suppress run_final on secret_pending** (`822a3d5`): runner finalize 块加 `if (!secretPendingObserved)` 守卫. 此前 task 进 secret_pending 时 snapshot.value=`failed` (因为 STAGE_FAILED 拆区), 导致一条 `finalState: failed` 的 SSE 进 broadcaster ring buffer; dashboard reload 时 replay 历史, UI 错显 "failed". **DB 一直对 (task_finals 不写)**, 只是 SSE 历史撒谎. 守卫消除根因. 反向验证: 移除守卫测试立刻 fail.
+
+### 实测验证
+
+- **Step 9** (`715deb1`): `scratch-step89-real.mjs` 用 sequential-thinking 走 SDK end-to-end. mcp_servers status="connected" / 21 工具 / mcp__sequential-thinking__sequentialthinking 真调用 / tool_result 45ms 回 / SDK closed result.subtype="success". 总 turn 29s.
+- **Step 8** (`9ba99fa`): 用户提供短期 GitHub PAT, 走 GitHub Issues Lister pipeline 完整 secret-gate 链路. 截屏 `step8-01-gate-pending.png` / `step8-02-token-filled.png` / `step8-03-after-resume-completed.png`. 实测顺序: trigger /run 无 envValues → secret_pending → POST /secrets → resolved:true → status running → fetchOpenIssues 37.9s 拉到 10 个真实 issues → filterByLabel 跑完 → completed. Hot-update audit 显示 actor=secret-gate-resume → 复用 migration 通路.
+
+### 文档
+
+- `findings.md` 加入 Bug 11 根因 + 三步修复 / Step 8 完整 verification / Step 9 完整 verification / Bug 12 闭合 / Bug 13 reclassification.
+- handoff.md 上半段 (815ee7f) 不动, 下半段是本次延续 (你正在读).
+
+## Step verification table (final)
+
+| Step | Status |
+|---|---|
+| 6 — `run_pipeline { name }` resolves to versionHash + 启动任务 | ✅ |
+| 7 — secret-gate 在 envKey 缺失时触发 | ✅ |
+| 8 — 用户 dashboard 提交 secret, 任务 resume, MCP 拿到真实值 | ✅ end-to-end (本次) |
+| 9 — 任务继续, MCP 真调, 生成输出 | ✅ 两次 (sequential-thinking SDK probe + 真实 GitHub API run) |
+
+唯一未覆盖的是 **inventory 持久化 (persistAs)** —— 用户提交 token 时选择 "save to inventory" 而非 "inline" 的路径. POST /secrets 已经支持 persistAs 参数 (route schema 验证), 但本次没走这条; 留作下次 dogfood.
+
+## Open issues for next session
+
+### High value
+
+1. **Bug 8b kernel-side guard** (deferred, see §Bug score updates).
+   不简单——applying stage 不持有 gapAnalysis (在 genPatch 上游), 三条修法都需 IR 重构. 当前由 prompt rule 顶住, dogfood 内未复发. 等下次有 builtin pipeline IR 改动时一并做.
+
+### Medium
+
+2. **inventory persistAs 路径未实测**. 上面 Step 8 收尾标注. 不阻塞任何东西.
+
+3. **Replenish more catalog entries**. 现 10 条. 候选: Notion / Linear (走 mcp-remote pattern) / HTTP fetch (找一个 vendor 维护的没坏的). 每条加之前必跑 mode-2.
+
+### Lower priority
+
+4. **架构白皮书重写**. CLAUDE.md 已标"暂停维护". Phase 6 收尾活, 文档活, AI 推不动 M1-M4. 等手感跑久了再写更准.
+
+## Things NOT to do (reaffirmed)
+
+- 不要再扩 dashboard 的 finalResult 来源覆盖逻辑—— Bug 12 现在在源头切了, 后续不该再加 UI 兜底防御 (会模糊"DB 是权威"这条线).
+- 不要为了"完整覆盖" inventory persistAs 跑测试—— roadmap 已落 Phase 5, 路径 schema 验证齐全, 单测覆盖到位; 等下次真实业务用到再 dogfood.
+- 不要 force-kill chrome-e2e-profile 中途搞测试—— Bug 13 经验. 要么完整启动 / 关闭, 要么 isolated context.
+- 不要把 Anthropic 订阅当 MCP 第三方 API key 的替代品—— 用户提到这个混淆, 已经在前面会话里澄清, 但记下来.
+
+## Key files for fast onboarding (additions to original handoff list)
+
+新加的关键文件:
+
+- `apps/server/src/kernel-next/runtime/runner.ts:1133, 1551, 968` — pauseBudget + run_final guard 三个 site
+- `apps/server/src/kernel-next/runtime/secret-pending-budget-pause.test.ts` — Bug 12 双重回归
+- `apps/server/src/kernel-next/runtime/real-executor.mcp-status-detector.test.ts` — Bug 11 status detector 五分支测试
+- `apps/server/src/kernel-next/runtime/real-executor-stderr-filter.test.ts` — SDK stderr filter 测试
+- `apps/server/src/kernel-next/mcp-catalog/entries-rot-guard.test.ts` — mode 1/2/3 完整供应链测试梯子
+- `apps/server/scratch-step89-real.mjs` (gitignored) — SDK end-to-end probe template
+- `apps/server/scratch-bug11-repro.mjs` (gitignored) — minimal SDK reproducer
+- `apps/server/scratch-vet-mcp.mjs` (gitignored) — catalog candidate vetter
+
+## Test count
+
+- runtime suite: 75 files / 518 tests (vs 73 / 511 之前). +5 测试覆盖本次 6 个 commit 的代码改动.
+- 每个 fix commit 都带回归测试 + 反向验证可证伪.
+
+## The session's meta-lesson (additions)
+
+前次的 lesson 还成立——**dogfood 不是可选项**. 本次再加一条:
+
+**根因 vs 兜底之分**. Bug 12 走过两阶段:
+1. `c91c8c5` 列了 3 个 UI 修复候选 (a/b/c), 都是兜底——预设"将来还可能有别的路径漏发 stale".
+2. `822a3d5` 一刀治本——secret_pending 不发 run_final, 后续完全不需要 UI 防御.
+
+第二阶段做完, 第一阶段所有候选作废. 这是 CLAUDE.md "为眼下问题设计、不预支" 原则的具体应用. 见到根因就修根因, 别在中下游加防御层. 防御层永远比根因多一种边界 case 漏掉.
