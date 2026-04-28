@@ -15,6 +15,7 @@
 // that returns `{ foo: 42 }`, and we verify the shape right now instead
 // of hoping it still works at run time.
 
+import { createRequire } from "node:module";
 import type { PipelineIR, ScriptStage, Diagnostic } from "../ir/schema.js";
 import type { ScriptModule, ScriptModuleContext } from "../runtime/script-module-resolver.js";
 import { compileInlineScript } from "./compile-inline-script.js";
@@ -216,6 +217,15 @@ const RUNTIME_REQUIRE_ALLOWLIST: ReadonlySet<string> = new Set([
   "node:zlib",
 ]);
 
+// ESM workaround — apps/server is type:module, so `require` is not a
+// global. createRequire(import.meta.url) gives us a CJS require for
+// the compiled script's `__importStar(require(...))` calls. Without
+// this, every inline script that imports a node:* builtin fails at
+// import time with "require is not defined" — observed during
+// continuation-3 dogfood of pipeline-generator emitting a publish
+// stage that imports node:fs/promises + node:path.
+const cjsRequire = createRequire(import.meta.url);
+
 function importJsModule(js: string): ScriptModule {
   const moduleObj: { exports: { default?: ScriptModule } } = { exports: {} };
   const restrictedRequire = (id: string) => {
@@ -225,8 +235,7 @@ function importJsModule(js: string): ScriptModule {
           `whitelist violation (only node: stdlib subset allowed)`,
       );
     }
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    return require(id);
+    return cjsRequire(id);
   };
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const factory = new Function("module", "exports", "require", js);

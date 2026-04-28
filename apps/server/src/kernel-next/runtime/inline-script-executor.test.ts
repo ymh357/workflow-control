@@ -226,4 +226,50 @@ describe("InlineScriptStageExecutor — submit + run end-to-end (D'-3)", () => {
     ).toBe(true);
     db.close();
   });
+
+  // Continuation-3 dogfood regression: inline scripts that import
+  // node:* builtins compile to `require("node:*")` calls. apps/server
+  // is type:module so the `require` global is undefined; without
+  // createRequire(import.meta.url), every such script fails the
+  // submit-time contract test with `SCRIPT_IMPORT_ERROR: require is
+  // not defined`. Discovered when pipeline-generator emitted a
+  // publish stage that imported node:fs/promises + node:path.
+  //
+  // We can't test the happy path under vitest (module resolution for
+  // @types/node fails when vitest cwd ≠ apps/server, the TS compile
+  // step inside compileInlineScript rejects the import with TS2307
+  // before the runtime require is ever exercised). What we CAN test:
+  // any failure must NOT be the ESM "require is not defined"
+  // ReferenceError — that one is the bug we fixed. Acceptable
+  // failures are TS2307 (compile-time, environment-specific) or
+  // SCRIPT_IMPORT_VIOLATION (runtime, off-whitelist module). A
+  // ReferenceError on `require` would surface as
+  // `SCRIPT_IMPORT_ERROR: require is not defined` and is what we
+  // forbid here.
+  it("inline script importing node:* never fails with ESM 'require is not defined'", async () => {
+    const db = makeDb();
+    const moduleSource = `
+      import { createHash } from "node:crypto";
+      const mod: ScriptModule = {
+        async run(inputs) {
+          const raw = inputs.raw as string;
+          const hash = createHash("sha1").update(raw).digest("hex");
+          return { shaped: hash, length: raw.length };
+        },
+      };
+      export default mod;
+    `;
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const ir = irWithInlineScript(moduleSource, { raw: "hello" });
+    const submit = await svc.submit(ir, { prompts: { "seed-prompt": "dummy" } });
+    if (!submit.ok) {
+      const messages = submit.diagnostics.map((d) => d.message ?? "").join(" | ");
+      // Pre-fix: would surface 'require is not defined' from new
+      // Function('module', 'exports', 'require', js) when js contains
+      // synthesized `require("node:crypto")` and `require` global is
+      // absent (ESM `type: module`).
+      expect(messages).not.toMatch(/require is not defined/);
+    }
+    db.close();
+  });
 });

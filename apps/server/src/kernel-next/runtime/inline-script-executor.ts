@@ -20,6 +20,7 @@
 // graph, not from anywhere the AI can influence outside the pipeline
 // contract.
 
+import { createRequire } from "node:module";
 import type { ScriptStage } from "../ir/schema.js";
 import { wireSourceKeyPrefix } from "../ir/wire-helpers.js";
 import type {
@@ -154,6 +155,12 @@ export class InlineScriptStageExecutor implements StageExecutor {
  * No filesystem touch, no tempdir cleanup, no interaction with
  * vitest's dynamic-import rewriter (we never call `import()`).
  */
+// ESM workaround — apps/server is type:module so `require` global is
+// undefined. createRequire(import.meta.url) gives us a CJS require
+// for compiled-script `require()` calls. Same fix applied to
+// contract-check.ts. Continuation-3 dogfood discovery.
+const cjsRequire = createRequire(import.meta.url);
+
 function importJsModule(js: string): ScriptModule {
   const moduleObj: { exports: { default?: ScriptModule } } = { exports: {} };
   const restrictedRequire = (id: string) => {
@@ -163,8 +170,7 @@ function importJsModule(js: string): ScriptModule {
           `whitelist violation (only node: stdlib subset allowed)`,
       );
     }
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    return require(id);
+    return cjsRequire(id);
   };
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const factory = new Function("module", "exports", "require", js);
