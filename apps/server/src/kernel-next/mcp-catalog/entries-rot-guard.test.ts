@@ -108,7 +108,14 @@ const SPAWN_TOTAL_BUDGET_MS = 60000;
       }
 
       const start = Date.now();
-      const initialized = await new Promise<{ ok: boolean; reason: string; initMs?: number }>((resolve) => {
+      type StageResult = {
+        ok: boolean;
+        reason: string;
+        initMs?: number;
+        toolsListMs?: number;
+        toolCount?: number;
+      };
+      const result_ = await new Promise<StageResult>((resolve) => {
         const child = spawn(entry.command, entry.args, {
           stdio: ["pipe", "pipe", "pipe"],
           env,
@@ -117,64 +124,101 @@ const SPAWN_TOTAL_BUDGET_MS = 60000;
         let stderr = "";
         let resolved = false;
         let firstStdoutAt: number | null = null;
-        const settle = (ok: boolean, reason: string, initMs?: number): void => {
+        let initializedAt: number | null = null;
+        let initializeSent = false;
+        let toolsListSent = false;
+        const settle = (r: StageResult): void => {
           if (resolved) return;
           resolved = true;
           try { child.kill(); } catch { /* best-effort */ }
-          resolve({ ok, reason, initMs });
+          resolve(r);
+        };
+        const sendOnce = (id: number, method: string, params: Record<string, unknown>): void => {
+          child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
+        };
+        const tryParseAllJsonLines = (): { id: number; result?: unknown; error?: unknown }[] => {
+          const lines = stdout.split("\n").filter((l) => l.trim().startsWith("{"));
+          const out: { id: number; result?: unknown; error?: unknown }[] = [];
+          for (const line of lines) {
+            try {
+              const obj = JSON.parse(line);
+              if (typeof obj.id === "number") out.push(obj);
+            } catch { /* mid-line, ignore */ }
+          }
+          return out;
         };
         child.stdout.on("data", (d) => {
           if (firstStdoutAt === null) firstStdoutAt = Date.now();
           stdout += d.toString();
-          // Look for the initialize result with id:1.
-          if (/"id"\s*:\s*1[\s,}]/.test(stdout) && stdout.includes("\"result\"")) {
-            const initMs = Date.now() - (firstStdoutAt ?? start);
-            settle(true, "initialized", initMs);
+          const responses = tryParseAllJsonLines();
+          // Step 1: wait for initialize (id=1) result.
+          if (initializedAt === null) {
+            const initResp = responses.find((r) => r.id === 1 && r.result !== undefined);
+            if (initResp) {
+              initializedAt = Date.now();
+              // Per MCP protocol, send `notifications/initialized` then
+              // tools/list to mirror what the SDK does.
+              child.stdin.write(JSON.stringify({
+                jsonrpc: "2.0",
+                method: "notifications/initialized",
+                params: {},
+              }) + "\n");
+              sendOnce(2, "tools/list", {});
+              toolsListSent = true;
+            }
+          }
+          // Step 2: wait for tools/list (id=2) result.
+          if (initializedAt !== null && toolsListSent) {
+            const toolsResp = responses.find((r) => r.id === 2);
+            if (toolsResp && toolsResp.result !== undefined) {
+              const tools = (toolsResp.result as { tools?: unknown[] }).tools ?? [];
+              const initMs = initializedAt - (firstStdoutAt ?? start);
+              const toolsListMs = Date.now() - initializedAt;
+              settle({ ok: true, reason: "initialized + tools advertised", initMs, toolsListMs, toolCount: tools.length });
+            }
           }
         });
         child.stderr.on("data", (d) => { stderr += d.toString(); });
-        child.on("error", (err) => settle(false, `spawn error: ${err.message}`));
+        child.on("error", (err) => settle({ ok: false, reason: `spawn error: ${err.message}` }));
         child.on("exit", (code) => {
           if (resolved) return;
-          // Treat clean exit (code=0) without an initialize result as a
-          // race rather than a hard fail: some MCP servers (e.g. @fre4x/arxiv)
-          // exit before flushing stdout when stdin closes early. Defer to
-          // the timeout — if the server didn't print "id":1, that's the
-          // real signal. Hard-fail only on non-zero exits with a real
-          // stderr message.
           if (code === 0 && stderr.length === 0) {
             return; // wait for timeout
           }
-          settle(false, `process exited code=${code}; stderr first 300=${stderr.slice(0, 300).replace(/\n/g, " ")}`);
+          settle({ ok: false, reason: `process exited code=${code}; stderr first 300=${stderr.slice(0, 300).replace(/\n/g, " ")}` });
         });
         // Send initialize request.
-        child.stdin.write(JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "initialize",
-          params: {
+        if (!initializeSent) {
+          initializeSent = true;
+          sendOnce(1, "initialize", {
             protocolVersion: "2024-11-05",
             capabilities: {},
             clientInfo: { name: "rot-guard", version: "1" },
-          },
-        }) + "\n");
-        // Total budget covers cold-start npm download + server init.
+          });
+        }
+        // Total budget covers cold-start npm download + server init + tools/list.
         setTimeout(
-          () => settle(false, `timeout waiting for initialize result (>${SPAWN_TOTAL_BUDGET_MS}ms total)`),
+          () => settle({ ok: false, reason: `timeout (>${SPAWN_TOTAL_BUDGET_MS}ms total): initializedAt=${initializedAt !== null} toolsListSent=${toolsListSent}` }),
           SPAWN_TOTAL_BUDGET_MS,
         );
       });
 
-      if (!initialized.ok) {
-        throw new Error(`${entry.id}: ${initialized.reason}`);
+      if (!result_.ok) {
+        throw new Error(`${entry.id}: ${result_.reason}`);
       }
-      // Bug 10: even after the tarball is cached, the MCP server's init
-      // span (first stdout → initialize result) must fit the SDK's
-      // window. A package that initializes >10s after first stdout
-      // works standalone but orphans inside the SDK runtime.
-      if (initialized.initMs !== undefined && initialized.initMs > SDK_MCP_INIT_BUDGET_MS) {
+      if (result_.initMs !== undefined && result_.initMs > SDK_MCP_INIT_BUDGET_MS) {
         throw new Error(
-          `${entry.id}: server initialized in ${initialized.initMs}ms (>${SDK_MCP_INIT_BUDGET_MS}ms SDK budget) — would orphan inside SDK runtime`,
+          `${entry.id}: initialize took ${result_.initMs}ms (>${SDK_MCP_INIT_BUDGET_MS}ms SDK budget) — would orphan inside SDK runtime`,
+        );
+      }
+      if (result_.toolsListMs !== undefined && result_.toolsListMs > SDK_MCP_INIT_BUDGET_MS) {
+        throw new Error(
+          `${entry.id}: tools/list took ${result_.toolsListMs}ms (>${SDK_MCP_INIT_BUDGET_MS}ms SDK budget) — would orphan inside SDK runtime`,
+        );
+      }
+      if (result_.toolCount !== undefined && result_.toolCount === 0) {
+        throw new Error(
+          `${entry.id}: server advertised 0 tools at tools/list — SDK would emit MCP_STARTUP_FAILED`,
         );
       }
     },

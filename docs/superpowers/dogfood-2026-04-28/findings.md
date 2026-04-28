@@ -334,6 +334,54 @@ budget (~10s based on observation, exact value unknown). That
 makes the test surface the real-runtime constraint, not just
 "package starts eventually". Tracked as a follow-up.
 
+## Bug 11 (P2) — MCP_STARTUP_FAILED for spawn-test-passing entries
+
+**Discovery**: After Bug 10 fix (split-budget spawn-test), generated
+"Page Title Extractor" using playwright entry (which passed mode-2
+spawn-test in 5.6s). Real run orphaned in 43s with
+`MCP_STARTUP_FAILED: declared external MCP server(s) 'playwright'
+did not advertise any tools at session init`.
+
+**Root cause**: SDK validates not just MCP `initialize` handshake
+but also that the server advertises tools at session init via
+`tools/list`. spawn-test verifies the former but not the latter.
+Some packages (this run: @playwright/mcp) reply to initialize but
+either don't reply to tools/list within SDK budget, or reply with
+empty tools.
+
+**Difference from Bug 10**: arxiv was slow on initialize (>10s).
+playwright is fast on initialize but slow / silent on tools/list.
+Same "MCP_STARTUP_FAILED" symptom; different protocol stage.
+
+**Fix options (not in this commit)**:
+  1. Extend spawn-test to also send `tools/list` after initialize
+     and require ≥1 tool in the response within SDK budget.
+  2. Add the same to add_mcp_catalog_entry's healthcheck so
+     newly-added entries are blocked at write time.
+
+**Workaround for now**: drop playwright from the catalog if the
+problem reproduces on a fresh server. (This run might be transient
+network/SDK weirdness — both runs of the SAME pipeline did the
+same thing, so likely not transient. Confirmed pattern, fix
+deferred.)
+
+**Update 2026-04-28**: spawn-test extended (commit f3b2256+follow-up)
+to send `tools/list` after `initialize` and verify ≥1 tool is
+advertised within SDK budget. ALL 8 entries pass this enhanced
+test, INCLUDING playwright — yet playwright still throws
+MCP_STARTUP_FAILED in the real SDK runtime. So tools/list-against-
+stdio is necessary but not sufficient. The remaining gap is the
+SDK's own MCP transport / framing — possibly a protocol-version
+mismatch or a quirk of how the Claude Agent SDK negotiates that
+the standalone `npx` JSON-RPC probe doesn't replicate. Tracked
+as a future investigation; the 5-rung supply-chain test ladder
+holds for everything except this last mile.
+
+**Lesson (extends Bug 9 + 10)**: each MCP protocol method is its
+own supply-chain test. Initialize alone is not enough; the SDK
+expects the full {initialize, tools/list, ...} sequence to
+complete in budget.
+
 ## Step verification summary
 
 | Step | Status |
