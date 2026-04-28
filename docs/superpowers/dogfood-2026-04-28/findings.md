@@ -292,6 +292,48 @@ exists but can't actually start as an MCP server" — needs a real spawn
 
 Each layer catches something the layers above it can't.
 
+## Bug 10 (P1) — spawn-test pass ≠ SDK-runnable
+
+**Discovery**: After Bug 9 fix (catalog count 9 with all spawn-test
+passing or known-flaky), generated an "arXiv Paper Search" pipeline
+to dogfood Step 6-9 end-to-end. Pipeline orphaned in 26s, 0
+agent_stream events — SDK couldn't establish MCP handshake.
+
+**Root cause**: `@fre4x/arxiv` cold-start needs ~25s (verified via
+standalone `node -e` probe). The Claude Agent SDK's MCP startup
+budget for stdio servers is shorter than that. Standalone manual
+probe → 25s success. Inside SDK runtime → 26s orphan.
+
+**The flake was signal**: the spawn-test rot-guard's `SKIP_SPAWN_TEST`
+list (added in 8d39ada) marked arxiv as "works standalone, times
+out inside vitest worker". I treated that as test-harness noise
+("low confidence in cause"). It wasn't noise — it was the same
+slow-cold-start problem the SDK runtime hits. Slow standalone +
+slow inside vitest worker + slow inside Claude SDK is one
+phenomenon, not three.
+
+**Fix (commit `05be361`)**: removed arxiv from catalog. No way to
+extend SDK's MCP startup window without a public config option;
+warming npx cache pre-emptively is fragile.
+
+**Lesson**: extend the supply-chain testing ladder.
+
+  - schema → unit
+  - exists → npm view (mode-1)
+  - starts → spawn + initialize (mode-2)
+  - **starts in time** → spawn-test must respect the SDK's startup
+    budget, not its own 60s timeout. If a package needs 25s to
+    boot inside vitest, it will need 25s+ inside the SDK and
+    likely time out there. Mode-2 should fail at the SDK budget,
+    not at a generous test-harness budget.
+  - authenticates → manual
+  - satisfies agent → live LLM dogfood
+
+Spawn-test should be hardened to fail at the SDK's MCP startup
+budget (~10s based on observation, exact value unknown). That
+makes the test surface the real-runtime constraint, not just
+"package starts eventually". Tracked as a follow-up.
+
 ## Step verification summary
 
 | Step | Status |
