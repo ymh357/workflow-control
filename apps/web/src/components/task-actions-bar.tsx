@@ -9,7 +9,20 @@ import { CopyButton } from "./copy-button";
 
 interface TaskActionsBarProps {
   taskId: string;
-  topState: "idle" | "running" | "completed" | "failed" | "unknown";
+  // Mirrors the union in [taskId]/page.tsx — see the comment there. Extended
+  // 2026-04-28 to include the gate/secret-gate states the canonical /status
+  // endpoint emits but the SSE task_state event doesn't. Cancel/retry only
+  // act on "running"/"failed", so the new states are safe no-ops here.
+  topState:
+    | "idle"
+    | "running"
+    | "completed"
+    | "failed"
+    | "cancelled"
+    | "orphaned"
+    | "gated"
+    | "secret_pending"
+    | "unknown";
   hasFailedStage: boolean;
   /** Called after a state-changing action so the page can refetch fresh data. */
   onStateChanged?: () => void;

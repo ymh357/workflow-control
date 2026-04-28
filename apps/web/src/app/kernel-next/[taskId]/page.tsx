@@ -52,7 +52,22 @@ interface TaskCostUpdatePayload {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
-type TopLevelState = "idle" | "running" | "completed" | "failed" | "unknown";
+// Mirrors the union returned by GET /api/kernel/tasks/:id/status (server's
+// TaskStatusReport). The SSE task_state event only emits the orchestrator
+// loop's main states (idle/running/completed/failed); the canonical task
+// status — which includes gate/secret-gate sub-states the dashboard must
+// display — comes from the status endpoint poller (see useEffect below).
+// "idle" is SSE-only (pre-first-stage); the status endpoint never returns it.
+type TopLevelState =
+  | "idle"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "orphaned"
+  | "gated"
+  | "secret_pending"
+  | "unknown";
 
 type StageErrorReason = "no_active_wire" | "executor_failed";
 
@@ -618,6 +633,22 @@ export default function KernelNextTaskPage() {
           status: string;
           pending?: Array<{ gateId: string }>;
         };
+        // Bug 5 fix: the canonical task status comes from this endpoint,
+        // not SSE task_state. SSE only emits idle/running/completed/failed
+        // for the orchestrator loop; gated/secret_pending only show up
+        // here. Override topState so the header badge reflects the real
+        // current state instead of the last orchestrator-loop transition.
+        if (
+          body.status === "running"
+          || body.status === "completed"
+          || body.status === "failed"
+          || body.status === "cancelled"
+          || body.status === "orphaned"
+          || body.status === "gated"
+          || body.status === "secret_pending"
+        ) {
+          setTopState(body.status);
+        }
         if (body.status === "gated" && Array.isArray(body.pending)) {
           setPendingGateIds(body.pending.map((g) => g.gateId));
         } else {
@@ -757,9 +788,10 @@ export default function KernelNextTaskPage() {
           <span>
             state:{" "}
             <span className={
-              topState === "failed" ? "text-red-400"
+              topState === "failed" || topState === "cancelled" || topState === "orphaned" ? "text-red-400"
               : topState === "completed" ? "text-emerald-400"
               : topState === "running" ? "text-blue-400"
+              : topState === "gated" || topState === "secret_pending" ? "text-amber-400"
               : "text-zinc-400"
             }>
               {topState}
