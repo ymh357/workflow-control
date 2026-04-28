@@ -576,14 +576,42 @@ but consistent with macOS process throttling under prolonged
 inactivity: setTimeout wakeups can be delayed when Node.js sits
 idle in a power-saving state. Not investigated further.
 
-**Bug 13 (P3) — Next.js dev server stalls after chrome restart**:
-After killing chrome instances mid-session, subsequent requests from
-new chrome to `localhost:3004` (Next.js dev) accumulate in pending
-state for minutes. Every request to /api/kernel/* (proxied through
-Next.js to :3001) hangs even though :3001 itself is healthy. Likely
-turbopack keep-alive pool not draining stale connections. Workaround:
-hit the kernel-next API directly on :3001 (which is what we did to
-complete Step 8). Tracked, not fixed.
+**Bug 13 (test-infra, not a product bug) — chrome network stack
+broken after force-kill of chrome-e2e-profile**:
+
+Original framing ("Next.js dev server stalls after chrome restart")
+was wrong. Re-investigated: the kernel-next API on :3001 was
+healthy throughout — `curl http://localhost:3001/health` returned
+immediately, `curl POST /api/kernel/tasks/<id>/secrets` returned
+`{ok: true, resolved: true}` immediately. The dashboard's
+`fetch("http://localhost:3001/...")` calls don't go through the
+Next.js dev server (:3004) at all; the frontend hits :3001
+directly. So nothing on the server side stalled.
+
+Actual cause: when chrome-devtools MCP's chrome instance
+(running with `--user-data-dir=/tmp/chrome-e2e-profile`) was
+killed mid-session via `pkill -9 -f chrome-e2e-profile` and a
+new chrome was spawned reusing the same profile, the new
+process ended up with a corrupted mojo network service state.
+Console showed multiple `ERR_NETWORK_CHANGED` errors and 24+
+pending fetch requests that never completed, including the
+`POST /secrets` call when clicking "Provide secrets & resume".
+We worked around by submitting via CLI `curl` directly.
+
+Not a product bug. Not a Next.js issue. Production isn't
+affected (it doesn't use turbopack and real users don't run
+under chrome-devtools MCP fixtures). The takeaway is purely
+operational for future dogfood sessions:
+
+  - Don't `pkill -9` the chrome-e2e-profile chrome — close it
+    cleanly so the SingletonLock and network state are flushed.
+  - If a force-kill is unavoidable, also remove
+    `/tmp/chrome-e2e-profile/Singleton*` and let chrome-devtools
+    spawn a fresh profile.
+  - When the UI fetch path stalls but :3001 is reachable from
+    CLI, hit the API endpoints directly with curl — the
+    business logic is identical (the dashboard calls the same
+    endpoints).
 
 ## Final commits arising from this dogfood session
 
