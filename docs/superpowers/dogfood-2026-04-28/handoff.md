@@ -361,6 +361,16 @@ the closed list below.)
    - **`@modelcontextprotocol/server-everything`**: passes mode-2 (13 tools, 18ms init), but it's a reference / demo MCP — adding it bloats the catalog without giving real workflows new capability.
    The 10 existing entries cover the actual dogfood workflows. Per CLAUDE.md "design for the present problem, do not pre-spend": adding entries with no immediate user is predictive infrastructure. New entries land when a real workflow needs them, with the rot-guard mode-2 + scratch-vet-mcp.mjs pair already in place to gate them.
 
+### ✅ Closed in continuation 3 (architecture pass)
+
+5. ~~**Runner wall-clock timeout never rejects when actor stops emitting snapshots**~~ — closed (`792c897`). The 503-line timer set inside `runPipeline` only flipped a `timedOut` flag; rejection happened only when `actor.subscribe` fired a snapshot. A stage handler returning a never-settling Promise + a downstream region waiting on its wire → no further snapshots → run never resolved or rejected. Real deadlock path. Fix: timer callback (`fireTimedOut`) directly invokes the captured `currentRejectAttempt`. Reverse-verified: removing the fix makes the new regression test (`runner.timeout-reject.test.ts`) hang for 10s+ until the harness kills it.
+
+6. ~~**Wire from-stage extraction duplicated in 14 sites with subtle drift**~~ — closed (`d66559e`). New `kernel-next/ir/wire-helpers.ts`: `wireFromStage`, `isStageSourcedWire`, `wireSourceKeyPrefix`. Refactored runner / mock-executor / real-executor / script-executor / inline-script-executor / runner-fanout / segment-planner / topo-downstream / real-executor-prompt-builder / ir/sql / hot-update/divergence + wire-reachable / validator/dag + structural. Three sites intentionally NOT migrated (impact.ts has its own port-aware helper, diff.ts wireKey builds a different format, mcp/patch.ts does pair-tuple uniqueness — orthogonal patterns). Found and fixed via this work: cross-region BFS was using `source !== "stage"` which silently skipped wires whose source was `undefined` (raw test fixture path), where the runtime treats undefined as stage-sourced.
+
+### Considered + deferred (continuation 3)
+
+7. **Kernel guard for mcpServers verbatim-fetch enforcement** — considered, deferred. The pipeline-generator + pipeline-modifier prompts require new mcpServers blocks to come verbatim from the catalog (recommend → add → get_mcp_catalog_entry). Adding a kernel-side check at submit() / propose() time would catch prompt regressions in the same way Bug 8b's validatePatch does. Deferred because: (a) hand-written user IRs that reference non-catalog MCP servers (e.g. a local-only MCP) are a legitimate use case in the single-user-local model that the guard would block; (b) no actual silent regression has been observed (unlike Bug 8b). The asymmetry vs Bug 8b is that Bug 8b had no legitimate use case for empty-ops + safe-verdict + non-empty-intent; mcpServers-not-in-catalog has many. Right path is probably a soft-warning diagnostic when added (`MCP_SERVER_NOT_IN_CATALOG`, severity=warning) rather than hard fail. The current Diagnostic shape has no severity; introducing one is a wider change than this issue justifies. Tracked in case real silent regressions emerge.
+
 ### Lower priority
 
 4. **架构白皮书重写**. CLAUDE.md 已标"暂停维护". Phase 6 收尾活, 文档活, AI 推不动 M1-M4. 等手感跑久了再写更准.
@@ -390,6 +400,9 @@ the closed list below.)
 - `apps/server/src/kernel-next/runtime/runner.ts:cancelledByPropagation` — runner-side BFS over wires + dispatch loop
 - `apps/server/src/kernel-next/runtime/runner.cross-region-cancel.test.ts` — 4 propagation regression tests
 - `apps/server/src/builtin-pipelines/pipeline-modifier/e2e.bug8b-guard.test.ts` — full e2e regression for Bug 8b (runs in <1s thanks to cross-region cancel)
+- `apps/server/src/kernel-next/ir/wire-helpers.ts` — centralized `wireFromStage` / `isStageSourcedWire` / `wireSourceKeyPrefix`; replaces 14 inline patterns
+- `apps/server/src/kernel-next/runtime/runner.ts:fireTimedOut` — wall-clock timer rejects in-flight attempt directly via `currentRejectAttempt`
+- `apps/server/src/kernel-next/runtime/runner.timeout-reject.test.ts` — regression: never-settling handler + tight budget rejects within 2s of budget
 - `apps/server/scratch-step89-real.mjs` (gitignored) — SDK end-to-end probe template
 - `apps/server/scratch-bug11-repro.mjs` (gitignored) — minimal SDK reproducer
 - `apps/server/scratch-vet-mcp.mjs` (gitignored) — catalog candidate vetter
@@ -400,6 +413,7 @@ the closed list below.)
 - 每个 fix commit 都带回归测试 + 反向验证可证伪.
 - continuation 2 (Bug 8b kernel guard): +12 测试 (8 unit on `validate_patch_vs_intent`, 4 stage-integration on `validatePatch` IR stage), +1 IR-snapshot 断言, 共 +13. server 全套 2090/2090 substantive (1 flaky `spawn-utils.adversarial.test.ts` 单跑 26/26 绿, 与 Bug 8b 无关).
 - continuation 3 (cross-region cancellation + Bug 8b e2e promotion): +5 测试 (4 unit `runner.cross-region-cancel.test.ts` 覆盖 direct/transitive/sibling/SSE-event, 1 promoted e2e `e2e.bug8b-guard.test.ts`). server 全套 2094/2094 substantive (同一个 flaky 单独跑过, 不算回归). pipeline-modifier 子套 16/16 全绿 (含新 e2e).
+- continuation 3 architecture pass (`792c897` + `d66559e`): +1 测试 `runner.timeout-reject.test.ts` (wall-clock reject regression with 10s reverse-verify on baseline). `wire-helpers.ts` refactor touches 14 files but adds 0 new tests — relies on the existing 832 tests around the touched modules to catch behavior change. Server runtime + validator + hot-update + ir + builtin-pipelines suites: 832/832 passing.
 
 ## The session's meta-lesson (additions)
 
@@ -410,3 +424,9 @@ the closed list below.)
 2. `822a3d5` 一刀治本——secret_pending 不发 run_final, 后续完全不需要 UI 防御.
 
 第二阶段做完, 第一阶段所有候选作废. 这是 CLAUDE.md "为眼下问题设计、不预支" 原则的具体应用. 见到根因就修根因, 别在中下游加防御层. 防御层永远比根因多一种边界 case 漏掉.
+
+**架构 pass 的两条 (continuation 3 收尾)**:
+
+1. **"todo list 完成 ≠ 系统到位"**. 用户问"还有哪些待办", 我先回了"全闭合"——把 dogfood 那张 issues list 划完误当成"产品完美". 用户立刻反诘"架构和 pipeline-generator 都完美了吗?", 我才停下来真做 architecture pass: timer reject path bug + 14 处 wire-source 漂移. 这两个都是 dogfood 期间发现但没回去修的 deferred 工作, 跟 issue list 上的 medium / lower 是不同维度的事. 永远区分"清单划完" vs "系统正确".
+
+2. **subscribe-callback-as-only-control-path 是 anti-pattern**. runner 的 timer / interrupt / GATE_REJECTED 都依赖 actor.subscribe 触发——只要 actor 自己不再 emit snapshot, 任何外部信号都进不去. cross-region cancellation 那时是因为 timer fire 后没 reject 才直接看到这个 bug; 修了之后回头看, 同型问题在 GATE_REJECTED + INTERRUPT 路径都隐藏 (都通过 dispatcher.send → actor.send → 期望产生 snapshot → subscribe 内分支). 没有同类 reproducer 之前不动它, 但记下来——下次见到 "runner 莫名不返回" 先看 dispatch + subscribe 是否 race.
