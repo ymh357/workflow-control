@@ -196,6 +196,12 @@ export function canonicalizeIR(ir: PipelineIR): CanonicalValue {
             // Absent description stays absent via sortKeys' undefined
             // stripping (preserves hash stability for pre-P3.6 IRs).
             description: p.description,
+            // Bug 7 (2026-04-28): port.optional changes seed-validation
+            // semantics (required vs nullable) — toggling it is a real
+            // pipeline change, not metadata. Absent value stays absent
+            // (sortKeys strips undefined), preserving hash stability for
+            // every pre-Bug-7 IR.
+            optional: p.optional,
           }))
       : undefined;
 
