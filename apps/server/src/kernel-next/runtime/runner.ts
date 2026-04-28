@@ -965,15 +965,29 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       ? "failed"
       : "completed";
 
-  publish({
-    type: "run_final",
-    taskId: opts.taskId,
-    timestamp: isoNow(),
-    data: {
-      finalState,
-      stageErrors: stageErrors.map((e) => ({ stage: e.stage, message: e.message })),
-    },
-  });
+  // Bug 12 (dogfood-2026-04-28): secret_pending is NOT a terminal
+  // state — the task is paused waiting for an envKey. The internal
+  // snapshot.value is `failed` (because STAGE_FAILED was dispatched
+  // to unstick the parallel region), but the task itself is alive
+  // and will resume via retryTaskFromStage when secrets land. If we
+  // publish a run_final here, the broadcaster's per-task ring buffer
+  // captures an authoritative-looking "failed" event that the
+  // dashboard later replays on reload, even after a successful
+  // resume has written its own run_final and a `completed` row to
+  // task_finals. The DB is right, the UI is wrong. Suppress the
+  // event entirely on the secret_pending exit path; the resumed
+  // runPipeline call will publish its own run_final at its terminal.
+  if (!secretPendingObserved) {
+    publish({
+      type: "run_final",
+      taskId: opts.taskId,
+      timestamp: isoNow(),
+      data: {
+        finalState,
+        stageErrors: stageErrors.map((e) => ({ stage: e.stage, message: e.message })),
+      },
+    });
+  }
   // P6.1 / D23 — final cost/token snapshot so the dashboard header
   // reflects any cost accrued during the last attempt (stage_done may
   // not have fired for that stage if the run terminated in `error`).

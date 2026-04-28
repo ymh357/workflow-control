@@ -25,6 +25,7 @@ import { randomUUID } from "node:crypto";
 import { initKernelNextSchema, insertPipelineVersion } from "../ir/sql.js";
 import { RealStageExecutor } from "./real-executor.js";
 import { runPipeline } from "./runner.js";
+import { KernelNextBroadcaster } from "../sse/broadcaster.js";
 import type { PipelineIR } from "../ir/schema.js";
 
 describe("Bug 12: secret_pending pauses the wall-clock budget", () => {
@@ -104,4 +105,65 @@ describe("Bug 12: secret_pending pauses the wall-clock budget", () => {
     expect(sgRow).toBeDefined();
     expect(JSON.parse(sgRow!.required_keys)).toContain(uniqueKey);
   }, 5_000);
+
+  // Bug 12 root-cause fix: secret_pending exit path must NOT publish a
+  // run_final SSE event. The broadcaster's per-task ring buffer
+  // otherwise captures a "failed" run_final that the dashboard later
+  // replays on reload, even after a successful resume has written its
+  // own run_final + completed task_finals row. DB ground-truth would
+  // be right but UI shows the stale event.
+  it("does NOT publish run_final on secret_pending exit (broadcaster ring buffer stays clean)", async () => {
+    const ir: PipelineIR = {
+      name: "bug12-no-stale-run-final",
+      externalInputs: [],
+      stages: [
+        {
+          name: "gated",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "result", type: "string" }],
+          config: {
+            promptRef: "stub",
+            mcpServers: [
+              {
+                name: "fake-mcp",
+                command: "npx",
+                args: ["-y", "@fake/mcp-server"],
+                envKeys: [uniqueKey],
+                env: { [uniqueKey]: `\${${uniqueKey}}` },
+              },
+            ],
+          },
+        },
+      ],
+      wires: [],
+    };
+    const vh = randomUUID().replace(/-/g, "").slice(0, 40);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+    const taskId = "t-bug12-broadcaster";
+
+    const broadcaster = new KernelNextBroadcaster();
+
+    const executor = new RealStageExecutor({
+      mcpServerFactory: () => ({}),
+    });
+
+    await runPipeline({
+      db, ir, taskId, versionHash: vh,
+      handlers: {}, executor, broadcaster,
+    }, 5_000);
+
+    // Inspect the captured history. With the fix, no run_final should
+    // be present — the task is paused, not terminal. Without the fix,
+    // a single run_final with finalState='failed' would land here and
+    // surface in the dashboard's Run-Final panel.
+    const history = broadcaster.historyFor(taskId);
+    const runFinals = history.filter((e) => e.type === "run_final");
+    expect(runFinals).toHaveLength(0);
+
+    // Sanity: other events still flow through (port_written for the
+    // optional extern wire path is absent here, but stage_executing /
+    // stage_error fire on the gated stage's secret_pending path).
+    expect(history.length).toBeGreaterThan(0);
+  }, 10_000);
 });
