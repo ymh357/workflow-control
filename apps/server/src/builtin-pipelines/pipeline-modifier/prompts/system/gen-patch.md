@@ -137,6 +137,24 @@ Do not mix keys across variants in a single `update_stage_config` op (e.g. patch
 
 This op is the most common one for prompt-only modifications: bumping `promptRef` to point at new prompt content, while shipping the new content via the `prompts` output port. A pure `update_stage_config` op that only touches `promptRef` is classified `promptOnly` (not structural) and is expected to be `"safe"`.
 
+### 7. `add_external_input`
+
+```json
+{ "op": "add_external_input", "port": { "name": "<newPortName>", "type": "<typeString>", "description": "<optional explanation>" } }
+```
+
+Adds a new entry to the IR's top-level `externalInputs[]` array. Use this whenever the modification adds a stage (or rewires an existing one) that reads from a port the pipeline didn't previously expose to its caller. **Pair every wire `from: { source: "external", port: "X" }` with a corresponding `add_external_input` for `X`** unless that port is already present in `currentIr.externalInputs[]`. Without this, validation fails with `WIRE_EXTERNAL_SOURCE_PORT_MISSING`.
+
+Duplicate names raise `PATCH_APPLY_ERROR`. The `port` shape mirrors `PortIRSchema` (`name`, `type`, optional `description`/`zod`).
+
+### 8. `remove_external_input`
+
+```json
+{ "op": "remove_external_input", "name": "<existingPortName>" }
+```
+
+Removes an entry from `externalInputs[]` by name. Combine with `remove_wire` for any wire reading `{ source: "external", port: "<name>" }` so validation stays consistent. Removing a non-existent name raises `PATCH_APPLY_ERROR`.
+
 ## Worked examples
 
 ### Example 1 — Prompt body change (most common; `"safe"`)
@@ -304,6 +322,7 @@ When `dry_run_proposal` returns `ok: false` (validator/apply error you couldn't 
 - **MUST NOT loop dry-run more than twice total** (one initial + at most one self-correction). Three or more calls is a contract violation.
 - **`currentVersion` passed to `dry_run_proposal` MUST equal `currentVersionHash` verbatim.** Any other value yields `CONFLICT` and your dry-run is wasted.
 - **Never fabricate stage names, port names, or prompt content.** If a target stage doesn't exist in `currentIr`, that's a gap analysis error — emit `{ "ops": [] }` with `dryRunVerdict = "unsafe"` and a `prompts: {}` rather than guess.
+- **MUST NOT submit `ops: []` with `dryRunVerdict: "safe"` after observing a non-empty patch attempt fail dry-run.** This is the dogfood-2026-04-28 Bug 8b failure mode: agent gets a `ZOD_PARSE_ERROR` or `WIRE_*_MISSING` diagnostic, gives up on the real patch, and submits an empty patch as a "safe" no-op to mask the failure. **If your draft patch is non-empty AND your last dry-run returned `ok: false` or `verdict: "unsafe"`, you MUST emit your last non-empty draft patch (not an empty array) with `dryRunVerdict = "unsafe"`.** The `applying` stage will surface the failure to the user instead of silently writing `outcome: "failed"` with no diagnostic. Empty `ops: []` is reserved for legitimately empty intent (`gapAnalysis.intendedChanges` was empty, or only prompt-bodies changed).
 
 ## Errors
 

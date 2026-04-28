@@ -1,6 +1,38 @@
 import { describe, it, expect } from "vitest";
 import { AgentStageSchema, GateRoutingSchema, IRPatchSchema, PipelineIRSchema, ScriptStageSchema, WireIRSchema } from "./schema.js";
 
+describe("IRPatchOpSchema externalInput ops (Bug 8a)", () => {
+  it("accepts add_external_input with a port spec", () => {
+    const r = IRPatchSchema.safeParse({
+      ops: [
+        { op: "add_external_input", port: { name: "newInput", type: "string", description: "from patch" } },
+      ],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("accepts remove_external_input with a name", () => {
+    const r = IRPatchSchema.safeParse({
+      ops: [{ op: "remove_external_input", name: "obsolete" }],
+    });
+    expect(r.success).toBe(true);
+  });
+
+  it("rejects add_external_input missing port", () => {
+    const r = IRPatchSchema.safeParse({
+      ops: [{ op: "add_external_input" }],
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it("rejects remove_external_input with non-string name", () => {
+    const r = IRPatchSchema.safeParse({
+      ops: [{ op: "remove_external_input", name: 42 }],
+    });
+    expect(r.success).toBe(false);
+  });
+});
+
 describe("PipelineIRSchema externalInputs", () => {
   it("accepts externalInputs: []", () => {
     const r = PipelineIRSchema.safeParse({

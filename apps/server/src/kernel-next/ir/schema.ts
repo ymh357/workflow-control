@@ -389,6 +389,13 @@ export const IRPatchOpSchema = z.discriminatedUnion("op", [
     stage: identifier,
     configPatch: z.record(z.string(), z.unknown()),
   }),
+  // Bug 8a (2026-04-28 dogfood): pipeline-modifier needs to add a new
+  // externalInput when its modification adds a stage that consumes one.
+  // Without these ops, the agent invents an op name, zod rejects, and the
+  // modifier silently submits ops:[] with verdict "safe", masking the
+  // failure. Mirror add_stage / remove_stage shape.
+  z.object({ op: z.literal("add_external_input"), port: PortIRSchema }),
+  z.object({ op: z.literal("remove_external_input"), name: identifier }),
 ]);
 
 export const IRPatchSchema = z.object({

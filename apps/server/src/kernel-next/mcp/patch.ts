@@ -161,6 +161,30 @@ export function applyPatch(base: PipelineIR, patch: IRPatch): PipelineIR {
         stage.config = { ...stage.config, ...op.configPatch } as StageIR["config"];
         break;
       }
+      // Bug 8a (2026-04-28 dogfood): add a new externalInput. Mirrors
+      // add_stage's duplicate-name reject. ir.externalInputs may be
+      // undefined on hand-built test IRs (schema defaults to []); coalesce.
+      case "add_external_input": {
+        const existing = ir.externalInputs ?? [];
+        if (existing.some((e) => e.name === op.port.name)) {
+          throw new PatchApplyError(
+            `add_external_input: '${op.port.name}' already exists`, op,
+          );
+        }
+        ir.externalInputs = [...existing, deepClone(op.port)];
+        break;
+      }
+      case "remove_external_input": {
+        const existing = ir.externalInputs ?? [];
+        const filtered = existing.filter((e) => e.name !== op.name);
+        if (filtered.length === existing.length) {
+          throw new PatchApplyError(
+            `remove_external_input: '${op.name}' not found`, op,
+          );
+        }
+        ir.externalInputs = filtered;
+        break;
+      }
     }
   }
 

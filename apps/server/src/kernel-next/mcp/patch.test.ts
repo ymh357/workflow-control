@@ -10,6 +10,7 @@ function base(): PipelineIR {
       { name: "B", type: "agent", inputs: [{ name: "x", type: "number" }], outputs: [], config: { promptRef: "p" } },
     ],
     wires: [{ from: { stage: "A", port: "x" }, to: { stage: "B", port: "x" } }],
+    externalInputs: [{ name: "topic", type: "string" }],
   };
 }
 
@@ -177,5 +178,51 @@ describe("applyPatch", () => {
     expect(a.config.cross_segment_resume_from).toBe("B");
     // promptRef preserved (merge, not replace).
     expect(a.config.promptRef).toBe("p");
+  });
+
+  // 2026-04-28: Bug 8a from dogfood. pipeline-modifier needs to add a new
+  // external input when it adds a stage that consumes a new external port.
+  // Previously unrepresentable in the patch DSL — agent invented the op name
+  // and zod rejected it; modifier silently submitted ops:[] with verdict
+  // "safe", masking the failure.
+  it("add_external_input appends a new port", () => {
+    const p: IRPatch = { ops: [
+      { op: "add_external_input", port: { name: "newInput", type: "string", description: "added by patch" } },
+    ]};
+    const out = applyPatch(base(), p);
+    expect(out.externalInputs?.map((e) => e.name)).toEqual(["topic", "newInput"]);
+    expect(out.externalInputs?.[1]?.description).toBe("added by patch");
+  });
+
+  it("add_external_input rejects duplicate name", () => {
+    const p: IRPatch = { ops: [
+      { op: "add_external_input", port: { name: "topic", type: "string" } },
+    ]};
+    expect(() => applyPatch(base(), p)).toThrow(PatchApplyError);
+  });
+
+  it("add_external_input works on an IR with no externalInputs (defaulted to [])", () => {
+    const ir = base();
+    delete ir.externalInputs;
+    const p: IRPatch = { ops: [
+      { op: "add_external_input", port: { name: "x", type: "number" } },
+    ]};
+    const out = applyPatch(ir, p);
+    expect(out.externalInputs).toEqual([{ name: "x", type: "number" }]);
+  });
+
+  it("remove_external_input removes by name", () => {
+    const p: IRPatch = { ops: [
+      { op: "remove_external_input", name: "topic" },
+    ]};
+    const out = applyPatch(base(), p);
+    expect(out.externalInputs).toEqual([]);
+  });
+
+  it("remove_external_input rejects nonexistent name", () => {
+    const p: IRPatch = { ops: [
+      { op: "remove_external_input", name: "nope" },
+    ]};
+    expect(() => applyPatch(base(), p)).toThrow(PatchApplyError);
   });
 });
