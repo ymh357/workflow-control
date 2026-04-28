@@ -9,6 +9,7 @@
 
 import type { PipelineIR } from "../ir/schema.js";
 import type { Diagnostic, ValidationResult } from "../ir/schema.js";
+import { wireFromStage } from "../ir/wire-helpers.js";
 
 export interface DagInfo {
   // Topological order (Kahn). Stages with in-degree 0 come first.
@@ -30,8 +31,9 @@ export function buildDag(ir: PipelineIR): DagInfo | { cycle: string[] } {
   for (const w of ir.wires) {
     // External wires originate outside the DAG — they seed ports but
     // create no upstream dependency for scheduling purposes.
-    if (w.from.source === "external") continue;
-    if (w.from.stage === w.to.stage) continue; // self-wire is a cycle, caught below
+    const fromStage = wireFromStage(w);
+    if (fromStage === null) continue;
+    if (fromStage === w.to.stage) continue; // self-wire is a cycle, caught below
     // A (gate feedback): wires carrying `__gate_feedback__` are the one
     // sanctioned back-edge in the otherwise-strict DAG. The source gate
     // stage is structurally downstream of the target (which is being
@@ -42,8 +44,8 @@ export function buildDag(ir: PipelineIR): DagInfo | { cycle: string[] } {
     // first pass and PORT_WRITTEN on subsequent gate answers, so no
     // scheduling dependency is required.
     if (w.from.port === "__gate_feedback__") continue;
-    upstream.get(w.to.stage)!.add(w.from.stage);
-    downstream.get(w.from.stage)!.add(w.to.stage);
+    upstream.get(w.to.stage)!.add(fromStage);
+    downstream.get(fromStage)!.add(w.to.stage);
   }
 
   // Kahn's algorithm with cycle detection.
@@ -75,9 +77,10 @@ export function buildDag(ir: PipelineIR): DagInfo | { cycle: string[] } {
 
   // Include self-wires as cycles (caught as length-1 cycles).
   for (const w of ir.wires) {
-    if (w.from.source === "external") continue;
-    if (w.from.stage === w.to.stage) {
-      return { cycle: [w.from.stage] };
+    const fromStage = wireFromStage(w);
+    if (fromStage === null) continue;
+    if (fromStage === w.to.stage) {
+      return { cycle: [fromStage] };
     }
   }
 

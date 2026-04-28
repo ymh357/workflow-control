@@ -6,6 +6,7 @@
 // testable without pulling in the full executor dependencies.
 
 import type { AgentStage, PipelineIR } from "../ir/schema.js";
+import { wireFromStage } from "../ir/wire-helpers.js";
 import type { MigrationHint } from "../hot-update/migration-hints.js";
 
 // chosen so typical stringified port values under ~1 KiB inline (≈
@@ -68,8 +69,9 @@ export function buildSystemPromptAppend(
   if (ir) {
     for (const w of ir.wires) {
       if (w.to.stage !== stage.name) continue;
-      if (w.from.source !== "stage") continue;
-      inputSourceStage.set(w.to.port, w.from.stage);
+      const fromStage = wireFromStage(w);
+      if (fromStage === null) continue;
+      inputSourceStage.set(w.to.port, fromStage);
     }
   }
   const inputDump = Object.keys(inputs).length === 0

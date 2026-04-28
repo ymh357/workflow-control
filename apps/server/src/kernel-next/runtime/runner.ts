@@ -27,6 +27,7 @@ import { MockStageExecutor, type StageHandlerMap } from "./mock-executor.js";
 import type { StageExecutor } from "./executor.js";
 import { parseNumTurnsFromStream } from "./real-executor.js";
 import type { PipelineIR, GateStage } from "../ir/schema.js";
+import { wireFromStage } from "../ir/wire-helpers.js";
 import { KernelService } from "../mcp/kernel.js";
 import { taskRegistry, type TerminationReason } from "./task-registry.js";
 import { topoDownstream } from "./topo-downstream.js";
@@ -383,8 +384,8 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
     while (frontier.length > 0) {
       const cur = frontier.pop()!;
       for (const w of opts.ir.wires) {
-        if (w.from.source === "external") continue;
-        const fromStage = (w.from as { stage?: string }).stage;
+        const fromStage = wireFromStage(w);
+        if (fromStage === null) continue;
         if (fromStage !== cur) continue;
         const next = w.to.stage;
         if (downstream.has(next) || next === failedStage) continue;

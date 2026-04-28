@@ -31,6 +31,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Options as SdkOptions } from "@anthropic-ai/claude-agent-sdk";
 import { createActor, waitFor } from "xstate";
 import type { PortIR, AgentStage, PipelineIR } from "../ir/schema.js";
+import { wireSourceKeyPrefix } from "../ir/wire-helpers.js";
 import type {
   ExecuteStageArgs,
   ExecuteStageResult,
@@ -344,8 +345,7 @@ export class RealStageExecutor implements StageExecutor {
       if (!wire) continue;
       // Bridge: Task 1.2 introduced WireSource. Task 1.3+ will resolve
       // external sources against the externalInputs namespace.
-      const fromStage = wire.from.source === "external" ? "__external__" : wire.from.stage;
-      const srcKey = `${fromStage}.${wire.from.port}`;
+      const srcKey = `${wireSourceKeyPrefix(wire)}.${wire.from.port}`;
       const value = portValues[srcKey];
       inputs[p.name] = value;
       portRuntime.recordRead({

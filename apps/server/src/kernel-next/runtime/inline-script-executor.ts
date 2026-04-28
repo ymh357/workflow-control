@@ -21,6 +21,7 @@
 // contract.
 
 import type { ScriptStage } from "../ir/schema.js";
+import { wireSourceKeyPrefix } from "../ir/wire-helpers.js";
 import type {
   ExecuteStageArgs,
   ExecuteStageResult,
@@ -66,8 +67,7 @@ export class InlineScriptStageExecutor implements StageExecutor {
         (w) => w.to.stage === stageName && w.to.port === p.name,
       );
       if (!wire) continue;
-      const fromStage = wire.from.source === "external" ? "__external__" : wire.from.stage;
-      const srcKey = `${fromStage}.${wire.from.port}`;
+      const srcKey = `${wireSourceKeyPrefix(wire)}.${wire.from.port}`;
       const value = portValues[srcKey];
       inputs[p.name] = value;
       portRuntime.recordRead({ attemptId, stageName, portName: p.name, value });

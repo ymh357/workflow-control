@@ -9,6 +9,7 @@
 // for the segmentation rules.
 
 import type { PipelineIR, StageIR, WireIR } from "../ir/schema.js";
+import { wireFromStage } from "../ir/wire-helpers.js";
 
 /**
  * Plan segments for the given IR. The result preserves stage order:
@@ -42,12 +43,8 @@ export function planSegments(ir: PipelineIR): string[][] {
   for (const s of ir.stages) upstreamAgentsOf.set(s.name, []);
 
   for (const w of ir.wires as WireIR[]) {
-    // Reject external wires — they have source === "external" and no upstream stage.
-    if (w.from.source === "external") continue;
-
-    // stage-source wire: source is "stage" or undefined (legacy shape)
-    const fromStageName = (w.from as { source?: "stage"; stage: string; port: string }).stage;
-    if (!fromStageName) continue;
+    const fromStageName = wireFromStage(w);
+    if (fromStageName === null) continue;
 
     const upstream = stageByName.get(fromStageName);
     if (!upstream) continue;
@@ -149,9 +146,8 @@ function topologicalStageOrder(ir: PipelineIR): string[] {
     adjacency.set(s.name, []);
   }
   for (const w of ir.wires as WireIR[]) {
-    if (w.from.source === "external") continue;
-    const fromStage = (w.from as { source?: "stage"; stage: string; port: string }).stage;
-    if (!fromStage) continue;
+    const fromStage = wireFromStage(w);
+    if (fromStage === null) continue;
     if (!inDegree.has(fromStage) || !inDegree.has(w.to.stage)) continue;
     if (fromStage === w.to.stage) continue;
     const succs = adjacency.get(fromStage)!;

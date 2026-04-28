@@ -503,6 +503,7 @@ export function initKernelNextSchema(db: DatabaseSync): void {
 //     see design doc §4.1 "Versioning 策略") ---
 
 import type { PipelineIR } from "./schema.js";
+import { wireSourceKeyPrefix } from "./wire-helpers.js";
 
 export interface PersistedPipelineVersion {
   versionHash: string;
@@ -560,8 +561,7 @@ export function insertPipelineVersion(
     for (const w of ir.wires) {
       // Bridge: Task 1.2 introduced WireSource discriminated union. Task 1.3+
       // will add source-aware persistence (or a dedicated wires.source column).
-      const fromStage = w.from.source === "external" ? "__external__" : w.from.stage;
-      insertWire.run(meta.versionHash, fromStage, w.from.port, w.to.stage, w.to.port);
+      insertWire.run(meta.versionHash, wireSourceKeyPrefix(w), w.from.port, w.to.stage, w.to.port);
     }
 
     db.exec("COMMIT");

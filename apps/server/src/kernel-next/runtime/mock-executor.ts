@@ -12,6 +12,7 @@
 // RealStageExecutor).
 
 import type { DatabaseSync } from "node:sqlite";
+import { wireSourceKeyPrefix } from "../ir/wire-helpers.js";
 import type {
   ExecuteStageArgs,
   ExecuteStageResult,
@@ -66,8 +67,7 @@ export async function executeStage(
     if (!wire) continue; // dangling input; real validator catches this, tolerate here
     // Bridge: Task 1.2 introduced WireSource. Task 1.3+ will resolve external
     // sources against the externalInputs namespace.
-    const fromStage = wire.from.source === "external" ? "__external__" : wire.from.stage;
-    const srcKey = `${fromStage}.${wire.from.port}`;
+    const srcKey = `${wireSourceKeyPrefix(wire)}.${wire.from.port}`;
     const value = portValues[srcKey];
     inputs[p.name] = value;
     // Record lineage: this stage read this input.

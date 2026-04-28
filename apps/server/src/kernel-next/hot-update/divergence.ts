@@ -5,6 +5,7 @@
 // with rerunFrom = divergenceStage. Returns null when IRs are equivalent.
 
 import type { PipelineIR } from "../ir/schema.js";
+import { wireFromStage } from "../ir/wire-helpers.js";
 import { computePipelineDiff } from "./diff.js";
 
 export function findEarliestDivergence(
@@ -37,8 +38,8 @@ export function findEarliestDivergence(
     adjacency.set(name, []);
   }
   for (const w of combinedWires) {
-    if (w.from.source === "external") continue;
-    const fromStage = (w.from as { stage: string }).stage;
+    const fromStage = wireFromStage(w);
+    if (fromStage === null) continue;
     if (!allStageNames.has(fromStage) || !allStageNames.has(w.to.stage)) continue;
     adjacency.get(fromStage)!.push(w.to.stage);
     inDegree.set(w.to.stage, (inDegree.get(w.to.stage) ?? 0) + 1);

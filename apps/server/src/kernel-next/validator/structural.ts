@@ -22,6 +22,7 @@
 
 import type { PipelineIR } from "../ir/schema.js";
 import type { Diagnostic, ValidationResult } from "../ir/schema.js";
+import { wireFromStage } from "../ir/wire-helpers.js";
 import { planSegments } from "../runtime/segment-planner.js";
 
 export interface StructuralValidationOptions {
@@ -401,9 +402,8 @@ export function validateStructural(
       const wireUpstream = new Map<string, string[]>();
       for (const st of ir.stages) wireUpstream.set(st.name, []);
       for (const w of ir.wires) {
-        if (w.from.source === "external") continue;
-        const fromStage = (w.from as { stage: string }).stage;
-        if (!fromStage) continue;
+        const fromStage = wireFromStage(w);
+        if (fromStage === null) continue;
         const list = wireUpstream.get(w.to.stage);
         if (!list) continue;
         if (!list.includes(fromStage)) list.push(fromStage);

@@ -4,6 +4,7 @@
 // dependency on rerunFrom are NOT superseded.
 
 import type { PipelineIR } from "../ir/schema.js";
+import { wireFromStage } from "../ir/wire-helpers.js";
 
 export function computeWireTransitiveReaders(
   ir: PipelineIR,
@@ -20,8 +21,8 @@ export function computeWireTransitiveReaders(
   while (queue.length > 0) {
     const cur = queue.shift() as string;
     for (const w of ir.wires) {
-      if (w.from.source === "external") continue;
-      const fromStage = (w.from as { stage: string }).stage;
+      const fromStage = wireFromStage(w);
+      if (fromStage === null) continue;
       if (fromStage !== cur) continue;
       const toStage = w.to.stage;
       if (!visited.has(toStage)) {

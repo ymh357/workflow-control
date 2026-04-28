@@ -43,6 +43,7 @@ import { PortRuntime, type EventDispatcher } from "./port-runtime.js";
 import type { StageHandlerMap } from "./mock-executor.js";
 import type { StageExecutor } from "./executor.js";
 import type { PipelineIR, AgentStage, ScriptStage } from "../ir/schema.js";
+import { wireSourceKeyPrefix } from "../ir/wire-helpers.js";
 
 export interface RunFanoutArgs {
   ir: PipelineIR;
@@ -92,8 +93,7 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
 
   // Bridge: Task 1.2 introduced WireSource. Task 1.3+ will resolve external
   // fanout sources from the external-inputs namespace.
-  const fromStage = wire.from.source === "external" ? "__external__" : wire.from.stage;
-  const sourceKey = `${fromStage}.${wire.from.port}`;
+  const sourceKey = `${wireSourceKeyPrefix(wire)}.${wire.from.port}`;
   const sourceValue = basePortValues[sourceKey];
   if (!Array.isArray(sourceValue)) {
     return {
