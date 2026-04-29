@@ -214,7 +214,21 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 const DEFAULT_MODEL = "claude-haiku-4-5";
-const DEFAULT_MAX_TURNS = 10;
+// 2026-04-29 (continuation 9.5): bumped from 10 → 50.
+//
+// 10 turns was set when stages were narrow (~5 outputs, 1-2 MCP tool
+// calls). After the 17-stage investigation skeleton landed, analyzing
+// alone needs ~25-30 turns (17 write_port calls + 4-6 mcp catalog tool
+// calls + a few thinking/text turns). Other long stages (evidenceGather
+// fanout child doing web research; reportAssembly stitching findings
+// + tutorials) sit in the same 15-25 range. Keeping 10 was the direct
+// cause of dogfood failure #5 (analyzing terminated with reason='error'
+// at turn 10 even though 17/17 ports were already written).
+//
+// 50 is generous but bounded — combined with maxBudgetUsd it caps cost
+// per stage. Callers can still override via run_pipeline's maxTurns
+// parameter or via PolicySchema.default.budget.maxTurns.
+const DEFAULT_MAX_TURNS = 50;
 const DEFAULT_MAX_BUDGET_USD = 0.2;
 const DEFAULT_CLAUDE_PATH = "claude";
 const DEFAULT_MAX_RETRIES = 0;
