@@ -171,6 +171,12 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
   let secretPendingObserved = false;
   const allMissingKeys = new Set<string>();
 
+  // P4 (2026-04-29) — per-element retry on transient executor error.
+  // 0 means "fail fast" (legacy behaviour). Spec is bounded 0..5 by
+  // FanoutSpecSchema; we additionally clamp here so an undefined
+  // value resolves to the documented default.
+  const elementRetries = Math.max(0, fanout.elementRetries ?? 0);
+
   const runElement = async (i: number): Promise<void> => {
     // B17 full — if an earlier successful fanout_element attempt
     // already covered this index, reuse its outputs instead of
@@ -189,46 +195,82 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
     // the executor reads a single element (typed T) instead of T[].
     const elementPortValues = { ...basePortValues, [sourceKey]: sourceValue[i] };
 
-    const result = await executor.executeStage({
-      ir,
-      stageName: stageDef.name,
-      taskId,
-      versionHash,
-      portValues: elementPortValues,
-      handlers,
-      portRuntime: silentRuntime,
-      // B17 full — tag the per-element attempt with its 0-based index.
-      // PortRuntime.startAttempt writes it to stage_attempts.fanout_element_idx
-      // so migration re-runs can skip indices that already succeeded.
-      fanoutElementIdx: i,
-    });
+    // P4 — retry loop. `attemptsLeft = elementRetries + 1` covers the
+    // initial attempt plus N retries. Each iteration opens a fresh
+    // stage_attempt (PortRuntime.startAttempt is invoked inside
+    // executor.executeStage), so DB lineage records every try as a
+    // distinct row (the failed ones with status='error', the final one
+    // with status='success'). secret_pending and success short-circuit
+    // the loop; only `result.status === "error"` is retryable.
+    let lastError: string | null = null;
+    let succeeded = false;
+    let secretPending: { missingKeys: string[] } | null = null;
+    const attemptsLeft = elementRetries + 1;
+    let lastAttemptId: string | null = null;
+    for (let tryIdx = 0; tryIdx < attemptsLeft; tryIdx++) {
+      const result = await executor.executeStage({
+        ir,
+        stageName: stageDef.name,
+        taskId,
+        versionHash,
+        portValues: elementPortValues,
+        handlers,
+        portRuntime: silentRuntime,
+        // B17 full — tag the per-element attempt with its 0-based index.
+        // PortRuntime.startAttempt writes it to stage_attempts.fanout_element_idx
+        // so migration re-runs can skip indices that already succeeded.
+        fanoutElementIdx: i,
+      });
 
-    if (result.status === "error") {
-      // Record the first error; later errors are discarded (they can
-      // occur concurrently when cap > 1). The pool will drain naturally
-      // — remaining workers see firstError !== null and stop taking
-      // new indices.
-      if (firstError === null) {
-        firstError = `fanout element[${i}] of ${sourceValue.length} failed: ${result.error ?? "unspecified"}`;
+      if (result.status === "error") {
+        lastError = result.error ?? "unspecified";
+        // Continue the retry loop. If this was the last try, fall
+        // through to the post-loop firstError assignment.
+        continue;
       }
+
+      if (result.status === "secret_pending") {
+        // F17/F19: per-element missing-envKey pause. Don't retry —
+        // the executor isn't going to start a new SDK session if
+        // envKeys are still missing. Resume happens after the user
+        // provides secrets and the kernel re-enters the stage.
+        secretPending = { missingKeys: result.missingKeys };
+        break;
+      }
+
+      // Success. Record attempt id for output collection below and exit
+      // the retry loop. Earlier failed attempts in this loop remain in
+      // the DB as kind='fanout_element', status='error' rows with the
+      // same fanout_element_idx — readers (lineage / dashboards) can
+      // see the retry history.
+      lastAttemptId = result.attemptId;
+      succeeded = true;
+      break;
+    }
+
+    if (secretPending) {
+      secretPendingObserved = true;
+      for (const k of secretPending.missingKeys) allMissingKeys.add(k);
       return;
     }
 
-    if (result.status === "secret_pending") {
-      // F17/F19: per-element missing-envKey pause. Collect every
-      // element's missingKeys (a different element MAY observe a
-      // different envKey if mcpServers vary by element index — though
-      // in practice they don't, since mcpServers is stage-config-level
-      // not element-level). Keep collecting; workers gate on the flag.
-      secretPendingObserved = true;
-      for (const k of result.missingKeys) allMissingKeys.add(k);
+    if (!succeeded) {
+      // Retries exhausted. Record the first stage-level error (later
+      // errors are discarded — they can occur concurrently when cap > 1).
+      // The pool will drain naturally; remaining workers see firstError
+      // !== null and stop taking new indices.
+      if (firstError === null) {
+        firstError = elementRetries > 0
+          ? `fanout element[${i}] of ${sourceValue.length} failed after ${elementRetries + 1} attempts: ${lastError ?? "unspecified"}`
+          : `fanout element[${i}] of ${sourceValue.length} failed: ${lastError ?? "unspecified"}`;
+      }
       return;
     }
 
     // Collect this attempt's output port values from the DB. Write by
     // index (not push) so the aggregated array preserves input order
     // even when elements finish out-of-order under parallelism.
-    const rows = silentRuntime.readWritesForAttempt(result.attemptId);
+    const rows = silentRuntime.readWritesForAttempt(lastAttemptId!);
     const byPort = new Map<string, unknown>();
     for (const r of rows) byPort.set(r.port, r.value);
     for (const name of declaredOutputs) {

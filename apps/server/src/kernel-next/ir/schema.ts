@@ -67,6 +67,17 @@ export const FanoutSpecSchema = z.object({
   // defaults to 3 when unspecified; 20 is an arbitrary hard ceiling
   // (mirrors RetrySpec's pattern of "typo guard, not policy").
   concurrency: z.number().int().positive().max(20).optional(),
+  // P4 (2026-04-29) — per-element retry on transient executor error. A
+  // single Anthropic API blip should not nuke an entire fanout run
+  // (observed in 0G dogfood: 5/6 evidenceGather children succeeded but
+  // one transient `api_error` failed the whole stage and the pipeline
+  // halted before findingsAuthoring could even start). When set,
+  // runner reschedules a failed element up to `elementRetries` times
+  // (re-executes the executor in-place, opens a new
+  // stage_attempt(kind='fanout_element') each retry, preserves
+  // fanout_element_idx). Default 0 (no retries) — the existing
+  // first-error behaviour.
+  elementRetries: z.number().int().nonnegative().max(5).optional(),
 });
 
 // Answer option for a gate. `value` is the exact string the runner
