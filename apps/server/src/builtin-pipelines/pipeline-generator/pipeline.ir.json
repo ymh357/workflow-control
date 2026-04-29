@@ -13,85 +13,77 @@
       },
       "inputs": [
         {
+          "description": "User natural-language task description (passed verbatim from external taskDescription input). Renamed from \"description\" to disambiguate from analyzing.outputs.pipelineDescription \u2014 see dogfood Finding 7 (2026-04-25).",
           "name": "taskText",
-          "type": "unknown",
-          "description": "User natural-language task description (passed verbatim from external taskDescription input). Renamed from \"description\" to disambiguate from analyzing.outputs.pipelineDescription — see dogfood Finding 7 (2026-04-25)."
+          "type": "unknown"
         },
         {
+          "description": "User free-text correction supplied at the awaitingConfirm gate via answer_gate({answer:\"reject\", comment:<this>}). Empty string on the first pass before the gate has fired; populated on reject-rerun. The analyzing agent must read this and, when non-empty, adjust its design accordingly.",
           "name": "rejectionFeedback",
-          "type": "string",
-          "description": "User free-text correction supplied at the awaitingConfirm gate via answer_gate({answer:\"reject\", comment:<this>}). Empty string on the first pass before the gate has fired; populated on reject-rerun. The analyzing agent must read this and, when non-empty, adjust its design accordingly."
+          "type": "string"
         }
       ],
       "name": "analyzing",
       "outputs": [
         {
-          "name": "assumptions",
+          "description": "Investigation sub-type (4 literal strings); drives skeleton variant + Layer 3 reportJudge thresholds.",
+          "name": "investigationType",
+          "type": "\"lookup\" | \"diagnostic\" | \"selection\" | \"landscape\""
+        },
+        {
+          "description": "Audience model: role, what they know/don't know/care about.",
+          "name": "audience",
+          "type": "{ role: string; knowsAbout: string[]; doesNotKnow: string[]; caresAbout: string[] }"
+        },
+        {
+          "description": "3-7 investigation dimensions (e.g. security, latency, cost).",
+          "name": "axes",
           "type": "string[]"
         },
         {
-          "name": "dataFlowSummary",
+          "description": "Registrable domain of the primary subject (e.g. '0g.ai'); empty when no single subject.",
+          "name": "subjectDomain",
           "type": "string"
         },
         {
-          "name": "pipelineDescription",
-          "type": "string"
+          "description": "Layer 1 prerequisite concepts with tier + dependencies.",
+          "name": "concepts",
+          "type": "Array<{ name: string; tier: \"core\" | \"support\" | \"optional\"; deps: string[] }>"
         },
         {
-          "name": "estimatedStageCount",
-          "type": "number"
-        },
-        {
-          "name": "pipelineId",
-          "type": "string"
-        },
-        {
+          "description": "Human-readable name for the new investigation pipeline.",
           "name": "pipelineName",
           "type": "string"
         },
         {
+          "description": "Kebab-case slug derived from pipelineName.",
+          "name": "pipelineId",
+          "type": "string"
+        },
+        {
+          "description": "1-2 sentence description of what the pipeline does.",
+          "name": "pipelineDescription",
+          "type": "string"
+        },
+        {
+          "description": "External MCP server entries (verbatim from catalog) attached to evidenceGather; empty array for most topics.",
           "name": "recommendedMcps",
           "type": "Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>"
         },
         {
-          "name": "recommendedSkills",
-          "type": "string[]"
-        },
-        {
-          "name": "stageContracts",
-          "type": "Record<string, unknown>[]"
-        },
-        {
-          "name": "stageDesign",
-          "type": "string"
-        },
-        {
-          "name": "subPipelineContracts",
-          "type": "Record<string, unknown>[]"
-        },
-        {
+          "description": "Markdown summary shown at awaitingConfirm gate for user review.",
           "name": "summary",
           "type": "string"
         },
         {
-          "name": "targetRepoName",
+          "description": "Markdown design narrative explaining the investigation choices.",
+          "name": "stageDesign",
           "type": "string"
         },
         {
-          "name": "useCases",
+          "description": "User-reviewable assumptions made by analyzing.",
+          "name": "assumptions",
           "type": "string[]"
-        },
-        {
-          "name": "usesFanout",
-          "type": "boolean"
-        },
-        {
-          "name": "usesSubPipelines",
-          "type": "boolean"
-        },
-        {
-          "name": "externalInputs",
-          "type": "Array<{ name: string; type: string; description?: string }>"
         }
       ],
       "type": "agent"
@@ -127,7 +119,7 @@
             "maxTurns": 20,
             "model": "sonnet",
             "name": "prompt-writer",
-            "prompt": "You write system prompts for workflow-control kernel-next agent stages. Given a stage specification (name, inputs ports, outputs ports, purpose, budget, whether it invokes run_pipeline), produce a high-quality system prompt in markdown.\n\nRequired structure: role definition (1-2 sentences), Available Inputs section listing each input port with its type and meaning, step-by-step Workflow with action verbs, explicit write_port calls for each output port using literal syntax, and Error Handling section with concrete fallbacks.\n\nCritical rules:\n- 30-80 lines per prompt. Under 30 is too vague, over 80 dilutes attention.\n- Do NOT include a JSON output schema section — writes go through write_port MCP tool calls, which the prompt must show literal examples of.\n- If the stage invokes a sub-pipeline, include explicit run_pipeline instructions with the exact sub-pipeline name and input shape.\n- Use specific roles (\"security auditor scanning OWASP vulnerabilities\") not generic ones (\"AI assistant\").\n- Do not fabricate output ports that are not declared in the stage spec.\n- TEMPORAL ANCHOR (F20, 2026-04-26): if the stage performs research, fact-checking, or claim verification, include in Workflow an explicit instruction: \"Treat the current system date as the report date. Any source claim dated AFTER the report date is a projection/forecast, NOT an established fact — flag it explicitly with a [Projection — dated YYYY-MM-DD] marker. Do NOT fold future-dated events into the deliverable as established facts and do NOT raise confidence on the basis of post-dated sources.\" This rule prevents hallucinated 'recent events' from leaking into research deliverables and corrupting the confidence scoring.\n",
+            "prompt": "You write system prompts for workflow-control kernel-next agent stages. Given a stage specification (name, inputs ports, outputs ports, purpose, budget, whether it invokes run_pipeline), produce a high-quality system prompt in markdown.\n\nRequired structure: role definition (1-2 sentences), Available Inputs section listing each input port with its type and meaning, step-by-step Workflow with action verbs, explicit write_port calls for each output port using literal syntax, and Error Handling section with concrete fallbacks.\n\nCritical rules:\n- 30-80 lines per prompt. Under 30 is too vague, over 80 dilutes attention.\n- Do NOT include a JSON output schema section \u2014 writes go through write_port MCP tool calls, which the prompt must show literal examples of.\n- If the stage invokes a sub-pipeline, include explicit run_pipeline instructions with the exact sub-pipeline name and input shape.\n- Use specific roles (\"security auditor scanning OWASP vulnerabilities\") not generic ones (\"AI assistant\").\n- Do not fabricate output ports that are not declared in the stage spec.\n- TEMPORAL ANCHOR (F20, 2026-04-26): if the stage performs research, fact-checking, or claim verification, include in Workflow an explicit instruction: \"Treat the current system date as the report date. Any source claim dated AFTER the report date is a projection/forecast, NOT an established fact \u2014 flag it explicitly with a [Projection \u2014 dated YYYY-MM-DD] marker. Do NOT fold future-dated events into the deliverable as established facts and do NOT raise confidence on the basis of post-dated sources.\" This rule prevents hallucinated 'recent events' from leaking into research deliverables and corrupting the confidence scoring.\n",
             "tools": [
               "Read",
               "Write"
@@ -137,11 +129,31 @@
       },
       "inputs": [
         {
-          "name": "assumptions",
+          "name": "investigationType",
+          "type": "\"lookup\" | \"diagnostic\" | \"selection\" | \"landscape\""
+        },
+        {
+          "name": "audience",
+          "type": "{ role: string; knowsAbout: string[]; doesNotKnow: string[]; caresAbout: string[] }"
+        },
+        {
+          "name": "axes",
           "type": "string[]"
         },
         {
-          "name": "dataFlowSummary",
+          "name": "subjectDomain",
+          "type": "string"
+        },
+        {
+          "name": "concepts",
+          "type": "Array<{ name: string; tier: \"core\" | \"support\" | \"optional\"; deps: string[] }>"
+        },
+        {
+          "name": "pipelineName",
+          "type": "string"
+        },
+        {
+          "name": "pipelineId",
           "type": "string"
         },
         {
@@ -149,68 +161,28 @@
           "type": "string"
         },
         {
-          "name": "estimatedStageCount",
-          "type": "number"
-        },
-        {
-          "name": "ir",
-          "type": "Record<string, unknown>"
-        },
-        {
-          "name": "pipelineId",
+          "name": "summary",
           "type": "string"
-        },
-        {
-          "name": "pipelineName",
-          "type": "string"
-        },
-        {
-          "name": "recommendedMcps",
-          "type": "Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>"
-        },
-        {
-          "name": "recommendedSkills",
-          "type": "string[]"
-        },
-        {
-          "name": "stageContracts",
-          "type": "Record<string, unknown>[]"
         },
         {
           "name": "stageDesign",
           "type": "string"
         },
         {
-          "name": "subIrs",
-          "type": "Record<string, unknown>[]"
-        },
-        {
-          "name": "subPipelineContracts",
-          "type": "Record<string, unknown>[]"
-        },
-        {
-          "name": "summary",
-          "type": "string"
-        },
-        {
-          "name": "targetRepoName",
-          "type": "string"
-        },
-        {
-          "name": "useCases",
+          "name": "assumptions",
           "type": "string[]"
         },
         {
-          "name": "usesFanout",
-          "type": "boolean"
+          "name": "recommendedMcps",
+          "type": "Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>"
         },
         {
-          "name": "usesSubPipelines",
-          "type": "boolean"
+          "name": "ir",
+          "type": "Record<string, unknown>"
         },
         {
-          "name": "externalInputs",
-          "type": "Array<{ name: string; type: string; description?: string }>"
+          "name": "subIrs",
+          "type": "Record<string, unknown>[]"
         }
       ],
       "name": "genPrompts",
@@ -228,179 +200,83 @@
     },
     {
       "config": {
-        "promptRef": "system/gen-skeleton"
+        "moduleId": "assemble_investigation_ir",
+        "source": "registry"
       },
       "inputs": [
         {
-          "name": "assumptions",
+          "name": "investigationType",
+          "type": "\"lookup\" | \"diagnostic\" | \"selection\" | \"landscape\""
+        },
+        {
+          "name": "audience",
+          "type": "{ role: string; knowsAbout: string[]; doesNotKnow: string[]; caresAbout: string[] }"
+        },
+        {
+          "name": "axes",
           "type": "string[]"
         },
         {
-          "name": "dataFlowSummary",
+          "name": "subjectDomain",
           "type": "string"
         },
         {
-          "name": "pipelineDescription",
-          "type": "string"
+          "name": "concepts",
+          "type": "Array<{ name: string; tier: \"core\" | \"support\" | \"optional\"; deps: string[] }>"
         },
         {
-          "name": "estimatedStageCount",
-          "type": "number"
+          "name": "pipelineName",
+          "type": "string"
         },
         {
           "name": "pipelineId",
           "type": "string"
         },
         {
-          "name": "pipelineName",
+          "name": "pipelineDescription",
           "type": "string"
         },
         {
           "name": "recommendedMcps",
           "type": "Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>"
-        },
-        {
-          "name": "recommendedSkills",
-          "type": "string[]"
-        },
-        {
-          "name": "stageContracts",
-          "type": "Record<string, unknown>[]"
-        },
-        {
-          "name": "stageDesign",
-          "type": "string"
-        },
-        {
-          "name": "subPipelineContracts",
-          "type": "Record<string, unknown>[]"
-        },
-        {
-          "name": "summary",
-          "type": "string"
-        },
-        {
-          "name": "targetRepoName",
-          "type": "string"
-        },
-        {
-          "name": "useCases",
-          "type": "string[]"
-        },
-        {
-          "name": "usesFanout",
-          "type": "boolean"
-        },
-        {
-          "name": "usesSubPipelines",
-          "type": "boolean"
-        },
-        {
-          "name": "externalInputs",
-          "type": "Array<{ name: string; type: string; description?: string }>"
         }
       ],
       "name": "genSkeleton",
       "outputs": [
         {
+          "description": "Assembled 17-stage PipelineIR (deterministic; passes submit_pipeline by construction).",
           "name": "ir",
           "type": "Record<string, unknown>"
         },
         {
+          "description": "Sub-pipeline IRs (always empty for investigation; the 17-stage skeleton is single-pipeline).",
           "name": "subIrs",
           "type": "Record<string, unknown>[]"
         }
       ],
-      "type": "agent"
+      "type": "script"
     },
     {
       "config": {
-        "promptRef": "system/persist"
+        "moduleId": "submit_pipeline_passthrough",
+        "source": "registry"
       },
       "inputs": [
         {
-          "name": "assumptions",
-          "type": "string[]"
-        },
-        {
-          "name": "dataFlowSummary",
-          "type": "string"
-        },
-        {
-          "name": "pipelineDescription",
-          "type": "string"
-        },
-        {
-          "name": "estimatedStageCount",
-          "type": "number"
-        },
-        {
           "name": "ir",
           "type": "Record<string, unknown>"
-        },
-        {
-          "name": "pipelineId",
-          "type": "string"
-        },
-        {
-          "name": "pipelineName",
-          "type": "string"
         },
         {
           "name": "prompts",
           "type": "Record<string, unknown>"
         },
         {
-          "name": "recommendedMcps",
-          "type": "Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>"
-        },
-        {
-          "name": "recommendedSkills",
-          "type": "string[]"
-        },
-        {
-          "name": "stageContracts",
-          "type": "Record<string, unknown>[]"
-        },
-        {
-          "name": "stageDesign",
-          "type": "string"
-        },
-        {
           "name": "subIrs",
-          "type": "Record<string, unknown>[]"
-        },
-        {
-          "name": "subPipelineContracts",
           "type": "Record<string, unknown>[]"
         },
         {
           "name": "subPrompts",
           "type": "Record<string, unknown>[]"
-        },
-        {
-          "name": "summary",
-          "type": "string"
-        },
-        {
-          "name": "targetRepoName",
-          "type": "string"
-        },
-        {
-          "name": "useCases",
-          "type": "string[]"
-        },
-        {
-          "name": "usesFanout",
-          "type": "boolean"
-        },
-        {
-          "name": "usesSubPipelines",
-          "type": "boolean"
-        },
-        {
-          "name": "externalInputs",
-          "type": "Array<{ name: string; type: string; description?: string }>"
         }
       ],
       "name": "persisting",
@@ -422,9 +298,232 @@
           "type": "string"
         }
       ],
-      "type": "agent"
+      "type": "script"
+    },
+    {
+      "config": {
+        "moduleId": "validate_and_repair_ir",
+        "source": "registry"
+      },
+      "inputs": [
+        {
+          "description": "PipelineIR JSON object emitted by genSkeleton (raw, possibly with mechanical errors that the LLM made \u2014 see continuation 9.5 handoff for the 5 known classes).",
+          "name": "ir",
+          "type": "Record<string, unknown>"
+        },
+        {
+          "description": "Sub-pipeline IRs from genSkeleton, repaired independently.",
+          "name": "subIrs",
+          "type": "Record<string, unknown>[]"
+        }
+      ],
+      "name": "validateAndRepairIR",
+      "outputs": [
+        {
+          "description": "PipelineIR after deterministic post-processing: dedup wires, fuzzy-match port-name typos, repair fanout-output shape, backfill externalInputs[]. genPrompts reads this so prompts are written against the corrected IR.",
+          "name": "ir",
+          "type": "Record<string, unknown>"
+        },
+        {
+          "description": "Sub-pipeline IRs after the same repairs.",
+          "name": "subIrs",
+          "type": "Record<string, unknown>[]"
+        },
+        {
+          "description": "Human-readable list of every repair the script applied. Empty when the LLM IR was already clean. Surfaced to the dashboard so users see what was auto-corrected vs what came from the LLM verbatim.",
+          "name": "repairs",
+          "type": "string[]"
+        }
+      ],
+      "type": "script"
     }
   ],
+  "store_schema": {
+    "analyzing.assumptions": {
+      "description": "User-reviewable assumptions made by analyzing.",
+      "produced_by": {
+        "port": "assumptions",
+        "stage": "analyzing"
+      },
+      "type": "string[]"
+    },
+    "analyzing.audience": {
+      "description": "Audience model: role, what they know/don't know/care about.",
+      "produced_by": {
+        "port": "audience",
+        "stage": "analyzing"
+      },
+      "type": "{ role: string; knowsAbout: string[]; doesNotKnow: string[]; caresAbout: string[] }"
+    },
+    "analyzing.axes": {
+      "description": "3-7 investigation dimensions (e.g. security, latency, cost).",
+      "produced_by": {
+        "port": "axes",
+        "stage": "analyzing"
+      },
+      "type": "string[]"
+    },
+    "analyzing.concepts": {
+      "description": "Layer 1 prerequisite concepts with tier + dependencies.",
+      "produced_by": {
+        "port": "concepts",
+        "stage": "analyzing"
+      },
+      "type": "Array<{ name: string; tier: \"core\" | \"support\" | \"optional\"; deps: string[] }>"
+    },
+    "analyzing.investigationType": {
+      "description": "Investigation sub-type (4 literal strings); drives skeleton variant + Layer 3 reportJudge thresholds.",
+      "produced_by": {
+        "port": "investigationType",
+        "stage": "analyzing"
+      },
+      "type": "\"lookup\" | \"diagnostic\" | \"selection\" | \"landscape\""
+    },
+    "analyzing.pipelineDescription": {
+      "description": "1-2 sentence description of what the pipeline does.",
+      "produced_by": {
+        "port": "pipelineDescription",
+        "stage": "analyzing"
+      },
+      "type": "string"
+    },
+    "analyzing.pipelineId": {
+      "description": "Kebab-case slug derived from pipelineName.",
+      "produced_by": {
+        "port": "pipelineId",
+        "stage": "analyzing"
+      },
+      "type": "string"
+    },
+    "analyzing.pipelineName": {
+      "description": "Human-readable name for the new investigation pipeline.",
+      "produced_by": {
+        "port": "pipelineName",
+        "stage": "analyzing"
+      },
+      "type": "string"
+    },
+    "analyzing.recommendedMcps": {
+      "description": "External MCP server entries (verbatim from catalog) attached to evidenceGather; empty array for most topics.",
+      "produced_by": {
+        "port": "recommendedMcps",
+        "stage": "analyzing"
+      },
+      "type": "Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>"
+    },
+    "analyzing.stageDesign": {
+      "description": "Markdown design narrative explaining the investigation choices.",
+      "produced_by": {
+        "port": "stageDesign",
+        "stage": "analyzing"
+      },
+      "type": "string"
+    },
+    "analyzing.subjectDomain": {
+      "description": "Registrable domain of the primary subject (e.g. '0g.ai'); empty when no single subject.",
+      "produced_by": {
+        "port": "subjectDomain",
+        "stage": "analyzing"
+      },
+      "type": "string"
+    },
+    "analyzing.summary": {
+      "description": "Markdown summary shown at awaitingConfirm gate for user review.",
+      "produced_by": {
+        "port": "summary",
+        "stage": "analyzing"
+      },
+      "type": "string"
+    },
+    "genPrompts.prompts": {
+      "description": "prompts emitted by genPrompts stage.",
+      "produced_by": {
+        "port": "prompts",
+        "stage": "genPrompts"
+      },
+      "type": "Record<string, unknown>"
+    },
+    "genPrompts.subPrompts": {
+      "description": "subPrompts emitted by genPrompts stage.",
+      "produced_by": {
+        "port": "subPrompts",
+        "stage": "genPrompts"
+      },
+      "type": "Record<string, unknown>[]"
+    },
+    "genSkeleton.ir": {
+      "description": "ir emitted by genSkeleton stage.",
+      "produced_by": {
+        "port": "ir",
+        "stage": "genSkeleton"
+      },
+      "type": "Record<string, unknown>"
+    },
+    "genSkeleton.subIrs": {
+      "description": "subIrs emitted by genSkeleton stage.",
+      "produced_by": {
+        "port": "subIrs",
+        "stage": "genSkeleton"
+      },
+      "type": "Record<string, unknown>[]"
+    },
+    "persisting.pipelineId": {
+      "description": "pipelineId emitted by persisting stage.",
+      "produced_by": {
+        "port": "pipelineId",
+        "stage": "persisting"
+      },
+      "type": "string"
+    },
+    "persisting.pipelineName": {
+      "description": "pipelineName emitted by persisting stage.",
+      "produced_by": {
+        "port": "pipelineName",
+        "stage": "persisting"
+      },
+      "type": "string"
+    },
+    "persisting.subVersionHashes": {
+      "description": "subVersionHashes emitted by persisting stage.",
+      "produced_by": {
+        "port": "subVersionHashes",
+        "stage": "persisting"
+      },
+      "type": "string[]"
+    },
+    "persisting.versionHash": {
+      "description": "versionHash emitted by persisting stage.",
+      "produced_by": {
+        "port": "versionHash",
+        "stage": "persisting"
+      },
+      "type": "string"
+    },
+    "validateAndRepairIR.ir": {
+      "description": "Repaired PipelineIR. Output of validate_and_repair_ir builtin: structurally valid (5 mechanical-error classes auto-fixed), consumed by genPrompts and persisting downstream.",
+      "produced_by": {
+        "port": "ir",
+        "stage": "validateAndRepairIR"
+      },
+      "type": "Record<string, unknown>"
+    },
+    "validateAndRepairIR.repairs": {
+      "description": "Human-readable list of repairs applied to the LLM-emitted IR. Surfaced in dashboard so users can audit what was auto-corrected vs LLM-authored.",
+      "produced_by": {
+        "port": "repairs",
+        "stage": "validateAndRepairIR"
+      },
+      "type": "string[]"
+    },
+    "validateAndRepairIR.subIrs": {
+      "description": "Repaired sub-pipeline IRs (each independently passed through validate_and_repair_ir).",
+      "produced_by": {
+        "port": "subIrs",
+        "stage": "validateAndRepairIR"
+      },
+      "type": "Record<string, unknown>[]"
+    }
+  },
   "wires": [
     {
       "from": {
@@ -458,38 +557,18 @@
     },
     {
       "from": {
-        "port": "dataFlowSummary",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "dataFlowSummary",
-        "stage": "genPrompts"
-      }
-    },
-    {
-      "from": {
         "port": "pipelineDescription",
         "stage": "analyzing"
       },
       "to": {
         "port": "pipelineDescription",
-        "stage": "genPrompts"
-      }
-    },
-    {
-      "from": {
-        "port": "estimatedStageCount",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "estimatedStageCount",
         "stage": "genPrompts"
       }
     },
     {
       "from": {
         "port": "ir",
-        "stage": "genSkeleton"
+        "stage": "validateAndRepairIR"
       },
       "to": {
         "port": "ir",
@@ -523,26 +602,6 @@
       },
       "to": {
         "port": "recommendedMcps",
-        "stage": "genPrompts"
-      }
-    },
-    {
-      "from": {
-        "port": "recommendedSkills",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "recommendedSkills",
-        "stage": "genPrompts"
-      }
-    },
-    {
-      "from": {
-        "port": "stageContracts",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "stageContracts",
         "stage": "genPrompts"
       }
     },
@@ -559,7 +618,7 @@
     {
       "from": {
         "port": "subIrs",
-        "stage": "genSkeleton"
+        "stage": "validateAndRepairIR"
       },
       "to": {
         "port": "subIrs",
@@ -568,291 +627,21 @@
     },
     {
       "from": {
-        "port": "subPipelineContracts",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "subPipelineContracts",
-        "stage": "genPrompts"
-      }
-    },
-    {
-      "from": {
         "port": "summary",
         "stage": "analyzing"
       },
       "to": {
         "port": "summary",
         "stage": "genPrompts"
-      }
-    },
-    {
-      "from": {
-        "port": "targetRepoName",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "targetRepoName",
-        "stage": "genPrompts"
-      }
-    },
-    {
-      "from": {
-        "port": "useCases",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "useCases",
-        "stage": "genPrompts"
-      }
-    },
-    {
-      "from": {
-        "port": "usesFanout",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "usesFanout",
-        "stage": "genPrompts"
-      }
-    },
-    {
-      "from": {
-        "port": "usesSubPipelines",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "usesSubPipelines",
-        "stage": "genPrompts"
-      }
-    },
-    {
-      "from": {
-        "port": "assumptions",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "assumptions",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "dataFlowSummary",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "dataFlowSummary",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "pipelineDescription",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "pipelineDescription",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "estimatedStageCount",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "estimatedStageCount",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "pipelineId",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "pipelineId",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "pipelineName",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "pipelineName",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "recommendedMcps",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "recommendedMcps",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "recommendedSkills",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "recommendedSkills",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "stageContracts",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "stageContracts",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "stageDesign",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "stageDesign",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "subPipelineContracts",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "subPipelineContracts",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "summary",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "summary",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "targetRepoName",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "targetRepoName",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "useCases",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "useCases",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "usesFanout",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "usesFanout",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "usesSubPipelines",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "usesSubPipelines",
-        "stage": "genSkeleton"
-      }
-    },
-    {
-      "from": {
-        "port": "assumptions",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "assumptions",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "dataFlowSummary",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "dataFlowSummary",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "pipelineDescription",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "pipelineDescription",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "estimatedStageCount",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "estimatedStageCount",
-        "stage": "persisting"
       }
     },
     {
       "from": {
         "port": "ir",
-        "stage": "genSkeleton"
+        "stage": "validateAndRepairIR"
       },
       "to": {
         "port": "ir",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "pipelineId",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "pipelineId",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "pipelineName",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "pipelineName",
         "stage": "persisting"
       }
     },
@@ -868,61 +657,11 @@
     },
     {
       "from": {
-        "port": "recommendedMcps",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "recommendedMcps",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "recommendedSkills",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "recommendedSkills",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "stageContracts",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "stageContracts",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "stageDesign",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "stageDesign",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
         "port": "subIrs",
-        "stage": "genSkeleton"
+        "stage": "validateAndRepairIR"
       },
       "to": {
         "port": "subIrs",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "subPipelineContracts",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "subPipelineContracts",
         "stage": "persisting"
       }
     },
@@ -938,299 +677,174 @@
     },
     {
       "from": {
-        "port": "summary",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "summary",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "targetRepoName",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "targetRepoName",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "useCases",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "useCases",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "usesFanout",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "usesFanout",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
-        "port": "usesSubPipelines",
-        "stage": "analyzing"
-      },
-      "to": {
-        "port": "usesSubPipelines",
-        "stage": "persisting"
-      }
-    },
-    {
-      "from": {
+        "port": "__gate_feedback__",
         "source": "stage",
-        "stage": "analyzing",
-        "port": "externalInputs"
+        "stage": "awaitingConfirm"
       },
       "to": {
-        "stage": "genSkeleton",
-        "port": "externalInputs"
+        "port": "rejectionFeedback",
+        "stage": "analyzing"
       }
     },
     {
       "from": {
-        "source": "stage",
-        "stage": "analyzing",
-        "port": "externalInputs"
+        "port": "ir",
+        "stage": "genSkeleton"
       },
       "to": {
-        "stage": "genPrompts",
-        "port": "externalInputs"
+        "port": "ir",
+        "stage": "validateAndRepairIR"
       }
     },
     {
       "from": {
-        "source": "stage",
-        "stage": "analyzing",
-        "port": "externalInputs"
+        "port": "subIrs",
+        "stage": "genSkeleton"
       },
       "to": {
-        "stage": "persisting",
-        "port": "externalInputs"
+        "port": "subIrs",
+        "stage": "validateAndRepairIR"
       }
     },
     {
       "from": {
-        "source": "stage",
-        "stage": "awaitingConfirm",
-        "port": "__gate_feedback__"
+        "port": "investigationType",
+        "stage": "analyzing"
       },
       "to": {
-        "stage": "analyzing",
-        "port": "rejectionFeedback"
+        "port": "investigationType",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "audience",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "audience",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "axes",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "axes",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "subjectDomain",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "subjectDomain",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "concepts",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "concepts",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "pipelineName",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "pipelineName",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "pipelineId",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "pipelineId",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "pipelineDescription",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "pipelineDescription",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "recommendedMcps",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "recommendedMcps",
+        "stage": "genSkeleton"
+      }
+    },
+    {
+      "from": {
+        "port": "investigationType",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "investigationType",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "audience",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "audience",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "axes",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "axes",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "subjectDomain",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "subjectDomain",
+        "stage": "genPrompts"
+      }
+    },
+    {
+      "from": {
+        "port": "concepts",
+        "stage": "analyzing"
+      },
+      "to": {
+        "port": "concepts",
+        "stage": "genPrompts"
       }
     }
-  ],
-  "store_schema": {
-    "analyzing.assumptions": {
-      "type": "string[]",
-      "description": "assumptions emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "assumptions"
-      }
-    },
-    "analyzing.dataFlowSummary": {
-      "type": "string",
-      "description": "dataFlowSummary emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "dataFlowSummary"
-      }
-    },
-    "analyzing.pipelineDescription": {
-      "type": "string",
-      "description": "description emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "pipelineDescription"
-      }
-    },
-    "analyzing.estimatedStageCount": {
-      "type": "number",
-      "description": "estimatedStageCount emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "estimatedStageCount"
-      }
-    },
-    "analyzing.pipelineId": {
-      "type": "string",
-      "description": "pipelineId emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "pipelineId"
-      }
-    },
-    "analyzing.pipelineName": {
-      "type": "string",
-      "description": "pipelineName emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "pipelineName"
-      }
-    },
-    "analyzing.recommendedMcps": {
-      "type": "Array<{ entryId: string; name: string; command: string; args: string[]; env?: Record<string, string>; envKeys: string[]; reason: string }>",
-      "description": "Structured MCP server declarations from the Flow catalog (entryId/name/command/args/env/envKeys/reason). Sourced via recommend_mcp_servers MCP tool.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "recommendedMcps"
-      }
-    },
-    "analyzing.recommendedSkills": {
-      "type": "string[]",
-      "description": "recommendedSkills emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "recommendedSkills"
-      }
-    },
-    "analyzing.stageContracts": {
-      "type": "Record<string, unknown>[]",
-      "description": "stageContracts emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "stageContracts"
-      }
-    },
-    "analyzing.stageDesign": {
-      "type": "string",
-      "description": "stageDesign emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "stageDesign"
-      }
-    },
-    "analyzing.subPipelineContracts": {
-      "type": "Record<string, unknown>[]",
-      "description": "subPipelineContracts emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "subPipelineContracts"
-      }
-    },
-    "analyzing.summary": {
-      "type": "string",
-      "description": "summary emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "summary"
-      }
-    },
-    "analyzing.targetRepoName": {
-      "type": "string",
-      "description": "targetRepoName emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "targetRepoName"
-      }
-    },
-    "analyzing.useCases": {
-      "type": "string[]",
-      "description": "useCases emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "useCases"
-      }
-    },
-    "analyzing.usesFanout": {
-      "type": "boolean",
-      "description": "usesFanout emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "usesFanout"
-      }
-    },
-    "analyzing.usesSubPipelines": {
-      "type": "boolean",
-      "description": "usesSubPipelines emitted by analyzing stage.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "usesSubPipelines"
-      }
-    },
-    "genPrompts.prompts": {
-      "type": "Record<string, unknown>",
-      "description": "prompts emitted by genPrompts stage.",
-      "produced_by": {
-        "stage": "genPrompts",
-        "port": "prompts"
-      }
-    },
-    "genPrompts.subPrompts": {
-      "type": "Record<string, unknown>[]",
-      "description": "subPrompts emitted by genPrompts stage.",
-      "produced_by": {
-        "stage": "genPrompts",
-        "port": "subPrompts"
-      }
-    },
-    "genSkeleton.ir": {
-      "type": "Record<string, unknown>",
-      "description": "ir emitted by genSkeleton stage.",
-      "produced_by": {
-        "stage": "genSkeleton",
-        "port": "ir"
-      }
-    },
-    "genSkeleton.subIrs": {
-      "type": "Record<string, unknown>[]",
-      "description": "subIrs emitted by genSkeleton stage.",
-      "produced_by": {
-        "stage": "genSkeleton",
-        "port": "subIrs"
-      }
-    },
-    "persisting.pipelineId": {
-      "type": "string",
-      "description": "pipelineId emitted by persisting stage.",
-      "produced_by": {
-        "stage": "persisting",
-        "port": "pipelineId"
-      }
-    },
-    "persisting.pipelineName": {
-      "type": "string",
-      "description": "pipelineName emitted by persisting stage.",
-      "produced_by": {
-        "stage": "persisting",
-        "port": "pipelineName"
-      }
-    },
-    "persisting.subVersionHashes": {
-      "type": "string[]",
-      "description": "subVersionHashes emitted by persisting stage.",
-      "produced_by": {
-        "stage": "persisting",
-        "port": "subVersionHashes"
-      }
-    },
-    "persisting.versionHash": {
-      "type": "string",
-      "description": "versionHash emitted by persisting stage.",
-      "produced_by": {
-        "stage": "persisting",
-        "port": "versionHash"
-      }
-    },
-    "analyzing.externalInputs": {
-      "type": "Array<{ name: string; type: string; description?: string }>",
-      "description": "Pipeline external entry ports as declared by the analyzing stage. Each entry carries name, TS type, and optional human-readable description consumed by external callers to understand what to ask the user.",
-      "produced_by": {
-        "stage": "analyzing",
-        "port": "externalInputs"
-      }
-    }
-  }
+  ]
 }

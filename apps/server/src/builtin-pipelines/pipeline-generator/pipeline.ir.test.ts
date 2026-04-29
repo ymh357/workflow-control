@@ -27,14 +27,19 @@ describe("pipeline-generator IR", () => {
     expect(port?.type).toBe(expectedType);
   });
 
-  it("all 4 recommendedMcps ports across the pipeline share the same type", () => {
+  it("all recommendedMcps ports across the pipeline share the same type", () => {
+    // Continuation 8 (2026-04-29): persisting was converted from agent
+    // to a deterministic builtin script. The script's input set is
+    // narrowed to {ir, prompts, subIrs, subPrompts} — it doesn't read
+    // recommendedMcps anymore, so the count drops from 4 to 3
+    // (analyzing.outputs + genSkeleton.inputs + genPrompts.inputs).
     const ports: Array<{ stage: string; type: string }> = [];
     for (const stage of ir.stages) {
       for (const p of [...(stage.inputs ?? []), ...(stage.outputs ?? [])]) {
         if (p.name === "recommendedMcps") ports.push({ stage: stage.name, type: p.type });
       }
     }
-    expect(ports.length).toBe(4);
+    expect(ports.length).toBe(3);
     const distinctTypes = new Set(ports.map((p) => p.type));
     expect(distinctTypes.size).toBe(1);
     expect([...distinctTypes][0]).toBe(expectedType);

@@ -137,6 +137,394 @@ Gate stage `awaitingConfirm` with `routes: { approve: "finalize", reject: "analy
 
 On the first pass, the gate has not fired yet. The runtime pre-populates `<gateStage>.__gate_feedback__` with the empty string at machine initialisation, so the wire resolves cleanly to `""` on the first call. No bootstrap is needed; the downstream agent simply observes an empty feedback string on the fresh run and a real correction on the reject-rerun.
 
+## STRICT: inline-script `sampleInputs` is mandatory
+
+When emitting a `script` stage with `source: "inline"`, the IR's `config` MUST contain THREE keys: `source`, `moduleSource`, `sampleInputs`. Omitting `sampleInputs` causes `ZOD_PARSE_ERROR: sampleInputs: Invalid input: expected record, received undefined` at `submit_pipeline` time.
+
+The `sampleInputs` value comes from the analyzing stage's `stageContracts[<stageName>].sampleInputs`. Copy it verbatim into the IR's `stages[<i>].config.sampleInputs` field. If the stageContract did not provide `sampleInputs`, that's an analyzing-stage bug — emit a minimal but realistic placeholder (one entry per declared input port, with the right TS type) AND record a warning that the analyzing contract was incomplete. Do not skip the field.
+
+For investigation pipelines specifically, you should NOT emit any inline script stages — `reportAssembly` writes the report via the Write builtin tool inside its prompt, and `tutorialAuthoring` agent instances each Write their own tutorial file. If you find yourself emitting `writeReport` or `writeTutorialBundle` script stages, the upstream stageContracts violated §STRICT: investigation skeleton enforcement (analysis.md) — surface the violation and refuse to forward those stages into the IR.
+
+## Investigation pipeline IR pattern
+
+If `design.stageDesign` declares the topic shape is `investigation` (analysis.md §Topic-shape detection / §Investigation pipeline structure), the resulting IR follows a stable shape you must preserve. You do NOT redesign these stages — you transcribe the contracts into IR form, ensuring the loop wires are correct.
+
+### Required wires (loop-back targets)
+
+Three gate stages route reject back upstream to enable the iteration loops. For each, you MUST emit BOTH the routing route AND the `__gate_feedback__` wire — without the feedback wire, the upstream agent regenerates blind.
+
+| Gate | reject target | feedback wire |
+|------|---|---|
+| `framingGate` | `topicFraming` | `framingGate.__gate_feedback__ → topicFraming.framingRejectionFeedback` |
+| `prereqGate` | `prereqExtraction` | `prereqGate.__gate_feedback__ → prereqExtraction.prereqRejectionFeedback` |
+| `tutorialReviewGate` | `tutorialAuthoring` | `tutorialReviewGate.__gate_feedback__ → tutorialAuthoring.tutorialRejectionFeedback` |
+| `primarySourceGate` | `evidenceGather` | `primarySourceGate.__gate_feedback__ → evidenceGather.primaryRejectionFeedback` |
+| `findingsSynthesisGate` | `hypothesize` | `findingsSynthesisGate.__gate_feedback__ → hypothesize.findingsRejectionFeedback` |
+| `humanReviewGate` | `hypothesize` | `humanReviewGate.__gate_feedback__ → hypothesize.humanRejectionFeedback` |
+| `reportJudgeGate` (reject_to_evidenceGather) | `evidenceGather` | `reportJudgeGate.__gate_feedback__ → evidenceGather.judgeRejectionFeedback` |
+| `reportJudgeGate` (reject_to_findingsAuthoring) | `findingsAuthoring` | `reportJudgeGate.__gate_feedback__ → findingsAuthoring.judgeRejectionFeedback` |
+
+The compiler emits `gate_routed_targets` for these reject targets. Kernel-next's runtime, after Continuation 5 fixes, correctly handles multi-hop transitive ancestor classification — so even though `topicFraming`, `prereqExtraction`, `tutorialAuthoring`, `evidenceGather`, `findingsAuthoring`, and `hypothesize` are remote ancestors of their respective gates, they remain non-`gate_routed` for the forward path and become reachable via reject only.
+
+**Two reject targets converging on `hypothesize`**: both `findingsSynthesisGate` (algorithmic loop) and `humanReviewGate` (user feedback) reject back to the same regen point. To avoid `WIRE_TARGET_ALREADY_DRIVEN`, `hypothesize` declares TWO separate input ports — `findingsRejectionFeedback` and `humanRejectionFeedback`. Each gate's feedback wire goes to its own port. The hypothesize prompt reads both, and treats whichever is non-empty as the live correction (only one of the two gates fires in any given iteration).
+
+**Two reject targets converging on `evidenceGather`**: `primarySourceGate` (early structural source-quality reject) AND `reportJudgeGate.reject_to_evidenceGather` (late content-quality reject from final judge). evidenceGather declares TWO separate input ports — `primaryRejectionFeedback` and `judgeRejectionFeedback`. Same dual-port pattern as hypothesize.
+
+**`findingsAuthoring`** declares ONE rejection-feedback port: `judgeRejectionFeedback` (from `reportJudgeGate.reject_to_findingsAuthoring`). Previously it had zero reject inputs.
+
+**Cross-gate shared routing targets**: kernel-next's GATE_TARGET_SHARED check was relaxed (2026-04-29). Stages like `prereqExtraction` (framingGate.approve + prereqGate.reject), `tutorialAuthoring` (prereqGate.approve + tutorialReviewGate.reject), `evidenceGather` (tutorialReviewGate.approve via hypothesize, primarySourceGate.reject, reportJudgeGate.reject_to_evidenceGather), `findingsAuthoring` (findingsSynthesisGate.approve + reportJudgeGate.reject_to_findingsAuthoring), and `hypothesize` (tutorialReviewGate.approve + findingsSynthesisGate.reject + humanReviewGate.reject) are now legally allowed by the validator. This is the structural foundation of the 17-stage skeleton.
+
+### Fanout typing for the three fanout stages
+
+- `tutorialAuthoring` fanout input: a single concept name (string). Upstream `prereqExtraction.tutorialOutline` has type `string[]`; on the fanout child, the input port is `concept: string` (singular, element type).
+- `evidenceGather` fanout input: a single hypothesis object. Upstream `hypothesize.hypotheses` has type `Array<{...}>`; the fanout child's input port is `hypothesis: { id: string; ... }` (element type).
+- `findingsAuthoring` fanout input: a single supported finding (= hypothesis-with-evidence). Upstream is the fanout result of `evidenceGather` filtered to `verdict === "supported"` — emit a small `agent` stage between `findingsSynthesisGate` and `findingsAuthoring` that aggregates supported findings into an array, OR pass the full evidenceGather aggregate and let `findingsAuthoring` filter at the prompt level. Either choice is acceptable; pick the simpler one for the topic.
+
+### REQUIRED: complete input-port table for every skeleton stage
+
+This is the AUTHORITATIVE list of `inputs[]` for every stage in the 17-stage investigation skeleton. Copy these names verbatim into your IR — every stage's input port set MUST contain at minimum these names (you may add stage-specific extras if the design's `stageContracts` introduces them, but you may NOT omit any from this list).
+
+| Stage | Required input port names | Notes |
+|---|---|---|
+| `topicFraming` | `taskText`, `framingRejectionFeedback` | `framingRejectionFeedback` is wired from `framingGate.__gate_feedback__`; empty string on first run. |
+| `framingGate` | `investigationType`, `audience`, `axes` | gate; no fanout. |
+| `prereqExtraction` | `investigationType`, `audience`, `axes`, `prereqRejectionFeedback` | `prereqRejectionFeedback` is wired from `prereqGate.__gate_feedback__`. **NOT** `framingRejectionFeedback` — that one belongs on topicFraming. |
+| `prereqGate` | `concepts`, `tutorialOutline` | gate; no fanout. |
+| `tutorialAuthoring` | `concept`, `audience`, `axes`, `tutorialRejectionFeedback` | fanout; element-level inputs. |
+| `tutorialReviewGate` | `tutorialSlugs`, `tutorialMarkdowns` | gate; reads aggregated array forms. |
+| `hypothesize` | `investigationType`, `audience`, `axes`, `tutorialSlugs`, `tutorialMarkdowns`, `findingsRejectionFeedback`, `humanRejectionFeedback` | TWO rejection-feedback ports (from findingsSynthesisGate AND humanReviewGate). |
+| `evidenceGather` | `hypothesis`, `tutorialSlugs`, `tutorialMarkdowns`, `subjectDomain`, `primaryRejectionFeedback`, `judgeRejectionFeedback` | fanout per hypothesis; TWO rejection-feedback ports (from primarySourceGate AND reportJudgeGate). |
+| `sourceClassify` | `evidence`, `subjectDomain` | script; element-level `evidence` from evidenceGather aggregate (kernel collects N elements into the array form on the input port). |
+| `primarySourceGate` | `investigationType`, `classifiedEvidence` | gate. |
+| `findingsSynthesisGate` | `classifiedEvidence` | gate. |
+| `findingsAuthoring` | `evidence`, `tutorialSlugs`, `tutorialMarkdowns`, `classifiedEvidence`, `audience`, `judgeRejectionFeedback` | fanout per supported finding; ONE rejection-feedback port (from reportJudgeGate). |
+| `humanReviewGate` | `tutorialSlugs`, `tutorialMarkdowns`, `findingIds`, `findingMarkdowns`, `findingTutorialAnchors`, `findingEvidenceAnchors` | gate; user reviews findings BEFORE assembly. |
+| `reportAssembly` | `investigationType`, `audience`, `tutorialSlugs`, `tutorialMarkdowns`, `findingIds`, `findingMarkdowns`, `findingTutorialAnchors`, `findingEvidenceAnchors` | agent. |
+| `reportJudge` | `investigationType`, `audience`, `axes`, `taskText`, `tutorialSlugs`, `tutorialMarkdowns`, `findingIds`, `findingMarkdowns`, `findingTutorialAnchors`, `findingEvidenceAnchors`, `reportMarkdown`, `reportAudit`, `classifiedEvidence` | agent. |
+| `reportJudgeGate` | `recommendedAction`, `judgeRound` | gate. |
+| `pipelineComplete` | `reportMarkdown` | terminal script. |
+
+**Self-check after emitting IR**: for every wire `<src.stage>.<src.port> -> <dst.stage>.<dst.port>`:
+1. `dst.port` MUST exist in `dst.stage.inputs[]`
+2. `src.port` MUST exist in `src.stage.outputs[]` (or `externalInputs` if `src.source === "external"`)
+
+If a wire targets `<dst.stage>.<dst.port>` and `dst.port` is not in this stage's `inputs[]`, you have one of two bugs:
+- (a) The wire is wrong (you used the wrong port name).
+- (b) The stage's `inputs[]` is incomplete (you forgot to declare the port).
+
+The fix is almost always (b) — add the missing input port to the stage's `inputs[]`. The required ports above are non-negotiable.
+
+### CRITICAL: fanout aggregate output port wiring (do NOT invent a synthetic aggregate port)
+
+This is the most-frequently-violated rule when generating IR for fanout stages. Read carefully.
+
+**Wrong (LLM frequently does this — submit_pipeline rejects with `WIRE_SOURCE_PORT_MISSING`):**
+
+```jsonc
+// Fanout stage declares element-level outputs:
+{
+  "name": "tutorialAuthoring",
+  "type": "agent",
+  "outputs": [
+    { "name": "slug", "type": "string" },
+    { "name": "markdown", "type": "string" }
+  ],
+  "fanout": { "input": "concept" }
+}
+// Then a wire writes from a NON-EXISTENT aggregate port:
+{ "from": { "source": "stage", "stage": "tutorialAuthoring", "port": "tutorials" }, ... }  // ❌ WIRE_SOURCE_PORT_MISSING — port "tutorials" does not exist on tutorialAuthoring
+```
+
+The LLM tends to invent a single "aggregate" port name (`tutorials`, `evidence`, `findings`) because that's how the upstream prompt or the design markdown talks about the bundle. **Kernel-next does NOT have an aggregate-port concept at the IR level.** The fanout stage's `outputs[]` are element-level only — i.e. each port carries the value ONE element produced. The runtime writes N rows to port_values (one per fanout element), and the downstream consumer's input port type is the array form (`Array<T>`), with the runtime collecting N element values into the array at read time.
+
+**Right (one wire per element-level output port; downstream stage's input port is the array form):**
+
+```jsonc
+// Fanout stage's element-level outputs are referenced in wires by their actual names:
+{ "from": { "source": "stage", "stage": "tutorialAuthoring", "port": "slug" },     "to": { "stage": "hypothesize", "port": "tutorialSlugs" } },
+{ "from": { "source": "stage", "stage": "tutorialAuthoring", "port": "markdown" }, "to": { "stage": "hypothesize", "port": "tutorialMarkdowns" } }
+// On the consumer side, hypothesize.inputs has these AS ARRAYS:
+{
+  "name": "hypothesize",
+  "inputs": [
+    { "name": "tutorialSlugs",     "type": "string[]" },
+    { "name": "tutorialMarkdowns", "type": "string[]" },
+    ...
+  ]
+}
+```
+
+The runtime takes care of the element → array transformation at the input port (it's the same mechanism `read_port` uses on aggregated fanout outputs).
+
+**Concrete rules for the 17-stage skeleton's three fanout stages** (STRICT — these are the EXACT shapes; do not split or merge):
+
+| Fanout stage | Element-level outputs (declared on `outputs[]`) — exact list | Downstream input port form |
+|---|---|---|
+| `tutorialAuthoring` | EXACTLY 2 ports: `slug: string`, `markdown: string` | `tutorialSlugs: string[]`, `tutorialMarkdowns: string[]` |
+| `evidenceGather` | EXACTLY 1 port: `evidence: { hypothesisId: string; verdict: "supported"\|"refuted"\|"inconclusive"; positiveEvidence: Array<{kind:string;url:string;quote:string}>; negativeEvidence: Array<{kind:string;url:string;quote:string}>; rawArtifacts: string[] }` — single OBJECT port carrying the per-hypothesis result. Do NOT split into 5 per-field ports (`hypothesisId`, `verdict`, `positiveEvidence`, etc.) — `sourceClassify.evidence` expects a single Array<{...}> input, not a 5-way merge. | `evidence: Array<{...}>` on `sourceClassify`, `findingsSynthesisGate`, `findingsAuthoring` consumers (kernel auto-aggregates N elements into the array). |
+| `findingsAuthoring` | EXACTLY 4 ports: `id: string`, `markdown: string`, `tutorialAnchors: string[]`, `evidenceAnchors: string[]` (each ONE per finding) | `findingIds: string[]`, `findingMarkdowns: string[]`, `findingTutorialAnchors: string[][]`, `findingEvidenceAnchors: string[][]` |
+
+**Why evidenceGather is single-port and others are multi-port**: when the per-element output is a single coherent record (one evidence bundle per hypothesis), keeping it as ONE object port is correct — splitting into per-field ports would just complicate downstream wiring with no benefit. tutorialAuthoring and findingsAuthoring split into multiple ports because their fields have independent downstream consumption shapes (the report sometimes reads only `markdown` without `slug`; sourceClassify never reads `evidence.hypothesisId` separately from the rest).
+
+**Wire de-duplication (non-negotiable)**: every (sourceStage, sourcePort, targetStage, targetPort) tuple may appear AT MOST ONCE in `wires[]`. If you find yourself writing the same wire twice (same source, same target), that's a copy-paste bug — kernel rejects with `WIRE_TARGET_ALREADY_DRIVEN: Input port 'X.Y' is driven by more than one wire`. Run a final dedup pass before emitting the IR.
+
+**Naming convention**: when the fanout stage's element-level port is `markdown`, the downstream consumer's input port is `<stageNamePrefix>Markdowns` or `<stageNamePrefix>MarkdownList`. Keep the stem consistent (`markdown` → `tutorialMarkdowns` for tutorialAuthoring's downstream; `markdown` → `findingMarkdowns` for findingsAuthoring's downstream). Don't try to invent a single "aggregate" port `tutorials` or `findings` — there is no such thing at the IR level.
+
+**Self-check**: For every wire whose `from.stage` is a fanout stage, the `from.port` MUST exactly equal one of the names in that stage's `outputs[]`. If you find yourself writing `<fanoutStage>.<pluralEnglishWord>` and that word is not literally an output port name, you've introduced a `WIRE_SOURCE_PORT_MISSING` failure.
+
+### Source classification stage (sourceClassify, primarySourceGate)
+
+The 14-stage skeleton inserts a deterministic source-classification step between `evidenceGather` (fanout aggregate) and `findingsSynthesisGate`:
+
+```
+evidenceGather (fanout, agent) → produces evidence: Array<{ hypothesisId, verdict, positiveEvidence, negativeEvidence, rawArtifacts }>
+   ↓
+sourceClassify (single, script, registry: classify_evidence_bundle) → produces classifiedEvidence: Array<{ ...same shape with citations tagged + per-hypothesis counts }>
+   ↓
+primarySourceGate (single, gate, LLM-judge) → reads classifiedEvidence + investigationType
+   ├─ approve → findingsSynthesisGate
+   └─ reject  → evidenceGather (with primaryRejectionFeedback)
+```
+
+**`sourceClassify` IR shape** (registry script, no inline source — the kernel ships the audited builtin):
+
+```json
+{
+  "name": "sourceClassify",
+  "type": "script",
+  "inputs": [
+    {
+      "name": "evidence",
+      "type": "Array<{ hypothesisId: string; verdict: \"supported\" | \"refuted\" | \"inconclusive\"; positiveEvidence: Array<{ kind: string; url: string; quote: string }>; negativeEvidence: Array<{ kind: string; url: string; quote: string }>; rawArtifacts?: string[] }>",
+      "description": "Evidence array aggregated from evidenceGather fanout. Each entry corresponds to one hypothesis."
+    },
+    {
+      "name": "subjectDomain",
+      "type": "string",
+      "description": "Registrable domain of the primary subject under investigation, copied from topicFraming.subjectDomain. Empty string when the topic has no single subject."
+    }
+  ],
+  "outputs": [
+    {
+      "name": "classifiedEvidence",
+      "type": "Array<{ hypothesisId: string; verdict: string; positiveEvidence: Array<{ kind: string; url: string; quote: string; type: \"primary\" | \"official_secondary\" | \"third_party\" | \"aggregator\" | \"unknown\"; signal: string; confidence: number }>; negativeEvidence: Array<{ kind: string; url: string; quote: string; type: string; signal: string; confidence: number }>; primaryCount: number; officialCount: number; thirdPartyCount: number; aggregatorCount: number; unknownCount: number }>",
+      "description": "Same evidence array shape with each citation augmented by URL classification (type/signal/confidence) and per-hypothesis aggregate counts."
+    }
+  ],
+  "config": {
+    "source": "registry",
+    "moduleId": "classify_evidence_bundle"
+  }
+}
+```
+
+Note: `config.source: "registry"` and `moduleId: "classify_evidence_bundle"` are the ONLY two fields in `config`. Do NOT include `moduleSource`, `sampleInputs`, or `retry` for this stage — registry scripts are kernel-audited and never fail under valid inputs (a thrown error means the upstream evidenceGather wrote a malformed shape, which is an evidenceGather contract bug, not a transient error).
+
+**`primarySourceGate` IR shape**:
+
+```json
+{
+  "name": "primarySourceGate",
+  "type": "gate",
+  "inputs": [
+    { "name": "investigationType", "type": "string" },
+    {
+      "name": "classifiedEvidence",
+      "type": "Array<{ hypothesisId: string; verdict: string; primaryCount: number; officialCount: number; thirdPartyCount: number; aggregatorCount: number; unknownCount: number; positiveEvidence: Array<unknown>; negativeEvidence: Array<unknown> }>"
+    }
+  ],
+  "outputs": [],
+  "config": {
+    "question": {
+      "text": "For each hypothesis with verdict='supported', does the evidence include at least one primary source? For diagnostic and selection investigationType, every supported hypothesis MUST have ≥1 primary source. For landscape and lookup, primary sources are recommended but not required. If reject, list the hypothesis ids that fall short and the source class missing for each (source_repo, onchain_explorer, paper, spec).",
+      "options": [
+        { "value": "approve", "description": "Every supported hypothesis has adequate primary support per the investigationType's threshold." },
+        { "value": "reject", "description": "One or more supported hypotheses lack primary sources; rerun evidenceGather targeting the missing source classes." }
+      ]
+    },
+    "routing": {
+      "routes": {
+        "approve": "findingsSynthesisGate",
+        "reject": "evidenceGather"
+      }
+    }
+  }
+}
+```
+
+**Required wires for the source-classify loop**:
+
+```json
+[
+  { "from": { "source": "stage", "stage": "evidenceGather", "port": "evidence" }, "to": { "stage": "sourceClassify", "port": "evidence" } },
+  { "from": { "source": "stage", "stage": "topicFraming", "port": "subjectDomain" }, "to": { "stage": "sourceClassify", "port": "subjectDomain" } },
+  { "from": { "source": "stage", "stage": "topicFraming", "port": "investigationType" }, "to": { "stage": "primarySourceGate", "port": "investigationType" } },
+  { "from": { "source": "stage", "stage": "sourceClassify", "port": "classifiedEvidence" }, "to": { "stage": "primarySourceGate", "port": "classifiedEvidence" } },
+  { "from": { "source": "stage", "stage": "primarySourceGate", "port": "__gate_feedback__" }, "to": { "stage": "evidenceGather", "port": "primaryRejectionFeedback" } }
+]
+```
+
+The `findingsSynthesisGate` stage MUST also read the same `classifiedEvidence` (so its LLM-judge can decide whether the evidence base is rich enough for synthesis), wired with one extra wire from `sourceClassify.classifiedEvidence` to `findingsSynthesisGate.classifiedEvidence`. The legacy direct `evidenceGather → findingsSynthesisGate` wire must be DROPPED — `findingsSynthesisGate` consumes the classified version.
+
+### Quality-judgment stage (reportJudge, reportJudgeGate, pipelineComplete)
+
+After `reportAssembly` completes the markdown, the 17-stage skeleton runs an automated quality judgment loop:
+
+```
+reportAssembly (single, agent) → produces report.markdown + report.audit
+   ↓
+reportJudge (single, agent) → 6-axis rubric scoring + recommendedAction
+   ↓
+reportJudgeGate (gate, auto-routed by recommendedAction)
+   ├─ accept → pipelineComplete
+   ├─ reject_to_evidenceGather → evidenceGather (with judgeRejectionFeedback)
+   └─ reject_to_findingsAuthoring → findingsAuthoring (with judgeRejectionFeedback)
+   ↓
+pipelineComplete (single, script, registry: noop_terminal) → terminal { done: true }
+```
+
+**`reportJudge` IR shape** (agent stage, NOT a gate — it produces structured output that the downstream gate dispatches on):
+
+```json
+{
+  "name": "reportJudge",
+  "type": "agent",
+  "inputs": [
+    { "name": "investigationType", "type": "\"lookup\" | \"diagnostic\" | \"selection\" | \"landscape\"" },
+    { "name": "audience", "type": "{ role: string; knowsAbout: string[]; doesNotKnow: string[]; caresAbout: string[] }" },
+    { "name": "axes", "type": "string[]" },
+    { "name": "taskText", "type": "string" },
+    // Tutorial bundle — element-level fanout outputs collected by the runtime.
+    // tutorialAuthoring.outputs is { slug, markdown } per fanout child; the
+    // consumer's input port form is the array of each.
+    { "name": "tutorialSlugs",     "type": "string[]" },
+    { "name": "tutorialMarkdowns", "type": "string[]" },
+    // Findings bundle — same pattern. findingsAuthoring.outputs is
+    // { id, markdown, tutorialAnchors, evidenceAnchors } per fanout child.
+    { "name": "findingIds",                "type": "string[]" },
+    { "name": "findingMarkdowns",          "type": "string[]" },
+    { "name": "findingTutorialAnchors",    "type": "string[][]" },
+    { "name": "findingEvidenceAnchors",    "type": "string[][]" },
+    { "name": "reportMarkdown", "type": "string" },
+    { "name": "reportAudit", "type": "{ sectionToTutorial: Record<string, string[]>; sectionToFindings: Record<string, string[]> }" },
+    { "name": "classifiedEvidence", "type": "Array<{ hypothesisId: string; verdict: string; primaryCount: number; officialCount: number; thirdPartyCount: number; aggregatorCount: number; unknownCount: number }>" }
+  ],
+  "outputs": [
+    { "name": "axisScores", "type": "{ explicit_requirements: number; implicit_requirements: number; synthesis: number; references: number; communication: number; instruction_following: number }" },
+    { "name": "axisFeedback", "type": "{ explicit_requirements: string; implicit_requirements: string; synthesis: string; references: string; communication: string; instruction_following: string }" },
+    { "name": "totalScore", "type": "number" },
+    { "name": "recommendedAction", "type": "\"accept\" | \"reject_to_evidenceGather\" | \"reject_to_findingsAuthoring\"" },
+    { "name": "judgeRound", "type": "number" },
+    { "name": "judgeWarnings", "type": "string[]" }
+  ],
+  "config": { "promptRef": "reportJudge" }
+}
+```
+
+**`reportJudgeGate` IR shape**:
+
+```json
+{
+  "name": "reportJudgeGate",
+  "type": "gate",
+  "inputs": [
+    { "name": "recommendedAction", "type": "\"accept\" | \"reject_to_evidenceGather\" | \"reject_to_findingsAuthoring\"" },
+    { "name": "judgeRound", "type": "number" }
+  ],
+  "outputs": [],
+  "config": {
+    "question": {
+      "text": "Auto-routed by reportJudge.recommendedAction. Approve = report meets quality bar; reject = re-run the indicated upstream stage with judge feedback.",
+      "options": [
+        { "value": "accept", "description": "All six rubric axes met threshold; pipeline can terminate with the current report." },
+        { "value": "reject_to_evidenceGather", "description": "References axis below threshold (insufficient primary sources); re-run evidenceGather targeting the missing source classes per judge feedback." },
+        { "value": "reject_to_findingsAuthoring", "description": "Synthesis / communication / instruction-following below threshold; re-run findingsAuthoring with the judge's per-axis feedback." }
+      ]
+    },
+    "routing": {
+      "routes": {
+        "accept": "pipelineComplete",
+        "reject_to_evidenceGather": "evidenceGather",
+        "reject_to_findingsAuthoring": "findingsAuthoring"
+      }
+    }
+  }
+}
+```
+
+**`pipelineComplete` IR shape** (terminal):
+
+```json
+{
+  "name": "pipelineComplete",
+  "type": "script",
+  "inputs": [
+    { "name": "reportMarkdown", "type": "string", "description": "Final approved report markdown. Wired in for lineage; not used computationally." }
+  ],
+  "outputs": [
+    { "name": "done", "type": "boolean" }
+  ],
+  "config": {
+    "source": "registry",
+    "moduleId": "noop_terminal"
+  }
+}
+```
+
+**Required wires for the judgment loop**:
+
+```json
+[
+  // reportJudge inputs (read most upstream state)
+  { "from": { "source": "stage", "stage": "topicFraming",       "port": "investigationType" }, "to": { "stage": "reportJudge", "port": "investigationType" } },
+  { "from": { "source": "stage", "stage": "topicFraming",       "port": "audience" },          "to": { "stage": "reportJudge", "port": "audience" } },
+  { "from": { "source": "stage", "stage": "topicFraming",       "port": "axes" },              "to": { "stage": "reportJudge", "port": "axes" } },
+  { "from": { "source": "external",                              "port": "taskText" },          "to": { "stage": "reportJudge", "port": "taskText" } },
+  // Tutorial bundle — TWO wires (one per element-level output port). reportJudge's input ports are array forms (string[]).
+  { "from": { "source": "stage", "stage": "tutorialAuthoring",  "port": "slug" },              "to": { "stage": "reportJudge", "port": "tutorialSlugs" } },
+  { "from": { "source": "stage", "stage": "tutorialAuthoring",  "port": "markdown" },          "to": { "stage": "reportJudge", "port": "tutorialMarkdowns" } },
+  // Findings bundle — FOUR wires (one per element-level output port). reportJudge's input ports are array forms.
+  { "from": { "source": "stage", "stage": "findingsAuthoring",  "port": "id" },                "to": { "stage": "reportJudge", "port": "findingIds" } },
+  { "from": { "source": "stage", "stage": "findingsAuthoring",  "port": "markdown" },          "to": { "stage": "reportJudge", "port": "findingMarkdowns" } },
+  { "from": { "source": "stage", "stage": "findingsAuthoring",  "port": "tutorialAnchors" },   "to": { "stage": "reportJudge", "port": "findingTutorialAnchors" } },
+  { "from": { "source": "stage", "stage": "findingsAuthoring",  "port": "evidenceAnchors" },   "to": { "stage": "reportJudge", "port": "findingEvidenceAnchors" } },
+  { "from": { "source": "stage", "stage": "reportAssembly",     "port": "markdown" },          "to": { "stage": "reportJudge", "port": "reportMarkdown" } },
+  { "from": { "source": "stage", "stage": "reportAssembly",     "port": "audit" },             "to": { "stage": "reportJudge", "port": "reportAudit" } },
+  { "from": { "source": "stage", "stage": "sourceClassify",     "port": "classifiedEvidence" },"to": { "stage": "reportJudge", "port": "classifiedEvidence" } },
+  // judgeRoundFeedback is the prior judge round's rationale; reads itself via __gate_feedback__ won't work (judge isn't a gate). For round-1 it's empty by initial-port-value default; for round-2 the prior reportJudge attempt's recommendedAction summary is read via read_port from the prompt.
+
+  // reportJudgeGate inputs
+  { "from": { "source": "stage", "stage": "reportJudge", "port": "recommendedAction" }, "to": { "stage": "reportJudgeGate", "port": "recommendedAction" } },
+  { "from": { "source": "stage", "stage": "reportJudge", "port": "judgeRound" },        "to": { "stage": "reportJudgeGate", "port": "judgeRound" } },
+
+  // judge feedback wires to the two reject targets
+  { "from": { "source": "stage", "stage": "reportJudgeGate", "port": "__gate_feedback__" }, "to": { "stage": "evidenceGather",   "port": "judgeRejectionFeedback" } },
+  { "from": { "source": "stage", "stage": "reportJudgeGate", "port": "__gate_feedback__" }, "to": { "stage": "findingsAuthoring","port": "judgeRejectionFeedback" } },
+
+  // pipelineComplete input (lineage only)
+  { "from": { "source": "stage", "stage": "reportAssembly", "port": "markdown" }, "to": { "stage": "pipelineComplete", "port": "reportMarkdown" } }
+]
+```
+
+**Note on the dual judge feedback wire**: kernel-next allows the same `__gate_feedback__` source to drive multiple targets. The runtime broadcasts the feedback string to every wired target on every gate-answer event; only the target whose stage actually executes (per the gate's chosen routing branch) reads the value. The other branch's target stage stays parked, unread. This is the standard fan-out pattern for cross-cutting feedback.
+
+### Bidirectional reference enforcement
+
+The structural invariant ("every finding cites a tutorial concept, every cited concept gets a back-link") is enforced at the **prompt** level, not the IR level — IR can't easily express "port X must reference port Y by content". Your IR contribution is to ensure:
+
+1. `findingsAuthoring` reads BOTH `evidenceGather.evidence` (the per-hypothesis result port) AND the full tutorial bundle from `tutorialAuthoring` (wired as separate element-level outputs `slug` + `markdown`, see "CRITICAL: fanout aggregate output port wiring" above). Without the tutorial input, the finding agent cannot cite tutorial concepts.
+2. `reportAssembly` reads the tutorial bundle + findings bundle + framing. It produces both the report markdown AND an audit map (`sectionToTutorial`, `sectionToFindings`). The audit map is the artifact a downstream verifier or human reviewer would inspect to spot floating findings or floating tutorial concepts. **`reportAssembly` is the terminal stage** — no gate follows it. The pipeline ends when reportAssembly successfully writes the report markdown to disk via the Write builtin.
+
+### How `hypothesize` learns from prior rounds (no back-edges)
+
+Kernel-next forbids cyclic wires in the forward DAG — `evidenceGather → hypothesize` is illegal because `hypothesize` is upstream of `evidenceGather`. The loop-back is achieved through TWO mechanisms only:
+
+1. **Two `RejectionFeedback` ports from two different gates**: `findingsSynthesisGate.__gate_feedback__` → `hypothesize.findingsRejectionFeedback` (LLM-judge reject rationale, e.g. "axes [security, ux] under-evidenced"); `humanReviewGate.__gate_feedback__` → `hypothesize.humanRejectionFeedback` (final user correction at the end). Each port is independently wired, never merged.
+
+2. **Direct read of prior-round evidence via `read_port`**: on a reject rerun, the runtime preserves the prior-round outputs of upstream stages in the store (`evidenceGather` aggregate result is still in `agent_execution_details`). The `hypothesize` prompt is instructed: "if either `findingsRejectionFeedback` or `humanRejectionFeedback` is non-empty, this is a reject rerun — call `read_port({stage: 'evidenceGather', port: 'aggregate'})` to retrieve the prior round's evidence verdicts including negative findings, then generate NEW hypotheses that explore axes/angles the prior round did not cover." This works because reject-rollback preserves prior-stage outputs (kernel's `persistentPortValues` semantic, modeled on the affectedStages set).
+
+Do NOT emit a wire `evidenceGather.<port> → hypothesize.<port>`. The skeleton self-check would correctly reject it as a cycle. The prompt-level `read_port` call is the mechanism.
+
 ## Wire generation
 
 For each stage's input port, generate one `WireIR` connecting it to the source:

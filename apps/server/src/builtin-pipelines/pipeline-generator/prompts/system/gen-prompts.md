@@ -49,6 +49,108 @@ Requirements:
 
 Collect the returned prompt body.
 
+## Investigation-pipeline stage prompts (special rules)
+
+If `design.stageDesign` declares topic shape is `investigation`, the stage names follow the 9-stage skeleton from analysis.md §Investigation pipeline structure. For these stages, the `prompt-writer` invocation must include the additional rules below (append them under "Requirements" in the Task description you pass to the sub-agent).
+
+### Layer 0: framing
+
+**`topicFraming`**:
+- Must produce `audience.knowsAbout` and `audience.doesNotKnow` lists that are SPECIFIC, not generic. E.g. "knows: EVM tx model, ERC-20" / "does not know: OFT, CCIP" — NOT "knows: blockchain basics" / "does not know: cross-chain stuff". Audience-aware tutoring later depends on this resolution.
+- `axes` must be 3-7 entries, each one a single-word or short-phrase dimension (e.g. "performance", "cost-efficiency", "security-model", "ux", "ecosystem-fit"). Generic axes like "general analysis" are forbidden.
+
+### Layer 1: foundations
+
+**`prereqExtraction`**:
+- The set of concepts must be sized so that an audience-modeled reader (per Layer 0) can understand every finding without searching elsewhere. Err on the side of more concepts; mark obvious-ones as `tier: optional`.
+- `deps` between concepts must be acyclic (kernel doesn't enforce, but `prereqGate` LLM-judge will reject cycles).
+- For `diagnostic` and `selection` sub-types, include at least one "comparison baseline" concept (e.g. for "0G bridge" investigation, include the concept "Cross-chain bridge generic architecture" so findings can place 0G against the baseline).
+
+**`tutorialAuthoring`** (fanout):
+- This is a **tutoring** mindset: "what does the audience need to learn to follow our findings", NOT "what is the canonical wikipedia summary of this concept". Use audience.knowsAbout/doesNotKnow to pick examples and analogies.
+- Length: 200-600 words per concept. Less = under-explained; more = textbook scope.
+- **Cite ≥2 authoritative sources** per concept (vendor docs, source code, peer-reviewed academic, well-known tech blog). `WebSearch` + `WebFetch` builtins are the right tools.
+- Output `slug` is kebab-case derived from `concept.name`. The slug is what findings reference back via `tutorialAnchors`.
+
+### Layer 2: investigation
+
+**`hypothesize`**:
+- Each hypothesis claim must be **falsifiable**. Bad: "0G's bridge has issues". Good: "0G→Ethereum bridge median latency is >5x higher than CCIP-based bridges on equivalent routes".
+- Each hypothesis MUST cite ≥1 `tutorialOutline` concept in `conceptsUsed`. If a hypothesis can't cite a concept, either the concept is missing (rare; flag in stageDesign as a gap) or the hypothesis is out-of-scope.
+- On reject rerun (`rejectionFeedback` non-empty): call `read_port({stage: 'evidenceGather', port: 'evidence'})` to retrieve prior-round evidence verdicts (the runtime returns the array of all per-hypothesis evidence entries from the prior fanout pass). Drop disproven hypotheses; generate NEW hypotheses on under-covered axes (per the rejection feedback) or different angles.
+
+**`evidenceGather`** (fanout per hypothesis):
+- **First-hand evidence is preferred over second-hand summary**. Concrete preference order:
+  1. On-chain transaction history sampled with N≥30 distribution analysis (cite explorer URLs: etherscan/bscscan/arbiscan/solscan/etc., always under `/tx/` or `/address/` paths — these classify as `primary`)
+  2. Source code read raw via `WebFetch` against `https://raw.githubusercontent.com/...` OR linked via `https://github.com/<org>/<repo>/blob/<ref>/<file>` with line range (these classify as `primary`)
+  3. RFCs / specs / standards: `datatracker.ietf.org/doc/...`, `eips.ethereum.org/...`, `w3.org/TR/...` (classify as `primary`)
+  4. Peer-reviewed papers / preprints: `arxiv.org/abs/...`, `doi.org/...`, `usenix.org/conference/...` (classify as `primary`)
+  5. Vendor primary documentation (the subject's own `docs.<subject>` site or official blog — classify as `official_secondary` once `topicFraming.subjectDomain` is set)
+  6. Authoritative third-party documentation
+  7. Aggregator summaries (reddit / hackernews / stackoverflow — classify as `aggregator`, last resort, explicitly tag with `kind: "aggregator_summary"`)
+- **Output schema**: each entry in `positiveEvidence` / `negativeEvidence` is `{ kind: string, url: string, quote: string }`. The `url` field MUST be a fully-qualified absolute URL (https://...) when the source is web-accessible — this is what `sourceClassify` will grade. For non-URL sources (local files, transcripts), use `kind: "local_file" | "local_transcript"` and put the path/identifier in `quote`; leave `url` as the empty string. The downstream classify_evidence_bundle script tags every citation with `{ type, signal, confidence }` based on URL structure — no LLM in the loop.
+- **Negative findings are required output**. If you tried to verify and found nothing, write that down in `negativeEvidence`. A hypothesis with empty `positiveEvidence` and at least one `negativeEvidence` entry is `verdict: "refuted"` or `"inconclusive"` — both are valid outcomes.
+- For `diagnostic` / `selection` topic sub-types: every claim of "X is bad/slow/expensive" needs ≥1 comparable baseline (tx-history of a peer system, source-code comparison, etc.). A claim without a baseline is `inconclusive` until baseline is added.
+- Cite the EXACT artifact, not "according to my training data": `quote` is the verbatim text or fragment from the source supporting the entry.
+- **On reject rerun (`primaryRejectionFeedback` non-empty)**: the previous attempt was rejected by `primarySourceGate` for missing primary sources. The feedback explicitly names which hypothesis ids fall short AND the kind of primary source missing for each. Treat this as authoritative — re-search the SAME hypotheses targeting the named source classes:
+  - `source_repo missing` → search github.com directly. Use `WebFetch` against `https://raw.githubusercontent.com/<org>/<repo>/<branch>/<path>` for raw file content; cite the github.com blob URL with line range as the `url`.
+  - `onchain_explorer missing` → query etherscan/bscscan/arbiscan/etc. Search by contract address (find via project docs, then go to `/address/<addr>`) or by transaction (use `/tx/<hash>` for individual txs, or `/address/<addr>#tokentxns` for token tx history). Cite the explorer URL.
+  - `paper missing` → query arxiv.org / usenix.org / acm.org / doi.org. Cite the abstract or PDF URL.
+  - `spec missing` → query the relevant standards body (datatracker.ietf.org, eips.ethereum.org, w3.org, iso.org). Cite the spec URL.
+  - When a hypothesis genuinely has no primary source available (the topic is too new for spec/paper, or the system is closed-source with no on-chain visibility), document that explicitly in `negativeEvidence` (kind: "no_primary_source_available", url: "", quote: "tried github/etherscan/arxiv/spec — none exists for this claim") and downgrade the verdict to `inconclusive`. Do NOT invent a primary source; the gate will catch the lie.
+
+**`findingsAuthoring`** (fanout per finding):
+- Every finding MUST list ≥1 `tutorialAnchors` (slug references to tutorial concepts). The bidirectional-link constraint is structural — without it the finding is rejected.
+- Every finding MUST list ≥1 `evidenceAnchors` (references to artifacts from `rawArtifacts`). A finding without evidence is removed.
+- The finding prose explicitly mentions the tutorial concept it builds on: e.g. "*As covered in the OFT primer, OFT is LayerZero's token standard.* This means 0G's bridge actually layers OFT on top of CCIP, contradicting the public 'CCIP-canonical' positioning..."
+- Length: 150-400 words per finding. Less = thin; more = should split into multiple findings.
+
+**`reportAssembly`**:
+- Choose the report skeleton based on `framing.investigationType`:
+  - `lookup` → Concept Map (tutorial) + Focused Deep Dive (findings)
+  - `diagnostic` → Current State (tutorial) + Pain Points (findings) + Comparative Baseline (findings) + Optimization Paths (findings)
+  - `selection` → Option Overview (tutorial) + Evaluation Axes (tutorial) + Comparison Matrix (findings) + Recommendation (findings)
+  - `landscape` → Current Snapshot (tutorial) + Trajectory (findings) + Forecast (findings)
+- Insert tutorial cross-references inline. When a finding cites a tutorial concept, render as a markdown link to that concept's section. When a tutorial concept is referenced by ≥1 finding, append a "**See also:**" footer linking to the finding(s).
+- Produce an `audit` map (`sectionToTutorial: Record<string, string[]>`, `sectionToFindings: Record<string, string[]>`) so a verifier can audit the bidirectional link integrity.
+
+**`reportJudge`** (Layer 3, runs after reportAssembly; produces structured rubric scores that drive reportJudgeGate's auto-routing):
+- **Adversarial-reviewer persona, mandatory**. The prompt MUST open with: "You are a senior practitioner who is sceptical of every claim in this report. Your job is to find what's missing, what's overstated, and what the report-writers might have rationalised. You are NOT here to validate the work; you are here to stress-test it." Without this framing, judge scores cluster too high (same-source bias — judge is the same model family as authors).
+- Compute `axisScores.references` deterministically: `references = min(10, round(10 * totalPrimaryCount / max(1, supportedHypothesisCount) / 1.5))`, where `totalPrimaryCount` is the sum of `classifiedEvidence[*].primaryCount` and `supportedHypothesisCount` is the count of `classifiedEvidence` entries with `verdict === "supported"`. Emit this number verbatim — this is the deterministic anchor; the LLM does NOT score this axis.
+- Score the other 5 axes (`explicit_requirements`, `implicit_requirements`, `synthesis`, `communication`, `instruction_following`) on a 0..10 scale per the criteria in analysis.md §Layer 3 stage details. For each, also write a one-paragraph `axisFeedback[axis]` explaining the score with concrete examples from the report.
+- Compute `recommendedAction`:
+  - if `axisScores.references < 7` → `"reject_to_evidenceGather"`
+  - else if `min(axisScores.synthesis, axisScores.communication, axisScores.instruction_following) < 7` → `"reject_to_findingsAuthoring"`
+  - else → `"accept"`
+- Read prior `judgeRound` from the previous reportJudge attempt via `read_port({stage: "reportJudge", port: "judgeRound"})`. On the first run this returns 0 (initial port value); on the second run it returns 1; etc. Emit `judgeRound = priorJudgeRound + 1`.
+- **Hard cap at 2 reject loops**: when `judgeRound === 3`, force `recommendedAction = "accept"` regardless of axis scores AND populate `judgeWarnings: string[]` with the specific axes that were sub-threshold ("references=4: only 1 primary source for 6 supported hypotheses; would have rejected back to evidenceGather but cap reached"). The cap exists to bound runaway iteration cost; the report's audit metadata records the unresolved gaps for the user.
+
+**`pipelineComplete`** is a script stage (`noop_terminal` builtin); no prompt needed. The kernel ships the trivial implementation that returns `{ done: true }` regardless of inputs.
+
+### Gates (LLM-judge auto-answer in single-user runtime)
+
+For each gate stage in the investigation skeleton (`framingGate`, `prereqGate`, `tutorialReviewGate`, `primarySourceGate`, `findingsSynthesisGate`, `humanReviewGate`, `reportJudgeGate`), the gate stage itself does NOT have a stage-prompt — gates pause waiting for an answer. The agent that answers (LLM-judge or user) operates outside this prompt set.
+
+But the agents that get reject-targeted (`topicFraming`, `prereqExtraction`, `tutorialAuthoring`, `evidenceGather`, `findingsAuthoring`, `hypothesize`) DO need their prompts to handle the rejection-feedback input(s) correctly:
+
+- On a fresh run, every rejection-feedback port is the empty string. Agent proceeds normally.
+- On a reject rerun, exactly ONE of the agent's rejection-feedback ports is non-empty (the gate that fired). The agent reads it FIRST, treats it as the authoritative correction, and produces output that addresses the specific rejection.
+- For agents that have TWO rejection-feedback ports (`hypothesize` reads `findingsRejectionFeedback` AND `humanRejectionFeedback`): exactly one of the two will be non-empty on any reject rerun; the other is empty. Use whichever is non-empty.
+- An agent that produces an output indistinguishable from its prior run's output on a reject rerun is malfunctioning — the prompt must explicitly forbid this.
+
+The `primarySourceGate` LLM-judge prompt itself (executed by the gate-answering agent, not part of this prompt set) should:
+- Read `topicFraming.investigationType` to determine the threshold:
+  - `diagnostic`, `selection` → every supported hypothesis MUST have ≥1 primary source. Reject if any falls short.
+  - `landscape`, `lookup` → primary sources strongly preferred but not strictly required. Approve unless the entire bundle has zero primary sources.
+- Read `sourceClassify.classifiedEvidence` and inspect `primaryCount` per hypothesis.
+- On reject, write the gate comment in this exact format so `evidenceGather`'s reject-rerun can parse it:
+  ```
+  Hypothesis ids needing more primary sources:
+  - <H_id>: missing <source_class>. Suggested target: <suggestion>
+  - <H_id>: missing <source_class>. Suggested target: <suggestion>
+  ```
+  where `<source_class>` is one of `source_repo | onchain_explorer | paper | spec` and `<suggestion>` is a one-sentence pointer (e.g. "search github.com/0g-labs/<repo> for the OFT contract"; "query etherscan.io/address/<contract> for tx evidence of compose calls").
+
 ## Sub-pipeline invocation prompts
 
 For any AgentStage in the main IR where `stageContracts[<name>].purpose` indicates sub-pipeline invocation (check `design.subPipelineContracts` for entries with `calledBy === stage.name`):
