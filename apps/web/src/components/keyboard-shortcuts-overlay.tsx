@@ -14,8 +14,8 @@ export const KeyboardShortcutsOverlay = (): React.ReactElement | null => {
 
   const Row = ({ keys, label }: { keys: string; label: string }): React.ReactElement => (
     <li className="flex items-baseline justify-between gap-4 py-1">
-      <span className="text-sm text-zinc-200">{label}</span>
-      <kbd className="rounded border border-zinc-700 bg-zinc-950 px-1.5 py-0.5 font-mono text-[0.7rem] text-zinc-300">
+      <span className="text-sm text-primary">{label}</span>
+      <kbd className="rounded border border-strong bg-page px-1.5 py-0.5 font-mono text-xs text-secondary">
         {keys}
       </kbd>
     </li>
@@ -30,23 +30,23 @@ export const KeyboardShortcutsOverlay = (): React.ReactElement | null => {
       onClick={closeHelp}
     >
       <div
-        className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl"
+        className="w-full max-w-md rounded-lg border border-strong bg-surface p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-baseline justify-between">
-          <h2 id="kbd-help-title" className="text-base font-semibold text-zinc-100">
+          <h2 id="kbd-help-title" className="text-base font-semibold text-primary">
             Keyboard shortcuts
           </h2>
           <button
             type="button"
             onClick={closeHelp}
             aria-label="Close shortcut help"
-            className="rounded text-zinc-400 hover:text-zinc-100"
+            className="rounded text-secondary hover:text-primary"
           >
             ✕
           </button>
         </header>
-        <ul className="mt-4 divide-y divide-zinc-800">
+        <ul className="mt-4 divide-y divide-default">
           <Row label="Focus search" keys="/" />
           <Row label="Go to launcher" keys="g l" />
           <Row label="Go to tasks" keys="g t" />
@@ -55,7 +55,7 @@ export const KeyboardShortcutsOverlay = (): React.ReactElement | null => {
           <Row label="Toggle this help" keys="?" />
           <Row label="Close any dialog" keys="Esc" />
         </ul>
-        <p className="mt-3 text-xs text-zinc-500">
+        <p className="mt-3 text-xs text-muted">
           Shortcuts are inert while typing in inputs / textareas.
         </p>
       </div>

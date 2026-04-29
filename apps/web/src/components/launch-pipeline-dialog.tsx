@@ -162,15 +162,15 @@ export const LaunchPipelineDialog = ({
       onClick={() => !submitting && onClose()}
     >
       <div
-        className="w-full max-w-2xl rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl"
+        className="w-full max-w-2xl rounded-lg border border-strong bg-surface shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex items-baseline justify-between border-b border-zinc-800 px-5 py-3">
+        <header className="flex items-baseline justify-between border-b border-default px-5 py-3">
           <div>
-            <h2 id="launch-dialog-title" className="text-base font-semibold text-zinc-100">
-              Launch <span className="font-mono text-sky-300">{pipeline.name}</span>
+            <h2 id="launch-dialog-title" className="text-base font-semibold text-primary">
+              Launch <span className="font-mono text-accent">{pipeline.name}</span>
             </h2>
-            <p className="mt-0.5 font-mono text-[0.7rem] text-zinc-500">
+            <p className="mt-0.5 font-mono text-xs text-muted">
               {pipeline.latestVersion.slice(0, 12)}…
             </p>
           </div>
@@ -179,7 +179,7 @@ export const LaunchPipelineDialog = ({
             onClick={onClose}
             disabled={submitting}
             aria-label="Close"
-            className="rounded text-zinc-400 hover:text-zinc-100 disabled:opacity-50"
+            className="rounded text-secondary hover:text-primary disabled:opacity-50"
           >
             ✕
           </button>
@@ -187,12 +187,12 @@ export const LaunchPipelineDialog = ({
 
         <form onSubmit={onSubmit} className="space-y-5 p-5">
           {pipeline.externalInputs.length === 0 ? (
-            <p className="text-sm text-zinc-500">
+            <p className="text-sm text-muted">
               This pipeline has no external inputs.
             </p>
           ) : (
             <section>
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-secondary">
                 Inputs
               </h3>
               <div className="space-y-3">
@@ -206,8 +206,8 @@ export const LaunchPipelineDialog = ({
                   return (
                     <div key={p.name}>
                       <label className="block text-sm">
-                        <span className="font-mono text-zinc-200">{p.name}</span>
-                        <span className="ml-2 font-mono text-xs text-zinc-500">{p.type}</span>
+                        <span className="font-mono text-primary">{p.name}</span>
+                        <span className="ml-2 font-mono text-xs text-muted">{p.type}</span>
                       </label>
                       {isStructurable ? (
                         <StructuredInput
@@ -224,7 +224,7 @@ export const LaunchPipelineDialog = ({
                           onChange={(e) =>
                             setSeedValues((prev) => ({ ...prev, [p.name]: e.target.value }))
                           }
-                          className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
+                          className="mt-1 w-full rounded border border-strong bg-page px-2 py-1.5 text-sm text-primary placeholder:text-muted focus:border-strong focus:outline-none"
                         />
                       ) : (
                         <textarea
@@ -234,7 +234,7 @@ export const LaunchPipelineDialog = ({
                           }
                           placeholder="JSON value"
                           rows={3}
-                          className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
+                          className="mt-1 w-full rounded border border-strong bg-page px-2 py-1.5 font-mono text-xs text-primary placeholder:text-muted focus:border-strong focus:outline-none"
                         />
                       )}
                     </div>
@@ -246,11 +246,11 @@ export const LaunchPipelineDialog = ({
 
           {pipeline.envKeys.length > 0 && (
             <section>
-              <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+              <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-secondary">
                 Secrets
               </h3>
               <InventoryBanner envKeys={pipeline.envKeys} layout="full" />
-              <p className="mb-2 text-xs text-zinc-500">
+              <p className="mb-2 text-xs text-muted">
                 Required by this pipeline&rsquo;s MCP servers. Values are
                 forwarded to the kernel via <code className="font-mono">envValues</code> and
                 never enter the agent prompt context.
@@ -261,10 +261,10 @@ export const LaunchPipelineDialog = ({
                   return (
                     <label key={k} className="block text-sm">
                       <span className="flex items-baseline justify-between gap-2">
-                        <span className="font-mono text-xs text-zinc-300">{k}</span>
+                        <span className="font-mono text-xs text-secondary">{k}</span>
                         {inEnv && (
                           <span
-                            className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-300"
+                            className="rounded border border-success-border bg-success-bg px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-success-fg"
                             title="Already visible in server process.env — leave blank to use that value"
                           >
                             in env
@@ -278,7 +278,7 @@ export const LaunchPipelineDialog = ({
                         onChange={(e) =>
                           setEnvValues((prev) => ({ ...prev, [k]: e.target.value }))
                         }
-                        className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
+                        className="mt-1 w-full rounded border border-strong bg-page px-2 py-1.5 font-mono text-xs text-primary placeholder:text-muted focus:border-strong focus:outline-none"
                         placeholder={inEnv ? "(leave empty — using process.env)" : "(leave empty to use process.env)"}
                       />
                     </label>
@@ -289,33 +289,33 @@ export const LaunchPipelineDialog = ({
           )}
 
           <section>
-            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-400">
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-secondary">
               Runtime overrides (optional)
             </h3>
             <div className="grid grid-cols-3 gap-3 text-sm">
               <label className="block">
-                <span className="text-xs text-zinc-400">model</span>
+                <span className="text-xs text-secondary">model</span>
                 <input
                   type="text"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
                   placeholder="claude-haiku-4-5"
-                  className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+                  className="mt-1 w-full rounded border border-strong bg-page px-2 py-1.5 font-mono text-xs text-primary focus:border-strong focus:outline-none"
                 />
               </label>
               <label className="block">
-                <span className="text-xs text-zinc-400">maxTurns</span>
+                <span className="text-xs text-secondary">maxTurns</span>
                 <input
                   type="number"
                   min={1}
                   value={maxTurns}
                   onChange={(e) => setMaxTurns(e.target.value)}
                   placeholder="10"
-                  className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+                  className="mt-1 w-full rounded border border-strong bg-page px-2 py-1.5 text-xs text-primary focus:border-strong focus:outline-none"
                 />
               </label>
               <label className="block">
-                <span className="text-xs text-zinc-400">maxBudgetUsd</span>
+                <span className="text-xs text-secondary">maxBudgetUsd</span>
                 <input
                   type="number"
                   step="0.05"
@@ -323,7 +323,7 @@ export const LaunchPipelineDialog = ({
                   value={maxBudgetUsd}
                   onChange={(e) => setMaxBudgetUsd(e.target.value)}
                   placeholder="0.20"
-                  className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+                  className="mt-1 w-full rounded border border-strong bg-page px-2 py-1.5 text-xs text-primary focus:border-strong focus:outline-none"
                 />
               </label>
             </div>
@@ -331,19 +331,19 @@ export const LaunchPipelineDialog = ({
 
           {diagnostics.length > 0 && <ErrorBanner diagnostics={diagnostics} />}
 
-          <div className="flex justify-end gap-2 border-t border-zinc-800 pt-4">
+          <div className="flex justify-end gap-2 border-t border-default pt-4">
             <button
               type="button"
               onClick={onClose}
               disabled={submitting}
-              className="rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-600 hover:bg-zinc-700 disabled:opacity-50"
+              className="rounded border border-strong bg-elevated px-3 py-1.5 text-sm text-primary hover:border-strong hover:bg-elevated disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting}
-              className="rounded border border-blue-600 bg-blue-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-blue-600 disabled:opacity-50"
+              className="rounded border border-info-border bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
             >
               {submitting ? "Launching…" : "Launch"}
             </button>

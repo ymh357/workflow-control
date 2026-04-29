@@ -2,7 +2,7 @@
 
 // /kernel-next — task list. Reads GET /api/kernel/tasks and renders
 // the one-row-per-task overview. Dark-themed to match the app shell
-// (layout.tsx body is bg-zinc-950 text-zinc-100). Read-only: writes
+// (layout.tsx body is bg-page text-primary). Read-only: writes
 // (launch / answer gate / cancel) go through MCP tools or per-task
 // detail pages.
 
@@ -13,6 +13,9 @@ import { useToast } from "../../components/toast";
 import { ConfirmDialog } from "../../components/confirm-dialog";
 import { CopyButton } from "../../components/copy-button";
 import { useArchivedTasks } from "../../hooks/use-archived-tasks";
+import { Button } from "../../components/ui/button";
+import { Select } from "../../components/ui/input";
+import { StatusPill } from "../../components/ui/status-pill";
 
 type TaskStatus = "running" | "gated" | "completed" | "failed" | "cancelled" | "orphaned";
 
@@ -63,24 +66,6 @@ function formatDuration(startedAt: number, endedAt: number | null): string {
   if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
   return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;
-}
-
-function statusBadge(status: TaskStatus) {
-  const base = "inline-flex items-center rounded border px-1.5 py-0.5 text-[0.68rem] font-semibold uppercase tracking-wide";
-  switch (status) {
-    case "running":
-      return `${base} border-blue-500/40 bg-blue-500/15 text-blue-300`;
-    case "gated":
-      return `${base} border-amber-500/40 bg-amber-500/15 text-amber-300`;
-    case "completed":
-      return `${base} border-emerald-500/40 bg-emerald-500/15 text-emerald-300`;
-    case "failed":
-      return `${base} border-red-500/40 bg-red-500/15 text-red-300`;
-    case "cancelled":
-      return `${base} border-zinc-500/40 bg-zinc-500/15 text-zinc-300`;
-    case "orphaned":
-      return `${base} border-purple-500/40 bg-purple-500/15 text-purple-300`;
-  }
 }
 
 function truncate(s: string, max: number): string {
@@ -159,9 +144,9 @@ export default function TaskListPage() {
     <div className="space-y-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-baseline gap-3">
-          <h1 className="text-2xl font-semibold tracking-tight">Tasks</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-primary">Tasks</h1>
           {tasks !== null && (
-            <span className="text-sm text-zinc-500">
+            <span className="text-sm text-muted">
               {statusCounts.total} total
               {statusCounts.running > 0 && ` · ${statusCounts.running} running`}
               {statusCounts.gated > 0 && ` · ${statusCounts.gated} gated`}
@@ -171,11 +156,10 @@ export default function TaskListPage() {
         </div>
 
         <div className="flex items-center gap-2 text-sm">
-          <select
+          <Select
             value={filter}
             onChange={(e) => setFilter(e.target.value as StatusFilter)}
             aria-label="Filter by status"
-            className="rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 focus:border-zinc-500 focus:outline-none"
           >
             <option value="">all statuses</option>
             <option value="running">running</option>
@@ -184,70 +168,66 @@ export default function TaskListPage() {
             <option value="failed">failed</option>
             <option value="cancelled">cancelled</option>
             <option value="orphaned">orphaned</option>
-          </select>
-          <label className="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 cursor-pointer hover:border-zinc-600">
+          </Select>
+          <label className="flex cursor-pointer items-center gap-1.5 rounded border border-default bg-surface px-2 py-1.5 text-secondary hover:border-strong">
             <input
               type="checkbox"
               checked={live}
               onChange={(e) => setLive(e.target.checked)}
-              className="accent-blue-500"
+              className="accent-accent"
             />
             <span>live</span>
-            <span className="text-zinc-500 text-xs">5s</span>
+            <span className="text-xs text-muted">5s</span>
           </label>
-          <button
-            type="button"
-            onClick={() => void refetch()}
-            className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 hover:border-zinc-600 hover:bg-zinc-800"
-          >
+          <Button type="button" onClick={() => void refetch()}>
             refresh
-          </button>
+          </Button>
           {archive.archivedCount > 0 && (
-            <label className="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 cursor-pointer hover:border-zinc-600">
+            <label className="flex cursor-pointer items-center gap-1.5 rounded border border-default bg-surface px-2 py-1.5 text-secondary hover:border-strong">
               <input
                 type="checkbox"
                 checked={showArchived}
                 onChange={(e) => setShowArchived(e.target.checked)}
-                className="accent-blue-500"
+                className="accent-accent"
               />
               <span>archived</span>
-              <span className="text-zinc-500 text-xs">{archive.archivedCount}</span>
+              <span className="text-xs text-muted">{archive.archivedCount}</span>
             </label>
           )}
         </div>
       </header>
 
       {error && (
-        <div className="rounded border border-red-500/50 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <div className="rounded border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
           {error}
         </div>
       )}
 
       {tasks === null && (
-        <div className="text-sm text-zinc-500">Loading…</div>
+        <div className="text-sm text-muted">Loading…</div>
       )}
 
       {tasks !== null && tasks.length === 0 && (
-        <div className="rounded-lg border border-dashed border-zinc-700 bg-zinc-900/30 p-10 text-center">
-          <p className="text-zinc-400">No tasks yet.</p>
-          <p className="mt-2 text-xs text-zinc-500">
-            Launch via MCP: <code className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono">run_pipeline</code>
-            {" "}or HTTP: <code className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono">POST /api/kernel/tasks/run</code>.
+        <div className="rounded-lg border border-dashed border-default bg-surface p-10 text-center">
+          <p className="text-secondary">No tasks yet.</p>
+          <p className="mt-2 text-xs text-muted">
+            Launch via MCP: <code className="rounded bg-elevated px-1.5 py-0.5 font-mono">run_pipeline</code>
+            {" "}or HTTP: <code className="rounded bg-elevated px-1.5 py-0.5 font-mono">POST /api/kernel/tasks/run</code>.
           </p>
         </div>
       )}
 
       {tasks !== null && tasks.length > 0 && (
-        <div className="overflow-x-auto rounded-lg border border-zinc-800">
+        <div className="surface-card overflow-x-auto rounded-lg border border-default">
           <table className="w-full border-collapse text-sm">
-            <thead className="bg-zinc-900/70 text-xs uppercase tracking-wide text-zinc-400">
+            <thead className="bg-elevated text-xs uppercase tracking-wide text-secondary">
               <tr>
                 <th className="px-3 py-2 text-left font-semibold">Task</th>
                 <th className="px-3 py-2 text-left font-semibold">Pipeline</th>
                 <th className="px-3 py-2 text-left font-semibold">Status</th>
                 <th className="px-3 py-2 text-left font-semibold">Current stage</th>
                 <th className="px-3 py-2 text-right font-semibold">Cost</th>
-                <th className="px-3 py-2 text-right font-semibold">Tokens <span className="text-zinc-600">in/out</span></th>
+                <th className="px-3 py-2 text-right font-semibold">Tokens <span className="text-muted">in/out</span></th>
                 <th className="px-3 py-2 text-right font-semibold">Att</th>
                 <th className="px-3 py-2 text-left font-semibold">Started</th>
                 <th className="px-3 py-2 text-right font-semibold">Duration</th>
@@ -258,12 +238,12 @@ export default function TaskListPage() {
               {tasks.filter((t) => showArchived || !archive.isArchived(t.taskId)).map((t) => (
                 <tr
                   key={t.taskId}
-                  className="border-t border-zinc-800 hover:bg-zinc-900/40 transition-colors"
+                  className="border-t border-default transition-colors hover:bg-elevated"
                 >
                   <td className="px-3 py-2">
                     <Link
                       href={`/kernel-next/${encodeURIComponent(t.taskId)}`}
-                      className="font-mono text-[0.82rem] text-sky-400 hover:text-sky-300 hover:underline"
+                      className="font-mono text-sm text-accent hover:underline"
                       title={t.taskId}
                     >
                       {truncate(t.taskId, 34)}
@@ -274,63 +254,64 @@ export default function TaskListPage() {
                     {t.pipelineName ? (
                       <Link
                         href={`/kernel-next/pipelines/${encodeURIComponent(t.pipelineName)}`}
-                        className="text-zinc-200 hover:text-white hover:underline"
+                        className="text-primary hover:underline"
                         title={t.pipelineName}
                       >
                         {truncate(t.pipelineName, 28)}
                       </Link>
                     ) : (
-                      <span className="font-mono text-xs text-zinc-500" title={t.versionHash}>
+                      <span className="font-mono text-xs text-muted" title={t.versionHash}>
                         {t.versionHash.slice(0, 8)}…
                       </span>
                     )}
                   </td>
                   <td className="px-3 py-2">
-                    <span className={statusBadge(t.status)}>{t.status}</span>
+                    <StatusPill status={t.status} />
                   </td>
-                  <td className="px-3 py-2 font-mono text-xs text-zinc-300">
-                    {t.currentStage ?? <span className="text-zinc-600">—</span>}
+                  <td className="px-3 py-2 font-mono text-xs text-secondary">
+                    {t.currentStage ?? <span className="text-muted">—</span>}
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums font-mono text-xs">
+                  <td className="px-3 py-2 text-right font-mono text-xs tabular-nums">
                     {t.totalCostUsd > 0 ? (
-                      <span className="text-zinc-200">${t.totalCostUsd.toFixed(4)}</span>
+                      <span className="text-primary">${t.totalCostUsd.toFixed(4)}</span>
                     ) : (
-                      <span className="text-zinc-600">—</span>
+                      <span className="text-muted">—</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums font-mono text-xs text-zinc-400">
+                  <td className="px-3 py-2 text-right font-mono text-xs tabular-nums text-secondary">
                     {t.totalInputTokens + t.totalOutputTokens > 0
                       ? `${t.totalInputTokens.toLocaleString()}/${t.totalOutputTokens.toLocaleString()}`
-                      : <span className="text-zinc-600">—</span>}
+                      : <span className="text-muted">—</span>}
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums font-mono text-xs text-zinc-300">
+                  <td className="px-3 py-2 text-right font-mono text-xs tabular-nums text-secondary">
                     {t.attemptCount}
                   </td>
-                  <td className="px-3 py-2 whitespace-nowrap text-xs text-zinc-400">
+                  <td className="px-3 py-2 whitespace-nowrap text-xs text-secondary">
                     {formatTimestamp(t.startedAt)}
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums text-xs text-zinc-400">
+                  <td className="px-3 py-2 text-right text-xs tabular-nums text-secondary">
                     {formatDuration(t.startedAt, t.endedAt)}
                   </td>
                   <td className="px-3 py-2 text-right">
                     {(t.status === "running" || t.status === "gated" || t.status === "orphaned") && (
-                      <button
-                        type="button"
+                      <Button
+                        variant="danger"
+                        size="sm"
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
                           setCancelTarget(t);
                         }}
                         disabled={actingTaskId === t.taskId}
-                        className="rounded border border-red-700/60 bg-red-900/30 px-2 py-1 text-[0.7rem] font-semibold text-red-200 hover:border-red-600 hover:bg-red-800/50 disabled:opacity-50"
                         title="Cancel this task"
                       >
                         Cancel
-                      </button>
+                      </Button>
                     )}
                     {t.status === "failed" && (
-                      <button
-                        type="button"
+                      <Button
+                        variant="primary"
+                        size="sm"
                         onClick={async (e) => {
                           e.preventDefault();
                           e.stopPropagation();
@@ -349,39 +330,40 @@ export default function TaskListPage() {
                           void refetch();
                         }}
                         disabled={actingTaskId === t.taskId}
-                        className="rounded border border-blue-700/60 bg-blue-900/30 px-2 py-1 text-[0.7rem] font-semibold text-blue-200 hover:border-blue-600 hover:bg-blue-800/50 disabled:opacity-50"
                         title="Retry from the earliest failed stage"
                       >
                         Retry
-                      </button>
+                      </Button>
                     )}
                     {(t.status === "completed" || t.status === "failed" || t.status === "cancelled") && (
                       archive.isArchived(t.taskId) ? (
-                        <button
-                          type="button"
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="ml-1"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
                             archive.unarchive(t.taskId);
                           }}
-                          className="ml-1 rounded border border-zinc-700/60 bg-zinc-900/30 px-2 py-1 text-[0.7rem] font-semibold text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800/50"
                           title="Unarchive (restore to default view)"
                         >
                           Unarchive
-                        </button>
+                        </Button>
                       ) : (
-                        <button
-                          type="button"
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="ml-1"
                           onClick={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
                             archive.archive(t.taskId);
                           }}
-                          className="ml-1 rounded border border-zinc-800/60 bg-zinc-900/20 px-2 py-1 text-[0.7rem] text-zinc-400 hover:border-zinc-700 hover:bg-zinc-800/40"
                           title="Hide from default view (UI-only, server data untouched)"
                         >
                           Archive
-                        </button>
+                        </Button>
                       )
                     )}
                   </td>
@@ -393,7 +375,7 @@ export default function TaskListPage() {
       )}
 
       {lastFetchedAt && (
-        <p className="text-right text-[0.68rem] text-zinc-600">
+        <p className="text-right text-xs text-muted">
           last updated {new Date(lastFetchedAt).toLocaleTimeString()}
         </p>
       )}

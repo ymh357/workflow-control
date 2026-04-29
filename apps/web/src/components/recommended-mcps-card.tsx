@@ -18,10 +18,10 @@ interface Props {
 }
 
 const STATUS_COLOR: Record<string, string> = {
-  "equipped":        "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
-  "pending-secret":  "border-amber-500/40 bg-amber-500/10 text-amber-300",
-  "unhealthy":       "border-red-500/40 bg-red-500/10 text-red-300",
-  "not-equipped":    "border-zinc-500/40 bg-zinc-500/10 text-zinc-300",
+  "equipped":        "border-success-border bg-success-bg text-success-fg",
+  "pending-secret":  "border-warning-border bg-warning-bg text-warning-fg",
+  "unhealthy":       "border-danger-border bg-danger-bg text-danger-fg",
+  "not-equipped":    "border-strong bg-elevated text-secondary",
 };
 
 export const RecommendedMcpsCard = ({ recommendedMcps }: Props) => {
@@ -77,11 +77,11 @@ export const RecommendedMcpsCard = ({ recommendedMcps }: Props) => {
   if (recommendedMcps.length === 0) return null;
 
   return (
-    <section className="rounded-lg border border-sky-700/40 bg-sky-700/5 p-3">
-      <h4 className="text-xs font-semibold uppercase tracking-wide text-sky-300">
+    <section className="rounded-lg border border-info-border bg-info-bg p-3">
+      <h4 className="text-xs font-semibold uppercase tracking-wide text-accent">
         Recommended Tools ({recommendedMcps.length})
       </h4>
-      <p className="mt-1 text-[0.7rem] text-zinc-400">
+      <p className="mt-1 text-xs text-secondary">
         Approving will commit these MCP servers to the generated pipeline. You can equip them now or after approval.
       </p>
       <ul className="mt-2 space-y-2">
@@ -89,10 +89,10 @@ export const RecommendedMcpsCard = ({ recommendedMcps }: Props) => {
           const status = statuses[r.entryId] ?? "not-equipped";
           const color = STATUS_COLOR[status] ?? STATUS_COLOR["not-equipped"];
           return (
-            <li key={r.entryId} className="rounded border border-zinc-700 bg-zinc-900/80 p-2">
+            <li key={r.entryId} className="rounded border border-strong bg-surface p-2">
               <div className="flex items-baseline gap-2">
-                <span className="font-mono text-xs text-sky-300">{r.entryId}</span>
-                <span className={`rounded border px-1.5 py-0.5 text-[0.55rem] uppercase tracking-wide ${color}`}>
+                <span className="font-mono text-xs text-accent">{r.entryId}</span>
+                <span className={`rounded border px-1.5 py-0.5 text-xs uppercase tracking-wide ${color}`}>
                   {status}
                 </span>
                 {status !== "equipped" && (
@@ -100,15 +100,15 @@ export const RecommendedMcpsCard = ({ recommendedMcps }: Props) => {
                     href={`/kernel-next/mcp-catalog`}
                     target="_blank"
                     rel="noreferrer"
-                    className="ml-auto text-[0.65rem] text-sky-400 underline"
+                    className="ml-auto text-xs text-accent underline"
                   >
                     前往装备 ↗
                   </a>
                 )}
               </div>
-              <p className="mt-1 text-[0.7rem] text-zinc-300">{r.reason}</p>
+              <p className="mt-1 text-xs text-secondary">{r.reason}</p>
               {r.envKeys.length > 0 && (
-                <p className="mt-1 font-mono text-[0.6rem] text-zinc-500">
+                <p className="mt-1 font-mono text-xs text-muted">
                   envKeys: {r.envKeys.join(", ")}
                 </p>
               )}

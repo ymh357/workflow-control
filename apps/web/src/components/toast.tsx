@@ -43,14 +43,14 @@ const ToastItem = ({ toast, onRemove }: { toast: Toast; onRemove: (id: number) =
   }, [exiting, toast.id, onRemove]);
 
   const colors = {
-    success: "bg-emerald-900/90 border-emerald-700 text-emerald-200",
-    error: "bg-red-900/90 border-red-700 text-red-200",
-    info: "bg-blue-900/90 border-blue-700 text-blue-200",
+    success: "bg-success-bg border-success-border text-success-fg",
+    error: "bg-danger-bg border-danger-border text-danger-fg",
+    info: "bg-info-bg border-info-border text-info-fg",
   };
 
   return (
     <div
-      className={`pointer-events-auto rounded-lg border px-4 py-3 text-sm shadow-lg backdrop-blur-sm transition-all duration-300 ${colors[toast.type]} ${exiting ? "opacity-0 translate-x-4" : "opacity-100 translate-x-0"}`}
+      className={`surface-card pointer-events-auto rounded-lg border px-4 py-3 text-sm shadow-lg backdrop-blur-sm transition-all duration-300 ${colors[toast.type]} ${exiting ? "opacity-0 translate-x-4" : "opacity-100 translate-x-0"}`}
     >
       {toast.message}
     </div>

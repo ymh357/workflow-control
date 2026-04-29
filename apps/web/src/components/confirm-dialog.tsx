@@ -55,18 +55,18 @@ export const ConfirmDialog = ({
       onClick={onCancel}
     >
       <div
-        className="w-full max-w-md rounded-lg border border-zinc-700 bg-zinc-900 p-5 shadow-xl"
+        className="w-full max-w-md rounded-lg border border-strong bg-surface p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 id="confirm-dialog-title" className="text-base font-semibold text-zinc-100">
+        <h2 id="confirm-dialog-title" className="text-base font-semibold text-primary">
           {title}
         </h2>
-        <p className="mt-2 text-sm text-zinc-300">{message}</p>
+        <p className="mt-2 text-sm text-secondary">{message}</p>
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
             onClick={onCancel}
-            className="rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-600 hover:bg-zinc-700"
+            className="rounded border border-strong bg-elevated px-3 py-1.5 text-sm text-primary hover:border-strong hover:bg-elevated"
           >
             {cancelLabel}
           </button>
@@ -76,8 +76,8 @@ export const ConfirmDialog = ({
             onClick={onConfirm}
             className={
               destructive
-                ? "rounded border border-red-700 bg-red-800/80 px-3 py-1.5 text-sm font-semibold text-red-100 hover:border-red-500 hover:bg-red-700"
-                : "rounded border border-blue-600 bg-blue-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-600"
+                ? "rounded border border-danger-border bg-danger-bg px-3 py-1.5 text-sm font-semibold text-danger-fg hover:border-danger-border hover:bg-elevated"
+                : "rounded border border-info-border bg-accent px-3 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
             }
           >
             {confirmLabel}

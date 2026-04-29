@@ -52,7 +52,7 @@ export const ThemeToggle = (): React.ReactElement => {
       <button
         type="button"
         aria-label="Theme"
-        className="rounded px-2 py-1 text-xs text-zinc-500"
+        className="rounded px-2 py-1 text-xs text-muted"
         disabled
       >
         ●
@@ -66,7 +66,7 @@ export const ThemeToggle = (): React.ReactElement => {
       onClick={toggle}
       title={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
       aria-label={`Switch to ${theme === "light" ? "dark" : "light"} mode`}
-      className="rounded px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 transition-colors data-[theme=light]:hover:bg-zinc-200 data-[theme=light]:hover:text-zinc-700"
+      className="rounded px-2 py-1 text-xs text-secondary hover:bg-elevated hover:text-primary transition-colors data-[theme=light]:hover:bg-elevated data-[theme=light]:hover:text-muted"
     >
       {theme === "light" ? "☀" : "☾"}
     </button>

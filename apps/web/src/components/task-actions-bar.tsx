@@ -95,7 +95,7 @@ export const TaskActionsBar = ({
             type="button"
             onClick={() => setConfirmCancel(true)}
             disabled={acting}
-            className="rounded border border-red-700/60 bg-red-900/30 px-3 py-1 text-xs font-semibold text-red-200 hover:border-red-600 hover:bg-red-800/50 disabled:opacity-50"
+            className="rounded border border-danger-border bg-danger-bg px-3 py-1 text-xs font-semibold text-danger-fg hover:border-danger-border hover:bg-danger-bg disabled:opacity-50"
           >
             {acting ? "Cancelling…" : "Cancel"}
           </button>
@@ -105,7 +105,7 @@ export const TaskActionsBar = ({
             type="button"
             onClick={onRetry}
             disabled={acting}
-            className="rounded border border-blue-700/60 bg-blue-900/30 px-3 py-1 text-xs font-semibold text-blue-200 hover:border-blue-600 hover:bg-blue-800/50 disabled:opacity-50"
+            className="rounded border border-info-border bg-info-bg px-3 py-1 text-xs font-semibold text-info-fg hover:border-info-border hover:bg-info-bg disabled:opacity-50"
             title="Retry from the earliest failed stage"
           >
             {acting ? "Retrying…" : "Retry from failed stage"}

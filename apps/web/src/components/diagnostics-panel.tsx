@@ -48,25 +48,25 @@ export function DiagnosticsPanel({ diagnostics }: DiagnosticsPanelProps) {
   };
 
   return (
-    <section className="mb-6 rounded border border-red-500/50 bg-red-500/10 p-3 font-mono text-sm">
+    <section className="mb-6 rounded border border-danger-border bg-danger-bg p-3 font-mono text-sm">
       <div className="mb-2 flex items-center justify-between">
-        <h2 className="font-semibold text-red-300">
+        <h2 className="font-semibold text-danger-fg">
           Diagnostics ({diagnostics.length})
         </h2>
         <button
           type="button"
           onClick={handleCopy}
-          className="rounded border border-red-500/50 bg-red-500/15 px-2 py-1 text-xs text-red-200 hover:border-red-500/70 hover:bg-red-500/25"
+          className="rounded border border-danger-border bg-danger-bg px-2 py-1 text-xs text-danger-fg hover:border-danger-border hover:bg-danger-bg"
         >
           Copy JSON
         </button>
       </div>
       {grouped.map(([code, items]) => (
         <details key={code} open className="mb-1">
-          <summary className="cursor-pointer font-semibold text-red-300">
+          <summary className="cursor-pointer font-semibold text-danger-fg">
             {code} ({items.length})
           </summary>
-          <ul className="ml-4 list-disc text-xs text-red-200/90">
+          <ul className="ml-4 list-disc text-xs text-danger-fg">
             {items.map((d, i) => (
               <li key={`${code}-${i}`}>{d.message}</li>
             ))}

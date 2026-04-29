@@ -145,8 +145,8 @@ const ErrorReasonBadge = ({ reason }: { reason?: StageErrorReason }) => {
     ? "executor_failed — stage agent/script returned error or threw"
     : "no_active_wire — every inbound wire resolved false";
   const className = isExec
-    ? "mr-1 inline-block rounded bg-red-100 px-1 text-[10px] font-semibold uppercase text-red-800"
-    : "mr-1 inline-block rounded bg-amber-100 px-1 text-[10px] font-semibold uppercase text-amber-800";
+    ? "mr-1 inline-block rounded bg-danger-bg px-1 text-xs font-semibold uppercase text-danger-fg"
+    : "mr-1 inline-block rounded border border-warning-border bg-warning-bg px-1 text-xs font-semibold uppercase text-warning-fg";
   return (
     <span className={className} title={title}>
       {label}
@@ -761,7 +761,7 @@ export default function KernelNextTaskPage() {
         <div className="flex flex-wrap items-baseline justify-between gap-3">
           <div className="flex items-baseline gap-3">
             <h1 className="text-2xl font-semibold tracking-tight">Task</h1>
-            <code className="rounded bg-zinc-900 px-2 py-1 font-mono text-sm text-sky-300">
+            <code className="rounded bg-surface px-2 py-1 font-mono text-sm text-accent">
               {taskId ?? "—"}
             </code>
             {taskId && <CopyButton value={taskId} label="copy" />}
@@ -775,10 +775,10 @@ export default function KernelNextTaskPage() {
             />
           )}
         </div>
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-400">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-secondary">
           <span className="inline-flex items-center gap-1.5">
             <span
-              className={`inline-block h-1.5 w-1.5 rounded-full ${connected ? "bg-emerald-500 animate-pulse" : "bg-zinc-600"}`}
+              className={`inline-block h-1.5 w-1.5 rounded-full ${connected ? "bg-success-fg animate-pulse" : "bg-elevated"}`}
             />
             stream {connected ? "open" : "closed"}
           </span>
@@ -788,11 +788,11 @@ export default function KernelNextTaskPage() {
           <span>
             state:{" "}
             <span className={
-              topState === "failed" || topState === "cancelled" || topState === "orphaned" ? "text-red-400"
-              : topState === "completed" ? "text-emerald-400"
-              : topState === "running" ? "text-blue-400"
-              : topState === "gated" || topState === "secret_pending" ? "text-amber-400"
-              : "text-zinc-400"
+              topState === "failed" || topState === "cancelled" || topState === "orphaned" ? "text-danger-fg"
+              : topState === "completed" ? "text-success-fg"
+              : topState === "running" ? "text-accent"
+              : topState === "gated" || topState === "secret_pending" ? "text-warning-fg"
+              : "text-secondary"
             }>
               {topState}
             </span>
@@ -802,7 +802,7 @@ export default function KernelNextTaskPage() {
               <span>·</span>
               <span className="font-mono tabular-nums">${cost.cumulativeUsd.toFixed(4)}</span>
               <span>·</span>
-              <span className="font-mono tabular-nums text-zinc-500">
+              <span className="font-mono tabular-nums text-muted">
                 {cost.inputTokens.toLocaleString()} in / {cost.outputTokens.toLocaleString()} out
               </span>
             </>
@@ -817,22 +817,22 @@ export default function KernelNextTaskPage() {
           <h2 className="text-base font-semibold mb-2">
             Seed Inputs ({seedRows.length})
           </h2>
-          <table className="w-full border-collapse border border-zinc-800">
-            <thead className="bg-zinc-900/70">
+          <table className="w-full border-collapse border border-default">
+            <thead className="bg-surface">
               <tr>
-                <th className="border border-zinc-800 px-2 py-1 text-left w-48">Port</th>
-                <th className="border border-zinc-800 px-2 py-1 text-left">Value</th>
-                <th className="border border-zinc-800 px-2 py-1 text-left w-28">Written at</th>
+                <th className="border border-default px-2 py-1 text-left w-48">Port</th>
+                <th className="border border-default px-2 py-1 text-left">Value</th>
+                <th className="border border-default px-2 py-1 text-left w-28">Written at</th>
               </tr>
             </thead>
             <tbody>
               {seedRows.map(([port, { value, timestamp }]) => (
                 <tr key={port} className="align-top">
-                  <td className="border border-zinc-800 px-2 py-1 font-mono text-sm text-zinc-200">{port}</td>
-                  <td className="border border-zinc-800 px-2 py-1">
+                  <td className="border border-default px-2 py-1 font-mono text-sm text-primary">{port}</td>
+                  <td className="border border-default px-2 py-1">
                     <SeedValueCell value={value} />
                   </td>
-                  <td className="border border-zinc-800 px-2 py-1 text-xs text-zinc-500 whitespace-nowrap">
+                  <td className="border border-default px-2 py-1 text-xs text-muted whitespace-nowrap">
                     {new Date(timestamp).toLocaleTimeString()}
                   </td>
                 </tr>
@@ -848,8 +848,8 @@ export default function KernelNextTaskPage() {
             const ctx = gateContexts.get(gid);
             if (!ctx) {
               return (
-                <section key={gid} className="mb-2 rounded border border-amber-500/50 bg-amber-500/10 p-3">
-                  <p className="text-sm text-amber-200">
+                <section key={gid} className="mb-2 rounded border border-warning-border bg-warning-bg p-3">
+                  <p className="text-sm text-warning-fg">
                     Gate <code>{gid}</code> pending — loading context…
                   </p>
                 </section>
@@ -873,7 +873,7 @@ export default function KernelNextTaskPage() {
       {ir && (
         <section className="mb-6">
           <h2 className="text-base font-semibold mb-2">Pipeline DAG</h2>
-          <div className="rounded-lg border border-zinc-800 overflow-hidden">
+          <div className="rounded-lg border border-default overflow-hidden">
             <PipelineGraph ir={ir} stageStates={stageStates} height={560} />
           </div>
         </section>
@@ -886,12 +886,12 @@ export default function KernelNextTaskPage() {
             <details
               key={stage}
               open
-              className="mb-2 rounded border border-sky-500/40 bg-sky-500/10 p-2"
+              className="mb-2 rounded border border-info-border bg-info-bg p-2"
             >
-              <summary className="cursor-pointer text-xs font-semibold text-sky-200">
+              <summary className="cursor-pointer text-xs font-semibold text-accent">
                 {stage}
               </summary>
-              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-xs text-zinc-200">
+              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-xs text-primary">
                 {text}
               </pre>
             </details>
@@ -902,17 +902,17 @@ export default function KernelNextTaskPage() {
       <section className="mb-6">
         <h2 className="text-base font-semibold mb-2">Stages</h2>
         {stageRows.length === 0 ? (
-          <p className="text-zinc-500">no stages yet</p>
+          <p className="text-muted">no stages yet</p>
         ) : (
-          <table className="w-full border-collapse border border-zinc-800">
-            <thead className="bg-zinc-900/70">
+          <table className="w-full border-collapse border border-default">
+            <thead className="bg-surface">
               <tr>
-                <th className="border border-zinc-800 px-2 py-1 text-left">Stage</th>
-                <th className="border border-zinc-800 px-2 py-1 text-left">State</th>
-                <th className="border border-zinc-800 px-2 py-1 text-left">Attempt</th>
-                <th className="border border-zinc-800 px-2 py-1 text-left">Duration</th>
-                <th className="border border-zinc-800 px-2 py-1 text-left">History</th>
-                <th className="border border-zinc-800 px-2 py-1 text-left">Error</th>
+                <th className="border border-default px-2 py-1 text-left">Stage</th>
+                <th className="border border-default px-2 py-1 text-left">State</th>
+                <th className="border border-default px-2 py-1 text-left">Attempt</th>
+                <th className="border border-default px-2 py-1 text-left">Duration</th>
+                <th className="border border-default px-2 py-1 text-left">History</th>
+                <th className="border border-default px-2 py-1 text-left">Error</th>
               </tr>
             </thead>
             <tbody>
@@ -924,36 +924,36 @@ export default function KernelNextTaskPage() {
                 return (
                   <React.Fragment key={row.stage}>
                     <tr>
-                      <td className="border border-zinc-800 px-2 py-1">{row.stage}</td>
+                      <td className="border border-default px-2 py-1">{row.stage}</td>
                       <td
-                        className={`border border-zinc-800 px-2 py-1 ${
-                          row.state === "error" ? "text-red-600" :
-                          row.state === "done" ? "text-green-600" : "text-blue-600"
+                        className={`border border-default px-2 py-1 ${
+                          row.state === "error" ? "text-danger-fg" :
+                          row.state === "done" ? "text-success-fg" : "text-info-fg"
                         }`}
                       >
                         {row.state}
                       </td>
-                      <td className="border border-zinc-800 px-2 py-1 text-xs text-zinc-400">
+                      <td className="border border-default px-2 py-1 text-xs text-secondary">
                         {row.attemptId ?? "—"}
                       </td>
-                      <td className="border border-zinc-800 px-2 py-1 text-xs text-zinc-300">
+                      <td className="border border-default px-2 py-1 text-xs text-secondary">
                         {formatDuration(latest?.duration_ms ?? null)}
                       </td>
-                      <td className="border border-zinc-800 px-2 py-1 text-xs">
+                      <td className="border border-default px-2 py-1 text-xs">
                         {canExpand ? (
                           <button
                             type="button"
                             onClick={() => setExpandedStage(isExpanded ? null : row.stage)}
-                            className="text-sky-400 hover:text-sky-300 hover:underline"
+                            className="text-accent hover:text-accent hover:underline"
                             aria-expanded={isExpanded}
                           >
                             {isExpanded ? "hide" : "show"} ({stageAttempts.length})
                           </button>
                         ) : (
-                          <span className="text-zinc-600">—</span>
+                          <span className="text-muted">—</span>
                         )}
                       </td>
-                      <td className="border border-zinc-800 px-2 py-1 text-xs text-red-400">
+                      <td className="border border-default px-2 py-1 text-xs text-danger-fg">
                         {row.state === "error" && (
                           <ErrorReasonBadge reason={row.errorReason} />
                         )}
@@ -964,10 +964,10 @@ export default function KernelNextTaskPage() {
                       <tr>
                         <td
                           colSpan={6}
-                          className="border border-zinc-800 bg-zinc-900/50 px-2 py-2"
+                          className="border border-default bg-surface px-2 py-2"
                         >
                           <table className="w-full border-collapse text-xs">
-                            <thead className="text-left text-zinc-400">
+                            <thead className="text-left text-secondary">
                               <tr>
                                 <th className="px-2 py-1">#</th>
                                 <th className="px-2 py-1">attempt_id</th>
@@ -982,11 +982,11 @@ export default function KernelNextTaskPage() {
                               {stageAttempts.map((a) => (
                                 <React.Fragment key={a.attempt_id}>
                                   <tr>
-                                    <td className="px-2 py-1 text-zinc-400">{a.attempt_idx}</td>
-                                    <td className="px-2 py-1 font-mono text-zinc-300">
+                                    <td className="px-2 py-1 text-secondary">{a.attempt_idx}</td>
+                                    <td className="px-2 py-1 font-mono text-secondary">
                                       <Link
                                         href={`/kernel-next/attempts/${encodeURIComponent(a.attempt_id)}`}
-                                        className="text-sky-400 hover:text-sky-300 hover:underline"
+                                        className="text-accent hover:text-accent hover:underline"
                                         title={a.attempt_id}
                                       >
                                         {a.attempt_id.slice(0, 8)}
@@ -994,26 +994,26 @@ export default function KernelNextTaskPage() {
                                     </td>
                                     <td
                                       className={`px-2 py-1 ${
-                                        a.status === "error" ? "text-red-400" :
-                                        a.status === "success" ? "text-emerald-400" :
-                                        a.status === "running" ? "text-sky-400" : "text-zinc-500"
+                                        a.status === "error" ? "text-danger-fg" :
+                                        a.status === "success" ? "text-success-fg" :
+                                        a.status === "running" ? "text-accent" : "text-muted"
                                       }`}
                                     >
                                       {a.status}
                                     </td>
-                                    <td className="px-2 py-1 text-zinc-400">
+                                    <td className="px-2 py-1 text-secondary">
                                       {new Date(a.started_at).toLocaleTimeString()}
                                     </td>
-                                    <td className="px-2 py-1 text-zinc-400">
+                                    <td className="px-2 py-1 text-secondary">
                                       {a.ended_at !== null ? new Date(a.ended_at).toLocaleTimeString() : "—"}
                                     </td>
-                                    <td className="px-2 py-1 text-zinc-300">
+                                    <td className="px-2 py-1 text-secondary">
                                       {formatDuration(a.duration_ms)}
                                     </td>
                                     <td className="px-2 py-1">
                                       {a.attempt_id in attemptDiffs ? (
                                         attemptDiffs[a.attempt_id] === null ? (
-                                          <span className="text-zinc-500">Loading…</span>
+                                          <span className="text-muted">Loading…</span>
                                         ) : (
                                           <button
                                             type="button"
@@ -1024,7 +1024,7 @@ export default function KernelNextTaskPage() {
                                                 return next;
                                               })
                                             }
-                                            className="text-blue-600 hover:underline"
+                                            className="text-info-fg hover:underline"
                                           >
                                             hide
                                           </button>
@@ -1033,7 +1033,7 @@ export default function KernelNextTaskPage() {
                                         <button
                                           type="button"
                                           onClick={() => void loadDiff(a.attempt_id)}
-                                          className="text-blue-600 hover:underline"
+                                          className="text-info-fg hover:underline"
                                         >
                                           View diff
                                         </button>
@@ -1070,14 +1070,14 @@ export default function KernelNextTaskPage() {
       <section className="mb-6">
         <h2 className="text-base font-semibold mb-2">
           Recent port writes
-          <span className="ml-2 text-xs font-normal text-zinc-500">
+          <span className="ml-2 text-xs font-normal text-muted">
             last {ports.length === 0 ? 20 : ports.length}
           </span>
         </h2>
         {ports.length === 0 ? (
-          <p className="text-sm text-zinc-500">no port writes yet</p>
+          <p className="text-sm text-muted">no port writes yet</p>
         ) : (
-          <ul className="divide-y divide-zinc-800 rounded-lg border border-zinc-800">
+          <ul className="divide-y divide-default rounded-lg border border-default">
             {ports.map((p, idx) => {
               const compact = p.preview.length > 120
                 ? `${p.preview.slice(0, 120).replace(/\s+/g, " ")}…`
@@ -1085,21 +1085,21 @@ export default function KernelNextTaskPage() {
               return (
                 <li key={`${p.at}-${idx}`} className="px-3 py-1.5 text-xs">
                   <div className="flex items-baseline gap-2">
-                    <span className="shrink-0 tabular-nums text-zinc-600">
+                    <span className="shrink-0 tabular-nums text-muted">
                       {new Date(p.at).toLocaleTimeString()}
                     </span>
-                    <span className="shrink-0 font-mono text-zinc-300">
-                      {p.stage}.<span className="text-zinc-100">{p.port}</span>
+                    <span className="shrink-0 font-mono text-secondary">
+                      {p.stage}.<span className="text-primary">{p.port}</span>
                     </span>
-                    <span className="truncate font-mono text-zinc-500">
+                    <span className="truncate font-mono text-muted">
                       = {compact}
                     </span>
                     {p.preview.length > 120 && (
-                      <details className="ml-auto shrink-0 text-zinc-400">
-                        <summary className="cursor-pointer select-none text-zinc-500 hover:text-zinc-300">
+                      <details className="ml-auto shrink-0 text-secondary">
+                        <summary className="cursor-pointer select-none text-muted hover:text-secondary">
                           full
                         </summary>
-                        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-zinc-900 px-2 py-1 text-[11px] text-zinc-200">
+                        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-surface px-2 py-1 text-xs text-primary">
                           {p.preview}
                         </pre>
                       </details>
@@ -1113,18 +1113,18 @@ export default function KernelNextTaskPage() {
       </section>
 
       {finalResult && (
-        <section className="mb-6 rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
+        <section className="mb-6 rounded-lg border border-default bg-surface p-4">
           <h2 className="text-base font-semibold mb-2">Run final</h2>
           <p className="text-sm">
             finalState:{" "}
-            <span className={finalResult.finalState === "failed" ? "text-red-400 font-semibold" : "text-emerald-400 font-semibold"}>
+            <span className={finalResult.finalState === "failed" ? "text-danger-fg font-semibold" : "text-success-fg font-semibold"}>
               {finalResult.finalState}
             </span>
           </p>
           {finalResult.stageErrors.length > 0 && (
             <>
               <p className="mt-2 font-semibold">Stage errors:</p>
-              <ul className="list-disc pl-5 text-red-300">
+              <ul className="list-disc pl-5 text-danger-fg">
                 {finalResult.stageErrors.map((e, idx) => (
                   <li key={idx}>
                     <span className="font-semibold">{e.stage}</span>: {e.message}
@@ -1151,14 +1151,14 @@ function SeedValueCell({ value }: { value: string }): React.JSX.Element {
   const shown = expanded || !isLong ? value : value.slice(0, SEED_PREVIEW_LIMIT) + " …";
   return (
     <div>
-      <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-zinc-300">
+      <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-all font-mono text-xs text-secondary">
         {shown}
       </pre>
       {isLong && (
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="mt-1 text-xs text-sky-400 hover:text-sky-300 hover:underline"
+          className="mt-1 text-xs text-accent hover:text-accent hover:underline"
         >
           {expanded ? "show less" : `show full (${value.length.toLocaleString()} chars)`}
         </button>

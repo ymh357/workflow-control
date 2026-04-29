@@ -47,41 +47,41 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
   const state = data.state;
 
   const borderColor =
-    state === "error" ? "border-red-500/70"
-    : state === "executing" ? "border-blue-500 animate-pulse"
-    : state === "done" ? "border-emerald-500/70"
-    : data.stageType === "external" ? "border-zinc-600 border-dashed"
-    : data.stageType === "gate" ? "border-amber-500/50"
-    : data.stageType === "script" ? "border-purple-500/50"
-    : "border-zinc-600";
+    state === "error" ? "border-danger-border"
+    : state === "executing" ? "border-info-border animate-pulse"
+    : state === "done" ? "border-success-border"
+    : data.stageType === "external" ? "border-strong border-dashed"
+    : data.stageType === "gate" ? "border-warning-border"
+    : data.stageType === "script" ? "border-info-border"
+    : "border-strong";
 
   // State-driven bg takes priority over stage-type bg so the pulsing
   // blue border has a coherent background during live execution (gate
   // amber + pulsing blue border was visually dissonant).
   const bg =
-    state === "error" ? "bg-red-950/50"
-    : state === "executing" ? "bg-blue-950/50"
-    : state === "done" ? "bg-emerald-950/40"
-    : data.stageType === "gate" ? "bg-amber-950/30"
-    : data.stageType === "script" ? "bg-purple-950/30"
-    : data.stageType === "external" ? "bg-zinc-900/50"
-    : "bg-zinc-900";
+    state === "error" ? "bg-danger-bg"
+    : state === "executing" ? "bg-info-bg"
+    : state === "done" ? "bg-success-bg"
+    : data.stageType === "gate" ? "bg-warning-bg"
+    : data.stageType === "script" ? "bg-info-bg"
+    : data.stageType === "external" ? "bg-surface"
+    : "bg-surface";
 
   // State badge — only rendered when a live state is present. Keeps
   // the static /pipelines/[name] view uncluttered.
   const stateBadge =
     state === "executing" ? (
-      <span className="rounded bg-blue-100 px-1 text-[10px] font-semibold uppercase text-blue-800">
+      <span className="rounded bg-info-bg px-1 text-xs font-semibold uppercase text-info-fg">
         running
       </span>
     )
     : state === "done" ? (
-      <span className="rounded bg-green-100 px-1 text-[10px] font-semibold uppercase text-green-800">
+      <span className="rounded border border-success-border bg-success-bg px-1 text-xs font-semibold uppercase text-success-fg">
         done
       </span>
     )
     : state === "error" ? (
-      <span className="rounded bg-red-100 px-1 text-[10px] font-semibold uppercase text-red-800">
+      <span className="rounded bg-danger-bg px-1 text-xs font-semibold uppercase text-danger-fg">
         error
       </span>
     )
@@ -89,43 +89,43 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
 
   return (
     <div
-      className={`w-[220px] rounded-lg border-2 ${borderColor} ${bg} px-3 py-2 shadow-sm ${selected ? "ring-2 ring-blue-300" : ""}`}
+      className={`w-[220px] rounded-lg border-2 ${borderColor} ${bg} px-3 py-2 shadow-sm ${selected ? "ring-2 ring-accent" : ""}`}
     >
       {/* Handles: reactflow needs explicit input/output handles for edges
           to render correctly. LR layout → left handle = input, right = output. */}
       {data.stageType !== "external" && (
-        <Handle type="target" position={Position.Left} className="!bg-zinc-500" />
+        <Handle type="target" position={Position.Left} className="!bg-elevated" />
       )}
-      <Handle type="source" position={Position.Right} className="!bg-zinc-500" />
+      <Handle type="source" position={Position.Right} className="!bg-elevated" />
 
       <div className="flex flex-wrap items-center gap-1 overflow-hidden">
-        <span className="text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+        <span className="text-xs font-semibold uppercase tracking-wide text-muted">
           {data.stageType}
         </span>
         {data.fanout && (
-          <span className="rounded bg-orange-100 px-1 text-[10px] font-semibold text-orange-800">
+          <span className="rounded bg-orange-100 px-1 text-xs font-semibold text-orange-800">
             FANOUT
           </span>
         )}
         {data.mcpCount > 0 && (
-          <span className="rounded bg-indigo-100 px-1 text-[10px] font-semibold text-indigo-800">
+          <span className="rounded bg-indigo-100 px-1 text-xs font-semibold text-indigo-800">
             MCP×{data.mcpCount}
           </span>
         )}
         {data.subAgentCount > 0 && (
-          <span className="rounded bg-teal-100 px-1 text-[10px] font-semibold text-teal-800">
+          <span className="rounded bg-teal-100 px-1 text-xs font-semibold text-teal-800">
             SUB×{data.subAgentCount}
           </span>
         )}
         {stateBadge}
       </div>
 
-      <div className="mt-1 truncate font-mono text-sm font-semibold text-zinc-100">
+      <div className="mt-1 truncate font-mono text-sm font-semibold text-primary">
         {data.label}
       </div>
       {data.promptRef && (
         <div
-          className="mt-0.5 truncate font-mono text-[10px] text-zinc-500"
+          className="mt-0.5 truncate font-mono text-xs text-muted"
           title={data.promptRef}
         >
           {data.promptRef}
@@ -133,7 +133,7 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
       )}
       {data.moduleId && (
         <div
-          className="mt-0.5 truncate font-mono text-[10px] text-zinc-500"
+          className="mt-0.5 truncate font-mono text-xs text-muted"
           title={data.moduleId}
         >
           {data.moduleId}
@@ -141,18 +141,18 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
       )}
       {((data.inputs && data.inputs.length > 0) ||
         (data.outputs && data.outputs.length > 0)) && (
-        <div className="mt-1 space-y-0.5 text-[9px] leading-tight">
+        <div className="mt-1 space-y-0.5 text-xs leading-tight">
           {data.inputs && data.inputs.length > 0 && (
             <div>
-              <span className="font-semibold uppercase tracking-wide text-zinc-500">in: </span>
-              <span className="text-zinc-300">
+              <span className="font-semibold uppercase tracking-wide text-muted">in: </span>
+              <span className="text-secondary">
                 {data.inputs.map((p, i) => (
                   <span
                     key={p.name}
                     className="whitespace-nowrap"
                     title={p.description ? `${p.name}: ${p.type}\n\n${p.description}` : `${p.name}: ${p.type}`}
                   >
-                    {i > 0 && <span className="text-zinc-600">, </span>}
+                    {i > 0 && <span className="text-muted">, </span>}
                     <span className={p.description ? "underline decoration-dotted" : ""}>
                       {p.name}
                     </span>
@@ -163,15 +163,15 @@ function StageNodeView({ data, selected }: NodeProps<StageNode>) {
           )}
           {data.outputs && data.outputs.length > 0 && (
             <div>
-              <span className="font-semibold uppercase tracking-wide text-zinc-500">out: </span>
-              <span className="text-zinc-300">
+              <span className="font-semibold uppercase tracking-wide text-muted">out: </span>
+              <span className="text-secondary">
                 {data.outputs.map((p, i) => (
                   <span
                     key={p.name}
                     className="whitespace-nowrap"
                     title={p.description ? `${p.name}: ${p.type}\n\n${p.description}` : `${p.name}: ${p.type}`}
                   >
-                    {i > 0 && <span className="text-zinc-600">, </span>}
+                    {i > 0 && <span className="text-muted">, </span>}
                     <span className={p.description ? "underline decoration-dotted" : ""}>
                       {p.name}
                     </span>
@@ -224,7 +224,7 @@ export function PipelineGraph({
       role="img"
       aria-label={`Pipeline DAG: ${ir.name} (${ir.stages.length} stages)`}
       style={{ width: "100%", height }}
-      className="bg-zinc-950"
+      className="bg-page"
     >
       <ReactFlow
         nodes={nodes}

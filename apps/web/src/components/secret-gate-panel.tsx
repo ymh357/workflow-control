@@ -111,25 +111,25 @@ export const SecretGatePanel = ({ taskId, onResolved }: SecretGatePanelProps) =>
   };
 
   return (
-    <section className="rounded-lg border border-amber-500/40 bg-amber-500/5 p-4">
+    <section className="rounded-lg border border-warning-border bg-warning-bg p-4">
       <div className="flex items-baseline justify-between gap-3">
         <div>
-          <h2 className="text-base font-semibold text-amber-300">
+          <h2 className="text-base font-semibold text-warning-fg">
             Waiting for secrets
           </h2>
-          <p className="mt-1 text-xs text-amber-200/70">
+          <p className="mt-1 text-xs text-warning-fg">
             This task is paused on a secret-gate. Provide values for the
             missing envKeys below and the runner will resume automatically.
             Values are stored in <code className="font-mono">task_env_values</code> and
             never enter the agent prompt context.
           </p>
         </div>
-        <span className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[0.65rem] font-semibold uppercase tracking-wide text-amber-300">
+        <span className="rounded border border-warning-border bg-warning-bg px-2 py-1 text-xs font-semibold uppercase tracking-wide text-warning-fg">
           {missingArr.length} missing
         </span>
       </div>
 
-      <ul className="mt-3 space-y-1 text-xs text-amber-200/80">
+      <ul className="mt-3 space-y-1 text-xs text-warning-fg">
         {pending.map((p) => (
           <li key={p.secretGateId}>
             stage <code className="font-mono">{p.stageName}</code> requires{" "}
@@ -144,17 +144,17 @@ export const SecretGatePanel = ({ taskId, onResolved }: SecretGatePanelProps) =>
           return (
             <div key={k} className="block text-sm">
               <label className="block">
-                <span className="font-mono text-xs text-amber-200">{k}</span>
+                <span className="font-mono text-xs text-warning-fg">{k}</span>
                 <input
                   type="password"
                   autoComplete="off"
                   value={values[k] ?? ""}
                   onChange={(e) => setValues((prev) => ({ ...prev, [k]: e.target.value }))}
-                  className="mt-1 w-full rounded border border-amber-500/30 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 focus:border-amber-400 focus:outline-none"
+                  className="mt-1 w-full rounded border border-warning-border bg-page px-2 py-1.5 font-mono text-xs text-primary focus:border-warning-border focus:outline-none"
                 />
               </label>
               {typeof eid === "string" && (
-                <label className="mt-1 flex items-center gap-2 text-[0.65rem] text-amber-200/80">
+                <label className="mt-1 flex items-center gap-2 text-xs text-warning-fg">
                   <input type="checkbox" checked={persistChecked[k] === true}
                     onChange={(e) => setPersistChecked((p) => ({ ...p, [k]: e.target.checked }))} />
                   Save to MCP inventory as <code className="font-mono">{eid}</code> for reuse on later runs
@@ -170,7 +170,7 @@ export const SecretGatePanel = ({ taskId, onResolved }: SecretGatePanelProps) =>
           <button
             type="submit"
             disabled={submitting}
-            className="rounded border border-amber-500/40 bg-amber-500/20 px-4 py-1.5 text-xs font-semibold text-amber-100 hover:border-amber-400 hover:bg-amber-500/30 disabled:opacity-50"
+            className="rounded border border-warning-border bg-warning-bg px-4 py-1.5 text-xs font-semibold text-warning-fg hover:border-warning-border hover:bg-warning-fg/30 disabled:opacity-50"
           >
             {submitting ? "Submitting…" : "Provide secrets & resume"}
           </button>

@@ -13,10 +13,10 @@ interface Props {
 }
 
 const BADGE: Record<string, string> = {
-  "equipped":        "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
-  "pending-secret":  "border-amber-500/40 bg-amber-500/10 text-amber-300",
-  "unhealthy":       "border-red-500/40 bg-red-500/10 text-red-300",
-  "not-equipped":    "border-zinc-500/40 bg-zinc-500/10 text-zinc-300",
+  "equipped":        "border-success-border bg-success-bg text-success-fg",
+  "pending-secret":  "border-warning-border bg-warning-bg text-warning-fg",
+  "unhealthy":       "border-danger-border bg-danger-bg text-danger-fg",
+  "not-equipped":    "border-strong bg-elevated text-secondary",
 };
 
 export const EntryCard = ({ entry, inventory, readouts, onChanged }: Props) => {
@@ -54,24 +54,24 @@ export const EntryCard = ({ entry, inventory, readouts, onChanged }: Props) => {
   };
 
   return (
-    <li className="rounded-lg border border-zinc-700 bg-zinc-900 p-4">
+    <li className="rounded-lg border border-strong bg-surface p-4">
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-3">
-            <h3 className="font-mono text-sm text-sky-300">{entry.id}</h3>
-            <span className="text-xs text-zinc-400">{entry.name}</span>
-            <span className={`rounded border px-2 py-0.5 text-[0.65rem] uppercase tracking-wide ${BADGE[status]}`}>
+            <h3 className="font-mono text-sm text-accent">{entry.id}</h3>
+            <span className="text-xs text-secondary">{entry.name}</span>
+            <span className={`rounded border px-2 py-0.5 text-xs uppercase tracking-wide ${BADGE[status]}`}>
               {status}
             </span>
           </div>
-          <p className="mt-1 text-xs text-zinc-400">{entry.description}</p>
-          <p className="mt-1 font-mono text-[0.65rem] text-zinc-500">
+          <p className="mt-1 text-xs text-secondary">{entry.description}</p>
+          <p className="mt-1 font-mono text-xs text-muted">
             {entry.command} {entry.args.join(" ")}
           </p>
           {entry.tags.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1">
               {entry.tags.map((t) => (
-                <span key={t} className="rounded bg-zinc-800 px-1.5 py-0.5 text-[0.6rem] text-zinc-400">{t}</span>
+                <span key={t} className="rounded bg-elevated px-1.5 py-0.5 text-xs text-secondary">{t}</span>
               ))}
             </div>
           )}
@@ -79,25 +79,25 @@ export const EntryCard = ({ entry, inventory, readouts, onChanged }: Props) => {
         <div className="flex flex-col gap-2">
           {status !== "equipped" && (
             <button onClick={() => setOpen(true)}
-              className="rounded border border-blue-700 bg-blue-700/40 px-3 py-1 text-xs text-blue-100">
+              className="rounded border border-info-border bg-info-bg px-3 py-1 text-xs text-info-fg">
               {status === "unhealthy" ? "Re-equip" : "Equip"}
             </button>
           )}
           {status === "equipped" && (
             <>
               <button onClick={onRecheck}
-                className="rounded border border-zinc-700 px-3 py-1 text-xs text-zinc-200">Recheck</button>
+                className="rounded border border-strong px-3 py-1 text-xs text-primary">Recheck</button>
               <button onClick={onUnequip}
-                className="rounded border border-red-700/40 bg-red-700/20 px-3 py-1 text-xs text-red-200">Unequip</button>
+                className="rounded border border-danger-border bg-danger-bg px-3 py-1 text-xs text-danger-fg">Unequip</button>
             </>
           )}
         </div>
       </div>
 
       {open && (
-        <div className="mt-4 border-t border-zinc-800 pt-3">
+        <div className="mt-4 border-t border-default pt-3">
           {requiredKeys.length === 0 ? (
-            <p className="text-xs text-zinc-400">This entry has no required envKeys — equipping runs only the package check.</p>
+            <p className="text-xs text-secondary">This entry has no required envKeys — equipping runs only the package check.</p>
           ) : (
             <div className="space-y-2">
               {requiredKeys.map((k) => {
@@ -105,20 +105,20 @@ export const EntryCard = ({ entry, inventory, readouts, onChanged }: Props) => {
                 return (
                   <label key={k.name} className="block text-xs">
                     <span className="flex items-baseline justify-between">
-                      <span className="font-mono text-zinc-300">{k.name}</span>
-                      {have && <span className="rounded border border-emerald-500/40 bg-emerald-500/10 px-1.5 py-0.5 text-[0.55rem] text-emerald-300">in inventory</span>}
+                      <span className="font-mono text-secondary">{k.name}</span>
+                      {have && <span className="rounded border border-success-border bg-success-bg px-1.5 py-0.5 text-xs text-success-fg">in inventory</span>}
                     </span>
-                    {k.description && <span className="text-zinc-500">{k.description}</span>}
+                    {k.description && <span className="text-muted">{k.description}</span>}
                     {k.obtainUrl && (
                       <a href={k.obtainUrl} target="_blank" rel="noreferrer"
-                        className="mt-1 inline-block text-[0.6rem] text-sky-400 underline">
+                        className="mt-1 inline-block text-xs text-accent underline">
                         Get a key ↗
                       </a>
                     )}
                     <input type="password" autoComplete="off"
                       value={values[k.name] ?? ""}
                       onChange={(e) => setValues((p) => ({ ...p, [k.name]: e.target.value }))}
-                      className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-xs"
+                      className="mt-1 w-full rounded border border-strong bg-page px-2 py-1 font-mono text-xs"
                       placeholder={have ? "(leave empty to keep saved value)" : "(optional if set in process.env)"}
                     />
                   </label>
@@ -128,9 +128,9 @@ export const EntryCard = ({ entry, inventory, readouts, onChanged }: Props) => {
           )}
           <div className="mt-3 flex justify-end gap-2">
             <button onClick={() => { setOpen(false); setValues({}); }}
-              className="rounded border border-zinc-700 px-3 py-1 text-xs">Cancel</button>
+              className="rounded border border-strong px-3 py-1 text-xs">Cancel</button>
             <button onClick={onEquip} disabled={submitting}
-              className="rounded border border-blue-700 bg-blue-700/40 px-3 py-1 text-xs text-blue-100 disabled:opacity-50">
+              className="rounded border border-info-border bg-info-bg px-3 py-1 text-xs text-info-fg disabled:opacity-50">
               {submitting ? "Equipping…" : "Equip"}
             </button>
           </div>

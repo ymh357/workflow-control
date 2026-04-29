@@ -32,7 +32,7 @@ export const StructuredInput = ({ typeStr, value, onChange }: StructuredInputPro
         onChange={(e) => onChange(e.target.value)}
         placeholder="JSON value"
         rows={3}
-        className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 placeholder-zinc-600 focus:border-zinc-500 focus:outline-none"
+        className="mt-1 w-full rounded border border-strong bg-page px-2 py-1.5 font-mono text-xs text-primary placeholder:text-muted focus:border-strong focus:outline-none"
       />
     );
   }
@@ -45,7 +45,7 @@ export const StructuredInput = ({ typeStr, value, onChange }: StructuredInputPro
         type={parsed.type === "number" ? "number" : "text"}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 text-sm text-zinc-100 focus:border-zinc-500 focus:outline-none"
+        className="mt-1 w-full rounded border border-strong bg-page px-2 py-1.5 text-sm text-primary focus:border-strong focus:outline-none"
       />
     );
   }
@@ -57,7 +57,7 @@ export const StructuredInput = ({ typeStr, value, onChange }: StructuredInputPro
         onChange={(e) => onChange(e.target.value)}
         placeholder={`["a", "b", "c"]`}
         rows={2}
-        className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-mono text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+        className="mt-1 w-full rounded border border-strong bg-page px-2 py-1.5 font-mono text-xs text-primary focus:border-strong focus:outline-none"
       />
     );
   }
@@ -82,7 +82,7 @@ export const StructuredInput = ({ typeStr, value, onChange }: StructuredInputPro
   };
 
   return (
-    <div className="mt-1 space-y-2 rounded border border-zinc-800 bg-zinc-950/50 p-2">
+    <div className="mt-1 space-y-2 rounded border border-default bg-page p-2">
       {parsed.fields.map((f) => (
         <FieldRow key={f.name} field={f} value={current[f.name]} onChange={(v) => updateField(f.name, v)} />
       ))}
@@ -100,10 +100,10 @@ const FieldRow = ({ field, value, onChange }: FieldRowProps): React.ReactElement
   const t = field.type;
   return (
     <label className="block text-xs">
-      <span className="font-mono text-zinc-300">
+      <span className="font-mono text-secondary">
         {field.name}
-        {t.optional && <span className="text-zinc-600">?</span>}
-        <span className="ml-2 text-zinc-600">{describeType(t)}</span>
+        {t.optional && <span className="text-muted">?</span>}
+        <span className="ml-2 text-muted">{describeType(t)}</span>
       </span>
       <FieldEditor type={t} value={value} onChange={onChange} />
     </label>
@@ -136,7 +136,7 @@ const FieldEditor = ({ type, value, onChange }: EditorProps): React.ReactElement
           type="text"
           value={typeof value === "string" ? value : ""}
           onChange={(e) => onChange(e.target.value === "" && type.optional ? undefined : e.target.value)}
-          className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+          className="mt-1 w-full rounded border border-strong bg-page px-2 py-1 text-xs text-primary focus:border-strong focus:outline-none"
         />
       );
     case "number":
@@ -153,7 +153,7 @@ const FieldEditor = ({ type, value, onChange }: EditorProps): React.ReactElement
             const n = Number(raw);
             onChange(Number.isFinite(n) ? n : raw);
           }}
-          className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+          className="mt-1 w-full rounded border border-strong bg-page px-2 py-1 text-xs text-primary focus:border-strong focus:outline-none"
         />
       );
     case "boolean":
@@ -165,7 +165,7 @@ const FieldEditor = ({ type, value, onChange }: EditorProps): React.ReactElement
             if (v === "") onChange(type.optional ? undefined : false);
             else onChange(v === "true");
           }}
-          className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+          className="mt-1 w-full rounded border border-strong bg-page px-2 py-1 text-xs text-primary focus:border-strong focus:outline-none"
         >
           {type.optional && <option value="">(unset)</option>}
           <option value="true">true</option>
@@ -196,7 +196,7 @@ const FieldEditor = ({ type, value, onChange }: EditorProps): React.ReactElement
             }
           }}
           placeholder="comma, separated, values"
-          className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+          className="mt-1 w-full rounded border border-strong bg-page px-2 py-1 font-mono text-xs text-primary focus:border-strong focus:outline-none"
         />
       );
     }
@@ -214,7 +214,7 @@ const FieldEditor = ({ type, value, onChange }: EditorProps): React.ReactElement
         onChange(merged);
       };
       return (
-        <div className="mt-1 space-y-2 rounded border border-zinc-800 bg-zinc-950/70 p-2">
+        <div className="mt-1 space-y-2 rounded border border-default bg-page p-2">
           {type.fields.map((sub) => (
             <FieldRow
               key={sub.name}
@@ -233,7 +233,7 @@ const FieldEditor = ({ type, value, onChange }: EditorProps): React.ReactElement
           value={typeof value === "string" ? value : value === undefined ? "" : JSON.stringify(value)}
           onChange={(e) => onChange(e.target.value)}
           placeholder="JSON or string"
-          className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-1 font-mono text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+          className="mt-1 w-full rounded border border-strong bg-page px-2 py-1 font-mono text-xs text-primary focus:border-strong focus:outline-none"
         />
       );
   }

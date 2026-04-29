@@ -51,7 +51,7 @@ const Nav = () => {
         {t("nav.proposals")}
         {pendingCount !== null && pendingCount > 0 && (
           <span
-            className="ml-1.5 inline-block rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-950"
+            className="ml-1.5 inline-block rounded border border-warning-border bg-warning-bg px-1.5 py-0.5 text-xs font-semibold text-warning-fg"
             aria-label={`${pendingCount} pending proposals`}
           >
             {pendingCount}

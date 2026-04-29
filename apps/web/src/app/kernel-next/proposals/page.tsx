@@ -146,12 +146,12 @@ export default function ProposalsPage() {
 
   if (error && !rows) {
     return (
-      <div className="rounded border border-red-500/50 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+      <div className="rounded border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
         Error: {error}
       </div>
     );
   }
-  if (!rows) return <p className="text-sm text-zinc-500">Loading…</p>;
+  if (!rows) return <p className="text-sm text-muted">Loading…</p>;
 
   const pending = rows.filter((r) => r.status === "pending");
   const approved = rows.filter((r) => r.status === "approved");
@@ -168,16 +168,16 @@ export default function ProposalsPage() {
     <section className="mb-6">
       <h2 className="mb-2 text-base font-semibold">{title} ({items.length})</h2>
       {items.length === 0 ? (
-        <p className="text-xs text-zinc-500">none</p>
+        <p className="text-xs text-muted">none</p>
       ) : (
-        <table className="w-full border-collapse border border-zinc-800">
-          <thead className="bg-zinc-900/70 text-zinc-400 uppercase text-xs tracking-wide">
+        <table className="w-full border-collapse border border-default">
+          <thead className="bg-surface text-secondary uppercase text-xs tracking-wide">
             <tr>
-              <th className="border border-zinc-800 px-2 py-1 text-left">Proposal</th>
-              <th className="border border-zinc-800 px-2 py-1 text-left">Pipeline</th>
-              <th className="border border-zinc-800 px-2 py-1 text-left">Actor</th>
-              <th className="border border-zinc-800 px-2 py-1 text-left">Created</th>
-              {actions && <th className="border border-zinc-800 px-2 py-1 text-left">Actions</th>}
+              <th className="border border-default px-2 py-1 text-left">Proposal</th>
+              <th className="border border-default px-2 py-1 text-left">Pipeline</th>
+              <th className="border border-default px-2 py-1 text-left">Actor</th>
+              <th className="border border-default px-2 py-1 text-left">Created</th>
+              {actions && <th className="border border-default px-2 py-1 text-left">Actions</th>}
             </tr>
           </thead>
           <tbody>
@@ -186,17 +186,17 @@ export default function ProposalsPage() {
               return (
                 <React.Fragment key={r.proposalId}>
                   <tr>
-                    <td className="border border-zinc-800 px-2 py-1 text-xs">{r.proposalId}</td>
-                    <td className="border border-zinc-800 px-2 py-1">{r.pipelineName}</td>
-                    <td className="border border-zinc-800 px-2 py-1 text-xs">{r.actor}</td>
-                    <td className="border border-zinc-800 px-2 py-1 text-xs text-zinc-500">
+                    <td className="border border-default px-2 py-1 text-xs">{r.proposalId}</td>
+                    <td className="border border-default px-2 py-1">{r.pipelineName}</td>
+                    <td className="border border-default px-2 py-1 text-xs">{r.actor}</td>
+                    <td className="border border-default px-2 py-1 text-xs text-muted">
                       {new Date(r.createdAt).toLocaleString()}
                     </td>
-                    {actions && <td className="border border-zinc-800 px-2 py-1">{actions(r)}</td>}
+                    {actions && <td className="border border-default px-2 py-1">{actions(r)}</td>}
                   </tr>
                   {extra && (
                     <tr>
-                      <td colSpan={columnCount} className="border border-zinc-800 bg-zinc-900/40 p-3">
+                      <td colSpan={columnCount} className="border border-default bg-surface p-3">
                         {extra}
                       </td>
                     </tr>
@@ -215,12 +215,12 @@ export default function ProposalsPage() {
     <div className="space-y-4">
       <header className="flex items-baseline gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">Proposals</h1>
-        <span className="text-sm text-zinc-500">
+        <span className="text-sm text-muted">
           {rows.length} total · {pending.length} pending · {approved.length} approved · {rejected.length} rejected
         </span>
       </header>
       {error && (
-        <div className="rounded border border-red-500/50 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <div className="rounded border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
           {error}
         </div>
       )}
@@ -233,7 +233,7 @@ export default function ProposalsPage() {
               type="button"
               onClick={() => void togglePreview(r.proposalId)}
               disabled={previewLoading[r.proposalId] ?? false}
-              className="rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-xs font-semibold text-zinc-200 hover:border-zinc-600 hover:bg-zinc-700 disabled:opacity-40"
+              className="rounded border border-strong bg-elevated px-2 py-1 text-xs font-semibold text-primary hover:border-strong hover:bg-elevated disabled:opacity-40"
             >
               {previewLoading[r.proposalId]
                 ? "Loading…"
@@ -242,14 +242,14 @@ export default function ProposalsPage() {
             <button
               type="button"
               onClick={() => void mutateStatus(r.proposalId, "approve")}
-              className="rounded border border-emerald-500/50 bg-emerald-500/15 px-2 py-1 text-xs font-semibold text-emerald-300 hover:border-emerald-500/70 hover:bg-emerald-500/25"
+              className="rounded border border-success-border bg-success-bg px-2 py-1 text-xs font-semibold text-success-fg hover:border-success-border hover:bg-elevated"
             >
               Approve
             </button>
             <button
               type="button"
               onClick={() => void mutateStatus(r.proposalId, "reject")}
-              className="rounded border border-red-500/50 bg-red-500/15 px-2 py-1 text-xs font-semibold text-red-300 hover:border-red-500/70 hover:bg-red-500/25"
+              className="rounded border border-danger-border bg-danger-bg px-2 py-1 text-xs font-semibold text-danger-fg hover:border-danger-border hover:bg-danger-bg"
             >
               Reject
             </button>
@@ -259,7 +259,7 @@ export default function ProposalsPage() {
           if (!(r.proposalId in previews)) return null;
           const p = previews[r.proposalId];
           if (p === null) {
-            return <p className="text-xs text-red-600">Preview failed — see error at top of page.</p>;
+            return <p className="text-xs text-danger-fg">Preview failed — see error at top of page.</p>;
           }
           return <ProposalDiff baseIr={p.baseIr} projectedIr={p.projectedIr} />;
         }}
@@ -272,7 +272,7 @@ export default function ProposalsPage() {
             type="button"
             onClick={() => setMigrateTarget(r)}
             disabled={r.migrateRunning === "none"}
-            className="rounded border border-blue-500/50 bg-blue-500/15 px-2 py-1 text-xs font-semibold text-blue-300 hover:border-blue-500/70 hover:bg-blue-500/25 disabled:opacity-40 disabled:cursor-not-allowed"
+            className="rounded border border-info-border bg-info-bg px-2 py-1 text-xs font-semibold text-info-fg hover:border-info-border hover:bg-elevated disabled:opacity-40 disabled:cursor-not-allowed"
             title={
               r.migrateRunning === "none"
                 ? "This proposal is for new tasks only (migrateRunningTasks=\"none\")"

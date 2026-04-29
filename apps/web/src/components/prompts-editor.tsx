@@ -27,7 +27,7 @@ export function PromptsEditor({ originalPrompts, actor, onActorChange, onSubmit 
   const refs = Object.keys(originalPrompts).sort();
   if (refs.length === 0) {
     return (
-      <p className="text-sm italic text-zinc-500">
+      <p className="text-sm italic text-muted">
         No editable prompts in this pipeline — nothing to iterate via this UI yet.
       </p>
     );
@@ -52,13 +52,13 @@ export function PromptsEditor({ originalPrompts, actor, onActorChange, onSubmit 
   return (
     <div className="space-y-4">
       <label className="block">
-        <span className="text-sm font-medium text-zinc-300">Actor (required)</span>
+        <span className="text-sm font-medium text-secondary">Actor (required)</span>
         <input
           type="text"
           value={actor}
           onChange={(e) => onActorChange(e.target.value)}
           placeholder="human:ymh"
-          className="mt-1 block w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-zinc-500 focus:outline-none"
+          className="mt-1 block w-full rounded border border-strong bg-surface px-2 py-1 font-mono text-sm text-primary placeholder:text-muted focus:border-strong focus:outline-none"
         />
       </label>
 
@@ -66,10 +66,10 @@ export function PromptsEditor({ originalPrompts, actor, onActorChange, onSubmit 
         const modified = draft[ref] !== originalPrompts[ref];
         return (
           <label key={ref} className="block">
-            <span className="text-sm font-medium text-zinc-300">
+            <span className="text-sm font-medium text-secondary">
               {ref}
               {modified && (
-                <span className="ml-2 rounded border border-amber-500/40 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-300">
+                <span className="ml-2 rounded border border-warning-border bg-warning-bg px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide text-warning-fg">
                   modified
                 </span>
               )}
@@ -78,7 +78,7 @@ export function PromptsEditor({ originalPrompts, actor, onActorChange, onSubmit 
               value={draft[ref] ?? ""}
               onChange={(e) => setDraft((d) => ({ ...d, [ref]: e.target.value }))}
               rows={10}
-              className="mt-1 block w-full rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-mono text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+              className="mt-1 block w-full rounded border border-strong bg-surface px-2 py-1 font-mono text-xs text-primary focus:border-strong focus:outline-none"
             />
           </label>
         );
@@ -89,19 +89,19 @@ export function PromptsEditor({ originalPrompts, actor, onActorChange, onSubmit 
           type="button"
           disabled={!canSubmit}
           onClick={() => void handleSubmit()}
-          className="rounded border border-amber-500/50 bg-amber-500/15 px-4 py-2 text-sm font-semibold text-amber-300 hover:border-amber-500/70 hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-40"
+          className="rounded border border-warning-border bg-warning-bg px-4 py-2 text-sm font-semibold text-warning-fg hover:border-warning-border hover:bg-warning-bg disabled:cursor-not-allowed disabled:opacity-40"
         >
           {submitting ? "Submitting…" : "Submit proposal"}
         </button>
         {modifiedEntries.length > 0 && (
-          <span className="text-xs text-zinc-500">
+          <span className="text-xs text-muted">
             {modifiedEntries.length} prompt{modifiedEntries.length === 1 ? "" : "s"} modified
           </span>
         )}
       </div>
 
       {errorMsg && (
-        <p className="rounded border border-red-500/50 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <p className="rounded border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
           submit failed: {errorMsg}
         </p>
       )}

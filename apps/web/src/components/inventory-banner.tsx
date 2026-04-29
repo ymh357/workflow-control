@@ -36,14 +36,14 @@ export const InventoryBanner = ({ envKeys, layout = "compact" }: Props) => {
 
   if (layout === "compact") {
     return (
-      <div className="rounded border border-zinc-700 bg-zinc-900/80 px-3 py-2 text-xs">
-        <span className="font-semibold text-zinc-300">Inventory:</span>
+      <div className="rounded border border-strong bg-surface px-3 py-2 text-xs">
+        <span className="font-semibold text-secondary">Inventory:</span>
         <ul className="mt-1 space-y-0.5">
           {items.map((it) => (
             <li key={it.envKey}>
-              <span className="font-mono text-zinc-400">{it.envKey}</span>{" "}→{" "}
-              <a className="text-sky-400 underline" href={`/kernel-next/mcp-catalog`}>{it.entryId}</a>
-              {" "}<span className="text-zinc-500">({it.status})</span>
+              <span className="font-mono text-secondary">{it.envKey}</span>{" "}→{" "}
+              <a className="text-accent underline" href={`/kernel-next/mcp-catalog`}>{it.entryId}</a>
+              {" "}<span className="text-muted">({it.status})</span>
             </li>
           ))}
         </ul>
@@ -51,7 +51,7 @@ export const InventoryBanner = ({ envKeys, layout = "compact" }: Props) => {
     );
   }
   return (
-    <div className="rounded border border-amber-700/40 bg-amber-700/10 px-3 py-2 text-xs text-amber-200">
+    <div className="rounded border border-warning-border bg-warning-bg px-3 py-2 text-xs text-warning-fg">
       Some required secrets map to MCP catalog entries.{" "}
       <a className="underline" href="/kernel-next/mcp-catalog">Equip them</a>{" "}to save the values once and reuse across runs.
     </div>

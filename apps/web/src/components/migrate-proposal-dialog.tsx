@@ -134,43 +134,43 @@ export const MigrateProposalDialog = ({
       onClick={() => !submitting && onClose()}
     >
       <div
-        className="w-full max-w-xl rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl"
+        className="w-full max-w-xl rounded-lg border border-strong bg-surface shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="flex items-baseline justify-between border-b border-zinc-800 px-5 py-3">
+        <header className="flex items-baseline justify-between border-b border-default px-5 py-3">
           <div>
-            <h2 id="migrate-dialog-title" className="text-base font-semibold text-zinc-100">
+            <h2 id="migrate-dialog-title" className="text-base font-semibold text-primary">
               Migrate proposal
             </h2>
-            <p className="mt-0.5 font-mono text-[0.7rem] text-zinc-500">{proposalId}</p>
+            <p className="mt-0.5 font-mono text-xs text-muted">{proposalId}</p>
           </div>
           <button
             type="button"
             onClick={onClose}
             disabled={submitting}
             aria-label="Close"
-            className="rounded text-zinc-400 hover:text-zinc-100 disabled:opacity-50"
+            className="rounded text-secondary hover:text-primary disabled:opacity-50"
           >
             ✕
           </button>
         </header>
 
         <form onSubmit={onSubmit} className="space-y-4 p-5">
-          <p className="text-xs text-zinc-500">
-            Pick a live task on <code className="font-mono text-zinc-400">{pipelineName}</code> to apply this proposal to. The kernel
+          <p className="text-xs text-muted">
+            Pick a live task on <code className="font-mono text-secondary">{pipelineName}</code> to apply this proposal to. The kernel
             will INTERRUPT the runner, swap in the new IR, and resume from the proposal&rsquo;s rerun-from stage.
           </p>
 
           {migrateRunning === "none" && (
-            <div className="rounded border border-amber-500/40 bg-amber-500/5 p-3 text-xs text-amber-200">
+            <div className="rounded border border-warning-border bg-warning-bg p-3 text-xs text-warning-fg">
               This proposal&rsquo;s <code className="font-mono">migrateRunningTasks</code> is set to <code className="font-mono">&quot;none&quot;</code> — it&rsquo;s for new tasks only. Use the launcher to start a fresh task on the new version.
             </div>
           )}
 
-          {loading && <p className="text-sm text-zinc-500">Loading candidate tasks…</p>}
+          {loading && <p className="text-sm text-muted">Loading candidate tasks…</p>}
 
           {!loading && filtered !== null && filtered.length === 0 && migrateRunning !== "none" && (
-            <div className="rounded border border-zinc-700/60 bg-zinc-900/40 p-3 text-xs text-zinc-400">
+            <div className="rounded border border-strong bg-surface p-3 text-xs text-secondary">
               No live tasks to migrate.
               {Array.isArray(migrateRunning)
                 ? ` This proposal opted in ${migrateRunning.length} task(s) but none are currently running.`
@@ -180,11 +180,11 @@ export const MigrateProposalDialog = ({
 
           {filtered && filtered.length > 0 && (
             <label className="block text-sm">
-              <span className="text-xs text-zinc-400">Target task</span>
+              <span className="text-xs text-secondary">Target task</span>
               <select
                 value={selectedTaskId}
                 onChange={(e) => setSelectedTaskId(e.target.value)}
-                className="mt-1 w-full rounded border border-zinc-700 bg-zinc-950 px-2 py-2 font-mono text-xs text-zinc-100 focus:border-zinc-500 focus:outline-none"
+                className="mt-1 w-full rounded border border-strong bg-page px-2 py-2 font-mono text-xs text-primary focus:border-strong focus:outline-none"
                 disabled={submitting}
               >
                 {filtered.map((t) => (
@@ -194,7 +194,7 @@ export const MigrateProposalDialog = ({
                   </option>
                 ))}
               </select>
-              <p className="mt-1 text-[0.65rem] text-zinc-600">
+              <p className="mt-1 text-xs text-muted">
                 {filtered.length} candidate{filtered.length === 1 ? "" : "s"} ·
                 policy: <code className="font-mono">{Array.isArray(migrateRunning) ? "explicit list" : `"${migrateRunning}"`}</code>
               </p>
@@ -203,19 +203,19 @@ export const MigrateProposalDialog = ({
 
           {diagnostics.length > 0 && <ErrorBanner diagnostics={diagnostics} />}
 
-          <div className="flex justify-end gap-2 border-t border-zinc-800 pt-4">
+          <div className="flex justify-end gap-2 border-t border-default pt-4">
             <button
               type="button"
               onClick={onClose}
               disabled={submitting}
-              className="rounded border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 hover:border-zinc-600 hover:bg-zinc-700 disabled:opacity-50"
+              className="rounded border border-strong bg-elevated px-3 py-1.5 text-sm text-primary hover:border-strong hover:bg-elevated disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
               disabled={submitting || !selectedTaskId || !filtered || filtered.length === 0}
-              className="rounded border border-blue-600 bg-blue-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-blue-600 disabled:opacity-50"
+              className="rounded border border-info-border bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover disabled:opacity-50"
             >
               {submitting ? "Migrating…" : "Migrate →"}
             </button>

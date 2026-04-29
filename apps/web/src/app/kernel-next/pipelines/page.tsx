@@ -81,7 +81,7 @@ export default function PipelinesPage() {
         <div className="flex items-baseline gap-3">
           <h1 className="text-2xl font-semibold tracking-tight">Pipelines</h1>
           {pipelines !== null && (
-            <span className="text-sm text-zinc-500">
+            <span className="text-sm text-muted">
               {pipelines.length} total
               {filtered && filtered.length !== pipelines.length && ` · ${filtered.length} match`}
             </span>
@@ -93,17 +93,17 @@ export default function PipelinesPage() {
             placeholder="Filter by name or hash…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            className="w-64 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 text-zinc-100 placeholder:text-zinc-500 focus:border-zinc-500 focus:outline-none"
+            className="w-64 rounded border border-strong bg-surface px-2 py-1 text-primary placeholder:text-muted focus:border-strong focus:outline-none"
           />
           <Link
             href="/kernel-next"
-            className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 hover:border-zinc-600 hover:bg-zinc-800"
+            className="rounded border border-strong bg-surface px-3 py-1 hover:border-strong hover:bg-elevated"
           >
             tasks
           </Link>
           <Link
             href="/kernel-next/proposals"
-            className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 hover:border-zinc-600 hover:bg-zinc-800"
+            className="rounded border border-strong bg-surface px-3 py-1 hover:border-strong hover:bg-elevated"
           >
             proposals
           </Link>
@@ -111,27 +111,27 @@ export default function PipelinesPage() {
       </header>
 
       {error && (
-        <div className="rounded border border-red-500/50 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <div className="rounded border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
           {error}
         </div>
       )}
 
-      {pipelines === null && <div className="text-sm text-zinc-500">Loading…</div>}
+      {pipelines === null && <div className="text-sm text-muted">Loading…</div>}
 
       {pipelines !== null && pipelines.length === 0 && (
-        <div className="rounded-lg border border-dashed border-zinc-700 bg-zinc-900/30 p-10 text-center">
-          <p className="text-zinc-400">No pipelines registered yet.</p>
-          <p className="mt-2 text-xs text-zinc-500">
-            Submit via MCP <code className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono">submit_pipeline</code> or
-            use <code className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono">pipeline-generator</code>.
+        <div className="rounded-lg border border-dashed border-strong bg-surface p-10 text-center">
+          <p className="text-secondary">No pipelines registered yet.</p>
+          <p className="mt-2 text-xs text-muted">
+            Submit via MCP <code className="rounded bg-elevated px-1.5 py-0.5 font-mono">submit_pipeline</code> or
+            use <code className="rounded bg-elevated px-1.5 py-0.5 font-mono">pipeline-generator</code>.
           </p>
         </div>
       )}
 
       {filtered && filtered.length > 0 && (
-        <div className="overflow-x-auto rounded-lg border border-zinc-800">
+        <div className="overflow-x-auto rounded-lg border border-default">
           <table className="w-full border-collapse text-sm">
-            <thead className="bg-zinc-900/70 text-xs uppercase tracking-wide text-zinc-400">
+            <thead className="bg-surface text-xs uppercase tracking-wide text-secondary">
               <tr>
                 <th className="px-3 py-2 text-left font-semibold">Name</th>
                 <th className="px-3 py-2 text-left font-semibold">Latest version</th>
@@ -142,23 +142,23 @@ export default function PipelinesPage() {
               {filtered.map((p) => (
                 <tr
                   key={p.name}
-                  className="border-t border-zinc-800 hover:bg-zinc-900/40 transition-colors"
+                  className="border-t border-default hover:bg-surface transition-colors"
                 >
                   <td className="px-3 py-2">
                     <Link
                       href={`/kernel-next/pipelines/${encodeURIComponent(p.name)}`}
-                      className="text-sky-400 hover:text-sky-300 hover:underline"
+                      className="text-accent hover:text-accent hover:underline"
                     >
                       {p.name}
                     </Link>
                   </td>
-                  <td className="px-3 py-2 font-mono text-xs text-zinc-400" title={p.latestVersion}>
+                  <td className="px-3 py-2 font-mono text-xs text-secondary" title={p.latestVersion}>
                     {p.latestVersion.slice(0, 16)}…
                   </td>
-                  <td className="px-3 py-2 text-xs text-zinc-400">
+                  <td className="px-3 py-2 text-xs text-secondary">
                     <span>{formatTimestamp(p.latestCreatedAt)}</span>
                     {relativeTime(p.latestCreatedAt) && (
-                      <span className="ml-2 text-zinc-600">{relativeTime(p.latestCreatedAt)}</span>
+                      <span className="ml-2 text-muted">{relativeTime(p.latestCreatedAt)}</span>
                     )}
                   </td>
                 </tr>
@@ -169,7 +169,7 @@ export default function PipelinesPage() {
       )}
 
       {filtered && filtered.length === 0 && pipelines !== null && pipelines.length > 0 && (
-        <p className="text-sm text-zinc-500">No pipelines match <code className="rounded bg-zinc-800 px-1 font-mono">{query}</code>.</p>
+        <p className="text-sm text-muted">No pipelines match <code className="rounded bg-elevated px-1 font-mono">{query}</code>.</p>
       )}
     </div>
   );

@@ -1,56 +1,140 @@
 @import "tailwindcss";
 
 /*
- * 2026-04-27 — light/dark theme tokens.
+ * 2026-04-29 — Phase A visual overhaul.
  *
- * The dashboard was originally dark-only with hard-coded zinc-* classes
- * everywhere. To support light mode without rewriting every page, we
- * keep zinc-* fixed-dark on the long-tail surfaces and introduce
- * semantic tokens for the chrome (page background, primary text,
- * borders, accents) that the user actually notices most.
+ * Single source of truth for color, typography, radius, and elevation.
+ * All pages consume these tokens via Tailwind utilities; no page should
+ * reference raw zinc-/sky-/blue-/red-/amber-/emerald-/purple- classes.
  *
- * Pages opted into theme tokens: layout shell, nav, /, /kernel-next.
- * Pages that remain dark-only by design (data-dense surfaces where
- * dark is the right default): /kernel-next/[taskId], /kernel-next/
- * proposals, /kernel-next/pipelines/[name], /kernel-next/attempts/*.
- *
- * Future expansion: replace bg-zinc-950 / bg-zinc-900 / text-zinc-100
- * etc. with the bg-page / bg-surface / text-primary tokens below as
- * pages get touched. There is no grand-refactor PR — gradual migration.
+ * See docs/superpowers/specs/2026-04-29-web-visual-overhaul-design.md
+ * for the full mapping table and contrast rationale.
  */
 
 :root {
-  --color-bg-page: oklch(0.18 0.01 280);          /* zinc-950-ish */
-  --color-bg-surface: oklch(0.22 0.01 280);       /* zinc-900 */
-  --color-bg-elevated: oklch(0.27 0.01 280);      /* zinc-800 */
-  --color-text-primary: oklch(0.96 0.005 280);    /* zinc-100 */
-  --color-text-secondary: oklch(0.78 0.005 280);  /* zinc-400 */
-  --color-text-muted: oklch(0.58 0.005 280);      /* zinc-500 */
-  --color-border-default: oklch(0.31 0.005 280);  /* zinc-800 */
-  --color-border-strong: oklch(0.40 0.005 280);   /* zinc-700 */
-  --color-accent: oklch(0.72 0.18 235);           /* sky-400 */
+  /* surfaces */
+  --color-bg-page: oklch(0.18 0.01 280);
+  --color-bg-surface: oklch(0.22 0.01 280);
+  --color-bg-elevated: oklch(0.27 0.01 280);
+
+  /* text */
+  --color-text-primary: oklch(0.96 0.005 280);
+  --color-text-secondary: oklch(0.78 0.005 280);
+  --color-text-muted: oklch(0.62 0.005 280);
+
+  /* borders */
+  --color-border-default: oklch(0.31 0.005 280);
+  --color-border-strong: oklch(0.42 0.005 280);
+
+  /* accent */
+  --color-accent: oklch(0.72 0.18 235);
+  --color-accent-hover: oklch(0.78 0.18 235);
+  --color-accent-fg: oklch(0.16 0.01 280);
+
+  /* status: success */
+  --color-success-fg: oklch(0.82 0.16 155);
+  --color-success-bg: oklch(0.32 0.06 155);
+  --color-success-border: oklch(0.45 0.1 155);
+
+  /* status: warning */
+  --color-warning-fg: oklch(0.85 0.14 85);
+  --color-warning-bg: oklch(0.34 0.06 85);
+  --color-warning-border: oklch(0.5 0.11 85);
+
+  /* status: danger */
+  --color-danger-fg: oklch(0.8 0.15 25);
+  --color-danger-bg: oklch(0.32 0.07 25);
+  --color-danger-border: oklch(0.5 0.13 25);
+
+  /* status: info */
+  --color-info-fg: oklch(0.82 0.13 235);
+  --color-info-bg: oklch(0.32 0.07 235);
+  --color-info-border: oklch(0.48 0.11 235);
+
+  color-scheme: dark;
 }
 
 [data-theme="light"] {
   --color-bg-page: oklch(0.99 0.002 280);
   --color-bg-surface: oklch(0.97 0.003 280);
-  --color-bg-elevated: oklch(0.94 0.005 280);
-  --color-text-primary: oklch(0.20 0.01 280);
-  --color-text-secondary: oklch(0.40 0.01 280);
-  --color-text-muted: oklch(0.55 0.01 280);
+  --color-bg-elevated: oklch(0.93 0.005 280);
+
+  --color-text-primary: oklch(0.2 0.01 280);
+  --color-text-secondary: oklch(0.4 0.01 280);
+  --color-text-muted: oklch(0.5 0.01 280);
+
   --color-border-default: oklch(0.88 0.005 280);
-  --color-border-strong: oklch(0.78 0.005 280);
-  --color-accent: oklch(0.55 0.18 245);
+  --color-border-strong: oklch(0.74 0.005 280);
+
+  --color-accent: oklch(0.5 0.18 245);
+  --color-accent-hover: oklch(0.42 0.18 245);
+  --color-accent-fg: oklch(0.99 0.002 280);
+
+  --color-success-fg: oklch(0.36 0.14 150);
+  --color-success-bg: oklch(0.94 0.05 150);
+  --color-success-border: oklch(0.78 0.12 150);
+
+  --color-warning-fg: oklch(0.42 0.13 75);
+  --color-warning-bg: oklch(0.95 0.06 85);
+  --color-warning-border: oklch(0.78 0.13 85);
+
+  --color-danger-fg: oklch(0.42 0.18 25);
+  --color-danger-bg: oklch(0.95 0.05 25);
+  --color-danger-border: oklch(0.74 0.16 25);
+
+  --color-info-fg: oklch(0.4 0.16 245);
+  --color-info-bg: oklch(0.95 0.04 245);
+  --color-info-border: oklch(0.72 0.14 245);
+
+  color-scheme: light;
 }
 
 @theme {
+  /* surfaces */
   --color-page: var(--color-bg-page);
   --color-surface: var(--color-bg-surface);
   --color-elevated: var(--color-bg-elevated);
+
+  /* text */
   --color-primary: var(--color-text-primary);
   --color-secondary: var(--color-text-secondary);
   --color-muted: var(--color-text-muted);
+
+  /* borders */
   --color-default: var(--color-border-default);
   --color-strong: var(--color-border-strong);
+
+  /* accent */
   --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  --color-accent-fg: var(--color-accent-fg);
+
+  /* status fg */
+  --color-success-fg: var(--color-success-fg);
+  --color-warning-fg: var(--color-warning-fg);
+  --color-danger-fg: var(--color-danger-fg);
+  --color-info-fg: var(--color-info-fg);
+
+  /* status bg */
+  --color-success-bg: var(--color-success-bg);
+  --color-warning-bg: var(--color-warning-bg);
+  --color-danger-bg: var(--color-danger-bg);
+  --color-info-bg: var(--color-info-bg);
+
+  /* status border */
+  --color-success-border: var(--color-success-border);
+  --color-warning-border: var(--color-warning-border);
+  --color-danger-border: var(--color-danger-border);
+  --color-info-border: var(--color-info-border);
+}
+
+/*
+ * Light mode adds a subtle shadow to elevated surfaces (cards, panels)
+ * to compensate for the lack of dark-mode contrast. Dark mode uses
+ * borders alone — adding shadow there yields a "plastic" look.
+ */
+[data-theme="light"] .surface-card {
+  box-shadow:
+    0 1px 2px 0 oklch(0.2 0.01 280 / 0.04),
+    0 1px 3px 0 oklch(0.2 0.01 280 / 0.05);
 }

@@ -39,15 +39,15 @@ interface AuditTimelineProps {
 }
 
 const KIND_STYLE: Record<string, { label: string; bg: string; fg: string }> = {
-  migrate:       { label: "migrate",        bg: "bg-purple-500/20", fg: "text-purple-300" },
-  rollback:      { label: "rollback",       bg: "bg-amber-500/20",  fg: "text-amber-300" },
-  migrate_failed:{ label: "migrate-failed", bg: "bg-red-500/20",    fg: "text-red-300" },
+  migrate:       { label: "migrate",        bg: "bg-info-bg", fg: "text-info-fg" },
+  rollback:      { label: "rollback",       bg: "bg-warning-bg",  fg: "text-warning-fg" },
+  migrate_failed:{ label: "migrate-failed", bg: "bg-danger-bg",    fg: "text-danger-fg" },
 };
 
 const PROPOSAL_STATUS_STYLE: Record<string, { bg: string; fg: string }> = {
-  pending:  { bg: "bg-sky-500/20",     fg: "text-sky-300" },
-  approved: { bg: "bg-emerald-500/20", fg: "text-emerald-300" },
-  rejected: { bg: "bg-red-500/20",     fg: "text-red-300" },
+  pending:  { bg: "bg-info-bg",     fg: "text-accent" },
+  approved: { bg: "bg-success-bg", fg: "text-success-fg" },
+  rejected: { bg: "bg-danger-bg",     fg: "text-danger-fg" },
 };
 
 export function AuditTimeline({ entries }: AuditTimelineProps) {
@@ -55,34 +55,34 @@ export function AuditTimeline({ entries }: AuditTimelineProps) {
 
   return (
     <section className="mb-6">
-      <h2 className="mb-2 font-semibold text-zinc-100">Hot-update audit ({entries.length})</h2>
-      <ol className="relative ml-4 border-l-2 border-zinc-800 pl-4">
+      <h2 className="mb-2 font-semibold text-primary">Hot-update audit ({entries.length})</h2>
+      <ol className="relative ml-4 border-l-2 border-default pl-4">
         {entries.map((e) => {
-          const style = KIND_STYLE[e.kind] ?? { label: e.kind, bg: "bg-zinc-800", fg: "text-zinc-300" };
+          const style = KIND_STYLE[e.kind] ?? { label: e.kind, bg: "bg-elevated", fg: "text-secondary" };
           const proposalStyle = e.proposal_status
-            ? (PROPOSAL_STATUS_STYLE[e.proposal_status] ?? { bg: "bg-zinc-800", fg: "text-zinc-300" })
+            ? (PROPOSAL_STATUS_STYLE[e.proposal_status] ?? { bg: "bg-elevated", fg: "text-secondary" })
             : null;
 
           return (
             <li key={e.event_id} className="relative mb-3">
-              <span className="absolute -left-[1.4rem] top-1 h-2 w-2 rounded-full bg-zinc-500" />
+              <span className="absolute -left-[1.4rem] top-1 h-2 w-2 rounded-full bg-elevated" />
               <div className="flex flex-wrap items-center gap-2 text-sm">
                 <span className={`rounded ${style.bg} px-1.5 py-0.5 text-xs font-semibold uppercase ${style.fg}`}>
                   {style.label}
                 </span>
-                <span className="text-xs text-zinc-500">
+                <span className="text-xs text-muted">
                   {new Date(e.timestamp).toLocaleTimeString()}
                 </span>
                 {typeof e.finished_at === "number" && (
-                  <span className="text-xs text-zinc-500" title="Migration duration">
+                  <span className="text-xs text-muted" title="Migration duration">
                     &middot; {formatAuditDuration(e.timestamp, e.finished_at)}
                   </span>
                 )}
-                <span className="text-xs text-zinc-400">
+                <span className="text-xs text-secondary">
                   actor: <code>{e.actor}</code>
                 </span>
                 {e.from_version && e.to_version && (
-                  <span className="text-xs text-zinc-400">
+                  <span className="text-xs text-secondary">
                     <code>{e.from_version.slice(0, 8)}</code>
                     {" "}
                     <span aria-hidden="true">&rarr;</span>
@@ -91,7 +91,7 @@ export function AuditTimeline({ entries }: AuditTimelineProps) {
                   </span>
                 )}
                 {e.rerun_from_stage && (
-                  <span className="text-xs text-zinc-500">
+                  <span className="text-xs text-muted">
                     rerun from: <code>{e.rerun_from_stage}</code>
                   </span>
                 )}

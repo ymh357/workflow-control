@@ -117,15 +117,15 @@ export default function PipelineEditorPage() {
     }
   }, [detail, actor, router]);
 
-  if (!pipelineName) return <p className="text-sm text-zinc-400">Missing pipeline name.</p>;
+  if (!pipelineName) return <p className="text-sm text-secondary">Missing pipeline name.</p>;
   if (error) {
     return (
-      <div className="rounded border border-red-500/50 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+      <div className="rounded border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
         Error: {error}
       </div>
     );
   }
-  if (!detail) return <p className="text-sm text-zinc-500">Loading…</p>;
+  if (!detail) return <p className="text-sm text-muted">Loading…</p>;
 
   const externalInputs = detail.ir?.externalInputs ?? [];
   const stageCount = detail.ir?.stages?.length ?? 0;
@@ -146,11 +146,11 @@ export default function PipelineEditorPage() {
         <div className="space-y-1">
           <div className="flex items-baseline gap-3">
             <h1 className="text-2xl font-semibold tracking-tight">{detail.name}</h1>
-            <span className="text-sm text-zinc-500">{stageCount} stages</span>
+            <span className="text-sm text-muted">{stageCount} stages</span>
           </div>
-          <p className="text-xs text-zinc-500">
+          <p className="text-xs text-muted">
             base version:{" "}
-            <code className="rounded bg-zinc-900 px-1.5 py-0.5 font-mono text-zinc-300">
+            <code className="rounded bg-surface px-1.5 py-0.5 font-mono text-secondary">
               {detail.latestVersion}
             </code>
             <CopyButton value={detail.latestVersion} label="copy hash" />
@@ -159,7 +159,7 @@ export default function PipelineEditorPage() {
         <button
           type="button"
           onClick={() => setLauncherOpen(true)}
-          className="rounded border border-blue-600 bg-blue-700 px-4 py-1.5 text-sm font-semibold text-white hover:bg-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-400"
+          className="rounded border border-info-border bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover focus:outline-none focus:ring-1 focus-visible:ring-accent"
         >
           Launch →
         </button>
@@ -169,14 +169,14 @@ export default function PipelineEditorPage() {
         <section className="space-y-2">
           <div className="flex items-baseline gap-3">
             <h2 className="text-base font-semibold">External inputs</h2>
-            <p className="text-xs text-zinc-500">
-              Supplied to <code className="font-mono text-zinc-400">run_pipeline</code> via{" "}
-              <code className="font-mono text-zinc-400">seedValues</code>.
+            <p className="text-xs text-muted">
+              Supplied to <code className="font-mono text-secondary">run_pipeline</code> via{" "}
+              <code className="font-mono text-secondary">seedValues</code>.
             </p>
           </div>
-          <div className="overflow-x-auto rounded-lg border border-zinc-800">
+          <div className="overflow-x-auto rounded-lg border border-default">
             <table className="w-full border-collapse text-sm">
-              <thead className="bg-zinc-900/70 text-xs uppercase tracking-wide text-zinc-400">
+              <thead className="bg-surface text-xs uppercase tracking-wide text-secondary">
                 <tr>
                   <th className="px-3 py-2 text-left font-semibold">Name</th>
                   <th className="px-3 py-2 text-left font-semibold">Type</th>
@@ -185,11 +185,11 @@ export default function PipelineEditorPage() {
               </thead>
               <tbody>
                 {externalInputs.map((p) => (
-                  <tr key={p.name} className="border-t border-zinc-800">
-                    <td className="px-3 py-2 font-mono text-zinc-100">{p.name}</td>
-                    <td className="px-3 py-2 font-mono text-xs text-zinc-400">{p.type}</td>
-                    <td className="px-3 py-2 text-zinc-300">
-                      {p.description || <span className="italic text-zinc-600">no description</span>}
+                  <tr key={p.name} className="border-t border-default">
+                    <td className="px-3 py-2 font-mono text-primary">{p.name}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-secondary">{p.type}</td>
+                    <td className="px-3 py-2 text-secondary">
+                      {p.description || <span className="italic text-muted">no description</span>}
                     </td>
                   </tr>
                 ))}
@@ -202,7 +202,7 @@ export default function PipelineEditorPage() {
       {detail.ir && (
         <section className="space-y-2">
           <h2 className="text-base font-semibold">Pipeline structure</h2>
-          <div className="rounded-lg border border-zinc-800 overflow-hidden">
+          <div className="rounded-lg border border-default overflow-hidden">
             <PipelineGraph ir={detail.ir} height={560} />
           </div>
         </section>
@@ -210,7 +210,7 @@ export default function PipelineEditorPage() {
 
       <section className="space-y-2">
         <h2 className="text-base font-semibold">Prompts</h2>
-        <p className="text-xs text-zinc-500">
+        <p className="text-xs text-muted">
           Edit agent stage prompts. Submit creates a proposal; approve/reject on the proposals page.
         </p>
         <PromptsEditor

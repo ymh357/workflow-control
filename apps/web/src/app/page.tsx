@@ -3,8 +3,6 @@
 // Launch hub. Lists every pipeline registered in pipeline_versions and
 // lets the user start a task with a typed input form, all without
 // dropping out to MCP or curl.
-//
-// 2026-04-27 B2.
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -13,6 +11,9 @@ import type { ApiDiagnostic } from "../lib/api-client";
 import { ErrorBanner } from "../components/error-banner";
 import { CopyButton } from "../components/copy-button";
 import { LaunchPipelineDialog } from "../components/launch-pipeline-dialog";
+import { Card } from "../components/ui/card";
+import { Button } from "../components/ui/button";
+import { Input } from "../components/ui/input";
 
 interface PipelineSummary {
   name: string;
@@ -58,18 +59,18 @@ export default function Home() {
     <div className="space-y-5">
       <header className="flex flex-wrap items-baseline justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Launch a pipeline</h1>
-          <p className="mt-1 text-sm text-zinc-500">
+          <h1 className="text-2xl font-semibold tracking-tight text-primary">Launch a pipeline</h1>
+          <p className="mt-1 text-sm text-secondary">
             Pick a pipeline, fill in inputs, and start a task. Live runs at{" "}
-            <Link href="/kernel-next" className="text-sky-400 hover:underline">/kernel-next</Link>.
+            <Link href="/kernel-next" className="text-accent hover:underline">/kernel-next</Link>.
           </p>
         </div>
-        <input
+        <Input
           type="search"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           placeholder="Filter pipelines…"
-          className="w-64 rounded border border-zinc-700 bg-zinc-900 px-2.5 py-1.5 text-sm text-zinc-100 placeholder-zinc-500 focus:border-zinc-500 focus:outline-none"
+          className="w-64"
           aria-label="Filter pipelines"
         />
       </header>
@@ -78,15 +79,15 @@ export default function Home() {
         <ErrorBanner diagnostics={diagnostics} onDismiss={() => setDiagnostics([])} />
       )}
 
-      {pipelines === null && <p className="text-sm text-zinc-500">Loading…</p>}
+      {pipelines === null && <p className="text-sm text-muted">Loading…</p>}
 
       {pipelines !== null && filtered.length === 0 && (
-        <div className="rounded-lg border border-dashed border-zinc-700 bg-zinc-900/30 p-10 text-center">
-          <p className="text-zinc-400">
+        <div className="rounded-lg border border-dashed border-default bg-surface p-10 text-center">
+          <p className="text-secondary">
             {pipelines.length === 0 ? "No pipelines installed yet." : "No matches."}
           </p>
           {pipelines.length === 0 && (
-            <p className="mt-2 text-xs text-zinc-500">
+            <p className="mt-2 text-xs text-muted">
               Builtin pipelines are seeded automatically on server start. Check that the kernel-next server is running.
             </p>
           )}
@@ -96,32 +97,33 @@ export default function Home() {
       {filtered.length > 0 && (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((p) => (
-            <article
+            <Card
               key={p.name}
-              className="flex flex-col rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 transition-colors hover:border-zinc-700"
+              as="article"
+              className="flex flex-col transition-colors hover:border-strong"
             >
               <div className="flex items-baseline justify-between gap-2">
-                <h2 className="font-mono text-sm font-semibold text-zinc-100">{p.name}</h2>
-                <span className="text-[0.65rem] text-zinc-500">{formatDate(p.latestCreatedAt)}</span>
+                <h2 className="font-mono text-sm font-semibold text-primary">{p.name}</h2>
+                <span className="text-xs text-muted">{formatDate(p.latestCreatedAt)}</span>
               </div>
               <div className="mt-1 flex items-center gap-1">
-                <code className="font-mono text-[0.65rem] text-zinc-500">
+                <code className="font-mono text-xs text-muted">
                   {p.latestVersion.slice(0, 12)}…
                 </code>
                 <CopyButton value={p.latestVersion} label="hash" />
               </div>
 
-              <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-zinc-400">
-                <dt className="text-zinc-500">inputs</dt>
+              <dl className="mt-3 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-secondary">
+                <dt className="text-muted">inputs</dt>
                 <dd className="text-right font-mono">{p.externalInputs.length}</dd>
-                <dt className="text-zinc-500">secrets</dt>
+                <dt className="text-muted">secrets</dt>
                 <dd className="text-right font-mono">
                   {p.envKeys.length === 0 ? "—" : p.envKeys.length}
                 </dd>
               </dl>
 
               {p.envKeys.length > 0 && (
-                <p className="mt-1 truncate font-mono text-[0.65rem] text-amber-400/80" title={p.envKeys.join(", ")}>
+                <p className="mt-1 truncate font-mono text-xs text-warning-fg" title={p.envKeys.join(", ")}>
                   ⚿ {p.envKeys.join(", ")}
                 </p>
               )}
@@ -129,19 +131,21 @@ export default function Home() {
               <div className="mt-auto flex gap-2 pt-3">
                 <Link
                   href={`/kernel-next/pipelines/${encodeURIComponent(p.name)}`}
-                  className="rounded border border-zinc-700 bg-zinc-900 px-2.5 py-1 text-xs text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800"
+                  className="inline-flex items-center justify-center rounded border border-strong bg-surface px-2.5 py-1 text-xs font-medium text-secondary transition-colors hover:bg-elevated hover:text-primary"
                 >
                   Inspect
                 </Link>
-                <button
+                <Button
                   type="button"
+                  variant="primary"
+                  size="sm"
+                  className="ml-auto"
                   onClick={() => setActive(p)}
-                  className="ml-auto rounded border border-blue-600 bg-blue-700 px-3 py-1 text-xs font-semibold text-white hover:bg-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-400"
                 >
                   Launch →
-                </button>
+                </Button>
               </div>
-            </article>
+            </Card>
           ))}
         </div>
       )}

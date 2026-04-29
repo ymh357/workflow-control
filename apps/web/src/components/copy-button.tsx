@@ -46,7 +46,7 @@ export const CopyButton = ({ value, label, className }: CopyButtonProps) => {
       onClick={onClick}
       title={copied ? "Copied" : `Copy: ${value}`}
       aria-label={copied ? "Copied" : `Copy ${label ?? "value"}`}
-      className={className ?? "ml-1 inline-flex items-center rounded border border-zinc-700 bg-zinc-900 px-1.5 py-0.5 text-[0.65rem] text-zinc-400 hover:border-zinc-600 hover:text-zinc-200 focus:outline-none focus:ring-1 focus:ring-zinc-500"}
+      className={className ?? "ml-1 inline-flex items-center rounded border border-strong bg-surface px-1.5 py-0.5 text-xs text-secondary hover:border-strong hover:text-primary focus:outline-none focus:ring-1 focus-visible:ring-strong"}
     >
       {copied ? "✓ copied" : (label ?? "copy")}
     </button>

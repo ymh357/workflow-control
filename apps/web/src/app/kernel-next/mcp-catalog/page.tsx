@@ -34,17 +34,17 @@ export default function McpCatalogPage() {
   const inventoryByEntry = new Map(inventory.rows.map((r) => [r.entryId, r]));
 
   return (
-    <main className="mx-auto w-full max-w-5xl p-6 text-zinc-100">
+    <main className="mx-auto w-full max-w-5xl p-6 text-primary">
       <header className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-xl font-semibold">MCP Catalog & Inventory</h1>
-          <p className="mt-1 text-xs text-zinc-400">
+          <p className="mt-1 text-xs text-secondary">
             Equip MCP servers so pipelines can use them. Secrets are encrypted at rest and never returned by any GET.
           </p>
         </div>
         <button
           onClick={() => setShowAdd(true)}
-          className="rounded border border-blue-700 bg-blue-700/40 px-3 py-1.5 text-sm text-blue-100 hover:bg-blue-700/60"
+          className="rounded border border-info-border bg-info-bg px-3 py-1.5 text-sm text-info-fg hover:bg-accent/60"
         >
           + Add custom entry
         </button>

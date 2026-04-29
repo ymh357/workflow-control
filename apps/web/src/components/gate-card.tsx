@@ -66,21 +66,21 @@ function PortRow({ port, value, writtenAt }: { port: string; value: unknown; wri
     ? { text: typeof value === "string" ? value : JSON.stringify(value, null, 2), truncated: false }
     : renderValue(value);
   return (
-    <tr className="border-t border-zinc-800">
-      <td className="px-3 py-1.5 align-top font-mono text-sm text-zinc-200">{port}</td>
+    <tr className="border-t border-default">
+      <td className="px-3 py-1.5 align-top font-mono text-sm text-primary">{port}</td>
       <td className="px-3 py-1.5 align-top">
-        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-zinc-300">{rendered.text}</pre>
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all font-mono text-xs text-secondary">{rendered.text}</pre>
         {rendered.truncated && !expanded && (
           <button
             type="button"
-            className="mt-1 text-xs text-sky-400 hover:text-sky-300 hover:underline"
+            className="mt-1 text-xs text-accent hover:text-accent hover:underline"
             onClick={() => setExpanded(true)}
           >
             show full
           </button>
         )}
       </td>
-      <td className="px-3 py-1.5 align-top text-xs text-zinc-500 whitespace-nowrap">
+      <td className="px-3 py-1.5 align-top text-xs text-muted whitespace-nowrap">
         {new Date(writtenAt).toLocaleTimeString()}
       </td>
     </tr>
@@ -127,17 +127,17 @@ export function GateCard({ context, onAnswer }: Props) {
   };
 
   return (
-    <section className="mb-6 rounded-lg border border-amber-500/50 bg-amber-500/10 p-4">
+    <section className="mb-6 rounded-lg border border-warning-border bg-warning-bg p-4">
       <div className="mb-3 flex items-baseline gap-3">
-        <span className="rounded border border-amber-500/50 bg-amber-500/20 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-amber-300">
+        <span className="rounded border border-warning-border bg-warning-bg px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-warning-fg">
           Gate pending
         </span>
-        <code className="font-mono text-sm text-zinc-200">{context.stageName}</code>
+        <code className="font-mono text-sm text-primary">{context.stageName}</code>
       </div>
-      <p className="mb-4 text-sm text-zinc-100">{context.question.text}</p>
+      <p className="mb-4 text-sm text-primary">{context.question.text}</p>
 
       {context.upstreams.length === 0 ? (
-        <p className="mb-3 text-xs italic text-zinc-500">
+        <p className="mb-3 text-xs italic text-muted">
           (no stage upstream; gate is fed by external inputs only)
         </p>
       ) : (
@@ -170,12 +170,12 @@ export function GateCard({ context, onAnswer }: Props) {
           return (
           <div key={up.stage}>
           {summaryPorts && (
-            <div className="mb-3 rounded border border-zinc-700 bg-zinc-900/60 p-3 text-sm">
-              <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">Decision summary</div>
-              <div className="mb-2 font-semibold text-zinc-100">{summaryPorts.name}</div>
-              <p className="mb-2 text-zinc-300">{summaryPorts.description}</p>
+            <div className="mb-3 rounded border border-strong bg-surface p-3 text-sm">
+              <div className="mb-1 text-xs uppercase tracking-wide text-muted">Decision summary</div>
+              <div className="mb-2 font-semibold text-primary">{summaryPorts.name}</div>
+              <p className="mb-2 text-secondary">{summaryPorts.description}</p>
               {summaryPorts.dataFlow && (
-                <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-zinc-400">
+                <pre className="whitespace-pre-wrap break-words font-mono text-xs text-secondary">
                   {summaryPorts.dataFlow.length > 600
                     ? summaryPorts.dataFlow.slice(0, 600) + " …"
                     : summaryPorts.dataFlow}
@@ -183,12 +183,12 @@ export function GateCard({ context, onAnswer }: Props) {
               )}
             </div>
           )}
-          <details className="mb-3 rounded border border-zinc-800 bg-zinc-950/50" open={detailsOpenByDefault}>
-            <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-zinc-200 hover:bg-zinc-900/50">
-              {up.stage} <span className="text-xs font-normal text-zinc-500">({up.outputs.length} outputs)</span>
+          <details className="mb-3 rounded border border-default bg-page" open={detailsOpenByDefault}>
+            <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-primary hover:bg-surface">
+              {up.stage} <span className="text-xs font-normal text-muted">({up.outputs.length} outputs)</span>
             </summary>
             <table className="w-full border-collapse text-sm">
-              <thead className="bg-zinc-900/70 text-xs uppercase tracking-wide text-zinc-400">
+              <thead className="bg-surface text-xs uppercase tracking-wide text-secondary">
                 <tr>
                   <th className="px-3 py-1.5 text-left font-semibold">Port</th>
                   <th className="px-3 py-1.5 text-left font-semibold">Value</th>
@@ -215,10 +215,10 @@ export function GateCard({ context, onAnswer }: Props) {
       <RecommendedMcpsCard recommendedMcps={recommendedMcps} />
 
       <div className="mt-4">
-        <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-zinc-400">
+        <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-secondary">
           Feedback (optional)
-          <span className="ml-2 font-normal normal-case text-zinc-500">
-            persisted to <code className="font-mono text-zinc-400">__gate_feedback__</code> port
+          <span className="ml-2 font-normal normal-case text-muted">
+            persisted to <code className="font-mono text-secondary">__gate_feedback__</code> port
           </span>
         </label>
         <textarea
@@ -226,7 +226,7 @@ export function GateCard({ context, onAnswer }: Props) {
           onChange={(e) => setComment(e.target.value)}
           rows={3}
           placeholder="Rejecting? Explain what to change. The upstream agent reads this on rerun."
-          className="w-full rounded border border-zinc-700 bg-zinc-950 px-3 py-2 text-sm font-mono text-zinc-100 placeholder:text-zinc-600 focus:border-zinc-500 focus:outline-none"
+          className="w-full rounded border border-strong bg-page px-3 py-2 text-sm font-mono text-primary placeholder:text-muted focus:border-strong focus:outline-none"
           maxLength={16_384}
         />
       </div>
@@ -239,11 +239,11 @@ export function GateCard({ context, onAnswer }: Props) {
             disabled={submitting !== null}
             onClick={() => void click(opt.value)}
             title={opt.description}
-            className="rounded border border-amber-500/50 bg-amber-500/15 px-3 py-1.5 text-sm font-semibold text-amber-200 hover:border-amber-500/70 hover:bg-amber-500/25 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded border border-warning-border bg-warning-bg px-3 py-1.5 text-sm font-semibold text-warning-fg hover:border-warning-border hover:bg-warning-bg disabled:cursor-not-allowed disabled:opacity-50"
           >
             {submitting === opt.value ? `${opt.value} …` : opt.value}
             {opt.description && (
-              <span className="ml-1.5 text-[11px] font-normal italic text-amber-300/80">
+              <span className="ml-1.5 text-xs font-normal italic text-warning-fg">
                 — {opt.description.length > 40 ? `${opt.description.slice(0, 40)}…` : opt.description}
               </span>
             )}
@@ -252,7 +252,7 @@ export function GateCard({ context, onAnswer }: Props) {
       </div>
 
       {errorMsg && (
-        <p className="mt-3 rounded border border-red-500/50 bg-red-500/10 px-3 py-1.5 text-sm text-red-300">
+        <p className="mt-3 rounded border border-danger-border bg-danger-bg px-3 py-1.5 text-sm text-danger-fg">
           answer failed: {errorMsg}
         </p>
       )}
