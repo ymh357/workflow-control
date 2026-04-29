@@ -30,6 +30,7 @@ import { InlineScriptStageExecutor } from "./inline-script-executor.js";
 import { CompositeStageExecutor } from "./composite-executor.js";
 import { TrivialScriptModuleResolver } from "./script-module-resolver.js";
 import { BUILTIN_SCRIPT_MODULES } from "../builtin-scripts/index.js";
+import { buildSubmitPipelinePassthrough } from "../builtin-scripts/submit-pipeline.js";
 import { findMissingMcpRemoteAuth } from "./mcp-remote-preflight.js";
 import { DbPromptResolver } from "./db-prompt-resolver.js";
 import { MOCK_HANDLER_REGISTRY } from "./mock-handler-registry.js";
@@ -134,7 +135,12 @@ export type StartPipelineRunResult =
     };
 
 const DEFAULT_MODEL = "claude-haiku-4-5";
-const DEFAULT_MAX_TURNS = 30;
+// 2026-04-29 (continuation 9.5): bumped 30 → 50.  See real-executor.ts
+// for full rationale: 17-stage analyzing alone needs ~25-30 turns
+// (17 write_port + 4-6 mcp catalog tool calls + thinking turns), and
+// the prior 30 was the cause of analyzing failure #5 (DEFAULT_MAX_TURNS
+// trips before LLM finishes write_port loop).
+const DEFAULT_MAX_TURNS = 50;
 const DEFAULT_MAX_BUDGET_USD = 2;
 
 // Build a prompts map covering every AgentStage promptRef in the IR so
@@ -387,7 +393,17 @@ export async function startPipelineRun(
         }),
         script: new ScriptStageExecutor({
           resolver: new TrivialScriptModuleResolver({
-            modules: { ...BUILTIN_SCRIPT_MODULES },
+            modules: {
+              ...BUILTIN_SCRIPT_MODULES,
+              // Continuation 8 (2026-04-29): submit_pipeline_passthrough
+              // is a privileged builtin that needs the kernel-next DB
+              // handle. ScriptModuleContext intentionally doesn't expose
+              // db; instead the factory binds the live db here so the
+              // module is per-task DB-scoped. Used by pipeline-generator's
+              // persisting stage (now a script, not an agent) to submit
+              // the generated IR + prompts deterministically.
+              submit_pipeline_passthrough: buildSubmitPipelinePassthrough(db),
+            },
           }),
         }),
         inlineScript: new InlineScriptStageExecutor(),
