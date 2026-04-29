@@ -1486,3 +1486,35 @@ continuation 9 + 9.5 + 9.6 跨度 ~10h 实际工作时间 (但 dogfood wait 占 
 - **D path 架构 insight**: LLM 应该产生内容,代码应该组装结构. 通用解, 不只 17-stage skeleton 适用.
 - **continuation 9 设计假设全验证**: sourceClassify (URL deterministic 分类) + primarySourceGate (rubric anchor) + reportJudge (6-axis judgment) 完整 chain 工作, 报告质量飞跃.
 - **9 次失败 → 1 次成功**: 教训是 "持续打补丁不收敛, 找到正确抽象层切下去". 这是 LLM-driven system 设计的通用 pattern.
+
+### Final commit batch (2026-04-29 ~20:30, 用户授权后执行)
+
+7 logical commits 取代之前规划的 17 commits (合并几个 file-overlapping changes 到一个 logical commit):
+
+| # | sha | summary |
+|---|---|---|
+| 1 | `e384c69` | `fix(kernel-next)`: rollback routing classification + fanout supersede + INTERRUPT graceful summary (continuation 5/8/9.5 — 4 distinct fixes in compiler/validator/runner) |
+| 2 | `dcbe04e` | `feat(runtime)`: fanout elementRetries for transient executor errors (P4 from continuation 5) |
+| 3 | `d1649ac` | `refactor(real-executor)`: bump DEFAULT_MAX_TURNS 10 → 50 (continuation 9.5 fix #5) |
+| 4 | `46067f4` | `feat(builtin-scripts)`: submit_pipeline_passthrough — persisting → deterministic script (C2 from continuation 8 + start-pipeline-run.ts max_turns + resolver wiring) |
+| 5 | `40c8ff3` | `feat(builtin-scripts)`: continuation 9 deterministic primitives — classify_source_url + classify_evidence_bundle + noop_terminal + validate_and_repair_ir + assemble_investigation_ir (5 builtins, 117 tests) |
+| 6 | `d61b689` | `feat(pipeline-generator)`: D-path investigation skeleton — analyzing emits content, genSkeleton becomes script |
+| 7 | `7ed5dfb` | `docs(handoff)`: continuation 5-9.6 cumulative |
+
+(This entry as commit 8.)
+
+Working tree clean after commit 7. branch main is 777 commits ahead of origin/main (still never pushed; CLAUDE.md鼓励 local-only single-user runtime).
+
+### 下一步建议 (留给后续 session)
+
+1. **Continuation 10+ 选项** — 4 个候选方向, 都需要用户决策, 不能自决:
+   - 跨 task tutorial 复用 (concept-level asset 沉淀)
+   - sub-pipeline 路径 (复杂 topic 拆 sub-investigations)
+   - D path 推广到 non-investigation pipelines (automation/lookup 也固化常见 shape)
+   - MCP envKey UX (pre-flight check + 用户提示)
+
+2. **0G evidence breadth 提升** — 设 etherscan/github API key 后重跑 17-stage investigation, 看 evidence 从 65 → 多少 (期望接近 reference 116). 这是验证 "MCP envKey UX 改善" 优先级的实证.
+
+3. **D path 通用化** — 把 assemble_investigation_ir 的 template-driven 思路推广到 pipeline-modifier (现在仍 LLM-driven). 同样的 mechanical-error 风险存在那里.
+
+4. **Push to origin** — 当前 main 比 origin/main ahead 777 commits. 单用户 runtime 不强求, 但备份意义需要 (机器丢了/磁盘坏了). 用户决定何时 push.
