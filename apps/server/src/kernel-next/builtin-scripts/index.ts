@@ -19,6 +19,8 @@ import type { ScriptModule } from "../runtime/script-module-resolver.js";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, resolve as pathResolve, join as pathJoin } from "node:path";
 import { homedir } from "node:os";
+import { validate_and_repair_ir } from "./validate-and-repair-ir.js";
+import { assemble_investigation_ir } from "./assemble-investigation-ir.js";
 
 // ---------- helpers ----------
 
@@ -310,6 +312,565 @@ const validate_patch_vs_intent: ScriptModule = {
   },
 };
 
+// ---------- source classification ----------
+
+// classify_source_url — domain-agnostic URL → source-type classifier.
+// Continuation 9 (2026-04-29). The web3-tech-research dogfood revealed
+// that LLM-driven evidenceGather routinely cites blogs/articles when
+// primary sources (source code, on-chain explorers, RFCs, papers,
+// official spec) exist for the claim. A purely prompt-based fix is
+// brittle; this script enforces source quality at the type level so
+// downstream stages (filter / verify / judge) can react deterministically.
+//
+// Type taxonomy — chosen so it generalises across domains without baking
+// in any specific subject (no "blockchain", no "ML", no "Linux" hints):
+//   - "primary"            — independently verifiable artifact: source
+//                            code, on-chain transaction/address, RFC,
+//                            published paper, official spec/standard.
+//   - "official_secondary" — produced by the subject itself (their own
+//                            blog, docs site, announcement). Authoritative
+//                            but a curated narrative, not raw evidence.
+//                            Recognized via the optional subjectDomain
+//                            input: when present, hosts containing it
+//                            are treated as official.
+//   - "third_party"        — articles/blogs/tutorials about the subject
+//                            written by someone else.
+//   - "aggregator"         — Q&A and discussion sites (reddit, HN, SO,
+//                            zhihu). Evidence is the consensus, not the
+//                            individual posts.
+//
+// The signal field returns the matching pattern key for diagnostics so
+// downstream filters can explain *why* a URL was classified a given way.
+//
+// Inputs:
+//   url:           string (required) — single URL to classify
+//   subjectDomain: string (optional)  — registrable domain of the subject
+//                                       under investigation (e.g. "0g.ai",
+//                                       "ethereum.org"). When set, hosts
+//                                       whose registrable suffix matches
+//                                       are upgraded from third_party →
+//                                       official_secondary if not already
+//                                       primary.
+//
+// Output:
+//   type:       "primary" | "official_secondary" | "third_party"
+//                 | "aggregator" | "unknown"
+//   signal:     short pattern key explaining the match
+//   confidence: 0-1 numeric; 1.0 for hard structural matches (github
+//                 path depth ≥ 2, etherscan tx/address), 0.7-0.9 for
+//                 host-based, 0.5 for fallback.
+
+interface ClassifyResult {
+  type: "primary" | "official_secondary" | "third_party" | "aggregator" | "unknown";
+  signal: string;
+  confidence: number;
+}
+
+const PRIMARY_HOST_PATTERNS: Array<{
+  hostMatch: (host: string) => boolean;
+  pathMatch: (path: string) => boolean;
+  signal: string;
+  confidence: number;
+}> = [
+  // Source code repositories — require ≥1 path segment after the host so
+  // bare github.com homepage doesn't qualify.
+  {
+    hostMatch: (h) => h === "github.com" || h.endsWith(".github.com"),
+    pathMatch: (p) => /^\/[^/]+\/[^/]+/.test(p),
+    signal: "source_repo:github",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "gitlab.com" || h.endsWith(".gitlab.com"),
+    pathMatch: (p) => /^\/[^/]+\/[^/]+/.test(p),
+    signal: "source_repo:gitlab",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "bitbucket.org",
+    pathMatch: (p) => /^\/[^/]+\/[^/]+/.test(p),
+    signal: "source_repo:bitbucket",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "codeberg.org" || h === "git.sr.ht",
+    pathMatch: (p) => /^\/[^/]+\/[^/]+/.test(p),
+    signal: "source_repo:other",
+    confidence: 1.0,
+  },
+  // On-chain explorers — only address/tx/contract paths, not the homepage.
+  {
+    hostMatch: (h) => /(^|\.)etherscan\.io$/.test(h)
+      || /(^|\.)bscscan\.com$/.test(h)
+      || /(^|\.)polygonscan\.com$/.test(h)
+      || /(^|\.)arbiscan\.io$/.test(h)
+      || /(^|\.)basescan\.org$/.test(h)
+      || /(^|\.)optimistic\.etherscan\.io$/.test(h)
+      || /(^|\.)snowtrace\.io$/.test(h)
+      || /(^|\.)ftmscan\.com$/.test(h),
+    pathMatch: (p) => /^\/(address|tx|token|block|api)\b/.test(p),
+    signal: "onchain_explorer:evm",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "explorer.solana.com" || h === "solscan.io" || h === "solana.fm",
+    pathMatch: (p) => /^\/(address|tx|account|block)\b/.test(p),
+    signal: "onchain_explorer:solana",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "blockstream.info" || h === "mempool.space",
+    pathMatch: (p) => /^\/(tx|address|block)\b/.test(p),
+    signal: "onchain_explorer:bitcoin",
+    confidence: 1.0,
+  },
+  // Specs & RFCs.
+  {
+    hostMatch: (h) => h === "datatracker.ietf.org",
+    pathMatch: (p) => /^\/doc\//.test(p),
+    signal: "spec:ietf_rfc",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "www.rfc-editor.org" || h === "rfc-editor.org",
+    pathMatch: (p) => /^\/(rfc|info)\//.test(p),
+    signal: "spec:rfc_editor",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "eips.ethereum.org",
+    pathMatch: () => true,
+    signal: "spec:eip",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "ercs.ethereum.org",
+    pathMatch: () => true,
+    signal: "spec:erc",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "bips.dev" || h === "github.com" /* already caught above */,
+    pathMatch: (p) => /^\/bip-/.test(p),
+    signal: "spec:bip",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "www.w3.org" || h === "w3.org",
+    pathMatch: (p) => /^\/TR\//.test(p),
+    signal: "spec:w3c_tr",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "www.iso.org" || h === "iso.org",
+    pathMatch: (p) => /^\/standard\//.test(p),
+    signal: "spec:iso",
+    confidence: 1.0,
+  },
+  // Peer-reviewed papers / preprints.
+  {
+    hostMatch: (h) => h === "arxiv.org",
+    pathMatch: (p) => /^\/(abs|pdf)\//.test(p),
+    signal: "paper:arxiv",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "doi.org" || h === "dx.doi.org",
+    pathMatch: () => true,
+    signal: "paper:doi",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "dl.acm.org",
+    pathMatch: (p) => /^\/doi\//.test(p),
+    signal: "paper:acm",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => /(^|\.)ieee\.org$/.test(h),
+    pathMatch: (p) => /^\/document\//.test(p),
+    signal: "paper:ieee",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => /(^|\.)springer\.com$/.test(h) || /(^|\.)nature\.com$/.test(h)
+      || /(^|\.)sciencedirect\.com$/.test(h),
+    pathMatch: () => true,
+    signal: "paper:journal",
+    confidence: 0.9,
+  },
+  {
+    hostMatch: (h) => h === "www.usenix.org" || h === "usenix.org",
+    pathMatch: (p) => /^\/conference\//.test(p),
+    signal: "paper:usenix",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "eprint.iacr.org",
+    pathMatch: () => true,
+    signal: "paper:iacr_eprint",
+    confidence: 1.0,
+  },
+  // Package registries — versioned source of truth for libraries.
+  {
+    hostMatch: (h) => h === "www.npmjs.com" || h === "npmjs.com",
+    pathMatch: (p) => /^\/package\//.test(p),
+    signal: "package_registry:npm",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "pypi.org",
+    pathMatch: (p) => /^\/project\//.test(p),
+    signal: "package_registry:pypi",
+    confidence: 1.0,
+  },
+  {
+    hostMatch: (h) => h === "crates.io",
+    pathMatch: (p) => /^\/crates\//.test(p),
+    signal: "package_registry:cratesio",
+    confidence: 1.0,
+  },
+];
+
+const AGGREGATOR_HOSTS = new Set([
+  "reddit.com",
+  "www.reddit.com",
+  "old.reddit.com",
+  "news.ycombinator.com",
+  "stackoverflow.com",
+  "stackexchange.com",
+  "superuser.com",
+  "serverfault.com",
+  "askubuntu.com",
+  "math.stackexchange.com",
+  "ethereum.stackexchange.com",
+  "zhihu.com",
+  "www.zhihu.com",
+  "quora.com",
+  "www.quora.com",
+]);
+
+// Hosts whose primary content shape is "third-party article". Even when
+// the URL contains the subjectDomain in path/query, the publisher is a
+// neutral aggregator of writers.
+const THIRD_PARTY_PUBLISHER_HOSTS = new Set([
+  "medium.com",
+  "dev.to",
+  "substack.com",
+  "hackernoon.com",
+  "infoq.com",
+  "thenewstack.io",
+  "freecodecamp.org",
+  "www.freecodecamp.org",
+  "towardsdatascience.com",
+  "blog.csdn.net",
+  "csdn.net",
+  "juejin.cn",
+  "jianshu.com",
+  "cnblogs.com",
+  "techcrunch.com",
+  "wired.com",
+  "arstechnica.com",
+  "theverge.com",
+  "coindesk.com",
+  "cointelegraph.com",
+  "decrypt.co",
+  "theblock.co",
+]);
+
+function parseUrlSafe(url: string): URL | undefined {
+  try {
+    return new URL(url);
+  } catch {
+    return undefined;
+  }
+}
+
+// Strip a leading "www." from a host and return both forms for matching
+// against a registrable-domain hint without a public-suffix list.
+function hostMatchesSubject(host: string, subjectDomain: string): boolean {
+  const h = host.toLowerCase();
+  const sd = subjectDomain.toLowerCase().replace(/^www\./, "");
+  if (!sd) return false;
+  // Exact host or any sub-host of the subject domain.
+  if (h === sd) return true;
+  if (h.endsWith("." + sd)) return true;
+  return false;
+}
+
+function classifyOne(rawUrl: string, subjectDomain?: string): ClassifyResult {
+  const u = parseUrlSafe(rawUrl);
+  if (!u) {
+    return { type: "unknown", signal: "url_parse_error", confidence: 0 };
+  }
+  const host = u.host.toLowerCase();
+  const path = u.pathname || "/";
+
+  // Primary check first — structural matches beat host-based matches.
+  for (const rule of PRIMARY_HOST_PATTERNS) {
+    if (rule.hostMatch(host) && rule.pathMatch(path)) {
+      return { type: "primary", signal: rule.signal, confidence: rule.confidence };
+    }
+  }
+
+  // Strip a leading "www." for set lookups so the SET stays canonical
+  // and we don't have to enumerate both forms.
+  const hostNoWww = host.replace(/^www\./, "");
+
+  // Aggregators take precedence over subject-domain reasoning — even if
+  // someone embeds reddit.com/r/ethereum, the content shape is still a
+  // discussion thread, not the project's own narrative.
+  if (AGGREGATOR_HOSTS.has(host) || AGGREGATOR_HOSTS.has(hostNoWww)) {
+    return { type: "aggregator", signal: "aggregator_host", confidence: 0.9 };
+  }
+
+  // Third-party publishers — neutral platforms regardless of who wrote.
+  if (THIRD_PARTY_PUBLISHER_HOSTS.has(host) || THIRD_PARTY_PUBLISHER_HOSTS.has(hostNoWww)) {
+    return { type: "third_party", signal: "third_party_publisher", confidence: 0.9 };
+  }
+
+  // Subject-domain bump: when the caller knows the subject's registrable
+  // domain (e.g. hypothesize stage extracted "0g.ai" from the input
+  // topic), a host that matches it is the subject's own narrative
+  // surface — official_secondary.
+  if (subjectDomain && hostMatchesSubject(host, subjectDomain)) {
+    return {
+      type: "official_secondary",
+      signal: "subject_domain_match",
+      confidence: 0.85,
+    };
+  }
+
+  // Generic blog/docs heuristics — when no subject hint is present we
+  // can't tell whether a "blog.foo.com" is the subject's own blog or a
+  // third party's site about the subject. Treat as third_party (the
+  // higher-rigor default) so the filter doesn't over-credit unverified
+  // sources.
+  if (/^blog\./.test(host) || /^news\./.test(host)) {
+    return { type: "third_party", signal: "blog_subdomain", confidence: 0.6 };
+  }
+  if (/^docs?\./.test(host) || /\.readthedocs\.io$/.test(host)) {
+    // Docs subdomains lean official, but without a subject hint we cannot
+    // confirm. Mark as official_secondary at lower confidence — downstream
+    // filter can choose whether to credit at this confidence level.
+    return { type: "official_secondary", signal: "docs_subdomain", confidence: 0.6 };
+  }
+
+  return { type: "unknown", signal: "no_match", confidence: 0.5 };
+}
+
+// classify_source_url — single URL or array form.
+// Inputs (one of):
+//   url: string                     — single classification
+//   urls: string[]                  — batch by raw URL
+//   citations: Array<{ url: string }> — batch by Citation objects (passthrough preserved)
+// Optional:
+//   subjectDomain: string
+// Output:
+//   For single: { type, signal, confidence }
+//   For batch:  { results: Array<ClassifyResult & { url, ...passthrough }> }
+const classify_source_url: ScriptModule = {
+  async run(inputs) {
+    const subjectDomainRaw = optionalString(inputs, "subjectDomain");
+    const subjectDomain = subjectDomainRaw?.toLowerCase().replace(/^https?:\/\//, "")
+      .replace(/\/.*$/, "");
+
+    const singleUrl = optionalString(inputs, "url");
+    if (singleUrl !== undefined) {
+      const r = classifyOne(singleUrl, subjectDomain);
+      return { type: r.type, signal: r.signal, confidence: r.confidence };
+    }
+
+    const urlsRaw = inputs.urls;
+    if (Array.isArray(urlsRaw)) {
+      const out = urlsRaw.map((u, i) => {
+        if (typeof u !== "string") {
+          throw new Error(
+            `input 'urls[${i}]' must be a string (got ${typeof u})`,
+          );
+        }
+        return { url: u, ...classifyOne(u, subjectDomain) };
+      });
+      return { results: out };
+    }
+
+    const citationsRaw = inputs.citations;
+    if (Array.isArray(citationsRaw)) {
+      const out = citationsRaw.map((c, i) => {
+        if (c === null || typeof c !== "object" || Array.isArray(c)) {
+          throw new Error(
+            `input 'citations[${i}]' must be an object (got ${typeof c})`,
+          );
+        }
+        const obj = c as Record<string, unknown>;
+        const u = obj.url;
+        if (typeof u !== "string") {
+          throw new Error(
+            `input 'citations[${i}].url' must be a string (got ${typeof u})`,
+          );
+        }
+        return { ...obj, ...classifyOne(u, subjectDomain) };
+      });
+      return { results: out };
+    }
+
+    throw new Error(
+      "classify_source_url: provide one of 'url' (string), 'urls' (string[]), or 'citations' (Array<{url}>)",
+    );
+  },
+};
+
+// classify_evidence_bundle — investigation-pipeline shaped wrapper around
+// classify_source_url. Continuation 9 (2026-04-29). The 14-stage
+// investigation skeleton's `sourceClassify` stage consumes the aggregate
+// output of the upstream `evidenceGather` fanout — an array shaped one
+// entry per hypothesis, each containing positive/negative evidence
+// arrays of citations. Rather than ship that shape transformation as
+// inline TypeScript in every generator-emitted IR (and depend on the LLM
+// to write it correctly), this builtin owns the canonical reshape.
+//
+// Inputs:
+//   evidence: Array<{
+//     hypothesisId: string,
+//     verdict: "supported" | "refuted" | "inconclusive",
+//     positiveEvidence: Array<{ kind: string; url: string; quote: string }>,
+//     negativeEvidence: Array<{ kind: string; url: string; quote: string }>,
+//     rawArtifacts?: string[]
+//   }>
+//   subjectDomain?: string  — forwarded to classify_source_url
+//
+// Output:
+//   classifiedEvidence: Array<{
+//     hypothesisId, verdict, rawArtifacts (passthrough),
+//     positiveEvidence: Array<original + { type, signal, confidence }>,
+//     negativeEvidence: Array<original + { type, signal, confidence }>,
+//     primaryCount, officialCount, thirdPartyCount,
+//     aggregatorCount, unknownCount
+//   }>
+//
+// Citations whose `url` is empty (non-URL-addressable evidence — local
+// files, transcripts, etc.) are tagged type:"unknown", signal:"no_url",
+// confidence:0. Downstream gates can choose to treat them as unverifiable
+// or trust them under their own logic.
+const classify_evidence_bundle: ScriptModule = {
+  async run(inputs) {
+    const subjectDomainRaw = optionalString(inputs, "subjectDomain");
+    const subjectDomain = subjectDomainRaw?.toLowerCase().replace(/^https?:\/\//, "")
+      .replace(/\/.*$/, "");
+
+    const evidenceRaw = inputs.evidence;
+    if (!Array.isArray(evidenceRaw)) {
+      throw new Error(
+        `classify_evidence_bundle: input 'evidence' is required and must be an array (got ${typeof evidenceRaw})`,
+      );
+    }
+
+    const classified = evidenceRaw.map((entry, idx) => {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+        throw new Error(
+          `classify_evidence_bundle: evidence[${idx}] must be an object (got ${typeof entry})`,
+        );
+      }
+      const e = entry as Record<string, unknown>;
+
+      const classifyCitationList = (
+        list: unknown,
+        listName: string,
+      ): Array<Record<string, unknown> & ClassifyResult> => {
+        if (list === undefined || list === null) return [];
+        if (!Array.isArray(list)) {
+          throw new Error(
+            `classify_evidence_bundle: evidence[${idx}].${listName} must be an array when present (got ${typeof list})`,
+          );
+        }
+        return list.map((c, ci) => {
+          if (c === null || typeof c !== "object" || Array.isArray(c)) {
+            throw new Error(
+              `classify_evidence_bundle: evidence[${idx}].${listName}[${ci}] must be an object (got ${typeof c})`,
+            );
+          }
+          const cit = c as Record<string, unknown>;
+          const u = cit.url;
+          if (u === undefined || u === null || u === "") {
+            return {
+              ...cit,
+              type: "unknown" as const,
+              signal: "no_url",
+              confidence: 0,
+            };
+          }
+          if (typeof u !== "string") {
+            throw new Error(
+              `classify_evidence_bundle: evidence[${idx}].${listName}[${ci}].url must be a string when present (got ${typeof u})`,
+            );
+          }
+          const cls = classifyOne(u, subjectDomain);
+          return { ...cit, ...cls };
+        });
+      };
+
+      const pos = classifyCitationList(e.positiveEvidence, "positiveEvidence");
+      const neg = classifyCitationList(e.negativeEvidence, "negativeEvidence");
+
+      // Counts use positive evidence only — those are the citations that
+      // back a "supported" verdict. Negative evidence is the agent's
+      // record of what was tried and didn't pan out; counting it as
+      // "primary support" would defeat the gate's purpose.
+      let primaryCount = 0,
+        officialCount = 0,
+        thirdPartyCount = 0,
+        aggregatorCount = 0,
+        unknownCount = 0;
+      for (const c of pos) {
+        switch (c.type) {
+          case "primary": primaryCount++; break;
+          case "official_secondary": officialCount++; break;
+          case "third_party": thirdPartyCount++; break;
+          case "aggregator": aggregatorCount++; break;
+          default: unknownCount++;
+        }
+      }
+
+      return {
+        ...e,
+        positiveEvidence: pos,
+        negativeEvidence: neg,
+        primaryCount,
+        officialCount,
+        thirdPartyCount,
+        aggregatorCount,
+        unknownCount,
+      };
+    });
+
+    return { classifiedEvidence: classified };
+  },
+};
+
+// noop_terminal — single-purpose script whose only job is to be a real
+// stage at the end of a pipeline so a gate can route `approve` to it.
+// Continuation 9 (2026-04-29). The 16-stage investigation skeleton's
+// `reportJudgeGate` needs an approve route that is the pipeline's
+// terminal — but kernel-next's gate-routing schema requires every route
+// to name a real stage (no `"terminal"` sentinel). Pointing approve
+// back to an upstream stage like `reportAssembly` would re-execute it,
+// wasting work. `noop_terminal` is the canonical solution: a one-line
+// script that returns `{ done: true }`. Multiple pipelines may use the
+// same builtin id without conflict.
+//
+// Inputs: any (ignored).
+// Output: { done: true }.
+const noop_terminal: ScriptModule = {
+  // The literal `done: true` is the only output port a pipeline using
+  // this stage needs to declare; other input wires (the report markdown,
+  // the judge audit JSON) flow into the stage but don't need to be
+  // re-emitted — the stage exists for routing, not for transformation.
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async run() {
+    return { done: true };
+  },
+};
+
 // ---------- registry ----------
 
 export const BUILTIN_SCRIPT_MODULES: Readonly<Record<string, ScriptModule>> = Object.freeze({
@@ -323,8 +884,23 @@ export const BUILTIN_SCRIPT_MODULES: Readonly<Record<string, ScriptModule>> = Ob
   json_stringify,
   env_resolve,
   validate_patch_vs_intent,
+  classify_source_url,
+  classify_evidence_bundle,
+  noop_terminal,
+  validate_and_repair_ir,
+  assemble_investigation_ir,
 });
 
-export const BUILTIN_SCRIPT_IDS: ReadonlySet<string> = new Set(
-  Object.keys(BUILTIN_SCRIPT_MODULES),
-);
+// Continuation 8 (2026-04-29) — `submit_pipeline_passthrough` is a
+// builtin module ID but its implementation lives in
+// `./submit-pipeline.ts` (factory function bound to db at run time, not
+// a stateless module). It's listed here so submit-time validation
+// (validator/structural.ts SCRIPT_MODULE_NOT_REGISTERED) accepts it,
+// and the actual binding is wired into the resolver in
+// runtime/start-pipeline-run.ts.
+const FACTORY_SCRIPT_IDS = ["submit_pipeline_passthrough"] as const;
+
+export const BUILTIN_SCRIPT_IDS: ReadonlySet<string> = new Set([
+  ...Object.keys(BUILTIN_SCRIPT_MODULES),
+  ...FACTORY_SCRIPT_IDS,
+]);

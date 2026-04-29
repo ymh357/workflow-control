@@ -22,10 +22,13 @@ function ctx(env: Record<string, string> = {}): ScriptModuleContext {
 }
 
 describe("BUILTIN_SCRIPT_IDS registry", () => {
-  it("exposes every key of BUILTIN_SCRIPT_MODULES", () => {
-    expect([...BUILTIN_SCRIPT_IDS].sort()).toEqual(
-      Object.keys(BUILTIN_SCRIPT_MODULES).sort(),
-    );
+  it("includes every key of BUILTIN_SCRIPT_MODULES plus factory script ids", () => {
+    // Factory ids (e.g. submit_pipeline_passthrough) live outside
+    // BUILTIN_SCRIPT_MODULES because they're bound to per-task state at
+    // runtime; the registry SET still exposes them for validator lookups.
+    for (const k of Object.keys(BUILTIN_SCRIPT_MODULES)) {
+      expect(BUILTIN_SCRIPT_IDS.has(k)).toBe(true);
+    }
   });
   it("includes the core I/O atoms", () => {
     for (const id of [
@@ -34,6 +37,9 @@ describe("BUILTIN_SCRIPT_IDS registry", () => {
       "path_expand", "path_join",
       "json_parse", "json_stringify",
       "env_resolve",
+      "classify_source_url",
+      "classify_evidence_bundle",
+      "noop_terminal",
     ]) {
       expect(BUILTIN_SCRIPT_IDS.has(id)).toBe(true);
     }
@@ -315,5 +321,553 @@ describe("validate_patch_vs_intent (Bug 8b kernel guard)", () => {
         ctx(),
       ),
     ).rejects.toThrow(/dryRunVerdict must be a string/);
+  });
+});
+
+describe("classify_source_url", () => {
+  const mod = BUILTIN_SCRIPT_MODULES.classify_source_url!;
+
+  // ---- primary: source repos ----
+  it("classifies github.com/owner/repo as primary source_repo", async () => {
+    const out = await mod.run(
+      { url: "https://github.com/foundry-rs/foundry/blob/master/README.md" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+    expect(out.signal).toBe("source_repo:github");
+    expect(out.confidence).toBe(1.0);
+  });
+  it("does NOT classify github.com homepage as primary (path depth < 2)", async () => {
+    const out = await mod.run({ url: "https://github.com/" }, ctx());
+    expect(out.type).not.toBe("primary");
+  });
+  it("classifies gitlab project URL as primary", async () => {
+    const out = await mod.run({ url: "https://gitlab.com/group/project" }, ctx());
+    expect(out.type).toBe("primary");
+    expect(out.signal).toBe("source_repo:gitlab");
+  });
+
+  // ---- primary: on-chain explorers ----
+  it("classifies etherscan tx URL as primary onchain_explorer:evm", async () => {
+    const out = await mod.run(
+      { url: "https://etherscan.io/tx/0xabc123" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+    expect(out.signal).toBe("onchain_explorer:evm");
+  });
+  it("classifies etherscan address URL as primary", async () => {
+    const out = await mod.run(
+      { url: "https://etherscan.io/address/0xdeadbeef" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+  });
+  it("does NOT classify etherscan homepage as primary", async () => {
+    const out = await mod.run({ url: "https://etherscan.io/" }, ctx());
+    expect(out.type).not.toBe("primary");
+  });
+  it("classifies arbiscan address URL as primary onchain_explorer:evm", async () => {
+    const out = await mod.run(
+      { url: "https://arbiscan.io/address/0x1" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+  });
+  it("classifies solscan tx as primary solana explorer", async () => {
+    const out = await mod.run(
+      { url: "https://solscan.io/tx/abc" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+    expect(out.signal).toBe("onchain_explorer:solana");
+  });
+
+  // ---- primary: specs ----
+  it("classifies eips.ethereum.org as primary spec:eip", async () => {
+    const out = await mod.run(
+      { url: "https://eips.ethereum.org/EIPS/eip-1559" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+    expect(out.signal).toBe("spec:eip");
+  });
+  it("classifies IETF rfc as primary spec:ietf_rfc", async () => {
+    const out = await mod.run(
+      { url: "https://datatracker.ietf.org/doc/html/rfc7519" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+  });
+  it("classifies w3.org/TR as primary spec:w3c_tr", async () => {
+    const out = await mod.run(
+      { url: "https://www.w3.org/TR/webrtc/" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+  });
+
+  // ---- primary: papers ----
+  it("classifies arxiv abs URL as primary paper:arxiv", async () => {
+    const out = await mod.run(
+      { url: "https://arxiv.org/abs/2104.00031" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+    expect(out.signal).toBe("paper:arxiv");
+  });
+  it("classifies doi.org as primary paper:doi", async () => {
+    const out = await mod.run(
+      { url: "https://doi.org/10.1145/3477132.3483560" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+  });
+  it("classifies usenix conference paper as primary", async () => {
+    const out = await mod.run(
+      { url: "https://www.usenix.org/conference/osdi23/presentation/foo" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+  });
+
+  // ---- primary: package registries ----
+  it("classifies npm package as primary package_registry:npm", async () => {
+    const out = await mod.run(
+      { url: "https://www.npmjs.com/package/zod" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+    expect(out.signal).toBe("package_registry:npm");
+  });
+  it("classifies pypi project as primary package_registry:pypi", async () => {
+    const out = await mod.run(
+      { url: "https://pypi.org/project/torch/" },
+      ctx(),
+    );
+    expect(out.type).toBe("primary");
+  });
+
+  // ---- aggregator ----
+  it("classifies reddit thread as aggregator", async () => {
+    const out = await mod.run(
+      { url: "https://www.reddit.com/r/ethereum/comments/abc" },
+      ctx(),
+    );
+    expect(out.type).toBe("aggregator");
+  });
+  it("classifies hackernews as aggregator", async () => {
+    const out = await mod.run(
+      { url: "https://news.ycombinator.com/item?id=12345" },
+      ctx(),
+    );
+    expect(out.type).toBe("aggregator");
+  });
+  it("classifies stackoverflow as aggregator", async () => {
+    const out = await mod.run(
+      { url: "https://stackoverflow.com/questions/123/foo" },
+      ctx(),
+    );
+    expect(out.type).toBe("aggregator");
+  });
+  it("classifies zhihu as aggregator", async () => {
+    const out = await mod.run(
+      { url: "https://www.zhihu.com/question/12345" },
+      ctx(),
+    );
+    expect(out.type).toBe("aggregator");
+  });
+
+  // ---- third-party publishers ----
+  it("classifies medium.com as third_party regardless of subjectDomain", async () => {
+    const out = await mod.run(
+      { url: "https://medium.com/0g-labs/post", subjectDomain: "0g.ai" },
+      ctx(),
+    );
+    expect(out.type).toBe("third_party");
+    expect(out.signal).toBe("third_party_publisher");
+  });
+  it("classifies dev.to as third_party", async () => {
+    const out = await mod.run({ url: "https://dev.to/foo/bar" }, ctx());
+    expect(out.type).toBe("third_party");
+  });
+  it("classifies coindesk as third_party", async () => {
+    const out = await mod.run(
+      { url: "https://www.coindesk.com/article/foo" },
+      ctx(),
+    );
+    expect(out.type).toBe("third_party");
+  });
+
+  // ---- subject-domain bump ----
+  it("upgrades subject-domain host to official_secondary", async () => {
+    const out = await mod.run(
+      { url: "https://docs.0g.ai/about", subjectDomain: "0g.ai" },
+      ctx(),
+    );
+    expect(out.type).toBe("official_secondary");
+    expect(out.signal).toBe("subject_domain_match");
+  });
+  it("does NOT mark unrelated host with subject_domain_match signal", async () => {
+    // docs.* heuristic may still classify as official_secondary, but the
+    // SIGNAL must not be subject_domain_match — that signal is what
+    // downstream filters trust at higher confidence (0.85). The generic
+    // docs subdomain match falls back to confidence 0.6.
+    const out = await mod.run(
+      { url: "https://random-other-host.io/x", subjectDomain: "0g.ai" },
+      ctx(),
+    );
+    expect(out.signal).not.toBe("subject_domain_match");
+  });
+  it("strips https:// and trailing path from subjectDomain input", async () => {
+    const out = await mod.run(
+      { url: "https://0g.ai/blog/post", subjectDomain: "https://0g.ai/" },
+      ctx(),
+    );
+    expect(out.type).toBe("official_secondary");
+  });
+
+  // ---- generic blog/docs heuristics ----
+  it("classifies blog.foo.com as third_party when no subject hint", async () => {
+    const out = await mod.run({ url: "https://blog.example.com/post" }, ctx());
+    expect(out.type).toBe("third_party");
+    expect(out.signal).toBe("blog_subdomain");
+  });
+  it("classifies docs.foo.com as official_secondary at lower confidence", async () => {
+    const out = await mod.run({ url: "https://docs.example.com/api" }, ctx());
+    expect(out.type).toBe("official_secondary");
+    expect(out.signal).toBe("docs_subdomain");
+    expect(out.confidence).toBe(0.6);
+  });
+
+  // ---- fallback / errors ----
+  it("returns unknown for an unrecognized host", async () => {
+    const out = await mod.run({ url: "https://random.site/page" }, ctx());
+    expect(out.type).toBe("unknown");
+    expect(out.signal).toBe("no_match");
+  });
+  it("returns unknown with url_parse_error for a malformed URL", async () => {
+    const out = await mod.run({ url: "not a url" }, ctx());
+    expect(out.type).toBe("unknown");
+    expect(out.signal).toBe("url_parse_error");
+    expect(out.confidence).toBe(0);
+  });
+
+  // ---- batch forms ----
+  it("batch via 'urls' returns one result per input with url preserved", async () => {
+    const out = await mod.run(
+      {
+        urls: [
+          "https://github.com/a/b",
+          "https://medium.com/x",
+          "not a url",
+        ],
+      },
+      ctx(),
+    );
+    const results = out.results as Array<Record<string, unknown>>;
+    expect(results.length).toBe(3);
+    expect(results[0]!.type).toBe("primary");
+    expect(results[0]!.url).toBe("https://github.com/a/b");
+    expect(results[1]!.type).toBe("third_party");
+    expect(results[2]!.type).toBe("unknown");
+  });
+  it("batch via 'citations' preserves passthrough fields and adds classification", async () => {
+    const out = await mod.run(
+      {
+        citations: [
+          { url: "https://etherscan.io/tx/0x1", quote: "tx evidence" },
+          { url: "https://blog.example.com/p", quote: "blog claim" },
+        ],
+      },
+      ctx(),
+    );
+    const results = out.results as Array<Record<string, unknown>>;
+    expect(results[0]!.type).toBe("primary");
+    expect(results[0]!.quote).toBe("tx evidence");
+    expect(results[1]!.type).toBe("third_party");
+    expect(results[1]!.quote).toBe("blog claim");
+  });
+  it("batch with subjectDomain applied to every entry", async () => {
+    const out = await mod.run(
+      {
+        urls: ["https://docs.0g.ai/x", "https://docs.example.com/y"],
+        subjectDomain: "0g.ai",
+      },
+      ctx(),
+    );
+    const results = out.results as Array<Record<string, unknown>>;
+    expect(results[0]!.type).toBe("official_secondary");
+    expect(results[0]!.signal).toBe("subject_domain_match");
+    expect(results[1]!.type).toBe("official_secondary");
+    expect(results[1]!.signal).toBe("docs_subdomain");
+  });
+  it("THROWS when neither url, urls, nor citations is provided", async () => {
+    await expect(mod.run({}, ctx())).rejects.toThrow(/provide one of/);
+  });
+  it("THROWS when urls[i] is not a string", async () => {
+    await expect(
+      mod.run({ urls: ["https://a/b/c", 42] }, ctx()),
+    ).rejects.toThrow(/urls\[1\]/);
+  });
+  it("THROWS when citations[i].url is not a string", async () => {
+    await expect(
+      mod.run({ citations: [{ url: 42 }] }, ctx()),
+    ).rejects.toThrow(/citations\[0\]\.url/);
+  });
+});
+
+describe("classify_evidence_bundle", () => {
+  const mod = BUILTIN_SCRIPT_MODULES.classify_evidence_bundle!;
+
+  it("classifies a single hypothesis with mixed sources and computes counts", async () => {
+    const out = await mod.run(
+      {
+        evidence: [
+          {
+            hypothesisId: "H1",
+            verdict: "supported",
+            positiveEvidence: [
+              {
+                kind: "source_code",
+                url: "https://github.com/0g-labs/oft/blob/main/Oft.sol",
+                quote: "function send(...)",
+              },
+              {
+                kind: "tx",
+                url: "https://etherscan.io/tx/0xabc",
+                quote: "calldata shows compose call",
+              },
+              {
+                kind: "blog",
+                url: "https://medium.com/random/post",
+                quote: "claims about latency",
+              },
+            ],
+            negativeEvidence: [],
+            rawArtifacts: ["0xabc"],
+          },
+        ],
+      },
+      ctx(),
+    );
+    const ce = out.classifiedEvidence as Array<Record<string, unknown>>;
+    expect(ce.length).toBe(1);
+    expect(ce[0]!.hypothesisId).toBe("H1");
+    expect(ce[0]!.primaryCount).toBe(2);
+    expect(ce[0]!.thirdPartyCount).toBe(1);
+    expect(ce[0]!.officialCount).toBe(0);
+    expect(ce[0]!.aggregatorCount).toBe(0);
+    expect(ce[0]!.unknownCount).toBe(0);
+    const pos = ce[0]!.positiveEvidence as Array<Record<string, unknown>>;
+    expect(pos[0]!.type).toBe("primary");
+    expect(pos[0]!.signal).toBe("source_repo:github");
+    expect(pos[0]!.kind).toBe("source_code");
+    expect(pos[0]!.quote).toBe("function send(...)");
+    expect(pos[2]!.type).toBe("third_party");
+  });
+
+  it("treats empty url as unknown/no_url with confidence 0", async () => {
+    const out = await mod.run(
+      {
+        evidence: [
+          {
+            hypothesisId: "H1",
+            verdict: "supported",
+            positiveEvidence: [
+              { kind: "local_file", url: "", quote: "see /tmp/notes.md" },
+            ],
+            negativeEvidence: [],
+          },
+        ],
+      },
+      ctx(),
+    );
+    const ce = out.classifiedEvidence as Array<Record<string, unknown>>;
+    const pos = ce[0]!.positiveEvidence as Array<Record<string, unknown>>;
+    expect(pos[0]!.type).toBe("unknown");
+    expect(pos[0]!.signal).toBe("no_url");
+    expect(pos[0]!.confidence).toBe(0);
+    expect(ce[0]!.unknownCount).toBe(1);
+    expect(ce[0]!.primaryCount).toBe(0);
+  });
+
+  it("counts only positive evidence, not negative", async () => {
+    const out = await mod.run(
+      {
+        evidence: [
+          {
+            hypothesisId: "H1",
+            verdict: "inconclusive",
+            positiveEvidence: [
+              { kind: "doc", url: "https://medium.com/x/y", quote: "" },
+            ],
+            negativeEvidence: [
+              { kind: "tried", url: "https://github.com/a/b", quote: "no match" },
+            ],
+          },
+        ],
+      },
+      ctx(),
+    );
+    const ce = out.classifiedEvidence as Array<Record<string, unknown>>;
+    expect(ce[0]!.primaryCount).toBe(0); // negative github does NOT count
+    expect(ce[0]!.thirdPartyCount).toBe(1);
+    const neg = ce[0]!.negativeEvidence as Array<Record<string, unknown>>;
+    expect(neg[0]!.type).toBe("primary"); // still classified for transparency
+  });
+
+  it("applies subjectDomain to upgrade subject's docs subdomain to official_secondary", async () => {
+    const out = await mod.run(
+      {
+        evidence: [
+          {
+            hypothesisId: "H1",
+            verdict: "supported",
+            positiveEvidence: [
+              { kind: "docs", url: "https://docs.0g.ai/about", quote: "..." },
+            ],
+            negativeEvidence: [],
+          },
+        ],
+        subjectDomain: "0g.ai",
+      },
+      ctx(),
+    );
+    const ce = out.classifiedEvidence as Array<Record<string, unknown>>;
+    const pos = ce[0]!.positiveEvidence as Array<Record<string, unknown>>;
+    expect(pos[0]!.type).toBe("official_secondary");
+    expect(pos[0]!.signal).toBe("subject_domain_match");
+    expect(ce[0]!.officialCount).toBe(1);
+  });
+
+  it("preserves passthrough fields (verdict, rawArtifacts, hypothesisId)", async () => {
+    const out = await mod.run(
+      {
+        evidence: [
+          {
+            hypothesisId: "H42",
+            verdict: "refuted",
+            positiveEvidence: [],
+            negativeEvidence: [],
+            rawArtifacts: ["abc", "def"],
+          },
+        ],
+      },
+      ctx(),
+    );
+    const ce = out.classifiedEvidence as Array<Record<string, unknown>>;
+    expect(ce[0]!.hypothesisId).toBe("H42");
+    expect(ce[0]!.verdict).toBe("refuted");
+    expect(ce[0]!.rawArtifacts).toEqual(["abc", "def"]);
+  });
+
+  it("handles multiple hypotheses independently", async () => {
+    const out = await mod.run(
+      {
+        evidence: [
+          {
+            hypothesisId: "H1",
+            verdict: "supported",
+            positiveEvidence: [
+              { kind: "k", url: "https://github.com/a/b", quote: "" },
+            ],
+            negativeEvidence: [],
+          },
+          {
+            hypothesisId: "H2",
+            verdict: "supported",
+            positiveEvidence: [
+              { kind: "k", url: "https://medium.com/x/y", quote: "" },
+              { kind: "k", url: "https://reddit.com/r/x/comments/y", quote: "" },
+            ],
+            negativeEvidence: [],
+          },
+        ],
+      },
+      ctx(),
+    );
+    const ce = out.classifiedEvidence as Array<Record<string, unknown>>;
+    expect(ce.length).toBe(2);
+    expect(ce[0]!.primaryCount).toBe(1);
+    expect(ce[1]!.thirdPartyCount).toBe(1);
+    expect(ce[1]!.aggregatorCount).toBe(1);
+    expect(ce[1]!.primaryCount).toBe(0);
+  });
+
+  it("THROWS when 'evidence' is not an array", async () => {
+    await expect(
+      mod.run({ evidence: "nope" }, ctx()),
+    ).rejects.toThrow(/'evidence' is required/);
+  });
+
+  it("THROWS when evidence[i] is not an object", async () => {
+    await expect(
+      mod.run({ evidence: ["not-an-object"] }, ctx()),
+    ).rejects.toThrow(/evidence\[0\] must be an object/);
+  });
+
+  it("THROWS when positiveEvidence is not an array", async () => {
+    await expect(
+      mod.run(
+        {
+          evidence: [
+            { hypothesisId: "H1", verdict: "supported", positiveEvidence: "no" },
+          ],
+        },
+        ctx(),
+      ),
+    ).rejects.toThrow(/positiveEvidence must be an array/);
+  });
+
+  it("THROWS when a citation url is non-string non-empty", async () => {
+    await expect(
+      mod.run(
+        {
+          evidence: [
+            {
+              hypothesisId: "H1",
+              verdict: "supported",
+              positiveEvidence: [{ kind: "k", url: 42, quote: "" }],
+              negativeEvidence: [],
+            },
+          ],
+        },
+        ctx(),
+      ),
+    ).rejects.toThrow(/positiveEvidence\[0\]\.url must be a string/);
+  });
+
+  it("works with empty positiveEvidence and negativeEvidence", async () => {
+    const out = await mod.run(
+      {
+        evidence: [
+          {
+            hypothesisId: "H1",
+            verdict: "inconclusive",
+            positiveEvidence: [],
+            negativeEvidence: [],
+          },
+        ],
+      },
+      ctx(),
+    );
+    const ce = out.classifiedEvidence as Array<Record<string, unknown>>;
+    expect(ce[0]!.primaryCount).toBe(0);
+    expect(ce[0]!.unknownCount).toBe(0);
+  });
+});
+
+describe("noop_terminal", () => {
+  const mod = BUILTIN_SCRIPT_MODULES.noop_terminal!;
+
+  it("returns { done: true } regardless of inputs", async () => {
+    const out = await mod.run({}, ctx());
+    expect(out).toEqual({ done: true });
+  });
+
+  it("ignores input keys", async () => {
+    const out = await mod.run({ anything: "ignored", arbitrary: 42 }, ctx());
+    expect(out).toEqual({ done: true });
   });
 });
