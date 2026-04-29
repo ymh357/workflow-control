@@ -77,9 +77,16 @@ If `design.stageDesign` declares topic shape is `investigation`, the stage names
 **`hypothesize`**:
 - Each hypothesis claim must be **falsifiable**. Bad: "0G's bridge has issues". Good: "0G→Ethereum bridge median latency is >5x higher than CCIP-based bridges on equivalent routes".
 - Each hypothesis MUST cite ≥1 `tutorialOutline` concept in `conceptsUsed`. If a hypothesis can't cite a concept, either the concept is missing (rare; flag in stageDesign as a gap) or the hypothesis is out-of-scope.
+- **Start from current deployed state, not design documents.** For protocol/product investigations: before forming hypotheses, ask "what is actually deployed and running right now?" — find the live contracts, front-ends, or APIs first, then form hypotheses about their behavior, gaps, or optimization potential. Hypotheses anchored to "the design says X" are weak; hypotheses anchored to "the deployed contract at 0x... does X" are strong.
+- **Each hypothesis must include a `verificationPath`**: one sentence naming the concrete artifact that would confirm or refute it. Examples: "query etherscan.io/address/0x... for tx distribution", "read raw source at github.com/<org>/<repo>/blob/main/<file>", "fetch the CCIP Router ABI from docs.chain.link/...". A hypothesis without a plausible verification path is out-of-scope.
 - On reject rerun (`rejectionFeedback` non-empty): call `read_port({stage: 'evidenceGather', port: 'evidence'})` to retrieve prior-round evidence verdicts (the runtime returns the array of all per-hypothesis evidence entries from the prior fanout pass). Drop disproven hypotheses; generate NEW hypotheses on under-covered axes (per the rejection feedback) or different angles.
 
 **`evidenceGather`** (fanout per hypothesis):
+- **Step 0 (mandatory, runs before any search): derive concrete lookup targets from the hypothesis `verificationPath`.** For each hypothesis:
+  - If `verificationPath` names a contract address or hints at one: fetch the project's official docs/website first to confirm the deployed contract address, then go directly to the block explorer (`/address/<addr>`) to read tx history and source code.
+  - If `verificationPath` names a GitHub repo: fetch `https://github.com/<org>` to list repos, pick the most relevant one, then fetch the raw source at `https://raw.githubusercontent.com/<org>/<repo>/main/<file>`.
+  - If no `verificationPath` is present: derive one yourself before searching — ask "what artifact would prove or refute this claim?" and locate that artifact first. Do NOT start with a generic web search.
+  - This step produces a list of 1-3 concrete URLs to fetch directly. Only fall back to `WebSearch` when direct fetch fails or returns 404.
 - **First-hand evidence is preferred over second-hand summary**. Concrete preference order:
   1. On-chain transaction history sampled with N≥30 distribution analysis (cite explorer URLs: etherscan/bscscan/arbiscan/solscan/etc., always under `/tx/` or `/address/` paths — these classify as `primary`)
   2. Source code read raw via `WebFetch` against `https://raw.githubusercontent.com/...` OR linked via `https://github.com/<org>/<repo>/blob/<ref>/<file>` with line range (these classify as `primary`)

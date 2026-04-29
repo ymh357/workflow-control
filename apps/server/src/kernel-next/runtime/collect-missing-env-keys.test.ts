@@ -5,11 +5,8 @@ import type { PipelineIR } from "../ir/schema.js";
 function makeIR(stages: PipelineIR["stages"]): PipelineIR {
   return {
     name: "Test Pipeline",
-    pipeline_id: "test-pipeline",
-    description: "",
     stages,
     wires: [],
-    store_schema: [],
   };
 }
 
@@ -79,7 +76,7 @@ describe("collectMissingEnvKeys", () => {
 
   it("ignores script stages (no mcpServers)", () => {
     const ir = makeIR([
-      { type: "script", name: "s1", inputs: [], outputs: [], config: { registry: "some_script" } },
+      { type: "script", name: "s1", inputs: [], outputs: [], config: { source: "registry", moduleId: "some_script" } },
     ]);
     expect(collectMissingEnvKeys(ir, undefined, {})).toEqual([]);
   });
