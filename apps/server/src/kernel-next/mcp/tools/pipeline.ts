@@ -112,11 +112,16 @@ export function buildPipelineTools(deps: ToolsDeps): ToolDef[] {
             tscPath,
           });
           if (result.ok === true) {
-            return jsonResponse({
+            const body: Record<string, unknown> = {
               ok: true,
               taskId: result.taskId,
               versionHash: result.versionHash,
-            });
+            };
+            if (result.missingEnvKeys && result.missingEnvKeys.length > 0) {
+              body.missingEnvKeys = result.missingEnvKeys;
+              body.hint = `Task created but ${result.missingEnvKeys.length} envKey(s) are missing: [${result.missingEnvKeys.join(", ")}]. Call provide_task_secrets({taskId: "${result.taskId}", secrets: {KEY: VALUE, ...}}) to supply them before the affected stages run.`;
+            }
+            return jsonResponse(body);
           }
           return {
             content: [{

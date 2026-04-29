@@ -121,7 +121,7 @@ export interface ExecutionPolicyShape {
 }
 
 export type StartPipelineRunResult =
-  | { ok: true; taskId: string; versionHash: string }
+  | { ok: true; taskId: string; versionHash: string; missingEnvKeys?: string[] }
   | {
       ok: false;
       code:
@@ -133,6 +133,31 @@ export type StartPipelineRunResult =
       message: string;
       context?: Record<string, unknown>;
     };
+
+// Collect every envKey declared across all stage mcpServers, then return
+// those not satisfied by envValues or process.env.
+export function collectMissingEnvKeys(
+  ir: PipelineIR,
+  envValues: Record<string, string> | undefined,
+  processEnv: Record<string, string | undefined>,
+): string[] {
+  const required = new Set<string>();
+  for (const stage of ir.stages) {
+    if (stage.type !== "agent") continue;
+    for (const mcp of stage.config.mcpServers ?? []) {
+      for (const key of mcp.envKeys ?? []) {
+        required.add(key);
+      }
+    }
+  }
+  const missing: string[] = [];
+  for (const key of required) {
+    if (!envValues?.[key] && !processEnv[key]) {
+      missing.push(key);
+    }
+  }
+  return missing.sort();
+}
 
 const DEFAULT_MODEL = "claude-haiku-4-5";
 // 2026-04-29 (continuation 9.5): bumped 30 → 50.  See real-executor.ts
@@ -296,6 +321,16 @@ export async function startPipelineRun(
       };
     }
   }
+
+  // --- Pre-flight: collect missing envKeys across all stage mcpServers ---
+  //
+  // Does not block task creation — task starts normally and secret_pending
+  // will pause stages that hit missing keys at runtime. This early scan
+  // surfaces the full required set upfront so callers can prompt the user
+  // before any stage runs (vs discovering keys one stage at a time).
+  const missingEnvKeys = mockEntry
+    ? []
+    : collectMissingEnvKeys(ir, input.envValues, process.env as Record<string, string | undefined>);
 
   // --- Merge policy ---
   const model = input.model
@@ -501,5 +536,10 @@ export async function startPipelineRun(
     }
   });
 
-  return { ok: true, taskId, versionHash };
+  return {
+    ok: true,
+    taskId,
+    versionHash,
+    ...(missingEnvKeys.length > 0 ? { missingEnvKeys } : {}),
+  };
 }
