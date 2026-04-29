@@ -248,7 +248,55 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
   let interruptObserved = false;
   const dispatcher: EventDispatcher = {
     send: (event: MachineEvent) => {
-      if (event.type === "INTERRUPT") interruptObserved = true;
+      if (event.type === "INTERRUPT") {
+        interruptObserved = true;
+        // Continuation 8/9 (2026-04-29): task-wide INTERRUPT (no stage
+        // payload) needs two-phase handling because the actor may be in
+        // one of two distinct states:
+        //   (a) Active stage executor — INTERRUPT must be forwarded so
+        //       the stage's region INTERRUPT handler triggers
+        //       AbortController.abort(), giving the executor a chance
+        //       to run a graceful summary turn (writes its summary
+        //       port, RESULT_SUCCESS, region naturally transitions to
+        //       done, actor terminates on its own). Force-stopping at
+        //       this point would skip the summary turn — the test
+        //       migration.graceful-summary covers this exactly.
+        //   (b) Parked at a gate — no active region to absorb
+        //       INTERRUPT, so the actor sits forever waiting for
+        //       GATE_ANSWERED. Migration orchestrator times out with
+        //       MIGRATION_INTERRUPT_TIMEOUT.
+        // We can't distinguish (a) vs (b) synchronously without a
+        // dedicated flag, so we forward the event AND schedule a
+        // deferred force-stop: if the actor is still alive after the
+        // grace period (case b) we stop it; if a graceful summary
+        // already completed (case a) the actor's status will be
+        // 'done'/'stopped' and the stop call is a no-op. Stage-targeted
+        // INTERRUPT (`{ stage: 'X' }`) is unchanged — forwarded so the
+        // per-stage AbortSignal logic still aborts only that stage.
+        const stageScope = (event as { stage?: string }).stage;
+        if (stageScope === undefined) {
+          if (currentActor) {
+            try { currentActor.send(event); } catch { /* already stopped */ }
+            // Bound on graceful-summary execution: 1500ms covers
+            // abort-signal propagation (~10ms) + summary turn LLM call
+            // (typically <1s for short summaries) + write_port +
+            // region.onDone. If the executor isn't done by then, we
+            // force-stop so migration awaiters can proceed.
+            const actorRef = currentActor;
+            setTimeout(() => {
+              try {
+                const snap = actorRef.getSnapshot() as { status?: string } | undefined;
+                if (snap?.status === "active") {
+                  actorRef.stop();
+                }
+              } catch { /* already stopped or errored */ }
+            }, 1500);
+          }
+          return;
+        }
+        // Stage-scoped — fall through to currentActor.send so the
+        // machine's stage region's INTERRUPT handler can run.
+      }
       if (event.type === "GATE_REJECTED") {
         // Intercept BEFORE reaching the XState actor — the machine has no
         // handler for this event type. The attempt's handler owns pruning
@@ -746,6 +794,35 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
           publishedStageExecuting.delete(name);
           publishedStageFinal.delete(name);
           dispatched.delete(name);
+        }
+        // 0G dogfood (2026-04-28): supersede prior fanout_element +
+        // fanout_aggregate stage_attempts rows for affected fanout
+        // stages. orchestrateFanoutStage's `preservedByIdx` query
+        // selects ALL `fanout_element` rows with `status='success'` for
+        // the (task, stage) pair — it was designed for hot-update
+        // migration where preserved attempts were genuinely valid for
+        // the new run. In a reject-rollback the upstream agent
+        // regenerates with different claims; the preserved rows are
+        // stale but their idx still matches, so the fanout silently
+        // reuses old outputs and never invokes the executor on the new
+        // input array. Marking them superseded knocks them out of the
+        // preserved query without touching their port_values / lineage.
+        for (const name of affected) {
+          const stageDef = opts.ir.stages.find((s) => s.name === name);
+          if (!stageDef) continue;
+          if (
+            (stageDef.type === "agent" || stageDef.type === "script") &&
+            stageDef.fanout
+          ) {
+            opts.db.prepare(
+              `UPDATE stage_attempts
+                 SET status = 'superseded'
+                 WHERE task_id = ?
+                   AND stage_name = ?
+                   AND kind IN ('fanout_element', 'fanout_aggregate')
+                   AND status = 'success'`,
+            ).run(opts.taskId, name);
+          }
         }
         // Mark the rejected gate so the replay loop skips it. Stays set
         // across subsequent rebuilds — a rejected gate must never replay

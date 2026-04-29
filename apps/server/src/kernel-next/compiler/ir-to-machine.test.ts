@@ -284,6 +284,69 @@ describe("compileIRToMachine — gate routing upstream exclusion", () => {
     actor.stop();
   });
 
+  // web3-tech-research dogfood (2026-04-28): the original exclusion
+  // only handled direct (one-hop) upstreams. Multi-hop reject chains —
+  // claim_collection → claim_verify → claim_review_gate where reject
+  // routes back to claim_collection — were misclassified as forward
+  // gate-routed, so claim_collection waited forever for an
+  // authorization the runner never issues on the forward pass and the
+  // task orphaned after seed.
+  it("multi-hop transitive upstream of a gate referenced as a routing target stays non-gate-routed", () => {
+    const ir: PipelineIR = {
+      name: "multi-hop-rollback",
+      stages: [
+        {
+          name: "ENTRY",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "raw", type: "string" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "MID",
+          type: "agent",
+          inputs: [{ name: "raw", type: "string" }],
+          outputs: [{ name: "shaped", type: "string" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "G",
+          type: "gate",
+          inputs: [{ name: "shaped", type: "string" }],
+          outputs: [],
+          config: {
+            question: { text: "ok?", options: [{ value: "approve" }, { value: "reject" }] },
+            // reject routes back two hops to ENTRY — multi-hop rollback.
+            routing: { routes: { approve: "FWD", reject: "ENTRY" } },
+          },
+        },
+        {
+          name: "FWD",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "done", type: "boolean" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "ENTRY", port: "raw" }, to: { stage: "MID", port: "raw" } },
+        { from: { source: "stage", stage: "MID", port: "shaped" }, to: { stage: "G", port: "shaped" } },
+      ],
+    };
+    const { machine } = compileIRToMachine(ir, { taskId: "t" });
+    const actor = createActor(machine);
+    actor.start();
+    actor.send({ type: "START" });
+    const running = readRunningValue(actor.getSnapshot());
+    // ENTRY is two hops upstream of G — must NOT be gate-routed; activates immediately.
+    expect(running?.ENTRY).toBe("executing");
+    // MID waits for ENTRY's port_written (regular pipeline flow).
+    expect(running?.MID).toBe("waiting");
+    // FWD is the forward gate target — must wait for GATE_ANSWERED.
+    expect(running?.FWD).toBe("waiting");
+    actor.stop();
+  });
+
   it("routing target that is NOT an upstream of the gate stays gate-routed", () => {
     // Control case: a downstream/approve target that is not feeding
     // the gate must continue to wait for GATE_ANSWERED.
@@ -330,6 +393,231 @@ describe("compileIRToMachine — gate routing upstream exclusion", () => {
     // for GATE_ANSWERED.
     expect(running?.TGT).toBe("waiting");
     actor.stop();
+  });
+});
+
+describe("compileIRToMachine — cross-gate shared routing target", () => {
+  // Pattern from the 12-stage investigation pipeline skeleton: a stage
+  // that is one gate's approve target AND another gate's reject target.
+  // Validator's GATE_TARGET_SHARED check was relaxed (2026-04-29) since
+  // gate firing is sequential and gateAuthorizedTargets uses dedup.
+  // This test confirms the runtime correctly handles such IR end-to-end.
+  it("compiles + runs an IR where a stage is targeted by two different gates", () => {
+    // SRC → G1(approve→SHARED, reject→A1) → SHARED → G2(approve→DONE, reject→SHARED) → DONE
+    // SHARED is BOTH G1.approve AND G2.reject. This is the kernel-next
+    // analogue of `prereqExtraction` in the 12-stage skeleton.
+    const ir: PipelineIR = {
+      name: "cross-gate-shared",
+      stages: [
+        {
+          name: "SRC",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "G1",
+          type: "gate",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [],
+          config: {
+            question: { text: "ok?", options: [{ value: "approve" }, { value: "reject" }] },
+            routing: { routes: { approve: "SHARED", reject: "A1" } },
+          },
+        },
+        {
+          name: "A1",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "tag", type: "string" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "SHARED",
+          type: "agent",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [{ name: "y", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "G2",
+          type: "gate",
+          inputs: [{ name: "y", type: "number" }],
+          outputs: [],
+          config: {
+            question: { text: "ok?", options: [{ value: "approve" }, { value: "reject" }] },
+            routing: { routes: { approve: "DONE", reject: "SHARED" } },
+          },
+        },
+        {
+          name: "DONE",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "ok", type: "boolean" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "SRC", port: "x" }, to: { stage: "G1", port: "x" } },
+        { from: { source: "stage", stage: "SRC", port: "x" }, to: { stage: "SHARED", port: "x" } },
+        { from: { source: "stage", stage: "SHARED", port: "y" }, to: { stage: "G2", port: "y" } },
+      ],
+    };
+
+    // Compile-time: must succeed.
+    const compiled = compileIRToMachine(ir, { taskId: "t" });
+    expect(compiled.machine).toBeDefined();
+    expect(compiled.stageMeta.size).toBeGreaterThan(0);
+
+    // SHARED is G1's approve target → forward gate-routed (waits for
+    // GATE_ANSWERED). G2's reject is also SHARED but G2 reject ⇒
+    // SHARED is a transitive upstream of G2 (SHARED → G2). The
+    // computeGateAncestors check excludes transitive-upstream targets
+    // from gateRoutedTargets, so SHARED's gate-routed flag depends on
+    // whichever gate puts it on the forward path. Either way, the
+    // runtime accepts the IR — that's the point of relaxing
+    // GATE_TARGET_SHARED.
+
+    const actor = createActor(compiled.machine);
+    actor.start();
+    actor.send({ type: "START" });
+    const running = readRunningValue(actor.getSnapshot());
+    // SRC and A1 have no inbound wires and are not gate-routed forward
+    // targets → both execute on START.
+    expect(running?.SRC).toBe("executing");
+    actor.stop();
+  });
+
+  it("end-to-end: G1.approve activates SHARED (cross-gate target reachable via approve)", () => {
+    // Regression guard for the 0G dogfood symptom (2026-04-29): a stage
+    // that is BOTH G1.approve AND G2.reject failed to transition out of
+    // waiting after G1's approve in the live runtime. Verify the
+    // compiled machine handles this in isolation.
+    const ir: PipelineIR = {
+      name: "g1-approve-activates-shared",
+      stages: [
+        {
+          name: "SRC",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "G1",
+          type: "gate",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [],
+          config: {
+            question: { text: "ok?", options: [{ value: "approve" }, { value: "reject" }] },
+            routing: { routes: { approve: "SHARED", reject: "ALT" } },
+          },
+        },
+        {
+          name: "ALT",
+          type: "agent",
+          inputs: [],
+          outputs: [],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "SHARED",
+          type: "agent",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [{ name: "y", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "G2",
+          type: "gate",
+          inputs: [{ name: "y", type: "number" }],
+          outputs: [],
+          config: {
+            question: { text: "ok?", options: [{ value: "approve" }, { value: "reject" }] },
+            routing: { routes: { approve: "DONE", reject: "SHARED" } },
+          },
+        },
+        {
+          name: "DONE",
+          type: "agent",
+          inputs: [],
+          outputs: [],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "SRC", port: "x" }, to: { stage: "G1", port: "x" } },
+        { from: { source: "stage", stage: "SRC", port: "x" }, to: { stage: "SHARED", port: "x" } },
+        { from: { source: "stage", stage: "SHARED", port: "y" }, to: { stage: "G2", port: "y" } },
+      ],
+    };
+
+    const { machine } = compileIRToMachine(ir, { taskId: "t" });
+    const actor = createActor(machine);
+    actor.start();
+    actor.send({ type: "START" });
+
+    // Simulate SRC writing its output port (normally done by the
+    // executor; in this test we drive it via PORT_WRITTEN).
+    actor.send({ type: "PORT_WRITTEN", key: "SRC.x", value: 42 });
+
+    // Before any GATE_ANSWERED, SHARED is gate-routed (G1.approve is
+    // forward) AND its inbound is delivered, but it must wait.
+    const beforeApprove = readRunningValue(actor.getSnapshot());
+    expect(beforeApprove?.SHARED).toBe("waiting");
+    expect(beforeApprove?.G1).toBe("executing");
+
+    // G1 approves SHARED. Expectation: SHARED transitions to executing
+    // immediately (it's authorized AND inbound delivered).
+    actor.send({
+      type: "GATE_ANSWERED",
+      gateId: "g1",
+      stageName: "G1",
+      answer: "approve",
+      targetStage: "SHARED",
+    });
+
+    const afterApprove = readRunningValue(actor.getSnapshot());
+    expect(afterApprove?.G1).toBe("done");
+    expect(afterApprove?.SHARED).toBe("executing");
+    // ALT is the unpicked sibling on G1 → must close as `done`.
+    expect(afterApprove?.ALT).toBe("done");
+    actor.stop();
+  });
+
+  // Pattern: hypothesize is target of THREE gates. Skeleton says
+  // tutorialReviewGate.approve, findingsSynthesisGate.reject,
+  // humanReviewGate.reject all converge on hypothesize.
+  it("compiles when a stage is targeted by three different gates", () => {
+    const ir: PipelineIR = {
+      name: "tri-gate-shared",
+      stages: [
+        { name: "ENTRY", type: "agent", inputs: [], outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+        { name: "G1", type: "gate", inputs: [{ name: "x", type: "number" }], outputs: [],
+          config: { question: { text: "?", options: [{ value: "approve" }] }, routing: { routes: { approve: "H" } } } },
+        { name: "H", type: "agent",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [{ name: "y", type: "number" }],
+          config: { promptRef: "p" } },
+        { name: "G2", type: "gate", inputs: [{ name: "y", type: "number" }], outputs: [],
+          config: { question: { text: "?", options: [{ value: "approve" }, { value: "reject" }] },
+                    routing: { routes: { approve: "FWD", reject: "H" } } } },
+        { name: "FWD", type: "agent", inputs: [], outputs: [{ name: "z", type: "number" }], config: { promptRef: "p" } },
+        { name: "G3", type: "gate", inputs: [{ name: "z", type: "number" }], outputs: [],
+          config: { question: { text: "?", options: [{ value: "approve" }, { value: "reject" }] },
+                    routing: { routes: { approve: "DONE", reject: "H" } } } },
+        { name: "DONE", type: "agent", inputs: [], outputs: [], config: { promptRef: "p" } },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "ENTRY", port: "x" }, to: { stage: "G1", port: "x" } },
+        { from: { source: "stage", stage: "ENTRY", port: "x" }, to: { stage: "H", port: "x" } },
+        { from: { source: "stage", stage: "H", port: "y" }, to: { stage: "G2", port: "y" } },
+        { from: { source: "stage", stage: "FWD", port: "z" }, to: { stage: "G3", port: "z" } },
+      ],
+    };
+    const compiled = compileIRToMachine(ir, { taskId: "t" });
+    expect(compiled.machine).toBeDefined();
   });
 });
 
@@ -415,6 +703,152 @@ describe("compileIRToMachine seedValues", () => {
     expect(ctx.portValues["__external__.a"]).toBe(10);
     expect(ctx.portValues["__external__.b"]).toBe(20);
     actor.stop();
+  });
+});
+
+describe("compileIRToMachine — rejectRollbackMap (gate-feedback exclusion)", () => {
+  // 0G dogfood regression (2026-04-29). Reproduces the
+  // approve-misclassified-as-reject bug from the 12-stage investigation
+  // skeleton, where a gate's `__gate_feedback__` back-edge to an upstream
+  // agent (e.g. humanReviewGate.__gate_feedback__ → hypothesize) made
+  // BFS-downstream reach forward through that back-edge into the gate
+  // itself, mis-tagging any approve target as a rollback answer.
+  it("does not classify approve as rollback when feedback wires create cycles", () => {
+    const ir: PipelineIR = {
+      name: "feedback-cycle-rollback",
+      stages: [
+        {
+          name: "ENTRY",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "x", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "MID",
+          type: "agent",
+          inputs: [
+            { name: "x", type: "number" },
+            { name: "feedback", type: "string" },
+          ],
+          outputs: [{ name: "y", type: "number" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "G",
+          type: "gate",
+          inputs: [{ name: "y", type: "number" }],
+          outputs: [],
+          config: {
+            question: { text: "?", options: [{ value: "approve" }, { value: "reject" }] },
+            // approve target is FWD (downstream of MID), reject is rollback to MID.
+            routing: { routes: { approve: "FWD", reject: "MID" } },
+          },
+        },
+        {
+          name: "FWD",
+          type: "agent",
+          inputs: [],
+          outputs: [],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "ENTRY", port: "x" }, to: { stage: "MID", port: "x" } },
+        { from: { source: "stage", stage: "MID", port: "y" }, to: { stage: "G", port: "y" } },
+        // The crucial back-edge: gate feedback to MID. Without the
+        // bfsDownstream filter for __gate_feedback__, BFS from FWD via
+        // FWD → ... → ? → G would not occur (FWD has no outbound wires
+        // here), so this minimal IR doesn't reproduce the
+        // findingsAuthoring case directly. Instead, we set up a minimal
+        // graph that exercises the back-edge path: G → MID (back) →
+        // G is a 1-hop cycle through the feedback wire.
+        { from: { source: "stage", stage: "G", port: "__gate_feedback__" }, to: { stage: "MID", port: "feedback" } },
+      ],
+    };
+
+    const compiled = compileIRToMachine(ir, { taskId: "t" });
+    // G's reject target is MID (a true upstream of G via ENTRY→MID→G);
+    // approve target is FWD (a true downstream of G).
+    const rb = compiled.rejectRollbackMap.get("G");
+    expect(rb).toBeDefined();
+    // CRITICAL: rejectRollbackMap must register the REJECT answer (not approve).
+    expect(rb!.answer).toBe("reject");
+    expect(rb!.targetStage).toBe("MID");
+    // affectedStages should include MID and G itself, but NOT FWD
+    // (which is downstream of G, not upstream).
+    expect(rb!.affectedStages).toContain("MID");
+    expect(rb!.affectedStages).toContain("G");
+    expect(rb!.affectedStages).not.toContain("FWD");
+  });
+
+  // Sanity: verify the broader 12-stage skeleton shape doesn't get
+  // approve-as-rollback classification on findingsSynthesisGate.
+  // findingsAuthoring → humanReviewGate, humanReviewGate feedback → hypothesize,
+  // hypothesize → evidenceGather → findingsSynthesisGate. Without the fix,
+  // BFS-downstream from findingsAuthoring would reach findingsSynthesisGate
+  // through the feedback back-edge, tagging
+  // findingsSynthesisGate.approve = findingsAuthoring as rollback.
+  it("12-stage skeleton: findingsSynthesisGate.approve is NOT a rollback target", () => {
+    const ir: PipelineIR = {
+      name: "skeleton-feedback-cycle",
+      stages: [
+        { name: "hypothesize", type: "agent",
+          inputs: [{ name: "feedback", type: "string" }],
+          outputs: [{ name: "hypotheses", type: "string[]" }],
+          config: { promptRef: "p" } },
+        { name: "evidenceGather", type: "agent",
+          inputs: [{ name: "hypothesis", type: "string" }],
+          outputs: [{ name: "evidence", type: "string" }],
+          config: { promptRef: "p" }, fanout: { input: "hypothesis" } },
+        { name: "findingsSynthesisGate", type: "gate",
+          inputs: [{ name: "evidence", type: "string[]" }, { name: "hypotheses", type: "string[]" }],
+          outputs: [],
+          config: {
+            question: { text: "?", options: [{ value: "approve" }, { value: "reject" }] },
+            routing: { routes: { approve: "findingsAuthoring", reject: "hypothesize" } },
+          } },
+        { name: "findingsAuthoring", type: "agent",
+          inputs: [{ name: "evidence", type: "string" }],
+          outputs: [{ name: "finding", type: "string" }],
+          config: { promptRef: "p" }, fanout: { input: "evidence" } },
+        { name: "humanReviewGate", type: "gate",
+          inputs: [{ name: "findings", type: "string[]" }],
+          outputs: [],
+          config: {
+            question: { text: "?", options: [{ value: "approve" }, { value: "reject" }] },
+            routing: { routes: { approve: "reportAssembly", reject: "hypothesize" } },
+          } },
+        { name: "reportAssembly", type: "agent",
+          inputs: [{ name: "findings", type: "string[]" }],
+          outputs: [{ name: "report", type: "string" }],
+          config: { promptRef: "p" } },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "hypothesize", port: "hypotheses" }, to: { stage: "evidenceGather", port: "hypothesis" } },
+        { from: { source: "stage", stage: "evidenceGather", port: "evidence" }, to: { stage: "findingsSynthesisGate", port: "evidence" } },
+        { from: { source: "stage", stage: "hypothesize", port: "hypotheses" }, to: { stage: "findingsSynthesisGate", port: "hypotheses" } },
+        { from: { source: "stage", stage: "evidenceGather", port: "evidence" }, to: { stage: "findingsAuthoring", port: "evidence" } },
+        { from: { source: "stage", stage: "findingsAuthoring", port: "finding" }, to: { stage: "humanReviewGate", port: "findings" } },
+        { from: { source: "stage", stage: "findingsAuthoring", port: "finding" }, to: { stage: "reportAssembly", port: "findings" } },
+        // Two reject-feedback back-edges to hypothesize (split into two ports).
+        { from: { source: "stage", stage: "findingsSynthesisGate", port: "__gate_feedback__" }, to: { stage: "hypothesize", port: "feedback" } },
+        { from: { source: "stage", stage: "humanReviewGate", port: "__gate_feedback__" }, to: { stage: "hypothesize", port: "feedback" } },
+      ],
+    } as unknown as PipelineIR;
+
+    const compiled = compileIRToMachine(ir, { taskId: "t" });
+    // findingsSynthesisGate's rollback should be the reject answer
+    // (target=hypothesize), NOT the approve answer.
+    const fsg = compiled.rejectRollbackMap.get("findingsSynthesisGate");
+    expect(fsg).toBeDefined();
+    expect(fsg!.answer).toBe("reject");
+    expect(fsg!.targetStage).toBe("hypothesize");
+    // humanReviewGate similarly.
+    const hrg = compiled.rejectRollbackMap.get("humanReviewGate");
+    expect(hrg).toBeDefined();
+    expect(hrg!.answer).toBe("reject");
+    expect(hrg!.targetStage).toBe("hypothesize");
   });
 });
 

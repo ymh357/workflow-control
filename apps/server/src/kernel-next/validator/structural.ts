@@ -243,25 +243,42 @@ export function validateStructural(
     }
   }
 
-  // --- Gate target cross-gate conflict (F6 / concern C3) ---
-  // Reject targets routed to by more than one gate. The runtime's
-  // GATE_ANSWERED path places the picked target into
-  // context.gateAuthorizedTargets and the non-picked siblings into
-  // gateSkippedTargets. A target shared across two gates would land
-  // on BOTH lists when each gate's answer arrives with a different
-  // selection, producing undefined behaviour (ir-to-machine compiles
-  // two mutually-exclusive transitions for the same region).
-  for (const [target, owners] of gateTargetOwners) {
-    if (owners.length > 1) {
-      diagnostics.push({
-        code: "GATE_TARGET_SHARED",
-        message:
-          `Stage '${target}' appears as a routing target for multiple gates ` +
-          `(${owners.join(", ")}). A routing target must belong to exactly one gate.`,
-        context: { target, gates: owners },
-      });
-    }
-  }
+  // --- Gate target cross-gate conflict (F6 / concern C3, RELAXED 2026-04-29) ---
+  //
+  // Original rule (F6 / concern C3) forbade a stage from being a routing
+  // target of more than one gate, fearing race conditions on
+  // gateAuthorizedTargets / gateSkippedTargets. Investigation during the
+  // 12-stage investigation-pipeline skeleton design (see
+  // docs/superpowers/dogfood-2026-04-28/handoff.md continuation 7)
+  // showed:
+  //
+  //   1. Gates fire sequentially, never concurrently — there is no
+  //      runtime race.
+  //   2. gateAuthorizedTargets uses dedup (line 392 of ir-to-machine.ts),
+  //      so adding the same target twice from two different gates is a
+  //      no-op the second time.
+  //   3. gateSkippedTargets is written but never used as a guard — only
+  //      gateAuthorizedTargets gates a stage's executing transition.
+  //      "Stale" skipped entries from a prior gate are harmless.
+  //   4. reject-rollback's affectedStages filter (runner.ts line 725)
+  //      cleans both lists by stage-name, so cross-gate state collapses
+  //      cleanly on rollback.
+  //
+  // The legitimate use case is a long pipeline with multiple
+  // LLM-judge / human-review gates where each gate's reject loops back
+  // to its own immediate upstream, AND the upstream of one gate is the
+  // same stage as the approve forward of another gate. In the 12-stage
+  // skeleton:
+  //   - prereqExtraction is framingGate.approve AND prereqGate.reject
+  //   - tutorialAuthoring is prereqGate.approve AND tutorialReviewGate.reject
+  //   - hypothesize is tutorialReviewGate.approve AND
+  //     findingsSynthesisGate.reject AND humanReviewGate.reject
+  //
+  // Forcing single-owner would require collapsing all gates into one
+  // monolithic review gate, throwing away the per-layer feedback loop.
+  // This rule is therefore lifted. The sharing pattern is now
+  // first-class supported.
+  void gateTargetOwners; // retained for potential future diagnostics
 
   // --- Wire validity ---
   const drivenInputs = new Set<string>();

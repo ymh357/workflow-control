@@ -182,39 +182,82 @@ export interface StageMeta {
   gateRouted: boolean;
 }
 
+/**
+ * For every gate stage, return the set of stages that can reach the
+ * gate via inbound wires (transitive closure), excluding the special
+ * `__gate_feedback__` back-edge that the DAG validator already
+ * ignores. Used by indexStages to distinguish rollback targets (gate
+ * ancestors — must activate on the forward pass) from forward
+ * gate-routed targets (non-ancestors — wait for GATE_ANSWERED).
+ *
+ * Implementation: reverse BFS from each gate over `inbound` wires.
+ * The IR is small enough that O(stages × wires) per gate is fine.
+ */
+function computeGateAncestors(ir: PipelineIR): Map<string, Set<string>> {
+  // Build adjacency: stage → upstream stages (one hop), filtered to
+  // exclude __gate_feedback__ back-edges (the DAG validator's same
+  // exclusion rule, mirrored here so the BFS sees a strict DAG).
+  const upstreamOf = new Map<string, Set<string>>();
+  for (const s of ir.stages) upstreamOf.set(s.name, new Set());
+  for (const w of ir.wires) {
+    if (w.from.source !== "stage") continue;
+    if (w.from.port === "__gate_feedback__") continue;
+    upstreamOf.get(w.to.stage)?.add(w.from.stage);
+  }
+
+  const ancestorsByGate = new Map<string, Set<string>>();
+  for (const s of ir.stages) {
+    if (s.type !== "gate") continue;
+    const seen = new Set<string>();
+    const frontier = [...(upstreamOf.get(s.name) ?? new Set())];
+    while (frontier.length > 0) {
+      const cur = frontier.pop()!;
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      for (const up of upstreamOf.get(cur) ?? new Set()) {
+        if (!seen.has(up)) frontier.push(up);
+      }
+    }
+    ancestorsByGate.set(s.name, seen);
+  }
+  return ancestorsByGate;
+}
+
 function indexStages(ir: PipelineIR): Map<string, StageMeta> {
   const index = new Map<string, StageMeta>();
 
   // First pass: compute the set of stages that appear as a target in
   // any gate's routing table. These stages are "gate-routed":
   // activation requires GATE_ANSWERED authorization in addition to
-  // inbound delivery — UNLESS the stage is a known upstream of the
-  // gate (i.e. has a wire feeding the gate), in which case the routing
-  // entry is treated as a rollback target rather than a forward-only
-  // activation gate. That upstream stage must activate on its own
-  // inbound wires on the first pass; a later `reject`-style answer
-  // sends the pipeline back to it via runner-side reset logic, not
-  // via gate-authorization.
+  // inbound delivery — UNLESS the target is a transitive ancestor of
+  // the gate in the IR DAG (excluding `__gate_feedback__` back-edges).
+  // Such ancestors are rollback targets: they must activate on their
+  // own inbound wires on the first forward pass; a later `reject`
+  // answer sends the pipeline back through them via runner-side reset
+  // logic, not via gate-authorization.
   //
-  // Without this exclusion, `human_confirm` (mapped to a gate with
-  // `on_reject_to` → the preceding stage) would make its own
-  // predecessor wait for authorization it never receives on the
-  // forward path, stalling the entire pipeline. Observed with
-  // pipeline-generator where `analyzing` feeds `awaitingConfirm` AND
-  // is the gate's reject target.
-  const gateUpstreamByGate = new Map<string, Set<string>>();
-  for (const w of ir.wires) {
-    if (w.from.source !== "stage") continue;
-    gateUpstreamByGate.set(w.to.stage, (gateUpstreamByGate.get(w.to.stage) ?? new Set()).add(w.from.stage));
-  }
+  // Earlier this exclusion only checked direct (one-hop) upstreams of
+  // the gate. Multi-hop rollback chains — e.g. claim_collection →
+  // claim_verify → claim_review_gate where `reject` routes back to
+  // claim_collection — were misclassified as forward gate-routed,
+  // making claim_collection wait for an authorization that the runner
+  // never issues on the first pass. The pipeline would then orphan
+  // after the seed phase: the only entry stage couldn't activate.
+  //
+  // Original symptom (before): `analyzing` feeds `awaitingConfirm` AND
+  // is the gate's reject target — the one-hop check handled it because
+  // the wire chain is short. This generalisation preserves that case
+  // while also handling pipelines whose reject chain has intermediate
+  // stages.
+  const gateAncestors = computeGateAncestors(ir);
   const gateRoutedTargets = new Set<string>();
   for (const s of ir.stages) {
     if (s.type !== "gate") continue;
-    const upstreams = gateUpstreamByGate.get(s.name) ?? new Set();
+    const ancestors = gateAncestors.get(s.name) ?? new Set();
     for (const target of Object.values(s.config.routing.routes)) {
       const list = Array.isArray(target) ? target : [target];
       for (const t of list) {
-        if (upstreams.has(t)) continue;  // rollback target, not a forward gate
+        if (ancestors.has(t)) continue;  // rollback target, not a forward gate
         gateRoutedTargets.add(t);
       }
     }
@@ -403,9 +446,27 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
 
   // Downstream adjacency: stageName -> set of immediate downstream stages.
   // Used to compute BFS-downstream for rejectRollbackMap entries below.
+  //
+  // 0G dogfood (2026-04-29): exclude `__gate_feedback__` back-edges from
+  // the adjacency, mirroring the same exclusion in computeGateAncestors.
+  // Without this, BFS-downstream reaches via gate-feedback wires that
+  // already point UPSTREAM (gate.__gate_feedback__ →
+  // <upstreamAgent>.rejectionFeedback). Concretely, with the
+  // 12-stage investigation skeleton:
+  //   findingsAuthoring → humanReviewGate (forward) →
+  //   humanReviewGate.__gate_feedback__ → hypothesize (BACK-EDGE) →
+  //   hypothesize.hypotheses → findingsSynthesisGate
+  // The BFS would conclude that `findingsAuthoring` is an ancestor of
+  // `findingsSynthesisGate`, which makes findingsSynthesisGate.approve
+  // (target=findingsAuthoring) look like a rollback answer. The
+  // answerGate isReject classifier then misroutes legitimate approve
+  // answers as rejects, and the runner rolls the pipeline back.
+  // Excluding `__gate_feedback__` sources keeps the DAG strictly
+  // forward and the rollback detection accurate.
   const downstreamAdj = new Map<string, Set<string>>();
   for (const w of ir.wires) {
     if (w.from.source !== "stage") continue;
+    if (w.from.port === "__gate_feedback__") continue;
     const src = w.from.stage;
     const dst = w.to.stage;
     if (!downstreamAdj.has(src)) downstreamAdj.set(src, new Set());

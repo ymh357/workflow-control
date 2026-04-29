@@ -304,4 +304,158 @@ describe("runner — gate reject rollback", () => {
 
     db.close();
   }, 30_000);
+
+  // Web3-tech-research dogfood (2026-04-28): a reject-rollback that
+  // includes a fanout stage in affectedStages used to silently reuse
+  // its prior fanout_element + fanout_aggregate outputs. Mechanism:
+  // orchestrateFanoutStage's preservedByIdx query selects every
+  // status='success' fanout_element row for the (task, stage) — the
+  // mechanism was designed for hot-update migration where preserved
+  // rows are valid. In a reject-rollback the upstream agent
+  // regenerates with different inputs, so the preserved per-element
+  // outputs are stale. The fix supersedes those rows on the reject
+  // path so the second pass actually re-executes the executor on the
+  // new input array.
+  it("reject-rollback supersedes prior fanout_element + fanout_aggregate rows so the second pass actually re-executes", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    // Pipeline: producer (agent) -> verifier (script, fanout over claims)
+    //           -> reviewer (gate, approve->summary, reject->producer)
+    //           -> summary (agent)
+    const ir: PipelineIR = {
+      name: "fanout-reject",
+      stages: [
+        {
+          name: "producer",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "claims", type: "string[]" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "verifier",
+          type: "script",
+          inputs: [{ name: "claim", type: "string" }],
+          outputs: [{ name: "verified", type: "string" }],
+          fanout: { input: "claim" },
+          config: {
+            source: "registry",
+            moduleId: "echo",
+          },
+        },
+        {
+          name: "reviewer",
+          type: "gate",
+          inputs: [{ name: "verifiedClaims", type: "string[]" }],
+          outputs: [],
+          config: {
+            question: { text: "ok?", options: [{ value: "approve" }, { value: "reject" }] },
+            routing: { routes: { approve: "summary", reject: "producer" } },
+          },
+        },
+        {
+          name: "summary",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "report", type: "string" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "producer", port: "claims" }, to: { stage: "verifier", port: "claim" } },
+        { from: { source: "stage", stage: "verifier", port: "verified" }, to: { stage: "reviewer", port: "verifiedClaims" } },
+      ],
+    } as unknown as PipelineIR;
+    const vh = computeVersionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+
+    let producerCalls = 0;
+    const handlers: StageHandlerMap = {
+      producer: () => {
+        producerCalls += 1;
+        // First pass produces 3 claims; second pass produces 3 *different* claims.
+        if (producerCalls === 1) return { claims: ["a1", "a2", "a3"] };
+        return { claims: ["b1", "b2", "b3"] };
+      },
+      // Fanout element handler: the executor sees one element per call.
+      verifier: (inputs: Record<string, unknown>) => ({ verified: `V(${inputs.claim as string})` }),
+      summary: () => ({ report: "done" }),
+    };
+
+    const broadcaster = new KernelNextBroadcaster();
+    const runPromise = runPipeline(
+      { db, ir, taskId: "task-fanout-rb", versionHash: vh, handlers, broadcaster },
+      30_000,
+    );
+
+    const firstGateId = await waitForOpenGate(db, "task-fanout-rb", "reviewer");
+    expect(producerCalls).toBe(1);
+
+    const fanoutAfterFirstPass = db.prepare(
+      `SELECT count(*) AS n FROM stage_attempts
+         WHERE task_id='task-fanout-rb' AND stage_name='verifier'
+           AND kind='fanout_element' AND status='success'`,
+    ).get() as { n: number };
+    expect(fanoutAfterFirstPass.n).toBe(3);
+
+    // Reject — affectedStages spans producer + verifier + reviewer + summary.
+    const dispatcher = taskRegistry.get("task-fanout-rb");
+    expect(dispatcher).toBeDefined();
+    dispatcher!.send({
+      type: "GATE_REJECTED",
+      gateId: firstGateId,
+      stageName: "reviewer",
+      answer: "reject",
+      targetStage: "producer",
+      affectedStages: ["producer", "verifier", "reviewer", "summary"],
+    });
+
+    const secondGateId = await waitForOpenGate(db, "task-fanout-rb", "reviewer", firstGateId);
+    expect(producerCalls).toBe(2);
+
+    // Critical assertions:
+    //   1. The 3 first-pass fanout_element rows were superseded.
+    //   2. The second pass produced 3 fresh fanout_element rows (one per new claim).
+    const supersededFanout = db.prepare(
+      `SELECT count(*) AS n FROM stage_attempts
+         WHERE task_id='task-fanout-rb' AND stage_name='verifier'
+           AND kind='fanout_element' AND status='superseded'`,
+    ).get() as { n: number };
+    expect(supersededFanout.n).toBe(3);
+    const succeededFanoutAfterSecondPass = db.prepare(
+      `SELECT count(*) AS n FROM stage_attempts
+         WHERE task_id='task-fanout-rb' AND stage_name='verifier'
+           AND kind='fanout_element' AND status='success'`,
+    ).get() as { n: number };
+    expect(succeededFanoutAfterSecondPass.n).toBe(3);
+
+    // The second-pass aggregate must reflect the NEW claims (b1/b2/b3),
+    // not the old (a1/a2/a3). Read the most recent successful aggregate.
+    const aggRow = db.prepare(
+      `SELECT pv.value_json
+         FROM port_values pv
+         JOIN stage_attempts sa ON sa.attempt_id = pv.attempt_id
+        WHERE sa.task_id='task-fanout-rb' AND sa.stage_name='verifier'
+          AND sa.kind='fanout_aggregate' AND sa.status='success'
+          AND pv.port_name='verified'
+        ORDER BY sa.attempt_idx DESC
+        LIMIT 1`,
+    ).get() as { value_json: string } | undefined;
+    expect(aggRow).toBeDefined();
+    const aggregated = JSON.parse(aggRow!.value_json);
+    expect(aggregated).toEqual(["V(b1)", "V(b2)", "V(b3)"]);
+
+    // Approve to let the run finish cleanly.
+    dispatcher!.send({
+      type: "GATE_ANSWERED",
+      gateId: secondGateId,
+      stageName: "reviewer",
+      answer: "approve",
+      targetStage: "summary",
+    });
+    const result = await runPromise;
+    expect(result.finalState).toBe("completed");
+
+    db.close();
+  }, 30_000);
 });
