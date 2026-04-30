@@ -139,7 +139,18 @@ export const LaunchPipelineDialog = ({
     if (maxTurns.trim().length > 0) payload.maxTurns = Number(maxTurns);
     if (maxBudgetUsd.trim().length > 0) payload.maxBudgetUsd = Number(maxBudgetUsd);
 
-    const res = await apiFetch<{ taskId: string; versionHash: string }>(
+    const res = await apiFetch<{
+      taskId: string;
+      versionHash: string;
+      // C10 Bug F2 (2026-04-30): server returns these when stage MCPs
+      // declare envKeys not satisfied by envValues + process.env. The
+      // task is created either way (secret_pending pauses the affected
+      // stages at runtime); surfacing them at launch lets the user
+      // supply secrets via the secret-gate panel before any stage
+      // wastes turns.
+      missingEnvKeys?: string[];
+      hint?: string;
+    }>(
       "/api/kernel/tasks/run",
       { method: "POST", body: payload },
     );
@@ -148,7 +159,17 @@ export const LaunchPipelineDialog = ({
       setDiagnostics(res.diagnostics);
       return;
     }
-    toast.success(`Launched ${pipeline.name}`);
+    if (res.data.missingEnvKeys && res.data.missingEnvKeys.length > 0) {
+      // Info toast — task is live, user can recover via the secret
+      // panel on the task detail page. Not an error: secret_pending
+      // pauses gracefully and is resolvable.
+      toast.info(
+        `Launched ${pipeline.name} — ${res.data.missingEnvKeys.length} envKey(s) missing ` +
+        `(${res.data.missingEnvKeys.join(", ")}). Provide via the secret panel on the next page.`,
+      );
+    } else {
+      toast.success(`Launched ${pipeline.name}`);
+    }
     onClose();
     router.push(`/kernel-next/${encodeURIComponent(res.data.taskId)}`);
   };
