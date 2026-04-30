@@ -75,6 +75,7 @@ If `design.stageDesign` declares topic shape is `investigation`, the stage names
 ### Layer 2: investigation
 
 **`hypothesize`**:
+- **Hypothesis count: 8-12 for `lookup`/`diagnostic`/`selection`; up to 14 for `landscape`. Hard ceiling of 14 across all sub-types.** This bound exists because `evidenceGather` runs as a fanout (one child per hypothesis), and per-child evidence quality dilutes when the count grows. If you find yourself wanting >14 hypotheses, the topic is over-scoped — either narrow it (drop axes that aren't core to the user's question) or down-prioritize the weakest ones. The reviewer would rather see 10 well-evidenced claims than 18 thin ones.
 - Each hypothesis claim must be **falsifiable**. Bad: "0G's bridge has issues". Good: "0G→Ethereum bridge median latency is >5x higher than CCIP-based bridges on equivalent routes".
 - Each hypothesis MUST cite ≥1 `tutorialOutline` concept in `conceptsUsed`. If a hypothesis can't cite a concept, either the concept is missing (rare; flag in stageDesign as a gap) or the hypothesis is out-of-scope.
 - **Start from current deployed state, not design documents.** For protocol/product investigations: before forming hypotheses, ask "what is actually deployed and running right now?" — find the live contracts, front-ends, or APIs first, then form hypotheses about their behavior, gaps, or optimization potential. Hypotheses anchored to "the design says X" are weak; hypotheses anchored to "the deployed contract at 0x... does X" are strong.
