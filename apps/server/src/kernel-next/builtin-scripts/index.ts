@@ -65,13 +65,150 @@ function expandPlaceholders(tpl: string, env: Readonly<Record<string, string>>):
 
 // ---------- http ----------
 
+// HTTP guard rails (Bug 6 fix, c12+ review).
+//
+// Pre-fix: http_fetch / http_request had no SSRF guard, no timeout,
+// no body cap. AI-generated pipelines that wired user input into a
+// fetch could probe loopback / cloud-metadata IPs, hang on slow
+// servers indefinitely, or download multi-GB bodies that exhausted
+// the kernel's heap.
+//
+// SSRF allow-list: explicitly reject loopback, link-local, private,
+// cloud-metadata, multicast, and unspecified addresses. The
+// allow-list is intentionally narrow — only RFC1918 + RFC6890
+// public-internet hosts are permitted. If a future use case needs
+// to fetch from a private IP, the caller can override via the
+// `allowPrivate: true` input flag (off by default).
+//
+// Timeout: 30s default, 5min ceiling. Implemented via AbortController.
+//
+// Body cap: 10MB default, 100MB ceiling. Implemented via streamed
+// read with byte counter (fetch's res.text() loads the entire body
+// into memory; we use res.body iterator to bound memory).
+
+const HTTP_DEFAULT_TIMEOUT_MS = 30_000;
+const HTTP_MAX_TIMEOUT_MS = 5 * 60 * 1000;
+const HTTP_DEFAULT_MAX_BYTES = 10 * 1024 * 1024;
+const HTTP_MAX_MAX_BYTES = 100 * 1024 * 1024;
+
+// SSRF: reject any host in these reserved ranges unless allowPrivate=true.
+// Patterns are checked against the parsed URL's hostname (lowercased).
+function isPrivateOrReservedHostname(hostname: string): boolean {
+  const h = hostname.toLowerCase();
+  // localhost / loopback names
+  if (h === "localhost" || h.endsWith(".localhost")) return true;
+  // IPv6 loopback / link-local / unique-local / unspecified
+  if (h === "::1" || h === "[::1]") return true;
+  if (h.startsWith("[fe80:") || h.startsWith("fe80:")) return true;
+  if (h.startsWith("[fc") || h.startsWith("[fd")) return true; // fc00::/7
+  if (h === "::" || h === "[::]") return true;
+  // IPv4 patterns. Only literal IPs check; hostnames are subject to
+  // DNS rebinding which we don't defend against here (would require
+  // resolve-and-pin which is out of scope for builtin-scripts).
+  const ipv4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const [, a, b] = ipv4.map(Number) as [number, number, number, number, number];
+    if (a === 10) return true;             // 10.0.0.0/8 RFC1918
+    if (a === 127) return true;            // loopback
+    if (a === 169 && b === 254) return true; // 169.254.0.0/16 link-local + cloud metadata
+    if (a === 172 && b !== undefined && b >= 16 && b <= 31) return true; // 172.16/12
+    if (a === 192 && b === 168) return true; // 192.168/16
+    if (a === 100 && b !== undefined && b >= 64 && b <= 127) return true; // 100.64/10 CGN
+    if (a === 0) return true;              // 0.0.0.0/8
+    if (a >= 224) return true;             // multicast + reserved
+  }
+  // Cloud metadata aliases (some clouds resolve these to 169.254.169.254)
+  if (h === "metadata.google.internal") return true;
+  if (h === "metadata.aws.internal") return true;
+  return false;
+}
+
+interface HttpGuardOptions {
+  timeoutMs: number;
+  maxBytes: number;
+  allowPrivate: boolean;
+}
+
+function readHttpGuardOptions(inputs: Record<string, unknown>): HttpGuardOptions {
+  let timeoutMs = HTTP_DEFAULT_TIMEOUT_MS;
+  if (typeof inputs.timeoutMs === "number" && inputs.timeoutMs > 0) {
+    timeoutMs = Math.min(inputs.timeoutMs, HTTP_MAX_TIMEOUT_MS);
+  }
+  let maxBytes = HTTP_DEFAULT_MAX_BYTES;
+  if (typeof inputs.maxBytes === "number" && inputs.maxBytes > 0) {
+    maxBytes = Math.min(inputs.maxBytes, HTTP_MAX_MAX_BYTES);
+  }
+  const allowPrivate = inputs.allowPrivate === true;
+  return { timeoutMs, maxBytes, allowPrivate };
+}
+
+function validateHttpUrl(rawUrl: string, allowPrivate: boolean): URL {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error(`invalid URL: ${JSON.stringify(rawUrl)}`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(
+      `URL protocol '${parsed.protocol}' is not allowed (only http: and https:)`,
+    );
+  }
+  if (!allowPrivate && isPrivateOrReservedHostname(parsed.hostname)) {
+    throw new Error(
+      `URL hostname '${parsed.hostname}' resolves to a private / loopback / cloud-metadata range. ` +
+        `Pass allowPrivate: true to override (single-user posture).`,
+    );
+  }
+  return parsed;
+}
+
+// Streamed body read with byte cap. Aborts the underlying response
+// when the cap is exceeded. Returns the partial body decoded as UTF-8
+// up to the cap, plus a `truncated: true` flag callers can observe.
+async function readBodyCapped(
+  response: Response,
+  maxBytes: number,
+): Promise<{ body: string; truncated: boolean }> {
+  if (!response.body) {
+    return { body: "", truncated: false };
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let collected = "";
+  let bytesRead = 0;
+  let truncated = false;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value === undefined) continue;
+    bytesRead += value.byteLength;
+    if (bytesRead > maxBytes) {
+      truncated = true;
+      // Take only the prefix up to the cap so total decoded size matches.
+      const allowedBytes = maxBytes - (bytesRead - value.byteLength);
+      const slice = allowedBytes > 0 ? value.slice(0, allowedBytes) : new Uint8Array();
+      collected += decoder.decode(slice, { stream: false });
+      try { await reader.cancel(); } catch { /* swallow */ }
+      break;
+    }
+    collected += decoder.decode(value, { stream: true });
+  }
+  if (!truncated) collected += decoder.decode();
+  return { body: collected, truncated };
+}
+
 // http_fetch — GET a URL, optionally with headers. Body returned as string
 // (UTF-8 decoded) plus numeric status and response headers. No retry loop;
 // callers that need retries wrap in a gate or a regenerate-friendly agent.
 const http_fetch: ScriptModule = {
   async run(inputs, ctx) {
     const rawUrl = requireString(inputs, "url");
-    const url = expandPlaceholders(rawUrl, ctx.env);
+    const expandedUrl = expandPlaceholders(rawUrl, ctx.env);
+    const guard = readHttpGuardOptions(inputs);
+    validateHttpUrl(expandedUrl, guard.allowPrivate);
+
     const headersIn = optionalRecord(inputs, "headers") ?? {};
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(headersIn)) {
@@ -80,8 +217,22 @@ const http_fetch: ScriptModule = {
       }
       headers[k] = expandPlaceholders(v, ctx.env);
     }
-    const res = await fetch(url, { method: "GET", headers });
-    const body = await res.text();
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), guard.timeoutMs);
+    timer.unref?.();
+    let res: Response;
+    try {
+      res = await fetch(expandedUrl, { method: "GET", headers, signal: controller.signal });
+    } catch (err) {
+      if (controller.signal.aborted) {
+        throw new Error(`http_fetch timed out after ${guard.timeoutMs}ms (url=${expandedUrl})`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+    const { body, truncated } = await readBodyCapped(res, guard.maxBytes);
     const respHeaders: Record<string, string> = {};
     res.headers.forEach((v, k) => { respHeaders[k] = v; });
     return {
@@ -89,6 +240,7 @@ const http_fetch: ScriptModule = {
       ok: res.ok,
       body,
       headers: respHeaders,
+      truncated,
     };
   },
 };
@@ -98,7 +250,10 @@ const http_fetch: ScriptModule = {
 const http_request: ScriptModule = {
   async run(inputs, ctx) {
     const rawUrl = requireString(inputs, "url");
-    const url = expandPlaceholders(rawUrl, ctx.env);
+    const expandedUrl = expandPlaceholders(rawUrl, ctx.env);
+    const guard = readHttpGuardOptions(inputs);
+    validateHttpUrl(expandedUrl, guard.allowPrivate);
+
     const method = (optionalString(inputs, "method") ?? "GET").toUpperCase();
     const headersIn = optionalRecord(inputs, "headers") ?? {};
     const headers: Record<string, string> = {};
@@ -120,8 +275,22 @@ const http_request: ScriptModule = {
         }
       }
     }
-    const res = await fetch(url, { method, headers, body });
-    const respText = await res.text();
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), guard.timeoutMs);
+    timer.unref?.();
+    let res: Response;
+    try {
+      res = await fetch(expandedUrl, { method, headers, body, signal: controller.signal });
+    } catch (err) {
+      if (controller.signal.aborted) {
+        throw new Error(`http_request timed out after ${guard.timeoutMs}ms (url=${expandedUrl})`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+    const { body: respText, truncated } = await readBodyCapped(res, guard.maxBytes);
     const respHeaders: Record<string, string> = {};
     res.headers.forEach((v, k) => { respHeaders[k] = v; });
     return {
@@ -129,6 +298,7 @@ const http_request: ScriptModule = {
       ok: res.ok,
       body: respText,
       headers: respHeaders,
+      truncated,
     };
   },
 };

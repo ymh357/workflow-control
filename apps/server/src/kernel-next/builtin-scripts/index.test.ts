@@ -219,6 +219,136 @@ describe("http_fetch / http_request placeholder expansion", () => {
   });
 });
 
+// Bug 6 fix (c12+ review): SSRF allow-list, timeout, body cap.
+describe("http_fetch / http_request guard rails (Bug 6)", () => {
+  const origFetch = globalThis.fetch;
+  afterAll(() => { globalThis.fetch = origFetch; });
+
+  describe("SSRF allow-list", () => {
+    it.each([
+      "http://127.0.0.1/",
+      "http://127.0.0.1:8080/path",
+      "http://localhost/",
+      "https://10.0.0.5/",
+      "https://192.168.1.1/",
+      "https://172.16.5.5/",
+      "https://172.31.0.1/",
+      "http://169.254.169.254/latest/meta-data/",  // AWS metadata
+      "http://metadata.google.internal/",
+      "http://[::1]/",
+      "http://0.0.0.0/",
+    ])("rejects %s", async (url) => {
+      await expect(
+        BUILTIN_SCRIPT_MODULES.http_fetch!.run({ url }, ctx()),
+      ).rejects.toThrow(/private \/ loopback \/ cloud-metadata range/);
+    });
+
+    it("allows public hostnames", async () => {
+      let called = false;
+      globalThis.fetch = (async () => {
+        called = true;
+        return new Response("ok", { status: 200 });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any;
+      await BUILTIN_SCRIPT_MODULES.http_fetch!.run(
+        { url: "https://api.example.com/" },
+        ctx(),
+      );
+      expect(called).toBe(true);
+    });
+
+    it("permits private IP when allowPrivate=true (single-user override)", async () => {
+      let called = false;
+      globalThis.fetch = (async () => {
+        called = true;
+        return new Response("ok", { status: 200 });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any;
+      await BUILTIN_SCRIPT_MODULES.http_fetch!.run(
+        { url: "http://192.168.1.5/", allowPrivate: true },
+        ctx(),
+      );
+      expect(called).toBe(true);
+    });
+
+    it("rejects non-http protocols", async () => {
+      await expect(
+        BUILTIN_SCRIPT_MODULES.http_fetch!.run(
+          { url: "file:///etc/passwd" },
+          ctx(),
+        ),
+      ).rejects.toThrow(/protocol .* not allowed/);
+    });
+
+    it("rejects malformed URLs cleanly", async () => {
+      await expect(
+        BUILTIN_SCRIPT_MODULES.http_fetch!.run({ url: "not-a-url" }, ctx()),
+      ).rejects.toThrow(/invalid URL/);
+    });
+  });
+
+  describe("timeout", () => {
+    it("aborts with a clear message when fetch exceeds timeoutMs", async () => {
+      globalThis.fetch = ((_url: string, init?: { signal?: AbortSignal }) => {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            const err = new Error("aborted");
+            (err as Error & { name: string }).name = "AbortError";
+            reject(err);
+          });
+        });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any;
+
+      await expect(
+        BUILTIN_SCRIPT_MODULES.http_fetch!.run(
+          { url: "https://api.example.com/slow", timeoutMs: 25 },
+          ctx(),
+        ),
+      ).rejects.toThrow(/timed out after 25ms/);
+    });
+  });
+
+  describe("body cap", () => {
+    it("truncates the body to maxBytes and sets truncated:true", async () => {
+      const bigChunk = new Uint8Array(2 * 1024).fill(65); // 2KB of 'A'
+      globalThis.fetch = (async () => {
+        const stream = new ReadableStream({
+          start(controller) {
+            controller.enqueue(bigChunk);
+            controller.enqueue(bigChunk);
+            controller.enqueue(bigChunk);
+            controller.close();
+          },
+        });
+        return new Response(stream, { status: 200 });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any;
+
+      const out = await BUILTIN_SCRIPT_MODULES.http_fetch!.run(
+        { url: "https://api.example.com/", maxBytes: 1024 },
+        ctx(),
+      ) as Record<string, unknown>;
+      expect(out.truncated).toBe(true);
+      expect((out.body as string).length).toBeLessThanOrEqual(1024);
+    });
+
+    it("returns the full body when under cap with truncated:false", async () => {
+      globalThis.fetch = (async () => {
+        return new Response("small body", { status: 200 });
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }) as any;
+
+      const out = await BUILTIN_SCRIPT_MODULES.http_fetch!.run(
+        { url: "https://api.example.com/" },
+        ctx(),
+      ) as Record<string, unknown>;
+      expect(out.truncated).toBe(false);
+      expect(out.body).toBe("small body");
+    });
+  });
+});
+
 describe("validate_patch_vs_intent (Bug 8b kernel guard)", () => {
   const mod = BUILTIN_SCRIPT_MODULES.validate_patch_vs_intent!;
 
