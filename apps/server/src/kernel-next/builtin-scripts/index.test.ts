@@ -795,6 +795,52 @@ describe("classify_evidence_bundle", () => {
     expect(ce[1]!.primaryCount).toBe(0);
   });
 
+  it("C10: tolerates a stringified-JSON evidence entry (auto-parses)", async () => {
+    const entry = {
+      hypothesisId: "H_LAT_1",
+      verdict: "inconclusive",
+      positiveEvidence: [
+        { kind: "vendor_docs", url: "https://docs.0g.ai/x", quote: "..." },
+      ],
+      negativeEvidence: [],
+    };
+    const out = await mod.run(
+      {
+        // Mix: index 0 is a stringified entry, index 1 is the raw object.
+        // Reproduces dogfood-c10 v8 behavior where one fanout child
+        // returned JSON.stringify(obj) while siblings returned obj.
+        evidence: [JSON.stringify(entry), entry],
+      },
+      ctx(),
+    );
+    const ce = out.classifiedEvidence as Array<Record<string, unknown>>;
+    expect(ce.length).toBe(2);
+    expect(ce[0]!.hypothesisId).toBe("H_LAT_1");
+    expect(ce[1]!.hypothesisId).toBe("H_LAT_1");
+  });
+
+  it("C10: tolerates a stringified-JSON citation inside positiveEvidence list", async () => {
+    const cit = { kind: "src", url: "https://github.com/a/b/blob/main/x.sol", quote: "fn f()" };
+    const out = await mod.run(
+      {
+        evidence: [
+          {
+            hypothesisId: "H1",
+            verdict: "supported",
+            positiveEvidence: [JSON.stringify(cit), cit],
+            negativeEvidence: [],
+          },
+        ],
+      },
+      ctx(),
+    );
+    const ce = out.classifiedEvidence as Array<Record<string, unknown>>;
+    const pos = ce[0]!.positiveEvidence as Array<Record<string, unknown>>;
+    expect(pos.length).toBe(2);
+    expect(pos[0]!.url).toBe(cit.url);
+    expect(pos[0]!.type).toBe("primary");
+  });
+
   it("THROWS when 'evidence' is not an array", async () => {
     await expect(
       mod.run({ evidence: "nope" }, ctx()),

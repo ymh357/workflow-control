@@ -766,12 +766,25 @@ const classify_evidence_bundle: ScriptModule = {
     }
 
     const classified = evidenceRaw.map((entry, idx) => {
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      // C10 (2026-04-30): tolerate stringified-JSON input. Some agent
+      // outputs come through as `JSON.stringify(obj)` instead of the
+      // raw object — parse it once before validating shape. If parse
+      // fails or produces a non-object, fall through to the strict
+      // throw below so callers still see a clear error.
+      let parsedEntry: unknown = entry;
+      if (typeof entry === "string") {
+        try {
+          parsedEntry = JSON.parse(entry);
+        } catch {
+          // not JSON — leave as string so the type check below throws
+        }
+      }
+      if (parsedEntry === null || typeof parsedEntry !== "object" || Array.isArray(parsedEntry)) {
         throw new Error(
           `classify_evidence_bundle: evidence[${idx}] must be an object (got ${typeof entry})`,
         );
       }
-      const e = entry as Record<string, unknown>;
+      const e = parsedEntry as Record<string, unknown>;
 
       const classifyCitationList = (
         list: unknown,
@@ -784,12 +797,17 @@ const classify_evidence_bundle: ScriptModule = {
           );
         }
         return list.map((c, ci) => {
-          if (c === null || typeof c !== "object" || Array.isArray(c)) {
+          // C10 (2026-04-30): same stringified-JSON tolerance as above.
+          let parsed: unknown = c;
+          if (typeof c === "string") {
+            try { parsed = JSON.parse(c); } catch { /* leave as string */ }
+          }
+          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
             throw new Error(
               `classify_evidence_bundle: evidence[${idx}].${listName}[${ci}] must be an object (got ${typeof c})`,
             );
           }
-          const cit = c as Record<string, unknown>;
+          const cit = parsed as Record<string, unknown>;
           const u = cit.url;
           if (u === undefined || u === null || u === "") {
             return {
