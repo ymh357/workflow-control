@@ -262,6 +262,14 @@ function buildStages(input: AssembleInvestigationIRInput): StageIR[] {
     inputs: [
       port("slugs", "string[]", "Full tutorial-outline slug set from prereqExtraction."),
       port("subjectDomain", "string"),
+      port(
+        "tutorialRejectionFeedback",
+        "string",
+        "Reject-rerun feedback from tutorialReviewGate; empty on fresh runs. " +
+          "Non-empty signals 'every cached entry is suspect': lookup bypasses " +
+          "the cache entirely so the fanout re-authors all tutorials and the " +
+          "downstream writeTutorialCache UPSERTs replace the stale entries.",
+      ),
     ],
     outputs: [
       port("cachedSlugs", "string[]", "Slugs already fresh in cache (≤30d old)."),
@@ -336,7 +344,15 @@ function buildStages(input: AssembleInvestigationIRInput): StageIR[] {
         ],
       },
       routing: {
-        routes: { approve: "hypothesize", reject: "tutorialAuthoring" },
+        // Bug 7 fix (c12+ review): reject must rollback to
+        // lookupTutorialCache (not tutorialAuthoring directly), so
+        // tutorialRejectionFeedback flows into the lookup → its
+        // cache-bypass logic refills missingSlugs with the full slug
+        // set → fanout actually re-authors. Pre-fix routing went
+        // straight to tutorialAuthoring whose fanout source
+        // (lookupTutorialCache.missingSlugs) had drained to []
+        // during the prior approve, producing a 0-element rerun.
+        routes: { approve: "hypothesize", reject: "lookupTutorialCache" },
       },
     },
   };
@@ -646,6 +662,10 @@ function buildWires(): WireIR[] {
   const tutorialCacheLookupWires: WireIR[] = [
     wire("prereqExtraction", "tutorialOutline", "lookupTutorialCache", "slugs"),
     wire("topicFraming", "subjectDomain", "lookupTutorialCache", "subjectDomain"),
+    // Bug 7 fix: reject feedback flows into the lookup so it can
+    // bypass the cache and refill missingSlugs with the full slug set,
+    // forcing a complete fanout re-author.
+    wire("tutorialReviewGate", "__gate_feedback__", "lookupTutorialCache", "tutorialRejectionFeedback"),
   ];
 
   // tutorialAuthoring (fanout) — driven by lookupTutorialCache.missingSlugs.

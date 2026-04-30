@@ -152,6 +152,76 @@ describe("lookup_tutorial_cache", () => {
       lookup.run({ slugs: huge, subjectDomain: "x" }, ctx()),
     ).rejects.toThrow(/refusing to look up 600 slugs/);
   });
+
+  // Bug 7 fix (c12+ review): on reject re-run, the rejection feedback
+  // is non-empty; lookup must bypass the cache so the fanout actually
+  // re-authors. Pre-fix the cache hit drained missingSlugs to [],
+  // producing a 0-element fanout.
+  describe("reject re-run cache bypass (Bug 7)", () => {
+    it("treats every slug as missing when tutorialRejectionFeedback is non-empty", async () => {
+      const writer = buildWriteTutorialCache(db);
+      await writer.run(
+        {
+          slugs: ["a", "b", "c"],
+          contents: ["body-a", "body-b", "body-c"],
+          subjectDomain: "dom",
+        },
+        ctx(),
+      );
+      const lookup = buildLookupTutorialCache(db);
+      const r = await lookup.run(
+        {
+          slugs: ["a", "b", "c"],
+          subjectDomain: "dom",
+          tutorialRejectionFeedback: "Tutorials a and b are too shallow; expand both.",
+        },
+        ctx(),
+      );
+      expect(r).toEqual({
+        cachedSlugs: [],
+        cachedContents: [],
+        missingSlugs: ["a", "b", "c"],
+      });
+    });
+
+    it("treats whitespace-only feedback as empty (does NOT bypass)", async () => {
+      const writer = buildWriteTutorialCache(db);
+      await writer.run(
+        { slugs: ["a"], contents: ["v1"], subjectDomain: "dom" },
+        ctx(),
+      );
+      const lookup = buildLookupTutorialCache(db);
+      const r = await lookup.run(
+        {
+          slugs: ["a"],
+          subjectDomain: "dom",
+          tutorialRejectionFeedback: "   \n\t  ",
+        },
+        ctx(),
+      ) as Record<string, unknown>;
+      expect(r.cachedSlugs).toEqual(["a"]);
+      expect(r.missingSlugs).toEqual([]);
+    });
+
+    it("normal lookup still works when feedback is empty string", async () => {
+      const writer = buildWriteTutorialCache(db);
+      await writer.run(
+        { slugs: ["x"], contents: ["body-x"], subjectDomain: "dom" },
+        ctx(),
+      );
+      const lookup = buildLookupTutorialCache(db);
+      const r = await lookup.run(
+        {
+          slugs: ["x", "y"],
+          subjectDomain: "dom",
+          tutorialRejectionFeedback: "",
+        },
+        ctx(),
+      ) as Record<string, unknown>;
+      expect(r.cachedSlugs).toEqual(["x"]);
+      expect(r.missingSlugs).toEqual(["y"]);
+    });
+  });
 });
 
 describe("write_tutorial_cache", () => {

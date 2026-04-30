@@ -52,22 +52,50 @@ function asStringRequired(v: unknown, fieldName: string): string {
  * kernel-next DB handle.
  *
  * Inputs:
- *   slugs: string[]            — full set of slugs the run wants to author
- *   subjectDomain: string      — from topicFraming.subjectDomain
+ *   slugs: string[]                   — full set of slugs the run wants to author
+ *   subjectDomain: string             — from topicFraming.subjectDomain
+ *   tutorialRejectionFeedback: string — empty on fresh runs, non-empty on
+ *                                       reject re-runs from tutorialReviewGate
  *
  * Outputs:
  *   cachedSlugs: string[]
  *   cachedContents: string[]   — parallel to cachedSlugs
  *   missingSlugs: string[]     — the slugs the fanout still needs to author
+ *
+ * Reject-rerun semantics (Bug 7 fix, c12+ review): when the reviewer
+ * rejects, every cached tutorial is suspect — the reviewer's feedback
+ * may name only a subset of slugs but we cannot reliably parse
+ * which ones from a free-form string. Bypass the cache entirely on
+ * reject (every slug becomes missing), so the fanout re-authors all
+ * tutorials and write_tutorial_cache UPSERTs replace the stale rows.
+ * Pre-fix, reject rerouted to tutorialAuthoring whose fanout source
+ * was lookupTutorialCache.missingSlugs = [] from the prior approve
+ * pass, producing a 0-element fanout and no actual re-authoring.
  */
 export function buildLookupTutorialCache(db: DatabaseSync): ScriptModule {
   return {
     async run(inputs) {
       const slugs = asStringArray(inputs.slugs ?? [], "slugs");
       const subjectDomain = asStringRequired(inputs.subjectDomain, "subjectDomain");
+      const rejectionFeedback = typeof inputs.tutorialRejectionFeedback === "string"
+        ? inputs.tutorialRejectionFeedback
+        : "";
 
       if (slugs.length === 0) {
         return { cachedSlugs: [], cachedContents: [], missingSlugs: [] };
+      }
+
+      // Reject re-run: bypass the cache so every slug routes to the
+      // fanout for fresh authoring. The fanout's writeTutorialCache
+      // upsert then replaces the stale cache entries with the new
+      // versions. See Bug 7 in
+      // docs/superpowers/specs/2026-04-30-full-codebase-review.md.
+      if (rejectionFeedback.trim().length > 0) {
+        return {
+          cachedSlugs: [],
+          cachedContents: [],
+          missingSlugs: [...slugs],
+        };
       }
 
       const freshAfter = Date.now() - TTL_MS;
