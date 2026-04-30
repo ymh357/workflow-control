@@ -1781,9 +1781,45 @@ secret-gate UX.
 
 **测试套**: 2232 pass + 24 skip + 0 fail (上次 5 flaky 这次都过).
 
+### Bug G 双层防御
+
+修完 validator (compile-time) 后审视 runtime 行为, 发现还有一个漏洞: 历史 IR.
+
+`run_pipeline { name }` 解析时取 latest version_hash, 但 latest 可能是
+validator 规则 land 之前 submit 的. 这种 IR 仍然能跑, 撞 runtime 错配.
+
+audit 当前 dev DB 找到 3 个历史 broken IRs:
+- 0G Bridge Architecture Investigation (2 个版本)
+- d4-envkey-probe (D4 v1 一次性测试)
+
+**修法**: real-executor 在 expandMcpServers 之前加 IR-shape 检查. 任何
+envKey 不在 command/args/env `${VAR}` references 中, 立即 STAGE_FAILED
+带 `IR_BROKEN_ENVKEY_NOT_REFERENCED` 错误码 + 具体修法提示 (告诉用户
+"加 env: { KEY: '${KEY}' } 到 mcpServer 块然后重新 submit").
+
+**为什么不 route 到 secret_pending**:
+- 这不是 missing secret 问题, 是 IR shape 错误
+- 即使用户提供 secret, 下次 attempt expandMcpServers 仍然没 ${VAR} 可
+  substitute, 子进程仍然拿不到值, 仍然 fail
+- 形成死循环 UX
+- hard error + 明确的 re-submit 提示是唯一对的解
+
+**验证**: 用 D4 v1 broken IR 直接 launch (`POST /api/kernel/tasks/run
+versionHash=a7d9beb7eb9d…`), task_finals.detail 立即包含完整
+`IR_BROKEN_ENVKEY_NOT_REFERENCED` 信息. 用户从 dashboard / SSE / API
+都能看到 actionable 提示.
+
+测试: bug-g-runtime-guard.test.ts (3 cases) 覆盖正反两面 + dev-machine
+masking 场景.
+
 ### 此刻状态
 
-- working tree dirty (validator + tests + handoff), 准备 commit
-- D4 验证完成. Bug G 修了.
+- 3 个 c11 commits:
+  - 7165979 fix(validator): ENVKEY_NOT_REFERENCED cross-check
+  - 8f96088 docs(handoff): c11 D4 dogfood + Bug G writeup
+  - e39b23f fix(runtime): IR_BROKEN_ENVKEY_NOT_REFERENCED guard for historical IRs
+- working tree clean (除一个 pre-existing untracked test file)
+- D4 验证完成. Bug G 双层防御 (validator + runtime) 全部 in place.
+- test suite: 2235 pass + 24 skip + 0 fail.
 - 下一步候选: D1 (tutorial cache) / D3 (D-path 扩展) / D2 (sub-pipeline) — 仍待用户决策
 
