@@ -305,6 +305,68 @@ describe("POST /api/kernel/tasks/run", () => {
     kernelNextBroadcaster.clearTask(taskId);
   });
 
+  it("C10 Bug F2: HTTP 202 surfaces missingEnvKeys + provide_task_secrets hint when stage MCPs declare unsatisfied envKeys", async () => {
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    // Build an IR whose first stage declares an MCP with an envKey that
+    // is not in process.env and not in body.envValues. The pre-flight
+    // scan in startPipelineRun must surface this through the HTTP
+    // response (mirrors the run_pipeline MCP tool's hint behaviour).
+    const ir = {
+      name: "kr-pre-flight-test",
+      stages: [
+        {
+          name: "X",
+          type: "agent" as const,
+          inputs: [],
+          outputs: [{ name: "out", type: "string" }],
+          config: {
+            promptRef: "X",
+            mcpServers: [
+              {
+                name: "etherscan",
+                command: "npx",
+                args: ["-y", "@everimbaq/etherscan-mcp"],
+                envKeys: ["KR_TEST_NEVER_SET_KEY_1", "KR_TEST_NEVER_SET_KEY_2"],
+              },
+            ],
+          },
+        },
+      ],
+      wires: [],
+    };
+    const submit = await svc.submit(ir, { prompts: { X: "p" } });
+    expect(submit.ok).toBe(true);
+    if (!submit.ok) return;
+
+    // Pre-flight should fire: caller passes no envValues, the keys aren't
+    // in process.env, so both should land in missingEnvKeys.
+    delete process.env.KR_TEST_NEVER_SET_KEY_1;
+    delete process.env.KR_TEST_NEVER_SET_KEY_2;
+
+    const res = await app.request("/api/kernel/tasks/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: "kr-pre-flight-test",
+        seedValues: {},
+      }),
+    });
+    expect(res.status).toBe(202);
+    const json = await res.json() as {
+      ok: boolean; taskId: string; missingEnvKeys?: string[]; hint?: string;
+    };
+    expect(json.ok).toBe(true);
+    expect(json.missingEnvKeys?.sort()).toEqual([
+      "KR_TEST_NEVER_SET_KEY_1",
+      "KR_TEST_NEVER_SET_KEY_2",
+    ]);
+    expect(json.hint).toContain("provide_task_secrets");
+    expect(json.hint).toContain(`/api/kernel/tasks/${json.taskId}/secrets`);
+
+    await new Promise((r) => setTimeout(r, 50));
+    kernelNextBroadcaster.clearTask(json.taskId);
+  });
+
 });
 
 describe("seedBuiltinPipelineByName populates pipeline_prompt_refs on module load", () => {

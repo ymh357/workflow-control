@@ -104,7 +104,28 @@ kernelRunRoute.post("/kernel/tasks/run", async (c) => {
     }, 400);
   }
 
-  return c.json({ ok: true, taskId: res.taskId, versionHash: res.versionHash }, 202);
+  // C10 Bug F2 (2026-04-30): forward missingEnvKeys + provide_task_secrets
+  // hint when startPipelineRun's pre-flight scan flagged stages with
+  // unsatisfied envKeys. Without this, HTTP callers (dashboard, dogfood
+  // scripts) get no early signal — they only discover the missing key
+  // when the affected stage hits secret_pending mid-run. The MCP tool
+  // run_pipeline already surfaces this; here we mirror it for HTTP
+  // parity.
+  const responseBody: Record<string, unknown> = {
+    ok: true,
+    taskId: res.taskId,
+    versionHash: res.versionHash,
+  };
+  if (res.missingEnvKeys && res.missingEnvKeys.length > 0) {
+    responseBody.missingEnvKeys = res.missingEnvKeys;
+    responseBody.hint =
+      `Task created but ${res.missingEnvKeys.length} envKey(s) are missing: ` +
+      `[${res.missingEnvKeys.join(", ")}]. ` +
+      `POST /api/kernel/tasks/${res.taskId}/secrets with body { secrets: { KEY: "value", ... } } ` +
+      `to supply them, or call the MCP tool provide_task_secrets. ` +
+      `Affected stages will pause with status='secret_pending' until secrets land.`;
+  }
+  return c.json(responseBody, 202);
 });
 
 // Seed builtin pipelines into pipeline_versions at module load so they
