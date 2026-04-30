@@ -1614,3 +1614,102 @@ continuation 10 跨度 ~6h (大部分是 dogfood 等待). 实际产出:
 - **发现 4 个独立 bug** (1 个 runner-level, 1 个 prompt-writer level, 2 个 dogfood script level)
 
 教训: prompt 改动的有效性必须通过 **agent tool call trace** 验证, 不能只看最终报告. 第一次 c10 跑出 33/100 时差点判定改动失败 — 实际是 verificationPath 太抽象让 agent 没法执行. 检查 attempt details 后才精准定位根因.
+
+---
+
+## Continuation 11+ Roadmap (2026-04-30, 用户授权先写文档不动手)
+
+c10 把 "修 bug + prompt 提报告分" 这条主线走完了 (38 → 63/100). 系统进入 "找不到下一个 bug 该修" 的稳定状态:
+- 0 actionable TODO/FIXME 在源码 (1 处 future YAGNI 注释合理)
+- working tree clean, 全套测试 2220 pass + 5 pre-existing fail (mcp-remote-preflight + db.adversarial, 与 c10 改动无关)
+- HTTP + MCP feature parity 完整 (Bug F2 修了 pre-flight forward gap, web LaunchDialog 消费 missingEnvKeys)
+
+剩下 4 个候选方向都属于 **新功能 / 范畴扩展**, 需要用户决策不能自决.
+
+### 方向 1: 跨 task tutorial 复用 (concept-level cache)
+
+**现状**: 每次跑 investigation pipeline, `tutorialAuthoring` 阶段重新生成 8-15 个 concept tutorial (区块链基础, CometBFT, CCIP 等通用知识). 同一 user 跑 N 次同领域 investigation 就重复生成 N 次同样的 tutorial.
+
+**要做的**: tutorial 按 slug 缓存到 DB, 下次同 slug 直接 hit cache.
+- 新 builtin script: `lookup_tutorial_cache`(slugs[]) → 返回 hit 的 markdown + miss 的 slug 列表
+- 改 17-stage skeleton: tutorialAuthoring 之前插一个 cache 查询 stage, 命中的 slug skip fanout
+- cache 存 prompt_contents 风格的 content_hash 表, key=`(slug, subjectDomain, audience.role)` 三元组
+- invalidation 策略: 写时打 createdAt, 30 天 TTL OR user 手动 prune
+
+**工作量**: 中等 (~1 周). 1 个 builtin script + 改 IR template + 1 个迁移表.
+
+**价值**: 节省 token + 加速. 5 次 investigation 大约能省 30-40% 时间和 cost.
+
+**用户决策点**: investigation 跑频率是否高到值得做?
+
+---
+
+### 方向 2: sub-pipeline 路径 (复杂 topic 拆分)
+
+**现状**: 17-stage skeleton 是 single-pipeline shape. `subIrs` schema 字段一直存在 (genSkeleton 输出 `subIrs: PipelineIR[]`) 但 D-path 始终输出空数组. 复杂 topic 全塞进 14 个 hypothesis 的 fanout, evidence quality 在 hypothesis 数 >12 时摊薄.
+
+**要做的**: analyzing 阶段判断 topic 复杂度, 复杂时拆成 N 个 sub-investigation (e.g. "调研 0G bridge" 拆成 sub-1 跨链消息层 / sub-2 经济激励层 / sub-3 安全模型). 每个 sub-pipeline 独立跑完, 主 pipeline 聚合 findings.
+
+**要新增**:
+- analyzing prompt 加 "复杂度判定" 子步骤
+- assemble_investigation_ir 支持产出 subIrs (同样硬编码模板, 但 N 个并行)
+- 主 pipeline 多一个 `subInvestigationFanout` stage, 触发 `run_pipeline` MCP tool
+- aggregateSubFindings 聚合 stage
+- runtime 改: parent task 等所有 child task 完成再 run reportAssembly
+- web UI: 树状展示 parent + N children
+
+**工作量**: 大 (~2-3 周). 新 fanout 模式, runtime 跨 task 等待, UI 改动.
+
+**价值**: 未验证. 当前 17-stage 已经能 cover 单轮 5K-30K 字报告. sub-pipeline 主要解决 100K+ 超长报告.
+
+**用户决策点**: 有没有遇到过 "17-stage 装不下" 的 topic? 没有就 YAGNI.
+
+---
+
+### 方向 3: D path 扩展到非 investigation pipelines
+
+**现状**: c9.6 D-path (用 `assemble_investigation_ir.ts` 把 17-stage 模板硬编码, LLM 只填内容) 只覆盖 investigation 类. Automation pipelines ("每周 fetch 数据 → transform → write") 和 lookup pipelines ("查询 X 的当前状态") 还是纯 LLM-driven, 仍可能撞 c9.5 列出的 mechanical 错误 (wire mismatch, port shape 错).
+
+**要做的**: 再写 2 个 builtin script — `assemble_automation_ir`, `assemble_lookup_ir` — 各自固化典型 shape.
+
+- automation 典型 shape: `prereqs → fetch → transform → validate → persist` (5-stage, no fanout)
+- lookup 典型 shape: `frame → query → format` (3-stage, no fanout)
+- analyzing prompt 按 investigationType 路由到对应 assemble_* script
+
+**工作量**: 大 (~每个一周). 2 个 builtin script + 测试 + analyzing prompt 路由 + e2e dogfood 各跑一遍.
+
+**价值**: 取决于 automation/lookup 实际使用频率. 目前测试都在 investigation, automation/lookup 没有真实用例驱动.
+
+**用户决策点**: 打算用 pipeline-generator 主要生成什么类型? 全是 investigation 就不必做.
+
+---
+
+### 方向 4: MCP envKey UX 端到端 dogfood 验证
+
+**现状**: c10 做完了 pre-flight check (HTTP + MCP + web toast). `provide_task_secrets` 之后 task 自动从 secret_pending 恢复 — 这个机制有 e2e test 覆盖 (`secret-gate-e2e.test.ts`) 但**没有真实 dogfood 跑通过整条 happy path**.
+
+**要做的**: 跑一次 envKey-required pipeline (e.g. 带 etherscan/github MCP 的 investigation), 全程不预设 env, 验证:
+1. pre-flight 报警 (HTTP response 含 missingEnvKeys + hint)
+2. task 创建后启动, 执行到 evidenceGather, 触发 secret_pending
+3. 调用 `POST /api/kernel/tasks/:id/secrets` 提供 keys
+4. task 自动恢复执行, evidenceGather 跑完, e2e 完成
+
+**工作量**: 小 (~1-2 小时, 包括如果发现 bug 再修).
+
+**价值**: 确定性高. 如果有 bug, 下次 envKey-required pipeline 就会撞坑; 现在测试找出来便宜.
+
+**用户决策点**: 中性小项, 不需要决策, 可任何时候做.
+
+---
+
+### 推荐次序
+
+按 ROI / 决策成本:
+
+1. **方向 4**: 不需要决策, 价值确定. 任何 session 起手做.
+2. **方向 1**: 如果用户场景是 "频繁跑 investigation", ROI 最高. 中等工作量.
+3. **方向 3**: 如果用户场景多元 (有 automation/lookup), 中长期值得.
+4. **方向 2**: YAGNI 风险最高. 等到真撞 "17-stage 装不下" 再做.
+
+如果用户场景集中在 single-investigation-per-week, 这套系统**已经 OK**, 进入 maintenance mode 也是合理选择.
+
