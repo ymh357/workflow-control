@@ -85,8 +85,11 @@ CREATE INDEX idx_tutorial_cache_created ON tutorial_cache(created_at);
 
 - `content_md` is the authored markdown (the same string written via
   `Write` to disk by the fanout child).
-- `sources_json` is the per-tutorial sources list — preserved so future
-  reuses can re-cite without re-fetching.
+- `sources_json` retained as `[]` placeholder for now. The
+  tutorialAuthoring agent already inlines source citations as markdown
+  links inside `content_md`, so a separate sources port would be
+  redundant and complicate the wires. The column stays in the schema
+  for future analytics use without requiring a migration.
 
 ### Builtin scripts
 

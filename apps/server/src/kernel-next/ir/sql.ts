@@ -391,6 +391,22 @@ CREATE TABLE IF NOT EXISTS task_env_values (
 );
 CREATE INDEX IF NOT EXISTS idx_tev_task ON task_env_values(task_id);
 
+-- Cross-task tutorial cache (D1, c12 / 2026-04-30).
+-- Caches authored markdown tutorials by (slug, subject_domain) so a
+-- second investigation in the same domain skips tutorial authoring
+-- for any concept whose slug already has a fresh entry. 30-day TTL
+-- (consumers filter on created_at >= now - 30d). See
+-- docs/superpowers/specs/2026-04-30-tutorial-cache-design.md.
+CREATE TABLE IF NOT EXISTS tutorial_cache (
+  slug           TEXT NOT NULL,
+  subject_domain TEXT NOT NULL,
+  content_md     TEXT NOT NULL,
+  sources_json   TEXT NOT NULL,
+  created_at     INTEGER NOT NULL,
+  PRIMARY KEY (slug, subject_domain)
+);
+CREATE INDEX IF NOT EXISTS idx_tutorial_cache_created ON tutorial_cache(created_at);
+
 -- Single-session mode observability (Task 11). Each row is one
 -- continuous SDK segment: stages sharing one session_id within one task,
 -- with their stage path and aggregate token usage. Excludes size-1

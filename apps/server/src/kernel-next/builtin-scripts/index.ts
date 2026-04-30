@@ -889,6 +889,48 @@ const noop_terminal: ScriptModule = {
   },
 };
 
+// merge_tutorials — D1 (c12, 2026-04-30). Concatenate cached and freshly
+// authored tutorial parallel-arrays into one merged set. Pure transform
+// (no DB), so it lives here rather than in tutorial-cache.ts.
+//
+// Inputs:
+//   cachedSlugs, cachedContents (parallel arrays from lookup_tutorial_cache)
+//   freshSlugs,  freshContents  (parallel arrays — fanout aggregate of
+//                                tutorialAuthoring.slug + .markdown)
+// Outputs:
+//   slugs, contents (cached then fresh, parallel-array concat)
+const merge_tutorials: ScriptModule = {
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async run(inputs) {
+    const cachedSlugs = (inputs.cachedSlugs ?? []) as unknown[];
+    const cachedContents = (inputs.cachedContents ?? []) as unknown[];
+    const freshSlugs = (inputs.freshSlugs ?? []) as unknown[];
+    const freshContents = (inputs.freshContents ?? []) as unknown[];
+
+    if (!Array.isArray(cachedSlugs) || !Array.isArray(cachedContents)
+        || !Array.isArray(freshSlugs) || !Array.isArray(freshContents)) {
+      throw new Error("merge_tutorials: all inputs must be arrays");
+    }
+    if (cachedSlugs.length !== cachedContents.length) {
+      throw new Error(
+        `merge_tutorials: cached parallel-array length mismatch ` +
+        `(${cachedSlugs.length}/${cachedContents.length})`,
+      );
+    }
+    if (freshSlugs.length !== freshContents.length) {
+      throw new Error(
+        `merge_tutorials: fresh parallel-array length mismatch ` +
+        `(${freshSlugs.length}/${freshContents.length})`,
+      );
+    }
+
+    return {
+      slugs: [...cachedSlugs, ...freshSlugs],
+      contents: [...cachedContents, ...freshContents],
+    };
+  },
+};
+
 // ---------- registry ----------
 
 export const BUILTIN_SCRIPT_MODULES: Readonly<Record<string, ScriptModule>> = Object.freeze({
@@ -907,6 +949,7 @@ export const BUILTIN_SCRIPT_MODULES: Readonly<Record<string, ScriptModule>> = Ob
   noop_terminal,
   validate_and_repair_ir,
   assemble_investigation_ir,
+  merge_tutorials,
 });
 
 // Continuation 8 (2026-04-29) — `submit_pipeline_passthrough` is a
@@ -916,7 +959,14 @@ export const BUILTIN_SCRIPT_MODULES: Readonly<Record<string, ScriptModule>> = Ob
 // (validator/structural.ts SCRIPT_MODULE_NOT_REGISTERED) accepts it,
 // and the actual binding is wired into the resolver in
 // runtime/start-pipeline-run.ts.
-const FACTORY_SCRIPT_IDS = ["submit_pipeline_passthrough"] as const;
+const FACTORY_SCRIPT_IDS = [
+  "submit_pipeline_passthrough",
+  // D1 (c12, 2026-04-30) — tutorial cache scripts that need a live db
+  // handle. Bound in start-pipeline-run.ts via buildLookupTutorialCache /
+  // buildWriteTutorialCache.
+  "lookup_tutorial_cache",
+  "write_tutorial_cache",
+] as const;
 
 export const BUILTIN_SCRIPT_IDS: ReadonlySet<string> = new Set([
   ...Object.keys(BUILTIN_SCRIPT_MODULES),

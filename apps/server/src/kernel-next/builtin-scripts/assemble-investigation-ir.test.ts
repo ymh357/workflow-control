@@ -54,16 +54,19 @@ function buildPromptsDict(ir: PipelineIR): Record<string, string> {
 }
 
 describe("assemble_investigation_ir / structure", () => {
-  it("emits 17 stages with canonical names and types", () => {
+  it("emits 20 stages with canonical names and types (D1 added 3 cache stages)", () => {
     const { ir } = assembleInvestigationIR(baseInput());
-    expect(ir.stages.length).toBe(17);
+    expect(ir.stages.length).toBe(20);
     const names = ir.stages.map((s) => s.name);
     expect(names).toEqual([
       "topicFraming",
       "framingGate",
       "prereqExtraction",
       "prereqGate",
+      "lookupTutorialCache",
       "tutorialAuthoring",
+      "writeTutorialCache",
+      "mergeTutorials",
       "tutorialReviewGate",
       "hypothesize",
       "evidenceGather",
@@ -78,7 +81,7 @@ describe("assemble_investigation_ir / structure", () => {
       "pipelineComplete",
     ]);
 
-    // Type counts: 8 agent, 7 gate, 2 script.
+    // Type counts: 8 agent, 7 gate, 5 script (D1 added 3 script stages).
     const counts = ir.stages.reduce<Record<string, number>>(
       (acc, s) => {
         acc[s.type] = (acc[s.type] ?? 0) + 1;
@@ -88,7 +91,7 @@ describe("assemble_investigation_ir / structure", () => {
     );
     expect(counts.agent).toBe(8);
     expect(counts.gate).toBe(7);
-    expect(counts.script).toBe(2);
+    expect(counts.script).toBe(5);
   });
 
   it("evidenceGather has EXACTLY 1 output port `evidence` (not 5 split fields)", () => {
@@ -371,7 +374,7 @@ describe("assemble_investigation_ir / determinism", () => {
     expect(JSON.stringify(a.wires)).toBe(JSON.stringify(b.wires));
   });
 
-  it("4 investigationType variants all produce 17-stage IRs (same structure)", () => {
+  it("4 investigationType variants all produce 20-stage IRs (same structure post-D1)", () => {
     const types: AssembleInvestigationIRInput["investigationType"][] = [
       "lookup",
       "diagnostic",
@@ -380,7 +383,7 @@ describe("assemble_investigation_ir / determinism", () => {
     ];
     for (const t of types) {
       const { ir } = assembleInvestigationIR(baseInput({ investigationType: t }));
-      expect(ir.stages.length).toBe(17);
+      expect(ir.stages.length).toBe(20);
     }
   });
 });

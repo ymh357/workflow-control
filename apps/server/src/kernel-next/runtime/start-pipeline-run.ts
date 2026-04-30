@@ -31,6 +31,10 @@ import { CompositeStageExecutor } from "./composite-executor.js";
 import { TrivialScriptModuleResolver } from "./script-module-resolver.js";
 import { BUILTIN_SCRIPT_MODULES } from "../builtin-scripts/index.js";
 import { buildSubmitPipelinePassthrough } from "../builtin-scripts/submit-pipeline.js";
+import {
+  buildLookupTutorialCache,
+  buildWriteTutorialCache,
+} from "../builtin-scripts/tutorial-cache.js";
 import { findMissingMcpRemoteAuth } from "./mcp-remote-preflight.js";
 import { DbPromptResolver } from "./db-prompt-resolver.js";
 import { MOCK_HANDLER_REGISTRY } from "./mock-handler-registry.js";
@@ -438,6 +442,9 @@ export async function startPipelineRun(
               // persisting stage (now a script, not an agent) to submit
               // the generated IR + prompts deterministically.
               submit_pipeline_passthrough: buildSubmitPipelinePassthrough(db),
+              // D1 (c12, 2026-04-30) — tutorial cache.
+              lookup_tutorial_cache: buildLookupTutorialCache(db),
+              write_tutorial_cache: buildWriteTutorialCache(db),
             },
           }),
         }),

@@ -250,11 +250,32 @@ function buildStages(input: AssembleInvestigationIRInput): StageIR[] {
     },
   };
 
+  // D1 (c12, 2026-04-30) — cross-task tutorial cache. Three stages
+  // sandwich tutorialAuthoring: lookup feeds the fanout only the
+  // missing slugs, write upserts the freshly-authored set, merge
+  // concatenates cached + fresh into the bundle that downstream
+  // consumers see. Spec:
+  // docs/superpowers/specs/2026-04-30-tutorial-cache-design.md.
+  const lookupTutorialCache: ScriptStage = {
+    name: "lookupTutorialCache",
+    type: "script",
+    inputs: [
+      port("slugs", "string[]", "Full tutorial-outline slug set from prereqExtraction."),
+      port("subjectDomain", "string"),
+    ],
+    outputs: [
+      port("cachedSlugs", "string[]", "Slugs already fresh in cache (≤30d old)."),
+      port("cachedContents", "string[]", "Cached markdown, parallel to cachedSlugs."),
+      port("missingSlugs", "string[]", "Slugs the tutorialAuthoring fanout still needs to author."),
+    ],
+    config: { source: "registry", moduleId: "lookup_tutorial_cache" },
+  };
+
   const tutorialAuthoring: AgentStage = {
     name: "tutorialAuthoring",
     type: "agent",
     inputs: [
-      port("concept", "string", "Single concept name (fanout element from tutorialOutline)."),
+      port("concept", "string", "Single concept name (fanout element from lookupTutorialCache.missingSlugs)."),
       port("audience", T_AUDIENCE),
       port("axes", "string[]"),
       port("tutorialRejectionFeedback", "string", "Reject-rerun correction from tutorialReviewGate; empty on first pass."),
@@ -265,6 +286,36 @@ function buildStages(input: AssembleInvestigationIRInput): StageIR[] {
     ],
     config: { promptRef: "tutorialAuthoring" },
     fanout: { input: "concept", elementRetries: 1 },
+  };
+
+  const writeTutorialCache: ScriptStage = {
+    name: "writeTutorialCache",
+    type: "script",
+    inputs: [
+      port("slugs", "string[]", "Slugs the fanout actually authored this run (aggregate)."),
+      port("contents", "string[]", "Authored markdown, parallel to slugs."),
+      port("subjectDomain", "string"),
+    ],
+    outputs: [
+      port("written", "number", "Count of upserted rows; informational."),
+    ],
+    config: { source: "registry", moduleId: "write_tutorial_cache" },
+  };
+
+  const mergeTutorials: ScriptStage = {
+    name: "mergeTutorials",
+    type: "script",
+    inputs: [
+      port("cachedSlugs", "string[]"),
+      port("cachedContents", "string[]"),
+      port("freshSlugs", "string[]", "tutorialAuthoring.slug aggregate (only the freshly-authored slugs)."),
+      port("freshContents", "string[]", "tutorialAuthoring.markdown aggregate."),
+    ],
+    outputs: [
+      port("slugs", "string[]", "Merged slug array (cached then fresh)."),
+      port("contents", "string[]", "Merged markdown array, parallel to slugs."),
+    ],
+    config: { source: "registry", moduleId: "merge_tutorials" },
   };
 
   const tutorialReviewGate: GateStage = {
@@ -539,7 +590,10 @@ function buildStages(input: AssembleInvestigationIRInput): StageIR[] {
     framingGate,
     prereqExtraction,
     prereqGate,
+    lookupTutorialCache,
     tutorialAuthoring,
+    writeTutorialCache,
+    mergeTutorials,
     tutorialReviewGate,
     hypothesize,
     evidenceGather,
@@ -584,32 +638,56 @@ function buildWires(): WireIR[] {
     wire("prereqExtraction", "tutorialOutline", "prereqGate", "tutorialOutline"),
   ];
 
-  // Layer 1: tutorialAuthoring (fanout) — driven by prereqExtraction.tutorialOutline (string[]).
+  // D1 (c12) — tutorial cache wires.
+  // Sequence: prereqExtraction.tutorialOutline → lookupTutorialCache →
+  // tutorialAuthoring (fanout over missingSlugs only) →
+  // writeTutorialCache (upsert fresh) → mergeTutorials (cached + fresh)
+  // → downstream consumers.
+  const tutorialCacheLookupWires: WireIR[] = [
+    wire("prereqExtraction", "tutorialOutline", "lookupTutorialCache", "slugs"),
+    wire("topicFraming", "subjectDomain", "lookupTutorialCache", "subjectDomain"),
+  ];
+
+  // tutorialAuthoring (fanout) — driven by lookupTutorialCache.missingSlugs.
   const tutorialAuthWires: WireIR[] = [
-    wire("prereqExtraction", "tutorialOutline", "tutorialAuthoring", "concept"),
+    wire("lookupTutorialCache", "missingSlugs", "tutorialAuthoring", "concept"),
     wire("topicFraming", "audience", "tutorialAuthoring", "audience"),
     wire("topicFraming", "axes", "tutorialAuthoring", "axes"),
     wire("tutorialReviewGate", "__gate_feedback__", "tutorialAuthoring", "tutorialRejectionFeedback"),
   ];
 
-  // Tutorial bundle aggregation feeding the rest of the pipeline. Each
-  // element-level output of tutorialAuthoring (slug, markdown) becomes
-  // an array on the consumer's input port.
+  // writeTutorialCache (upsert) — fed by the fanout aggregate.
+  const tutorialCacheWriteWires: WireIR[] = [
+    wire("tutorialAuthoring", "slug", "writeTutorialCache", "slugs"),
+    wire("tutorialAuthoring", "markdown", "writeTutorialCache", "contents"),
+    wire("topicFraming", "subjectDomain", "writeTutorialCache", "subjectDomain"),
+  ];
+
+  // mergeTutorials (concat cached + fresh).
+  const tutorialMergeWires: WireIR[] = [
+    wire("lookupTutorialCache", "cachedSlugs", "mergeTutorials", "cachedSlugs"),
+    wire("lookupTutorialCache", "cachedContents", "mergeTutorials", "cachedContents"),
+    wire("tutorialAuthoring", "slug", "mergeTutorials", "freshSlugs"),
+    wire("tutorialAuthoring", "markdown", "mergeTutorials", "freshContents"),
+  ];
+
+  // Tutorial bundle aggregation feeding the rest of the pipeline.
+  // Post-D1 the source is mergeTutorials, not tutorialAuthoring directly.
   const tutorialBundleWires: WireIR[] = [
-    wire("tutorialAuthoring", "slug", "tutorialReviewGate", "tutorialSlugs"),
-    wire("tutorialAuthoring", "markdown", "tutorialReviewGate", "tutorialMarkdowns"),
-    wire("tutorialAuthoring", "slug", "hypothesize", "tutorialSlugs"),
-    wire("tutorialAuthoring", "markdown", "hypothesize", "tutorialMarkdowns"),
-    wire("tutorialAuthoring", "slug", "evidenceGather", "tutorialSlugs"),
-    wire("tutorialAuthoring", "markdown", "evidenceGather", "tutorialMarkdowns"),
-    wire("tutorialAuthoring", "slug", "findingsAuthoring", "tutorialSlugs"),
-    wire("tutorialAuthoring", "markdown", "findingsAuthoring", "tutorialMarkdowns"),
-    wire("tutorialAuthoring", "slug", "humanReviewGate", "tutorialSlugs"),
-    wire("tutorialAuthoring", "markdown", "humanReviewGate", "tutorialMarkdowns"),
-    wire("tutorialAuthoring", "slug", "reportAssembly", "tutorialSlugs"),
-    wire("tutorialAuthoring", "markdown", "reportAssembly", "tutorialMarkdowns"),
-    wire("tutorialAuthoring", "slug", "reportJudge", "tutorialSlugs"),
-    wire("tutorialAuthoring", "markdown", "reportJudge", "tutorialMarkdowns"),
+    wire("mergeTutorials", "slugs", "tutorialReviewGate", "tutorialSlugs"),
+    wire("mergeTutorials", "contents", "tutorialReviewGate", "tutorialMarkdowns"),
+    wire("mergeTutorials", "slugs", "hypothesize", "tutorialSlugs"),
+    wire("mergeTutorials", "contents", "hypothesize", "tutorialMarkdowns"),
+    wire("mergeTutorials", "slugs", "evidenceGather", "tutorialSlugs"),
+    wire("mergeTutorials", "contents", "evidenceGather", "tutorialMarkdowns"),
+    wire("mergeTutorials", "slugs", "findingsAuthoring", "tutorialSlugs"),
+    wire("mergeTutorials", "contents", "findingsAuthoring", "tutorialMarkdowns"),
+    wire("mergeTutorials", "slugs", "humanReviewGate", "tutorialSlugs"),
+    wire("mergeTutorials", "contents", "humanReviewGate", "tutorialMarkdowns"),
+    wire("mergeTutorials", "slugs", "reportAssembly", "tutorialSlugs"),
+    wire("mergeTutorials", "contents", "reportAssembly", "tutorialMarkdowns"),
+    wire("mergeTutorials", "slugs", "reportJudge", "tutorialSlugs"),
+    wire("mergeTutorials", "contents", "reportJudge", "tutorialMarkdowns"),
   ];
 
   // Layer 2: hypothesize.
@@ -689,7 +767,10 @@ function buildWires(): WireIR[] {
     ...ext,
     ...layer0to1,
     ...prereqWires,
+    ...tutorialCacheLookupWires,
     ...tutorialAuthWires,
+    ...tutorialCacheWriteWires,
+    ...tutorialMergeWires,
     ...tutorialBundleWires,
     ...hypothesizeWires,
     ...evidenceGatherWires,
