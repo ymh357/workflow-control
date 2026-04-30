@@ -651,6 +651,8 @@ For each entry you decide to use:
    - **`command`, `args`, `env`, `envKeys` are copied verbatim from the catalog response.** Do NOT slugify, lowercase, reorder, or "improve" them. Don't drop `-y` from args. Don't replace `${VAR}` placeholders with literal values.
    - **`env` is the only synthesised field**: for each envKey name in the catalog, emit `"<envKey>": "${<envKey>}"`. The kernel's expander (Phase 2 inventory layer) resolves the `${VAR}` placeholders at run time.
 
+   - **HARD RULE — envKeys MUST be paired with env**: if your IR's `envKeys: [...]` is non-empty, the `env` object MUST contain a matching `${<KEY>}` reference for every entry. The kernel validator (`ENVKEY_NOT_REFERENCED`) rejects submissions that declare an envKey without a `${VAR}` reference somewhere in `command`, `args`, or `env` — the runtime cannot route to the secret-gate UX without a placeholder to substitute the resolved value into. Anti-pattern (REJECTED on submit, also rejected by historical-IR runtime guard): `{ "envKeys": ["GITHUB_PERSONAL_ACCESS_TOKEN"] }` with no `env` field. Correct: `{ "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_PERSONAL_ACCESS_TOKEN}" }, "envKeys": ["GITHUB_PERSONAL_ACCESS_TOKEN"] }`.
+
    **Examples of what to write**:
    - catalog `{ id: "fetch", name: "Fetch MCP", command: "npx", args: ["-y", "fetch-mcp"], envKeys: [] }` →
      IR block `{ "name": "fetch", "command": "npx", "args": ["-y", "fetch-mcp"], "envKeys": [] }`
