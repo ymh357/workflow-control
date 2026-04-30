@@ -754,36 +754,100 @@ export class KernelService {
     pipelineName: string;
     newIR: PipelineIR;
     actor: string;
+    /**
+     * Bug 9 fix (c12+ review): registry pipelines have AgentStages
+     * with promptRefs that must resolve at run time. Pre-fix this
+     * method neither hashed prompts into the versionHash nor persisted
+     * any pipeline_prompt_refs rows, so every registry-pushed pipeline
+     * errored with "prompt not found" on the first agent stage. The
+     * `prompts` parameter is now required for any IR that contains
+     * agent stages with promptRef.
+     */
+    prompts?: Record<string, string>;
   }): { ok: true; versionHash: string; path: string }
    | { ok: false; diagnostics: Diagnostic[] } {
+    // Bug 9 path-traversal fix: validate pipelineName against an
+    // explicit kebab-case identifier regex BEFORE any path.join.
+    // Pre-fix `path.join(registryRoot, name)` accepted `..` segments
+    // and could write pipeline.ir.json anywhere the kernel UID could
+    // write.
+    const NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+    if (!NAME_RE.test(input.pipelineName)) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "REGISTRY_PIPELINE_NAME_INVALID",
+          message:
+            `pipelineName '${input.pipelineName}' must match ${NAME_RE} ` +
+            `(kebab-case, ≤64 chars, must start with [a-z0-9]). ` +
+            `This rule blocks path-traversal via '..' segments and ` +
+            `non-portable Windows paths.`,
+          context: { pipelineName: input.pipelineName },
+        }],
+      };
+    }
+
     const validationResult = this.validate(input.newIR);
     if (!validationResult.ok) {
       return { ok: false, diagnostics: validationResult.diagnostics };
     }
     const parsedIR = PipelineIRSchema.parse(input.newIR);
 
-    const hash = versionHash(parsedIR);
-
-    if (getPipelineIR(this.db, hash) === null) {
-      const { source } = emitPipelineModule(parsedIR);
-      insertPipelineVersion(this.db, parsedIR, {
-        versionHash: hash,
-        tsSource: source,
-      });
+    // Bug 9: collect promptRefs from the IR; verify the caller supplied
+    // them (system/* and global-constraints prompts are optional for
+    // tests but otherwise every promptRef must be present).
+    const prompts = input.prompts ?? {};
+    const agentPromptRefs = new Set<string>();
+    for (const s of parsedIR.stages) {
+      if (s.type === "agent" && s.config.promptRef) {
+        agentPromptRefs.add(s.config.promptRef);
+      }
+    }
+    const promptDiags: Diagnostic[] = [];
+    for (const ref of agentPromptRefs) {
+      if (!(ref in prompts)) {
+        promptDiags.push({
+          code: "PROMPT_REF_MISSING",
+          message:
+            `prompt for AgentStage promptRef '${ref}' was not supplied. ` +
+            `update_registry_pipeline must receive every promptRef referenced ` +
+            `by an agent stage; otherwise DbPromptResolver fails at run time.`,
+          context: { promptRef: ref },
+        });
+      }
+    }
+    if (promptDiags.length > 0) {
+      return { ok: false, diagnostics: promptDiags };
     }
 
-    // File-write side effect. Resolve registry root lazily to honour
-    // REGISTRY_ROOT override without complicating happy-path callers.
-    // Using require() inside the method keeps ESM-side static analysis
-    // clean (node:fs / node:path are CJS-compatible via the built-in
-    // shim). REGISTRY_PIPELINE_NOT_FOUND fires when the target dir is
-    // absent — callers must create it out-of-band (we don't mkdir for
-    // them to avoid accidentally inventing new registry entries).
+    // Bug 9: hash IR + prompts together (matching submit() / propose()).
+    // Pre-fix used `versionHash(parsedIR)` which is IR-only — collisions
+    // possible across submit/updateRegistry for prompts-laden pipelines.
+    const hash = pipelineVersionHash({ ir: parsedIR, prompts });
+
+    // File path resolution + traversal guard. Using path.resolve to
+    // canonicalise ".." segments (defence-in-depth alongside the regex
+    // check above), then verify the canonical dirPath lives under the
+    // canonical registryRoot.
     const nodeFs = require("node:fs") as typeof import("node:fs");
     const nodePath = require("node:path") as typeof import("node:path");
-    const registryRoot = process.env["REGISTRY_ROOT"]
-      ?? nodePath.resolve(process.cwd(), "apps/server/src/builtin-pipelines");
-    const dirPath = nodePath.join(registryRoot, input.pipelineName);
+    const registryRoot = nodePath.resolve(
+      process.env["REGISTRY_ROOT"]
+        ?? nodePath.resolve(process.cwd(), "apps/server/src/builtin-pipelines"),
+    );
+    const dirPath = nodePath.resolve(registryRoot, input.pipelineName);
+    if (!dirPath.startsWith(registryRoot + nodePath.sep) && dirPath !== registryRoot) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "REGISTRY_PIPELINE_PATH_ESCAPE",
+          message:
+            `resolved registry path '${dirPath}' escapes registryRoot ` +
+            `'${registryRoot}'. This indicates a path-traversal attempt.`,
+          context: { pipelineName: input.pipelineName, dirPath, registryRoot },
+        }],
+      };
+    }
     if (!nodeFs.existsSync(dirPath)) {
       return {
         ok: false,
@@ -794,6 +858,24 @@ export class KernelService {
         }],
       };
     }
+
+    // Persist (idempotent on hash collision via INSERT OR IGNORE inside
+    // insertPipelineVersion / insertPromptContent / insertPromptRefs).
+    if (getPipelineIR(this.db, hash) === null) {
+      const { source } = emitPipelineModule(parsedIR);
+      insertPipelineVersion(this.db, parsedIR, {
+        versionHash: hash,
+        tsSource: source,
+      });
+      const refsMap: Record<string, string> = {};
+      for (const [ref, content] of Object.entries(prompts)) {
+        const ch = promptContentHash(content);
+        insertPromptContent(this.db, ch, normalizePromptContent(content));
+        refsMap[ref] = ch;
+      }
+      insertPromptRefs(this.db, hash, refsMap);
+    }
+
     const irPath = nodePath.join(dirPath, "pipeline.ir.json");
     nodeFs.writeFileSync(
       irPath,

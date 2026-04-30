@@ -40,17 +40,32 @@ export function buildGateTools(deps: ToolsDeps): ToolDef[] {
         "and never echoed back in the response. When all required keys are " +
         "satisfied the secret gate is marked resolved and the paused stage is " +
         "automatically retried. If some keys are still missing the response " +
-        "includes a `stillMissing` array so the caller knows what to provide next.",
+        "includes a `stillMissing` array so the caller knows what to provide next. " +
+        "Optional `persistAs` map (envKey -> {entryId}) saves provided secrets " +
+        "to the encrypted MCP inventory so future tasks reuse them without " +
+        "prompting again (Bug 25 fix; pre-fix the wrapper dropped this option).",
       inputSchema: {
         taskId: z.string(),
         secrets: z.record(z.string(), z.string()),
+        persistAs: z.record(
+          z.string().min(1),
+          z.object({ entryId: z.string().min(1) }).strict(),
+        ).optional(),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       handler: async (args: any) => {
         try {
+          // Bug 25 fix (c12+ review): forward `persistAs` to KernelService
+          // so the documented "save to inventory" path is reachable from
+          // MCP. Pre-fix only the underlying KernelService.provideTaskSecrets
+          // accepted persistAs; the MCP wrapper silently dropped it.
+          const persistAs = args.persistAs as
+            | Record<string, { entryId: string }>
+            | undefined;
           const result = await kernel.provideTaskSecrets(
             String(args.taskId),
             (args.secrets ?? {}) as Record<string, string>,
+            persistAs ? { persistAs } : undefined,
           );
           return jsonResponse(result);
         } catch (err) {

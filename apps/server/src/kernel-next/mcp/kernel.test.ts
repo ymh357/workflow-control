@@ -1231,6 +1231,7 @@ describe("KernelService — Stage 5A updateRegistryPipeline", () => {
       const r = svc.updateRegistryPipeline({
         pipelineName: "my-pipeline",
         newIR,
+        prompts: diamondPrompts(),
         actor: "test",
       });
       if (!r.ok) throw new Error("expected ok: " + JSON.stringify(r.diagnostics));
@@ -1259,6 +1260,7 @@ describe("KernelService — Stage 5A updateRegistryPipeline", () => {
       const r = svc.updateRegistryPipeline({
         pipelineName: "missing-pipeline",
         newIR,
+        prompts: diamondPrompts(),
         actor: "test",
       });
       expect(r.ok).toBe(false);
@@ -1269,6 +1271,142 @@ describe("KernelService — Stage 5A updateRegistryPipeline", () => {
       delete process.env["REGISTRY_ROOT"];
       nodeFs.rmSync(tmp, { recursive: true, force: true });
     }
+  });
+
+  // Bug 9 fix (c12+ review): name validation, path traversal, prompt
+  // persistence, hash uses pipelineVersionHash({ir,prompts}).
+  describe("Bug 9 — hash + path traversal + prompt persistence", () => {
+    const nodeFs = require("node:fs") as typeof import("node:fs");
+    const nodeOs = require("node:os") as typeof import("node:os");
+    const nodePath = require("node:path") as typeof import("node:path");
+
+    it.each([
+      "..",
+      "../etc",
+      "foo/../bar",
+      "Foo",            // uppercase rejected
+      "-leading-dash",
+      "with space",
+      ".hidden",
+      "",
+    ])("rejects malformed pipelineName '%s' as REGISTRY_PIPELINE_NAME_INVALID", (badName) => {
+      const tmp = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "registry-"));
+      process.env["REGISTRY_ROOT"] = tmp;
+      try {
+        const db = makeDb();
+        const svc = new KernelService(db, { skipTypeCheck: true });
+        const newIR = diamondIR();
+        newIR.name = badName || "x";
+        const r = svc.updateRegistryPipeline({
+          pipelineName: badName,
+          newIR,
+          prompts: diamondPrompts(),
+          actor: "test",
+        });
+        expect(r.ok).toBe(false);
+        if (r.ok) throw new Error("expected failure");
+        expect(r.diagnostics.some((d) => d.code === "REGISTRY_PIPELINE_NAME_INVALID")).toBe(true);
+        db.close();
+      } finally {
+        delete process.env["REGISTRY_ROOT"];
+        nodeFs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("rejects when prompts is missing for IR with agent stages (PROMPT_REF_MISSING)", () => {
+      const tmp = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "registry-"));
+      const pipelineDir = nodePath.join(tmp, "needs-prompts");
+      nodeFs.mkdirSync(pipelineDir);
+      process.env["REGISTRY_ROOT"] = tmp;
+      try {
+        const db = makeDb();
+        const svc = new KernelService(db, { skipTypeCheck: true });
+        const newIR = diamondIR();
+        newIR.name = "needs-prompts";
+        const r = svc.updateRegistryPipeline({
+          pipelineName: "needs-prompts",
+          newIR,
+          // prompts intentionally omitted
+          actor: "test",
+        });
+        expect(r.ok).toBe(false);
+        if (r.ok) throw new Error("expected failure");
+        expect(r.diagnostics.some((d) => d.code === "PROMPT_REF_MISSING")).toBe(true);
+        db.close();
+      } finally {
+        delete process.env["REGISTRY_ROOT"];
+        nodeFs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("hash equals pipelineVersionHash({ir,prompts}) — same IR, different prompts → different hash", () => {
+      const tmp = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "registry-"));
+      const pipelineDir = nodePath.join(tmp, "hash-test");
+      nodeFs.mkdirSync(pipelineDir);
+      nodeFs.writeFileSync(nodePath.join(pipelineDir, "pipeline.ir.json"), "{}", "utf8");
+      process.env["REGISTRY_ROOT"] = tmp;
+      try {
+        const db = makeDb();
+        const svc = new KernelService(db, { skipTypeCheck: true });
+        const newIR = diamondIR();
+        newIR.name = "hash-test";
+
+        const r1 = svc.updateRegistryPipeline({
+          pipelineName: "hash-test",
+          newIR,
+          prompts: diamondPrompts(),
+          actor: "test",
+        });
+        if (!r1.ok) throw new Error("r1 failed: " + JSON.stringify(r1.diagnostics));
+
+        // Same IR, different prompt content → different hash.
+        const altPrompts: Record<string, string> = {};
+        for (const k of Object.keys(diamondPrompts())) altPrompts[k] = "different";
+        const r2 = svc.updateRegistryPipeline({
+          pipelineName: "hash-test",
+          newIR,
+          prompts: altPrompts,
+          actor: "test",
+        });
+        if (!r2.ok) throw new Error("r2 failed: " + JSON.stringify(r2.diagnostics));
+        expect(r1.versionHash).not.toBe(r2.versionHash);
+        db.close();
+      } finally {
+        delete process.env["REGISTRY_ROOT"];
+        nodeFs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it("persists pipeline_prompt_refs rows so DbPromptResolver can resolve them later", () => {
+      const tmp = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "registry-"));
+      const pipelineDir = nodePath.join(tmp, "prompt-persist");
+      nodeFs.mkdirSync(pipelineDir);
+      nodeFs.writeFileSync(nodePath.join(pipelineDir, "pipeline.ir.json"), "{}", "utf8");
+      process.env["REGISTRY_ROOT"] = tmp;
+      try {
+        const db = makeDb();
+        const svc = new KernelService(db, { skipTypeCheck: true });
+        const newIR = diamondIR();
+        newIR.name = "prompt-persist";
+        const r = svc.updateRegistryPipeline({
+          pipelineName: "prompt-persist",
+          newIR,
+          prompts: diamondPrompts(),
+          actor: "test",
+        });
+        if (!r.ok) throw new Error("expected ok: " + JSON.stringify(r.diagnostics));
+        const refs = db.prepare(
+          `SELECT prompt_ref, content_hash FROM pipeline_prompt_refs WHERE version_hash = ?`,
+        ).all(r.versionHash) as Array<{ prompt_ref: string; content_hash: string }>;
+        const expectedRefs = Object.keys(diamondPrompts()).sort();
+        const actualRefs = refs.map((x) => x.prompt_ref).sort();
+        expect(actualRefs).toEqual(expectedRefs);
+        db.close();
+      } finally {
+        delete process.env["REGISTRY_ROOT"];
+        nodeFs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
   });
 });
 

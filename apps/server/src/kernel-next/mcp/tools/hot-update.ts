@@ -146,10 +146,16 @@ export function buildHotUpdateTools(deps: ToolsDeps): ToolDef[] {
         "Stage 5A — replace a registry pipeline's IR definition and " +
         "register a new pipeline_versions row. Does NOT migrate running " +
         "tasks. REGISTRY_ROOT env var can override the registry root " +
-        "for tests.",
+        "for tests. The `prompts` field is REQUIRED for any IR with " +
+        "AgentStage promptRefs (post-Bug-9 fix); each promptRef in the " +
+        "IR must have a matching key in prompts.",
       inputSchema: {
-        pipelineName: z.string().min(1),
+        pipelineName: z.string().min(1).max(64).regex(
+          /^[a-z0-9][a-z0-9-]{0,63}$/,
+          "kebab-case identifier; ≤64 chars; starts with [a-z0-9]; ' .. ' rejected",
+        ),
         newIR: z.unknown(),
+        prompts: z.record(z.string().min(1), z.string()).optional(),
         actor: z.string().default("unknown"),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -158,6 +164,7 @@ export function buildHotUpdateTools(deps: ToolsDeps): ToolDef[] {
           return jsonResponse(kernel.updateRegistryPipeline({
             pipelineName: String(args.pipelineName),
             newIR: args.newIR as never,
+            prompts: args.prompts as Record<string, string> | undefined,
             actor: String(args.actor ?? "unknown"),
           }));
         } catch (err) {
@@ -298,8 +305,12 @@ export function buildHotUpdateTools(deps: ToolsDeps): ToolDef[] {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       handler: async (args: any) => {
         try {
+          // Bug 24 fix (c12+ review): kernel.migrateTask is async.
+          // Pre-fix this passed the unresolved Promise to jsonResponse,
+          // which JSON.stringified an empty `{}` object back to MCP
+          // callers — silently breaking the migrate_task tool.
           return jsonResponse(
-            kernel.migrateTask(String(args.taskId), String(args.proposalId)),
+            await kernel.migrateTask(String(args.taskId), String(args.proposalId)),
           );
         } catch (err) {
           return errorResponse(err instanceof Error ? err.message : String(err));

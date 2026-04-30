@@ -557,6 +557,10 @@ export const DiagnosticSchema = z.object({
     // 2026-04-30 D4 dogfood (Bug G): mcpServer.envKeys cross-check
     // against ${VAR} references in command/args/env values.
     "ENVKEY_NOT_REFERENCED",
+    // 2026-04-30 c12+ review (Bug 9): update_registry_pipeline path
+    // traversal + bad pipeline-name validation.
+    "REGISTRY_PIPELINE_NAME_INVALID",
+    "REGISTRY_PIPELINE_PATH_ESCAPE",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),
