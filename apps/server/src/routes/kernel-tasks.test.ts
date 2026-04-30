@@ -42,16 +42,21 @@ function openAttempt(
   versionHash: string,
   stageName: string,
   status: "running" | "success" | "error" = "running",
+  // C10 (2026-04-30) Bug F — getTaskStatus treats fresh attempts as
+  // live (60s window). Tests asserting 'orphaned' must pass a stale age.
+  staleAgeMs = 0,
 ): string {
   const id = "att-" + Math.random().toString(36).slice(2, 10);
+  const startedAt = Date.now() - staleAgeMs;
   db.prepare(
     `INSERT INTO stage_attempts
      (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, ended_at, status)
      VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
-  ).run(id, taskId, versionHash, stageName, Date.now(),
-    status === "running" ? null : Date.now(), status);
+  ).run(id, taskId, versionHash, stageName, startedAt,
+    status === "running" ? null : startedAt, status);
   return id;
 }
+const STALE_THRESHOLD_MS = 65_000;
 
 describe("REST /api/kernel/tasks/:taskId/status", () => {
   let db: DatabaseSync;
@@ -125,7 +130,7 @@ describe("REST /api/kernel/tasks/:taskId/status", () => {
     const svc = new KernelService(db, { skipTypeCheck: true });
     const submit = await svc.submit(seedIR(), { prompts: { p: "dummy" } });
     if (!submit.ok) throw new Error("seed submit failed");
-    openAttempt(db, "t-err", submit.versionHash, "A", "error");
+    openAttempt(db, "t-err", submit.versionHash, "A", "error", STALE_THRESHOLD_MS);
     const res = await buildApp().fetch(new Request("http://t/api/kernel/tasks/t-err/status"));
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, status: "orphaned", taskId: "t-err" });

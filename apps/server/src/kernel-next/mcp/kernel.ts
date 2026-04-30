@@ -1734,6 +1734,43 @@ export class KernelService {
     if (statuses.some((s) => s === "running")) {
       return { ok: true, status: "running", taskId };
     }
+
+    // C10 (2026-04-30) Bug F: between a fanout's aggregate row landing
+    // and the next stage's first attempt opening, latest-per-stage
+    // briefly shows ALL success / no running, even though the runner is
+    // mid-PORT_WRITTEN dispatching the next stage. The pre-Bug-F path
+    // called this orphaned, which made dashboards / dogfood monitors
+    // prematurely declare the task dead.
+    //
+    // Resolution: liveness is the OR of two signals taken across the
+    // whole task (not just latest-per-stage):
+    //   (a) any agent_execution_details row with last_heartbeat_at
+    //       within the threshold (real-executor's stream-update tick)
+    //   (b) any stage_attempts row whose started_at is within the
+    //       threshold (covers script stages and the brief window between
+    //       a finished stage and the next stage's first attempt opening)
+    // A task that's been quiet on BOTH signals for 60s is genuinely
+    // orphaned — runner crashed, process killed, etc. The threshold is
+    // above normal inter-attempt latency (~1s) but well below the
+    // runner's per-element timeout (30min) and global wall-clock (90min)
+    // so a wedged task still surfaces as orphaned eventually.
+    const HEARTBEAT_LIVENESS_MS = 60 * 1000;
+    const now = Date.now();
+    const recentHeartbeat = this.db.prepare(
+      `SELECT MAX(aed.last_heartbeat_at) AS hb
+       FROM agent_execution_details aed
+       INNER JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
+       WHERE sa.task_id = ?`,
+    ).get(taskId) as { hb: number | null };
+    if (recentHeartbeat.hb && now - recentHeartbeat.hb < HEARTBEAT_LIVENESS_MS) {
+      return { ok: true, status: "running", taskId };
+    }
+    const recentAttempt = this.db.prepare(
+      `SELECT MAX(started_at) AS s FROM stage_attempts WHERE task_id = ?`,
+    ).get(taskId) as { s: number | null };
+    if (recentAttempt.s && now - recentAttempt.s < HEARTBEAT_LIVENESS_MS) {
+      return { ok: true, status: "running", taskId };
+    }
     return { ok: true, status: "orphaned", taskId };
   }
 

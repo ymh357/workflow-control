@@ -620,8 +620,14 @@ describe("KernelService — getTaskStatus (A4)", () => {
     stageName: string,
     status: "running" | "success" | "error" = "running",
     attemptIdx = 1,
+    // C10 (2026-04-30) Bug F — getTaskStatus now treats fresh attempts
+    // as live (60s window) so the brief gap between fanout aggregate
+    // and next-stage start doesn't read as orphaned. Tests asserting
+    // 'orphaned' must use a started_at older than the threshold.
+    staleAgeMs = 0,
   ): string {
     const attemptId = "att-" + Math.random().toString(36).slice(2, 10);
+    const startedAt = Date.now() - staleAgeMs;
     db.prepare(
       `INSERT INTO stage_attempts
        (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, ended_at, status)
@@ -632,12 +638,13 @@ describe("KernelService — getTaskStatus (A4)", () => {
       versionHash,
       stageName,
       attemptIdx,
-      Date.now(),
-      status === "running" ? null : Date.now(),
+      startedAt,
+      status === "running" ? null : startedAt,
       status,
     );
     return attemptId;
   }
+  const STALE_THRESHOLD_MS = 65_000; // > getTaskStatus's 60s liveness window
 
   it("not_found when no stage_attempts exist", async () => {
     const db = makeDb();
@@ -748,9 +755,10 @@ describe("KernelService — getTaskStatus (A4)", () => {
       const hash = await seedSmallPipeline(svc);
       // All attempts say success but runner never wrote task_finals —
       // classic "runner crashed after writing the last success but
-      // before finally". Must NOT report completed.
-      openAttempt(db, "t1", hash, "A", "success");
-      openAttempt(db, "t1", hash, "G", "success");
+      // before finally". Must NOT report completed. Stale started_at
+      // so the C10 Bug-F liveness window doesn't catch this.
+      openAttempt(db, "t1", hash, "A", "success", 1, STALE_THRESHOLD_MS);
+      openAttempt(db, "t1", hash, "G", "success", 1, STALE_THRESHOLD_MS);
       expect(svc.getTaskStatus("t1")).toEqual({
         ok: true, status: "orphaned", taskId: "t1",
       });
@@ -764,8 +772,8 @@ describe("KernelService — getTaskStatus (A4)", () => {
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
       const hash = await seedSmallPipeline(svc);
-      openAttempt(db, "t1", hash, "A", "success");
-      openAttempt(db, "t1", hash, "G", "error");
+      openAttempt(db, "t1", hash, "A", "success", 1, STALE_THRESHOLD_MS);
+      openAttempt(db, "t1", hash, "G", "error", 1, STALE_THRESHOLD_MS);
       // Attempts say failed shape but no task_finals. Orphaned, not failed.
       expect(svc.getTaskStatus("t1")).toEqual({
         ok: true, status: "orphaned", taskId: "t1",
@@ -797,7 +805,7 @@ describe("KernelService — getTaskStatus (A4)", () => {
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
       const hash = await seedSmallPipeline(svc);
-      const att = openAttempt(db, "t1", hash, "G", "success");
+      const att = openAttempt(db, "t1", hash, "G", "success", 1, STALE_THRESHOLD_MS);
       const { gateId } = svc.createGate({
         taskId: "t1", stageName: "G", attemptId: att,
         question: { text: "?", options: [{ value: "yes" }] },
@@ -816,12 +824,30 @@ describe("KernelService — getTaskStatus (A4)", () => {
     try {
       const svc = new KernelService(db, { skipTypeCheck: true });
       const hash = await seedSmallPipeline(svc);
-      openAttempt(db, "t1", hash, "A", "error", 1);
-      openAttempt(db, "t1", hash, "A", "success", 2);
-      openAttempt(db, "t1", hash, "G", "success");
+      openAttempt(db, "t1", hash, "A", "error", 1, STALE_THRESHOLD_MS);
+      openAttempt(db, "t1", hash, "A", "success", 2, STALE_THRESHOLD_MS);
+      openAttempt(db, "t1", hash, "G", "success", 1, STALE_THRESHOLD_MS);
       // Post-audit: latest-per-stage now only disambiguates 'running'
       // vs 'orphaned'; it cannot synthesize completed.
       expect(svc.getTaskStatus("t1").status).toBe("orphaned");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("C10 Bug F: fresh stage_attempts reads as 'running' even when no row is status=running (mid-PORT_WRITTEN window)", async () => {
+    const db = makeDb();
+    try {
+      const svc = new KernelService(db, { skipTypeCheck: true });
+      const hash = await seedSmallPipeline(svc);
+      // Reproduces the v9 dogfood race: fanout aggregate just landed
+      // (success row, started_at=now), no running rows yet for the
+      // next stage, no task_finals. Pre-fix this read as 'orphaned';
+      // with C10's fresh-attempt liveness it reads as 'running' so
+      // dashboards / monitors don't prematurely declare the task dead.
+      openAttempt(db, "t1", hash, "A", "success", 1, /* fresh */ 0);
+      const s = svc.getTaskStatus("t1");
+      expect(s.status).toBe("running");
     } finally {
       db.close();
     }
