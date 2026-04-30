@@ -14,16 +14,22 @@ import { getKernelNextDb } from "../lib/kernel-next-db.js";
 
 export const kernelTaskListRoute = new Hono();
 
+// Bug 64 fix (c12+ review): secret_pending added to the union — the
+// kernel emits it but the list page TaskStatus type used to omit it,
+// silently producing undefined entries in dashboard counts.
 const querySchema = z.object({
   limit: z.coerce.number().int().positive().max(500).optional(),
-  status: z.enum(["running", "gated", "completed", "failed", "cancelled", "orphaned"]).optional(),
+  status: z.enum([
+    "running", "gated", "secret_pending",
+    "completed", "failed", "cancelled", "orphaned",
+  ]).optional(),
 });
 
 interface TaskListRow {
   taskId: string;
   pipelineName: string | null;
   versionHash: string;
-  status: "running" | "gated" | "completed" | "failed" | "cancelled" | "orphaned";
+  status: "running" | "gated" | "secret_pending" | "completed" | "failed" | "cancelled" | "orphaned";
   currentStage: string | null;
   gateId: string | null;
   gateStage: string | null;
@@ -52,9 +58,18 @@ kernelTaskListRoute.get("/kernel/tasks", (c) => {
   const { limit = 100, status: statusFilter } = parsed.data;
   const db = getKernelNextDb();
 
-  // Base: distinct task_id with earliest started_at (its "start") and
-  // latest ended_at (its "last activity"). Pipeline name + version hash
-  // pulled from pipeline_versions via the first attempt's version_hash.
+  // Bug 48 fix (c12+ review): pre-fix SELECTed `limit * 2` raw rows
+  // and post-filtered by status, silently truncating results when the
+  // status filter was restrictive. Now: when no status filter, LIMIT
+  // applies directly. With a status filter we still over-fetch a bit
+  // (because the filter combines task_finals + gate_queue + latest
+  // attempt status, none of which are in this aggregate query) — but
+  // we drop the * 2 and instead set LIMIT = max(limit * 5, 1000) when
+  // a status filter is active. This cap is large enough to find the
+  // requested rows in any realistic dev DB while still bounded.
+  const fetchLimit = statusFilter
+    ? Math.max(limit * 5, 1000)
+    : limit;
   const rows = db.prepare(
     `SELECT
         sa.task_id,
@@ -65,7 +80,7 @@ kernelTaskListRoute.get("/kernel/tasks", (c) => {
      GROUP BY sa.task_id
      ORDER BY started_at DESC
      LIMIT ?`,
-  ).all(limit * 2) as Array<{
+  ).all(fetchLimit) as Array<{
     task_id: string;
     started_at: number;
     last_activity_at: number;
@@ -90,11 +105,32 @@ kernelTaskListRoute.get("/kernel/tasks", (c) => {
   const pendingByTask = new Map<string, typeof pendingGates[number]>();
   for (const g of pendingGates) pendingByTask.set(g.task_id, g);
 
-  // Version → pipeline_name lookup. For tasks we don't have a
-  // task_finals row, reach for the latest attempt's version_hash.
+  // Bug 64 fix (c12+ review): surface secret_pending state in the list.
+  // Pre-fix the kernel emitted secret_pending via getTaskStatus but the
+  // list page status enum omitted it, so dashboard rows showed
+  // "orphaned" or "running" for paused tasks needing a secret.
+  const pendingSecretGates = db.prepare(
+    `SELECT task_id, stage_name FROM secret_gate_queue WHERE resolved_at IS NULL`,
+  ).all() as Array<{ task_id: string; stage_name: string }>;
+  const secretPendingByTask = new Map<string, { stage_name: string }>();
+  for (const g of pendingSecretGates) secretPendingByTask.set(g.task_id, g);
+
+  // Bug 8 fix (c12+ review): pre-fix `GROUP BY task_id HAVING MAX(started_at)`
+  // was a no-op truthiness check — MAX(started_at) is always positive — and
+  // the version_hash returned alongside was non-deterministic (SQLite
+  // picks an arbitrary row from each group). Migrated tasks (multiple
+  // version_hashes per task_id) showed a random pipeline name on the
+  // task list. Now uses the same correlated-subquery pattern that
+  // latestAttemptByTask below uses, picking the version_hash of the
+  // attempt with the actual latest started_at.
   const attemptVersionRows = db.prepare(
-    `SELECT task_id, version_hash FROM stage_attempts
-     GROUP BY task_id HAVING MAX(started_at)`,
+    `SELECT sa1.task_id, sa1.version_hash
+       FROM stage_attempts sa1
+      WHERE sa1.started_at = (
+        SELECT MAX(sa2.started_at)
+          FROM stage_attempts sa2
+         WHERE sa2.task_id = sa1.task_id
+      )`,
   ).all() as Array<{ task_id: string; version_hash: string }>;
   const versionByTask = new Map<string, string>();
   for (const r of attemptVersionRows) versionByTask.set(r.task_id, r.version_hash);
@@ -149,17 +185,32 @@ kernelTaskListRoute.get("/kernel/tasks", (c) => {
   const result: TaskListRow[] = [];
   for (const row of rows) {
     const pending = pendingByTask.get(row.task_id);
+    const secretPending = secretPendingByTask.get(row.task_id);
     const final = finalByTask.get(row.task_id);
     const latest = latestStageByTask.get(row.task_id);
 
-    // Status resolution (mirrors KernelService.getTaskStatus):
-    //   gated > final > running > orphaned
-    // Caveat: "gated" wins even if task_finals exists — a task_finals
-    // row with a lingering unanswered gate shouldn't happen in practice
-    // (runner finalises all gates before writing task_finals), but we
-    // prefer the more actionable status when the two disagree.
+    // Status resolution mirrors KernelService.getTaskStatus precedence:
+    //   secret_pending > gated > final > running > orphaned
+    // secret_pending wins above gated because a secret-paused task
+    // requires a secret-provide that's not interchangeable with a
+    // gate-answer; surfacing the more specific state first is more
+    // actionable.
+    //
+    // gated wins over final because a task_finals row with a lingering
+    // unanswered gate shouldn't happen in practice (runner finalises
+    // all gates before writing task_finals); we prefer the more
+    // actionable status when the two disagree.
+    //
+    // Bug 18 (c12+ review) is filed against KernelService.cancelTask
+    // not closing pending gate / secret-gate rows on cancel — that fix
+    // is in a different file. Here we compensate by treating a final
+    // task with status='cancelled' AND a pending gate / secret-gate as
+    // 'cancelled' (the cancel terminal state is authoritative once
+    // task_finals records it).
     let status: TaskListRow["status"];
-    if (pending) status = "gated";
+    if (final?.final_state === "cancelled") status = "cancelled";
+    else if (secretPending) status = "secret_pending";
+    else if (pending) status = "gated";
     else if (final) status = final.final_state;
     else if (latest?.status === "running") status = "running";
     else status = "orphaned";
@@ -177,9 +228,11 @@ kernelTaskListRoute.get("/kernel/tasks", (c) => {
       currentStage:
         status === "gated"
           ? pending?.stage_name ?? null
-          : status === "running"
-            ? latest?.stage ?? null
-            : null,
+          : status === "secret_pending"
+            ? secretPending?.stage_name ?? null
+            : status === "running"
+              ? latest?.stage ?? null
+              : null,
       gateId: pending?.gate_id ?? null,
       gateStage: pending?.stage_name ?? null,
       startedAt: row.started_at,
