@@ -326,6 +326,10 @@ describe("POST /api/kernel/tasks/run", () => {
                 name: "etherscan",
                 command: "npx",
                 args: ["-y", "@everimbaq/etherscan-mcp"],
+                env: {
+                  KR_TEST_NEVER_SET_KEY_1: "${KR_TEST_NEVER_SET_KEY_1}",
+                  KR_TEST_NEVER_SET_KEY_2: "${KR_TEST_NEVER_SET_KEY_2}",
+                },
                 envKeys: ["KR_TEST_NEVER_SET_KEY_1", "KR_TEST_NEVER_SET_KEY_2"],
               },
             ],

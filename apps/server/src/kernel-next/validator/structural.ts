@@ -484,5 +484,69 @@ export function validateStructural(
     }
   }
 
+  // --- mcpServers.envKeys ⊆ ${VAR} references in command/args/env (Bug G, 2026-04-30) ---
+  //
+  // The kernel has two layers that look at MCP env requirements and they
+  // were inconsistent:
+  //   1. Pre-flight (collectMissingEnvKeys, start-pipeline-run.ts) — reads
+  //      mcpServer.envKeys[] declaratively and warns the caller upfront.
+  //   2. Runtime (expandMcpServers, mcp-servers-expander.ts) — only
+  //      enumerates ${VAR} placeholders in command/args/env values; envKeys
+  //      that are not referenced anywhere are silently ignored.
+  //
+  // The breakage: an IR that lists envKeys but forgets the matching
+  // env: { KEY: "${KEY}" } passes pre-flight (warns the user "missing
+  // KEY"), passes submit, then at runtime the expander finds nothing to
+  // expand → ok=true → the secret-gate path is skipped entirely → the
+  // child MCP process spawns without the key and fails its own
+  // handshake. The user sees an opaque attempt-error and cannot recover
+  // via provide_task_secrets because no secret_gate_queue row was ever
+  // written.
+  //
+  // Fix: every envKey must appear as a ${KEY} reference in at least one
+  // of command, args[*], env[*]. This guarantees expandMcpServers will
+  // see the variable and route through the secret-gate path when it is
+  // missing.
+  const VAR_RE_FOR_ENVKEY = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+  function collectVarRefs(s: string): Set<string> {
+    const out = new Set<string>();
+    const re = new RegExp(VAR_RE_FOR_ENVKEY.source, "g");
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(s)) !== null) out.add(m[1]);
+    return out;
+  }
+  for (const stage of ir.stages) {
+    if (stage.type !== "agent") continue;
+    const servers = stage.config.mcpServers ?? [];
+    for (const srv of servers) {
+      const declaredKeys = srv.envKeys ?? [];
+      if (declaredKeys.length === 0) continue;
+      const refs = new Set<string>();
+      for (const v of collectVarRefs(srv.command)) refs.add(v);
+      for (const a of srv.args ?? []) for (const v of collectVarRefs(a)) refs.add(v);
+      if (srv.env) {
+        for (const value of Object.values(srv.env)) {
+          for (const v of collectVarRefs(value)) refs.add(v);
+        }
+      }
+      for (const key of declaredKeys) {
+        if (!refs.has(key)) {
+          diagnostics.push({
+            code: "ENVKEY_NOT_REFERENCED",
+            message:
+              `Stage '${stage.name}' mcpServer '${srv.name}' declares envKey '${key}' ` +
+              `but no \${${key}} reference appears in command/args/env. ` +
+              `Add env: { "${key}": "\${${key}}" } so runtime expansion can route ` +
+              `through the secret-gate when the value is missing. Without this, the ` +
+              `pre-flight check warns about '${key}' but the runtime silently spawns ` +
+              `the MCP child without the value, producing an opaque handshake failure ` +
+              `that provide_task_secrets cannot recover.`,
+            context: { stage: stage.name, server: srv.name, envKey: key },
+          });
+        }
+      }
+    }
+  }
+
   return diagnostics.length === 0 ? { ok: true } : { ok: false, diagnostics };
 }

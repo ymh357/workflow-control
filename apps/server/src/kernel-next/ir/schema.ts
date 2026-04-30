@@ -554,6 +554,9 @@ export const DiagnosticSchema = z.object({
     // 2026-04-27 pipeline-modifier builtin
     "MODIFIER_TARGET_UNKNOWN",
     "MODIFIER_SELF_MODIFY_REJECTED",
+    // 2026-04-30 D4 dogfood (Bug G): mcpServer.envKeys cross-check
+    // against ${VAR} references in command/args/env values.
+    "ENVKEY_NOT_REFERENCED",
   ]),
   message: z.string(),
   context: z.record(z.string(), z.unknown()).optional(),

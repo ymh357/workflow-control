@@ -540,3 +540,202 @@ describe("validateStructural: cross_segment_resume_from", () => {
       .toBeDefined();
   });
 });
+
+// Bug G (D4 dogfood, 2026-04-30): cross-check between mcpServer.envKeys
+// and the ${VAR} references that actually appear in command/args/env.
+//
+// Failure mode: an IR that lists envKeys but forgets the matching env
+// entry passes pre-flight (warns the operator) and submit, but at
+// runtime expandMcpServers finds no ${VAR} to expand, returns ok=true,
+// and the secret-gate path is skipped entirely. The MCP child spawns
+// without the value and fails its own handshake. The user is then stuck:
+// provide_task_secrets is rejected because there is no secret_gate_queue
+// row, and the error message bubbled up is opaque (SDK-side).
+describe("validateStructural: mcpServers envKeys ⊆ ${VAR} refs (Bug G)", () => {
+  it("accepts envKeys that are referenced via env: { KEY: '${KEY}' }", () => {
+    const ir: PipelineIR = {
+      name: "ok-envkeys-with-env",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "out", type: "string" }],
+          config: {
+            promptRef: "p",
+            mcpServers: [
+              {
+                name: "etherscan",
+                command: "npx",
+                args: ["-y", "@everimbaq/etherscan-mcp"],
+                env: { ETHERSCAN_API_KEY: "${ETHERSCAN_API_KEY}" },
+                envKeys: ["ETHERSCAN_API_KEY"],
+              },
+            ],
+          },
+        },
+      ],
+      wires: [],
+    };
+    expect(validateStructural(ir)).toEqual({ ok: true });
+  });
+
+  it("accepts envKeys referenced via args[*] (rare but legal)", () => {
+    const ir: PipelineIR = {
+      name: "ok-envkeys-via-args",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "out", type: "string" }],
+          config: {
+            promptRef: "p",
+            mcpServers: [
+              {
+                name: "weird",
+                command: "npx",
+                args: ["-y", "weird-mcp", "--token", "${WEIRD_TOKEN}"],
+                envKeys: ["WEIRD_TOKEN"],
+              },
+            ],
+          },
+        },
+      ],
+      wires: [],
+    };
+    expect(validateStructural(ir)).toEqual({ ok: true });
+  });
+
+  it("rejects envKey that is declared but never referenced (the D4 footgun)", () => {
+    const ir: PipelineIR = {
+      name: "broken-envkeys-no-env",
+      stages: [
+        {
+          name: "queryEthBalance",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "out", type: "string" }],
+          config: {
+            promptRef: "p",
+            mcpServers: [
+              {
+                name: "etherscan",
+                command: "npx",
+                args: ["-y", "@everimbaq/etherscan-mcp"],
+                envKeys: ["ETHERSCAN_API_KEY"],
+                // env field intentionally omitted — this is the bug
+                // shape D4 dogfood produced on 2026-04-30.
+              },
+            ],
+          },
+        },
+      ],
+      wires: [],
+    };
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      const diag = r.diagnostics.find((d) => d.code === "ENVKEY_NOT_REFERENCED");
+      expect(diag).toBeDefined();
+      expect(diag!.context).toMatchObject({
+        stage: "queryEthBalance",
+        server: "etherscan",
+        envKey: "ETHERSCAN_API_KEY",
+      });
+    }
+  });
+
+  it("reports each unreferenced envKey separately when multiple are missing", () => {
+    const ir: PipelineIR = {
+      name: "broken-multi",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "out", type: "string" }],
+          config: {
+            promptRef: "p",
+            mcpServers: [
+              {
+                name: "srv",
+                command: "npx",
+                args: ["-y", "x"],
+                env: { KEY1: "${KEY1}" },
+                envKeys: ["KEY1", "KEY2", "KEY3"],
+              },
+            ],
+          },
+        },
+      ],
+      wires: [],
+    };
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      const codes = r.diagnostics.filter((d) => d.code === "ENVKEY_NOT_REFERENCED");
+      expect(codes.length).toBe(2);
+      const missingKeys = codes.map((d) => (d.context as { envKey: string }).envKey).sort();
+      expect(missingKeys).toEqual(["KEY2", "KEY3"]);
+    }
+  });
+
+  it("accepts an empty envKeys array (no constraint to enforce)", () => {
+    const ir: PipelineIR = {
+      name: "ok-empty",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "out", type: "string" }],
+          config: {
+            promptRef: "p",
+            mcpServers: [
+              {
+                name: "fetch",
+                command: "npx",
+                args: ["-y", "fetch-mcp"],
+                envKeys: [],
+              },
+            ],
+          },
+        },
+      ],
+      wires: [],
+    };
+    expect(validateStructural(ir)).toEqual({ ok: true });
+  });
+
+  it("ignores ${VAR} references in env that don't appear in envKeys (e.g. ${HOME})", () => {
+    // Reverse direction: env references something not declared in envKeys.
+    // This is allowed — system-level vars like HOME/PATH should not require
+    // an envKeys entry.
+    const ir: PipelineIR = {
+      name: "ok-system-var",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "out", type: "string" }],
+          config: {
+            promptRef: "p",
+            mcpServers: [
+              {
+                name: "srv",
+                command: "npx",
+                args: ["-y", "x"],
+                env: { CACHE_DIR: "${HOME}/.cache" },
+                envKeys: [],
+              },
+            ],
+          },
+        },
+      ],
+      wires: [],
+    };
+    expect(validateStructural(ir)).toEqual({ ok: true });
+  });
+});
