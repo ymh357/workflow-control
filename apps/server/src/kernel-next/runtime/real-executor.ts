@@ -448,6 +448,46 @@ export class RealStageExecutor implements StageExecutor {
       // MCP tool resolves the row and resumes via the migration path.
       let externalMcpServers: Record<string, ExpandedMcpServer> | undefined;
       if (stage.config.mcpServers && stage.config.mcpServers.length > 0) {
+        // Bug G runtime guard (D4 dogfood, 2026-04-30): historical IRs in
+        // pipeline_versions can have envKeys without a matching ${VAR}
+        // reference. The validator (structural.ts ENVKEY_NOT_REFERENCED)
+        // rejects new IRs in this shape, but pre-fix versions remain
+        // resolvable by name. Fail fast here with a clear actionable
+        // message instead of letting the stage spawn the MCP child without
+        // the envKey value (which produces an opaque handshake failure
+        // that provide_task_secrets cannot recover from).
+        const VAR_RE_BUG_G = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+        for (const srv of stage.config.mcpServers) {
+          const declared = srv.envKeys ?? [];
+          if (declared.length === 0) continue;
+          const refs = new Set<string>();
+          const collect = (s: string) => {
+            const re = new RegExp(VAR_RE_BUG_G.source, "g");
+            let m: RegExpExecArray | null;
+            while ((m = re.exec(s)) !== null) refs.add(m[1]);
+          };
+          collect(srv.command);
+          for (const a of srv.args ?? []) collect(a);
+          if (srv.env) for (const v of Object.values(srv.env)) collect(v);
+          const unreferenced = declared.filter((k) => !refs.has(k));
+          if (unreferenced.length > 0) {
+            const errMsg =
+              `IR_BROKEN_ENVKEY_NOT_REFERENCED: stage '${stage.name}' mcpServer '${srv.name}' ` +
+              `declares envKey(s) [${unreferenced.join(", ")}] but command/args/env contain no \${${unreferenced[0]}} reference. ` +
+              `This pipeline IR was submitted before the validator rule ENVKEY_NOT_REFERENCED was added. ` +
+              `provide_task_secrets cannot recover this stage because there is no \${VAR} placeholder for the value to substitute into. ` +
+              `Re-submit the pipeline with env: { ${unreferenced.map((k) => `"${k}": "\${${k}}"`).join(", ")} } added to the mcpServer block.`;
+            writer.close({ terminationReason: "error" });
+            abortController.abort();
+            // silent: false — this is an unrecoverable IR-shape error
+            // (no amount of retry or secret-provision fixes it). The
+            // operator must re-submit a corrected IR. Surfacing the
+            // STAGE_FAILED event with the full message lets the runner
+            // record the actionable detail in task_finals.
+            portRuntime.finishAttempt(attemptId, "error", errMsg, { silent: false });
+            return { attemptId, attemptIdx, status: "error" };
+          }
+        }
         const expanderDb = portRuntime.getDb();
         const taskEnv = loadTaskEnvValues(expanderDb, taskId);
         // Phase 4: collect any MCP_INVENTORY_DECRYPT_FAILED that fires during
