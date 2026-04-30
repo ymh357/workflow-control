@@ -369,6 +369,35 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
     attemptHooks,
   );
   taskRegistry.register(opts.taskId, dispatcher);
+
+  // Bug 4 fix (c12+ review): pre-fix the registry registration above
+  // and the wall-clock activeTimer (set up further below) leaked when
+  // any code between registration and the main try/finally block
+  // (line 716) threw. Six DB call sites between here and there could
+  // realistically throw on FK violation / schema corruption / disk
+  // full / circular ref in seedValues. The registry leak meant
+  // awaitTermination waiters blocked forever; the activeTimer leak
+  // pinned setTimeout closures in the event loop until the timer
+  // expired (90 minutes default).
+  //
+  // Fix: emergency-cleanup helper invoked from catches. Use shared
+  // mutable references for activeTimer so the helper can clear it
+  // even though it's set up later in the function body.
+  const emergencyCleanup = (terminationDetail: string): void => {
+    try {
+      if (activeTimer !== null) clearTimeout(activeTimer);
+    } catch { /* ignore */ }
+    try {
+      taskRegistry.signalTermination(opts.taskId, {
+        kind: "error",
+        detail: terminationDetail,
+      });
+    } catch { /* ignore */ }
+    try {
+      taskRegistry.unregister(opts.taskId);
+    } catch { /* ignore */ }
+  };
+
   const kernel = new KernelService(opts.db, { skipTypeCheck: true });
 
   // Run-scoped execution bookkeeping. `dispatched` dedupes executor
@@ -486,6 +515,11 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       taskRegistry.unregister(opts.taskId);
       throw new Error(reason.detail);
     }
+    // Bug 4 fix (c12+ review): wrap resume-hydration DB reads so a
+    // schema-corruption / SQLite-busy / FK-violation throw doesn't
+    // leak the registry + activeTimer (the activeTimer is set up below
+    // but emergencyCleanup is defensive — it null-checks).
+    try {
     // 1. finalizedStages: every stage_attempt that is still status='success'
     //    for this task. Superseded stages (those the orchestrator just
     //    marked) stay out so the retry loop re-invokes them.
@@ -548,6 +582,12 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
     }
     // 4. Tell compiler to honour initialContext.
     isRetryRebuild = true;
+    } catch (err) {
+      emergencyCleanup(
+        `resume hydration failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
+    }
   }
   // Task 6 — gates that were rejected in the current run. On rebuild,
   // the replay loop skips synthesising a GATE_ANSWERED for these so the
@@ -679,6 +719,10 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
         );
       }
     }
+    // Bug 4 + Bug 14 fix (c12+ review): wrap the seed phase so a throw
+    // (circular ref in seedValues during JSON.stringify, FK violation,
+    // schema corruption) doesn't leak the synthetic attempt as
+    // status='running' nor leak the registry/activeTimer.
     const { attemptId } = portRuntime.startAttempt({
       taskId: opts.taskId,
       versionHash: opts.versionHash,
@@ -690,21 +734,39 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       // should be created for it.
       suppressHooks: true,
     });
-    for (const port of externalInputs) {
-      // Bug 7: optional inputs that the caller omitted are seeded as
-      // null so downstream wires resolve to a determinate value. Stages
-      // wiring from these ports must read their input as `T | null`.
-      const value = port.name in seedValues
-        ? seedValues[port.name]
-        : (port.optional === true ? null : undefined);
-      portRuntime.writePort({
-        attemptId,
-        stageName: "__external__",
-        portName: port.name,
-        value,
-      });
+    try {
+      for (const port of externalInputs) {
+        // Bug 7: optional inputs that the caller omitted are seeded as
+        // null so downstream wires resolve to a determinate value. Stages
+        // wiring from these ports must read their input as `T | null`.
+        const value = port.name in seedValues
+          ? seedValues[port.name]
+          : (port.optional === true ? null : undefined);
+        portRuntime.writePort({
+          attemptId,
+          stageName: "__external__",
+          portName: port.name,
+          value,
+        });
+      }
+      portRuntime.finishAttempt(attemptId, "success");
+    } catch (err) {
+      // Mark the synthetic attempt as error so it doesn't sit in
+      // 'running' forever. Use silent:true so we don't dispatch
+      // STAGE_FAILED for the synthetic seed (no consumer cares).
+      try {
+        portRuntime.finishAttempt(
+          attemptId,
+          "error",
+          err instanceof Error ? err.message : String(err),
+          { silent: true },
+        );
+      } catch { /* if even finishAttempt throws (e.g. DB locked), give up */ }
+      emergencyCleanup(
+        `seed phase failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
     }
-    portRuntime.finishAttempt(attemptId, "success");
   }
 
   // ---- Main retry loop ---------------------------------------------
@@ -794,6 +856,11 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
           publishedStageExecuting.delete(name);
           publishedStageFinal.delete(name);
           dispatched.delete(name);
+          // Bug 10 fix (c12+ review): same parity gap as the retry
+          // path. cancelledByPropagation must be cleared on rebuild;
+          // pre-fix a stage cancelled in attempt N stayed marked,
+          // suppressing STAGE_CANCELLED on subsequent rebuilds.
+          cancelledByPropagation.delete(name);
         }
         // 0G dogfood (2026-04-28): supersede prior fanout_element +
         // fanout_aggregate stage_attempts rows for affected fanout
@@ -900,11 +967,45 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
       // finalizedStages is already filtered above (line 800), so this
       // step is redundant.
 
+      // Bug 1 fix (c12+ review): same fanout-supersede issue the
+      // rollback verdict path addresses (see lines 800-826). Pre-fix
+      // the retry verdict path reset finalizedStages and portValues
+      // for stages in `toReset`, but never marked stale
+      // `fanout_element` / `fanout_aggregate` rows as 'superseded'.
+      // After a script-stage retry rewinds the run to before a fanout
+      // (or to the fanout itself), orchestrateFanoutStage's
+      // `preservedByIdx` query reused the prior successful per-element
+      // outputs against new upstream inputs. Marking them superseded
+      // knocks them out of the preserved query without losing lineage.
+      for (const name of toReset) {
+        const stageDef = opts.ir.stages.find((s) => s.name === name);
+        if (!stageDef) continue;
+        if (
+          (stageDef.type === "agent" || stageDef.type === "script") &&
+          stageDef.fanout
+        ) {
+          opts.db.prepare(
+            `UPDATE stage_attempts
+               SET status = 'superseded'
+               WHERE task_id = ?
+                 AND stage_name = ?
+                 AND kind IN ('fanout_element', 'fanout_aggregate')
+                 AND status = 'success'`,
+          ).run(opts.taskId, name);
+        }
+      }
+
       // SSE dedupe sets: clear entries for reset stages.
       for (const name of toReset) {
         publishedStageExecuting.delete(name);
         publishedStageFinal.delete(name);
         dispatched.delete(name);
+        // Bug 10 fix (c12+ review): cancelledByPropagation set was
+        // never reset on retry rebuild despite the comment at line
+        // 423-424 promising it. Stages cancelled in attempt N stayed
+        // marked across rebuilds, suppressing STAGE_CANCELLED in
+        // attempt N+1.
+        cancelledByPropagation.delete(name);
       }
 
       // Log-continuity: seed from the current context, then filter reset

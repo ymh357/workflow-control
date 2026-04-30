@@ -612,13 +612,24 @@ export class RealStageExecutor implements StageExecutor {
         agentActor.send({ type: "INTERRUPT" });
       };
       if (args.signal) {
+        // Bug 2 fix (c12+ review): TOCTOU race. Pre-fix the order was:
+        //   1. read .aborted
+        //   2. addEventListener
+        // If .abort() landed between (1) and (2), the executor never
+        // received the interrupt and ran the full SDK query on a
+        // cancelled task. Reverse the order: register the listener
+        // FIRST, then re-check `.aborted`. If aborted, dispatch
+        // immediately (the listener won't fire because we registered
+        // with `once: true` AFTER the abort already happened — and
+        // `once: true` listeners DO fire synchronously if attached
+        // after abort, but we don't want to depend on that subtlety).
+        // Removing the listener after the synchronous re-check
+        // ensures we don't double-dispatch.
+        args.signal.addEventListener("abort", onAbort, { once: true });
         if (args.signal.aborted) {
-          // Signal already aborted (interrupt fired before executeStage
-          // even started — e.g. XState stop-on-create). Send immediately.
+          args.signal.removeEventListener("abort", onAbort);
           abortController.abort();
           agentActor.send({ type: "INTERRUPT" });
-        } else {
-          args.signal.addEventListener("abort", onAbort, { once: true });
         }
       }
 

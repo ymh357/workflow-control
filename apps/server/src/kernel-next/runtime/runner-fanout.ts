@@ -126,6 +126,14 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
   // Index filter (`fanout_element_idx < sourceValue.length`) guards
   // against a shrunk source array — out-of-range preserved attempts
   // are not relevant to this run.
+  // Bug 3 fix (c12+ review): pre-fix the SELECT had no ORDER BY. If
+  // multiple rows existed for the same idx (which can happen when a
+  // Promise.race timeout detached an executor that later succeeded —
+  // see Bug 3 / runElement loop below — or after a botched migration
+  // path), the resulting Map iteration was non-deterministic and
+  // future re-runs reused outputs at random. Order by attempt_idx DESC
+  // (most recent attempt for that idx wins) and dedupe via
+  // setIfAbsent so the latest success row is the canonical one.
   const preservedRows = db.prepare(
     `SELECT sa.attempt_id, sa.fanout_element_idx
        FROM stage_attempts sa
@@ -134,10 +142,16 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
          AND sa.kind = 'fanout_element'
          AND sa.status = 'success'
          AND sa.fanout_element_idx IS NOT NULL
-         AND sa.fanout_element_idx < ?`,
+         AND sa.fanout_element_idx < ?
+       ORDER BY sa.attempt_idx DESC, sa.started_at DESC`,
   ).all(taskId, stageDef.name, sourceValue.length) as Array<{ attempt_id: string; fanout_element_idx: number }>;
   const preservedByIdx = new Map<number, Record<string, unknown>>();
   for (const r of preservedRows) {
+    // Bug 3 fix (c12+ review): rows are pre-sorted DESC by attempt_idx
+    // / started_at, so the FIRST row for any given idx is the most
+    // recent. Skip subsequent rows for the same idx (they would be
+    // stale duplicates from a race or a botched supersede).
+    if (preservedByIdx.has(r.fanout_element_idx)) continue;
     // Read the attempt's declared output port values from port_values.
     const outs = db.prepare(
       `SELECT port_name, value_json FROM port_values
@@ -275,6 +289,29 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
         // surface as an unhandled rejection when it eventually settles
         // (esp. if it throws after abort).
         executorPromise.catch(() => { /* timeout already resolved the race */ });
+        // Bug 3 fix (c12+ review): force-finalise any orphan
+        // status='running' row this element opened. silentRuntime's
+        // startAttempt (called inside executor.executeStage early)
+        // already inserted a stage_attempts row; if the executor
+        // doesn't observe the abort (mock executor; SDK stalled
+        // mid-tool-call), the row stays 'running' forever and pollutes
+        // future preservedByIdx queries. By writing status='error'
+        // first, any LATER writeAttempt(success) from the detached
+        // executor still wins the row (UPDATE stage_attempts SET
+        // status='success' is unconditional in port-runtime), but the
+        // common case where the executor never resolves at all leaves
+        // a clean error row. ORDER BY in preservedByIdx (post-fix)
+        // also tolerates the rare case where both an error and a
+        // later success coexist for the same idx.
+        db.prepare(
+          `UPDATE stage_attempts
+              SET status = 'error',
+                  ended_at = ?
+            WHERE task_id = ?
+              AND stage_name = ?
+              AND fanout_element_idx = ?
+              AND status = 'running'`,
+        ).run(Date.now(), taskId, stageDef.name, i);
         lastError = `fanout element[${i}] timed out after ${elementTimeoutMs}ms`;
         continue;
       }
