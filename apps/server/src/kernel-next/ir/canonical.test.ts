@@ -407,3 +407,81 @@ describe("canonical: session_mode in version_hash", () => {
     expect(explicit).toBe(absent);
   });
 });
+
+// Bug 5 fix (c12+ review): store_schema must participate in the hash.
+// Pre-fix it was silently omitted, so any change to the data dictionary
+// produced an identical versionHash — breaking propose_pipeline_change's
+// optimistic locking and pipeline_versions dedup.
+describe("canonical: store_schema in version_hash (Bug 5)", () => {
+  const baseStoreSchema: PipelineIR = {
+    name: "store-schema-hash-test",
+    stages: [{
+      name: "s",
+      type: "agent",
+      inputs: [],
+      outputs: [{ name: "o", type: "string" }],
+      config: { promptRef: "p/r" },
+    }],
+    wires: [],
+  };
+
+  it("differs when store_schema is added vs absent", () => {
+    const without = versionHash(baseStoreSchema);
+    const withSchema = versionHash({
+      ...baseStoreSchema,
+      store_schema: {
+        "s.o": {
+          type: "string",
+          description: "Output of s",
+          produced_by: { stage: "s", port: "o" },
+        },
+      },
+    });
+    expect(without).not.toBe(withSchema);
+  });
+
+  it("differs when store_schema description changes", () => {
+    const a = versionHash({
+      ...baseStoreSchema,
+      store_schema: {
+        "s.o": { type: "string", description: "Old", produced_by: { stage: "s", port: "o" } },
+      },
+    });
+    const b = versionHash({
+      ...baseStoreSchema,
+      store_schema: {
+        "s.o": { type: "string", description: "New", produced_by: { stage: "s", port: "o" } },
+      },
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it("hash is stable across key insertion order in store_schema", () => {
+    const a = versionHash({
+      ...baseStoreSchema,
+      store_schema: {
+        "s.b": { type: "number", produced_by: { stage: "s", port: "b" } },
+        "s.a": { type: "string", produced_by: { stage: "s", port: "a" } },
+      },
+    });
+    const b = versionHash({
+      ...baseStoreSchema,
+      store_schema: {
+        "s.a": { type: "string", produced_by: { stage: "s", port: "a" } },
+        "s.b": { type: "number", produced_by: { stage: "s", port: "b" } },
+      },
+    });
+    expect(a).toBe(b);
+  });
+
+  it("includes store_schema in canonical output", () => {
+    const out = canonicalJSON({
+      ...baseStoreSchema,
+      store_schema: {
+        "s.o": { type: "string", produced_by: { stage: "s", port: "o" } },
+      },
+    });
+    expect(out).toContain("store_schema");
+    expect(out).toContain("s.o");
+  });
+});

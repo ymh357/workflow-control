@@ -205,6 +205,26 @@ export function canonicalizeIR(ir: PipelineIR): CanonicalValue {
           }))
       : undefined;
 
+  // Bug 5 fix (c12+ review): store_schema must participate in the
+  // canonical hash. Pre-fix it was silently omitted, so any change
+  // to the data dictionary produced an identical versionHash —
+  // breaking propose_pipeline_change's optimistic locking and
+  // pipeline_versions dedup. Validator emits STORE_SCHEMA_*
+  // diagnostics that never bumped the version pre-fix.
+  //
+  // Hash compatibility note: every existing pipeline_versions row
+  // hashed before this fix did NOT include store_schema. After this
+  // fix, the same IR re-submitted will hash differently than the
+  // stored row. INSERT OR IGNORE in pipeline_versions then leaves
+  // both rows coexisting (different version_hash). Operators
+  // upgrading kernel-next should re-submit any pipelines they want
+  // to keep canonical; the dashboard's "latest" lookup picks the
+  // most recent row by created_at and continues working without
+  // intervention.
+  const storeSchema = ir.store_schema !== undefined
+    ? sortKeys(ir.store_schema as Record<string, unknown>)
+    : undefined;
+
   return sortKeys({
     name: ir.name,
     entry: ir.entry,
@@ -216,6 +236,7 @@ export function canonicalizeIR(ir: PipelineIR): CanonicalValue {
     // schema defaults to "multi". Drift here silently re-versions
     // every legacy pipeline.
     session_mode: ir.session_mode ?? "multi",
+    store_schema: storeSchema,
   });
 }
 
