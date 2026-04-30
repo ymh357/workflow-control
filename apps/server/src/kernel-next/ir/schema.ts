@@ -78,6 +78,16 @@ export const FanoutSpecSchema = z.object({
   // fanout_element_idx). Default 0 (no retries) — the existing
   // first-error behaviour.
   elementRetries: z.number().int().nonnegative().max(5).optional(),
+  // C10 (2026-04-30) — per-element wall-clock timeout. Wraps each
+  // executor.executeStage() call in a Promise.race vs setTimeout. On
+  // timeout, the executor's AbortSignal fires and the attempt is
+  // recorded as `error: "fanout element timeout after Nms"`, which
+  // feeds the elementRetries loop normally. Default applied at the
+  // runner layer (DEFAULT_FANOUT_ELEMENT_TIMEOUT_MS in runner-fanout.ts)
+  // is 30 minutes — comfortably above the worst observed agent run
+  // (~5 min) but tight enough that a wedged SDK session doesn't hang
+  // the whole stage indefinitely. Set explicitly to override.
+  elementTimeoutMs: z.number().int().positive().max(2 * 60 * 60 * 1000).optional(),
 });
 
 // Answer option for a gate. `value` is the exact string the runner

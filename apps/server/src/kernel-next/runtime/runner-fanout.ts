@@ -41,7 +41,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { PortRuntime, type EventDispatcher } from "./port-runtime.js";
 import type { StageHandlerMap } from "./mock-executor.js";
-import type { StageExecutor } from "./executor.js";
+import type { StageExecutor, ExecuteStageResult } from "./executor.js";
 import type { PipelineIR, AgentStage, ScriptStage } from "../ir/schema.js";
 import { wireSourceKeyPrefix } from "../ir/wire-helpers.js";
 
@@ -177,6 +177,23 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
   // value resolves to the documented default.
   const elementRetries = Math.max(0, fanout.elementRetries ?? 0);
 
+  // C10 (2026-04-30) — per-element wall-clock timeout. Without this, a
+  // wedged Claude SDK session (observed: streaming response that never
+  // resolves) leaves a `running` stage_attempts row that no one ever
+  // closes. The runner's global 90-min budget protects the run as a
+  // whole, but the fanout aggregate above never finalises because
+  // Promise.all on the worker pool doesn't return until every element
+  // settles — so the run sits idle until global timeout. Per-element
+  // timeout abort()'s the executor's signal so doAttempt's stream
+  // listener throws and the element fails normally (then enters the
+  // elementRetries loop).
+  //
+  // Default 30 minutes: covers the worst observed agent stage in c9.6
+  // (~5 min for analyzing under retry pressure) with a 6x safety margin.
+  // Authors can override via FanoutSpec.elementTimeoutMs.
+  const DEFAULT_FANOUT_ELEMENT_TIMEOUT_MS = 30 * 60 * 1000;
+  const elementTimeoutMs = fanout.elementTimeoutMs ?? DEFAULT_FANOUT_ELEMENT_TIMEOUT_MS;
+
   const runElement = async (i: number): Promise<void> => {
     // B17 full — if an earlier successful fanout_element attempt
     // already covered this index, reuse its outputs instead of
@@ -208,7 +225,34 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
     const attemptsLeft = elementRetries + 1;
     let lastAttemptId: string | null = null;
     for (let tryIdx = 0; tryIdx < attemptsLeft; tryIdx++) {
-      const result = await executor.executeStage({
+      // C10 (2026-04-30) — per-element timeout via Promise.race. We can't
+      // rely on executor responding to AbortSignal alone (mock executor
+      // doesn't, and even real-executor's SDK stream listener may stall
+      // before the next chunk lets it observe abort). The race
+      // unblocks the runner deterministically; we still abort() so the
+      // executor's own cleanup paths (real-executor: aborts SDK
+      // controller in finally) tear down the upstream promise.
+      //
+      // Note: when timeout wins the race, the underlying executor
+      // promise may still be in flight. We swallow its eventual outcome
+      // via the .catch() — its stage_attempts row is already opened by
+      // PortRuntime, and either (a) the executor reaches its finally
+      // and writes status=error/success normally (DB stays consistent,
+      // we just ignore the late result), or (b) the executor never
+      // resolves (process exit cleans up). Critically: our retry loop
+      // moves on instead of waiting indefinitely.
+      const elementController = new AbortController();
+
+      const TIMEOUT_SENTINEL = Symbol("fanout-element-timeout");
+      let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<typeof TIMEOUT_SENTINEL>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          elementController.abort();
+          resolve(TIMEOUT_SENTINEL);
+        }, elementTimeoutMs);
+      });
+
+      const executorPromise = executor.executeStage({
         ir,
         stageName: stageDef.name,
         taskId,
@@ -220,7 +264,22 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
         // PortRuntime.startAttempt writes it to stage_attempts.fanout_element_idx
         // so migration re-runs can skip indices that already succeeded.
         fanoutElementIdx: i,
+        signal: elementController.signal,
       });
+
+      const raceResult = await Promise.race([executorPromise, timeoutPromise]);
+      if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+
+      if (raceResult === TIMEOUT_SENTINEL) {
+        // Detach the still-pending executor promise so it doesn't
+        // surface as an unhandled rejection when it eventually settles
+        // (esp. if it throws after abort).
+        executorPromise.catch(() => { /* timeout already resolved the race */ });
+        lastError = `fanout element[${i}] timed out after ${elementTimeoutMs}ms`;
+        continue;
+      }
+
+      const result: ExecuteStageResult = raceResult;
 
       if (result.status === "error") {
         lastError = result.error ?? "unspecified";
