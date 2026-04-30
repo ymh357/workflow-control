@@ -1821,5 +1821,81 @@ masking 场景.
 - working tree clean (除一个 pre-existing untracked test file)
 - D4 验证完成. Bug G 双层防御 (validator + runtime) 全部 in place.
 - test suite: 2235 pass + 24 skip + 0 fail.
-- 下一步候选: D1 (tutorial cache) / D3 (D-path 扩展) / D2 (sub-pipeline) — 仍待用户决策
+
+## Continuation 12 (2026-04-30): D1+D3+D2 全审
+
+用户授权 "只要合理 对 workflow 产品有益 都做". 三个候选审完, 结果不
+全是 "做" — 用户授权范围内的 "合理" 决策含 reject:
+
+### D1 — 实施完成
+
+跨 task tutorial cache. 17→20 stage. 3 个新 stages (lookupTutorialCache /
+writeTutorialCache / mergeTutorials), 新 SQLite 表 `tutorial_cache`
+(slug, subjectDomain) PK + 30 day TTL.
+
+**Commit**: a44f72c feat(d1): cross-task tutorial cache (3 stages, 17→20 skeleton)
+**Spec**: docs/superpowers/specs/2026-04-30-tutorial-cache-design.md
+**Tests**: 19 新, 全部 pass.
+
+预期 ROI: power user 在同 domain 反复跑 investigation, 30-50% concept
+hit rate, 每个 hit 节省 30-60s + $0.05-0.15.
+
+### D3 — 拒绝
+
+D-path 扩展到 automation/lookup. 评估发现:
+- automation 没有可硬编码的通用 template (fetch/transform/persist 是短语,
+  不是 type — 任意两个 automation 几乎零结构 overlap)
+- D-path 在 investigation 上之所以能防 mechanical 错 (wire 错配, fanout
+  port shape drift) 是因为 investigation 有真正的 fixed structure;
+  automation 的 5-stage 简单到根本不会撞这些错
+- "lookup" 跟 investigation `lookup` sub-type 重复, 单独 3-stage 是 degenerate
+
+正确路径: 当 LLM 真生 automation IR 撞错时, 加 prompt-level 结构约束 +
+validator-level shape check + good-fixture 语料库. 不需要硬编码 template.
+
+**Commit**: 93b982c docs(spec): D3 rejected with rationale
+**Spec**: docs/superpowers/specs/2026-04-30-d-path-extension-rejected.md
+**Re-open trigger**: ≥3 真实 automation pipelines 通过 pipeline-generator
+生成且同 shape 重复出现.
+
+### D2 — 拒绝, 简单替代实施
+
+sub-pipeline 路径. 评估发现实证不支持:
+- 当前 dev 机最大 investigation 报告 ~1155 words. 100k-token 限制对应
+  ~75k words. **65× 低于触发 context 饱和的 regime**.
+- "hypothesis 数 >12 时 evidence quality 摊薄" 这个真实症状的 cheap fix
+  是 prompt 加 hypothesis cap, 不需要 cross-task wait runtime + UI 改动.
+- 2-3 周 runtime + UI 工作做投机性需求 = 违反 CLAUDE.md "Don't add features
+  beyond what the task requires".
+
+实施简单替代: gen-prompts.md `hypothesize` 加 hypothesis 数量 cap (8-12
+/ 14 max, landscape only). 一行 prompt 改动, 解决 80% 抱怨.
+
+**Commit**: dd91d1c docs(spec) + feat(gen-prompts): D2 rejected, hypothesis cap added
+**Spec**: docs/superpowers/specs/2026-04-30-sub-pipeline-rejected.md
+**Re-open trigger**: 真实 investigation 报告 >10k words 且 intra-task
+优化 (section streaming, findings-bundle truncation) 已 insufficient.
+
+### c12 commits 总结
+
+| sha | type | summary |
+|---|---|---|
+| 6ab398b | docs(spec) | D1 design |
+| a44f72c | feat(d1) | tutorial cache (3 stages, 17→20 skeleton) |
+| 93b982c | docs(spec) | D3 rejected with rationale |
+| dd91d1c | docs(spec) + feat | D2 rejected; hypothesis cap added |
+
+### c11+ roadmap 状态 (4 方向全闭环)
+
+- D1 ✅ 实施 (a44f72c)
+- D2 ✅ 决策 (dd91d1c) — 拒绝 + cheap alt
+- D3 ✅ 决策 (93b982c) — 拒绝
+- D4 ✅ 实施 (c11 — 7165979 + e39b23f + fc39435 + Bug G 三层防御)
+
+### 此刻状态 (c12 末)
+
+- working tree clean (除一个 pre-existing untracked test file)
+- test suite: 2255 pass + 24 skip + 0 fail
+- 没有更多 c11+ 候选待决策. 系统进入 maintenance mode 是合理选择.
+- 下一步触发: 真实 dogfood 揭示新 bug, 或用户给新方向.
 
