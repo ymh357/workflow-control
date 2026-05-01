@@ -573,8 +573,11 @@ describe("classifyOrphan — partially-complete fanout (Bug 58)", () => {
     initKernelNextSchema(db);
     // Hand-built IR (avoid relying on a builtin that happens to contain
     // a fanout stage). Two stages: A (entry, fanout) and B (downstream).
+    // External input `items` feeds A.items so the fanout has an inbound
+    // wire (B4.F22 structural rule).
     const ir = {
       name: "fanout-orphan",
+      externalInputs: [{ name: "items", type: "string[]" }],
       stages: [
         {
           name: "A", type: "agent",
@@ -591,6 +594,7 @@ describe("classifyOrphan — partially-complete fanout (Bug 58)", () => {
         },
       ],
       wires: [
+        { from: { source: "external", port: "items" }, to: { stage: "A", port: "items" } },
         { from: { source: "stage", stage: "A", port: "out" }, to: { stage: "B", port: "values" } },
       ],
     } as unknown as PipelineIR;
@@ -625,6 +629,7 @@ describe("classifyOrphan — partially-complete fanout (Bug 58)", () => {
     initKernelNextSchema(db);
     const ir = {
       name: "fanout-aggregate",
+      externalInputs: [{ name: "items", type: "string[]" }],
       stages: [
         {
           name: "A", type: "agent",
@@ -634,7 +639,9 @@ describe("classifyOrphan — partially-complete fanout (Bug 58)", () => {
           fanout: { input: "items" },
         },
       ],
-      wires: [],
+      wires: [
+        { from: { source: "external", port: "items" }, to: { stage: "A", port: "items" } },
+      ],
     } as unknown as PipelineIR;
     const svc = new KernelService(db, { skipTypeCheck: true });
     const sub = await svc.submit(ir, { prompts: { p: "x" } });

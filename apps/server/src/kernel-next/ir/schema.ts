@@ -472,6 +472,10 @@ export const DiagnosticSchema = z.object({
     // so the IR is rejected and the LLM must regenerate a coherent route.
     "GATE_ROLLBACK_MIXED_TARGETS",
     "FANOUT_INPUT_MISSING",
+    // B4.F22: fanout stage declares input port that has no inbound wire,
+    // so the runtime would wait forever for an array that nothing
+    // produces. Caught at submit time as a structural diagnostic.
+    "FANOUT_INPUT_NOT_WIRED",
     // A1.2 additions — gate lifecycle
     "GATE_NOT_FOUND",
     "GATE_ALREADY_ANSWERED",

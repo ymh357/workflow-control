@@ -195,6 +195,24 @@ export function validateStructural(
             `but no such input port is declared.`,
           context: { stage: s.name, fanoutInput: fanout.input },
         });
+      } else {
+        // B4.F22: fanout input port must also have an inbound wire,
+        // otherwise the runtime waits forever for an array that no
+        // upstream ever produces. The port name being declared is
+        // necessary but not sufficient — the wire is what actually
+        // delivers the value.
+        const hasInbound = ir.wires.some(
+          (w) => w.to.stage === s.name && w.to.port === fanout.input,
+        );
+        if (!hasInbound) {
+          diagnostics.push({
+            code: "FANOUT_INPUT_NOT_WIRED",
+            message:
+              `Stage '${s.name}' declares fanout on input port '${fanout.input}', ` +
+              `but no wire delivers a value to that port. The fanout would block forever.`,
+            context: { stage: s.name, fanoutInput: fanout.input },
+          });
+        }
       }
     }
 

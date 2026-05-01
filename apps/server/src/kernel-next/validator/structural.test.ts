@@ -197,9 +197,39 @@ describe("structural validator", () => {
     }
   });
 
-  it("accepts a stage with fanout naming an existing input port", () => {
+  it("accepts a stage with fanout naming an existing input port (with inbound wire)", () => {
     const ir: PipelineIR = {
       name: "t",
+      stages: [
+        {
+          name: "SRC",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "items", type: "number[]" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "A",
+          type: "agent",
+          inputs: [{ name: "item", type: "number" }],
+          outputs: [{ name: "out", type: "string" }],
+          config: { promptRef: "p" },
+          fanout: { input: "item" },
+        },
+      ],
+      wires: [
+        { from: { stage: "SRC", port: "items" }, to: { stage: "A", port: "item" } },
+      ],
+    };
+    expect(validateStructural(ir)).toEqual({ ok: true });
+  });
+
+  // B4.F22 regression — a fanout-input port that is declared but has no
+  // inbound wire would block forever at runtime; structural validator
+  // must reject this at submit time.
+  it("rejects a fanout stage whose input port has no inbound wire", () => {
+    const ir: PipelineIR = {
+      name: "t-fanout-unwired",
       stages: [
         {
           name: "A",
@@ -212,7 +242,13 @@ describe("structural validator", () => {
       ],
       wires: [],
     };
-    expect(validateStructural(ir)).toEqual({ ok: true });
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      const codes = r.diagnostics.map((d) => d.code);
+      expect(codes).toContain("FANOUT_INPUT_NOT_WIRED");
+      expect(codes).not.toContain("FANOUT_INPUT_MISSING");
+    }
   });
 
   // F6 / concern C3 (RELAXED 2026-04-29) — a stage routed to by more
