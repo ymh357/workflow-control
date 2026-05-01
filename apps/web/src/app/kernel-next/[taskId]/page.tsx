@@ -562,8 +562,13 @@ export default function KernelNextTaskPage() {
     const connect = async (): Promise<void> => {
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       try {
+        // B7.F4 (2026-04-30 review): every other route in this
+        // file already encodeURIComponent's taskId; this SSE
+        // construction was the only one that didn't. A taskId
+        // containing '/' or '?' would corrupt the URL — defensive
+        // even though current task IDs don't use those characters.
         const res = await fetch(
-          `${API_BASE}/api/kernel-next/tasks/${taskId}/stream`,
+          `${API_BASE}/api/kernel-next/tasks/${encodeURIComponent(taskId)}/stream`,
           { signal: controller.signal },
         );
         if (!res.ok || !res.body) {
