@@ -1,4 +1,5 @@
 import { logger } from "./logger.js";
+import { redactStringPreview } from "./redact.js";
 
 function findAllBalanced(text: string, open: string, close: string): string[] {
   const results: string[] = [];
@@ -92,6 +93,14 @@ export function extractJSON(text: string): Record<string, unknown> {
     if (result) return result;
   }
 
-  logger.error({ textPreview: text.slice(0, 500) }, "extractJSON: no JSON found in agent output");
+  // B6.#23 (2026-04-30 review): pre-fix the preview was the raw 500
+  // chars of agent output, including any tokens / API keys the
+  // agent emitted from a tool-call response. Now redact known token
+  // shapes before logging, and shorten to 200 chars to limit log
+  // bloat.
+  logger.error(
+    { textPreview: redactStringPreview(text.slice(0, 200)) },
+    "extractJSON: no JSON found in agent output",
+  );
   throw new Error("Failed to extract JSON from agent output");
 }
