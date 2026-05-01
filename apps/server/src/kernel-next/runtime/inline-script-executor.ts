@@ -39,6 +39,15 @@ export class InlineScriptStageExecutor implements StageExecutor {
   // Cache compiled modules by versionHash+stageName: the same inline
   // source is immutable within one pipeline version, so a retry of the
   // same stage does not require recompiling.
+  //
+  // B2.#30 (2026-04-30 review): the cache is per-executor (not module-
+  // level), so it dies with the run. But a long task that survives
+  // multiple hot-updates accumulates one entry per (versionHash,
+  // stageName) pair forever — and since each compiled ScriptModule
+  // can be 10s of KB, a task with 20 stages and 10 hot-updates
+  // accumulates ~5 MB before termination. Cap at MAX_CACHE_ENTRIES
+  // with simple LRU eviction (insertion order is reset on access).
+  private static readonly MAX_CACHE_ENTRIES = 64;
   private readonly cache = new Map<string, ScriptModule>();
 
   async executeStage(args: ExecuteStageArgs): Promise<ExecuteStageResult> {
@@ -85,7 +94,12 @@ export class InlineScriptStageExecutor implements StageExecutor {
     // Resolve (compile + import) lazily, cached per version+stage.
     const cacheKey = `${versionHash}::${stageName}`;
     let mod = this.cache.get(cacheKey);
-    if (!mod) {
+    if (mod) {
+      // Touch on hit: delete + re-insert to bump LRU position. Map
+      // preserves insertion order, so eviction below pops the oldest.
+      this.cache.delete(cacheKey);
+      this.cache.set(cacheKey, mod);
+    } else {
       const compiled = compileInlineScript(scriptStage.config.moduleSource);
       if (!compiled.ok) {
         const message =
@@ -108,6 +122,13 @@ export class InlineScriptStageExecutor implements StageExecutor {
         });
         portRuntime.finishAttempt(attemptId, "error", message);
         return { attemptId, attemptIdx, status: "error", error: message };
+      }
+      // Evict the oldest entry first if we're at the cap. Map iter
+      // order is insertion order; the first key is the least
+      // recently used (hits above re-insert).
+      if (this.cache.size >= InlineScriptStageExecutor.MAX_CACHE_ENTRIES) {
+        const oldestKey = this.cache.keys().next().value;
+        if (oldestKey !== undefined) this.cache.delete(oldestKey);
       }
       this.cache.set(cacheKey, mod);
     }
