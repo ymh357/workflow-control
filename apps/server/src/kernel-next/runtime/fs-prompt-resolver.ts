@@ -13,7 +13,7 @@
 // fail fast, not silently degrade to an empty prompt.
 
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { PromptResolveArgs, PromptResolver } from "./prompt-resolver.js";
 
 export interface FsPromptResolverOptions {
@@ -38,7 +38,10 @@ export class FsPromptResolver implements PromptResolver {
   private readonly extension: string;
 
   constructor(options: FsPromptResolverOptions) {
-    this.rootDir = options.rootDir;
+    // Canonicalize rootDir up-front so the traversal check below
+    // compares apples-to-apples even when the caller passes a path
+    // with `..` segments or symlinks.
+    this.rootDir = resolve(options.rootDir);
     this.extension = options.extension ?? DEFAULT_EXT;
   }
 
@@ -51,7 +54,21 @@ export class FsPromptResolver implements PromptResolver {
       );
     }
     const relPath = ref.endsWith(this.extension) ? ref : ref + this.extension;
-    const absPath = join(this.rootDir, relPath);
+    // B2.#29 (2026-04-30 review): pre-fix `join(rootDir, relPath)`
+    // accepted promptRef='../../etc/passwd' and the readFileSync
+    // would happily read whatever the kernel UID could see. Real
+    // prod uses DbPromptResolver (no path traversal surface), but
+    // this resolver is still wired in tests and could be reused by
+    // a future caller. Defense in depth.
+    const absPath = resolve(join(this.rootDir, relPath));
+    if (absPath !== this.rootDir
+      && !absPath.startsWith(this.rootDir + sep)) {
+      throw new Error(
+        `FsPromptResolver: promptRef '${ref}' for stage '${stage.name}' ` +
+          `resolves to '${absPath}', which escapes rootDir '${this.rootDir}'. ` +
+          `Path traversal blocked.`,
+      );
+    }
     try {
       return readFileSync(absPath, "utf-8");
     } catch (err) {

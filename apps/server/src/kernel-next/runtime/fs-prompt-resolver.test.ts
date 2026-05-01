@@ -70,4 +70,23 @@ describe("FsPromptResolver", () => {
       taskId: "t", attemptId: "a", inputs: {},
     })).not.toThrow();
   });
+
+  // B2.#29 (2026-04-30 review) regression: a promptRef containing
+  // `..` segments must not let a malformed IR escape rootDir and
+  // read arbitrary files the kernel UID can see.
+  it("rejects a promptRef containing path-traversal segments", () => {
+    const r = new FsPromptResolver({ rootDir: root, extension: "" });
+    expect(() => r.resolve({
+      stage: makeStage("evil", "../../etc/passwd"),
+      taskId: "t", attemptId: "a", inputs: {},
+    })).toThrow(/escapes rootDir|Path traversal/);
+  });
+
+  it("rejects a promptRef that resolves outside rootDir via implicit .md", () => {
+    const r = new FsPromptResolver({ rootDir: root });
+    expect(() => r.resolve({
+      stage: makeStage("evil", "../../../tmp/outside"),
+      taskId: "t", attemptId: "a", inputs: {},
+    })).toThrow(/escapes rootDir|Path traversal/);
+  });
 });
