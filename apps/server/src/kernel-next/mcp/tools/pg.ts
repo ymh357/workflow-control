@@ -3,6 +3,9 @@
 // the run to a terminal state.
 
 import { z } from "zod";
+import { statSync, readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import type { PipelineIR } from "../../ir/schema.js";
 import { handleStartPipelineGenerator, handleWaitPipelineResult } from "../pg-entry.js";
 import { loadBuiltinPipelineIR } from "../../runtime/load-builtin-pipeline.js";
@@ -13,12 +16,70 @@ import { DbPromptResolver } from "../../runtime/db-prompt-resolver.js";
 import type { ToolDef, ToolsDeps } from "../tool-types.js";
 import { jsonResponse, errorResponse } from "../tool-helpers.js";
 
+// B3.F17 (2026-04-30 review): the pipeline-generator IR cache used to
+// be a one-shot module-level Map<undefined> that loaded on first
+// access and never refreshed. updateRegistryPipeline writes the new
+// pipeline.ir.json + new prompts to disk, but pg.ts kept serving the
+// stale IR — start_pipeline_generator would dispatch the OLD pipeline
+// even after a hot-update via the registry. Cache now keys on the
+// max mtime of pipeline.ir.json + every file under prompts/, so any
+// disk write triggers a re-load on the next read. Cost: O(prompts)
+// stat() calls per pg call; the prompts tree is shallow (~10 files
+// for pipeline-generator) so this is sub-millisecond.
+const __pgFileName = fileURLToPath(import.meta.url);
+const __pgDirName = dirname(__pgFileName);
+const PIPELINE_GENERATOR_DIR = join(
+  __pgDirName, "..", "..", "..", "builtin-pipelines", "pipeline-generator",
+);
+
+function maxMtimeOfPipelineGeneratorDir(): number {
+  let max = 0;
+  function visit(p: string): void {
+    let st;
+    try {
+      st = statSync(p);
+    } catch {
+      return;
+    }
+    if (st.mtimeMs > max) max = st.mtimeMs;
+    if (st.isDirectory()) {
+      let entries: string[];
+      try {
+        entries = readdirSync(p);
+      } catch {
+        return;
+      }
+      for (const e of entries) visit(join(p, e));
+    }
+  }
+  visit(PIPELINE_GENERATOR_DIR);
+  return max;
+}
+
 let cachedPipelineGeneratorIR: ReturnType<typeof loadBuiltinPipelineIR> | undefined;
+let cachedPipelineGeneratorMtime = 0;
+let pipelineGeneratorReloadCount = 0;
+
 function getPipelineGeneratorIR() {
-  if (!cachedPipelineGeneratorIR) {
+  const currentMtime = maxMtimeOfPipelineGeneratorDir();
+  if (!cachedPipelineGeneratorIR || currentMtime > cachedPipelineGeneratorMtime) {
     cachedPipelineGeneratorIR = loadBuiltinPipelineIR("pipeline-generator");
+    cachedPipelineGeneratorMtime = currentMtime;
+    pipelineGeneratorReloadCount += 1;
   }
   return cachedPipelineGeneratorIR;
+}
+
+// Test-only: expose the reload counter + a getter that goes through
+// the cache so a unit test can assert "second call after mtime
+// advance triggers a reload". Not part of the public API — guarded
+// by the __FOR_TESTS__ prefix per the existing convention in
+// execution-record-writer.ts.
+export function __getPipelineGeneratorReloadCountForTests__(): number {
+  return pipelineGeneratorReloadCount;
+}
+export function __triggerPipelineGeneratorLoadForTests__(): void {
+  getPipelineGeneratorIR();
 }
 
 export function buildPgTools(deps: ToolsDeps): ToolDef[] {
