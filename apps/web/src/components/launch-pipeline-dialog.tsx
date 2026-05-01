@@ -68,16 +68,23 @@ export const LaunchPipelineDialog = ({
       setSubmitting(false);
       setDiagnostics([]);
       setEnvProbe({});
+      // B7.F9 (2026-04-30 review): pre-fix the envProbe fetch had no
+      // AbortController, so a rapid open→close→open sequence could
+      // leave an old request in flight that still resolved against
+      // the new dialog state and clobbered fresh probe results.
+      // Now: per-open AbortController, aborted on close/unmount.
+      const ac = new AbortController();
       // Probe which envKeys are already visible in process.env so the
       // form can mark them "in env" and the user can leave those blank.
       if (pipeline.envKeys.length > 0) {
         void apiFetch<{ status: Record<string, boolean> }>(
           "/api/kernel/pipelines/env-probe",
-          { method: "POST", body: { envKeys: pipeline.envKeys } },
+          { method: "POST", body: { envKeys: pipeline.envKeys }, signal: ac.signal },
         ).then((r) => {
-          if (r.ok) setEnvProbe(r.data.status);
+          if (!ac.signal.aborted && r.ok) setEnvProbe(r.data.status);
         });
       }
+      return () => ac.abort();
     }
   }, [open, pipeline.envKeys]);
 
