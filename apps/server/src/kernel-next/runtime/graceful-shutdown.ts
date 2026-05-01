@@ -8,6 +8,7 @@
 // boot's orphan reconciler can pick up.
 
 import type { DatabaseSync } from "node:sqlite";
+import { withTransaction } from "../ir/with-transaction.js";
 
 export function reconcileRunningAttempts(db: DatabaseSync, taskIds: string[]): number {
   if (taskIds.length === 0) return 0;
@@ -20,16 +21,26 @@ export function reconcileRunningAttempts(db: DatabaseSync, taskIds: string[]): n
      WHERE status='running' AND task_id IN (${placeholders})`,
   ).all(...taskIds) as Array<{ attempt_id: string }>;
   if (runningAttempts.length === 0) return 0;
-  const updateAttempts = db.prepare(
-    `UPDATE stage_attempts SET status='superseded'
-     WHERE status='running' AND task_id IN (${placeholders})`,
-  );
-  const attemptsRes = updateAttempts.run(...taskIds);
-  const aedPh = runningAttempts.map(() => "?").join(",");
-  db.prepare(
-    `UPDATE agent_execution_details
-        SET termination_reason='interrupted', ended_at=?
-      WHERE attempt_id IN (${aedPh}) AND ended_at IS NULL`,
-  ).run(now, ...runningAttempts.map((r) => r.attempt_id));
-  return Number(attemptsRes.changes);
+  // Bug B2.#19/#20 (c12+ review Wave 2 T2): the two UPDATEs below
+  // were issued without a transaction. If SIGTERM arrived mid-flight
+  // and the process died between them, the next boot would see
+  // stage_attempts marked 'superseded' but their AED rows still
+  // running with ended_at=NULL — an inconsistent reconciliation.
+  // Bundle into one transaction so SIGTERM either takes the system
+  // to a fully reconciled state or rolls back to "as if shutdown
+  // never started" for the next reboot's orphan reconciler.
+  return withTransaction(db, () => {
+    const updateAttempts = db.prepare(
+      `UPDATE stage_attempts SET status='superseded'
+       WHERE status='running' AND task_id IN (${placeholders})`,
+    );
+    const attemptsRes = updateAttempts.run(...taskIds);
+    const aedPh = runningAttempts.map(() => "?").join(",");
+    db.prepare(
+      `UPDATE agent_execution_details
+          SET termination_reason='interrupted', ended_at=?
+        WHERE attempt_id IN (${aedPh}) AND ended_at IS NULL`,
+    ).run(now, ...runningAttempts.map((r) => r.attempt_id));
+    return Number(attemptsRes.changes);
+  });
 }

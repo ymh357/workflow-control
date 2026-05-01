@@ -91,6 +91,27 @@ export function sweepTimedOutGates(db: DatabaseSync): GateSweepResult {
     const deadlineAt = row.created_at + timeoutMin * 60_000;
     if (now < deadlineAt) continue;
 
+    // Bug 60 (c12+ review Wave 2 T2): pre-fix the sweeper SELECTed
+    // unanswered gates, then proceeded to cancelTask without
+    // re-checking. A user answering the gate concurrently in that
+    // window flipped an actively-completing task to cancelled. We
+    // can't fully eliminate the race (SQLite serialises writes
+    // across connections, but reads can interleave), but we can
+    // shrink it to the smallest possible window by re-confirming the
+    // gate is still unanswered AND the task still has no terminal
+    // verdict immediately before invoking cancelTask. Both conditions
+    // queried in one prepared statement so they share an instant.
+    const stillEligible = db.prepare(
+      `SELECT 1
+         FROM gate_queue gq
+        WHERE gq.gate_id = ?
+          AND gq.answered_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM task_finals tf WHERE tf.task_id = gq.task_id
+          )`,
+    ).get(row.gate_id);
+    if (!stillEligible) continue;
+
     const reason = `gate_timeout: ${row.stage_name} exceeded ${timeoutMin} minutes`;
     const result = kernel.cancelTask({
       taskId: row.task_id,

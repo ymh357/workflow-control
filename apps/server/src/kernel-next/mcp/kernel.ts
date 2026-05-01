@@ -30,7 +30,6 @@ import {
 import { applyPatch, PatchApplyError } from "./patch.js";
 import { taskRegistry } from "../runtime/task-registry.js";
 import { kernelNextBroadcaster } from "../sse/singleton.js";
-import { deleteTaskEnvValues } from "../runtime/task-env-values.js";
 import { compileIRToMachine } from "../compiler/ir-to-machine.js";
 import { dryRunProposal as runDryRun } from "../hot-update/dry-run.js";
 import type {
@@ -50,6 +49,7 @@ import {
 import { equipEntry } from "../mcp-catalog/inventory.js";
 import type { ExecFn } from "../mcp-catalog/healthcheck.js";
 import { wireFromStage } from "../ir/wire-helpers.js";
+import { withTransaction } from "../ir/with-transaction.js";
 
 // Stage 5B — per-task migration lock now lives in
 // hot-update/migration-orchestrator.ts. The test hooks below forward to
@@ -651,6 +651,18 @@ export class KernelService {
     }
 
     // Persist new version (idempotent) and its prompt refs.
+    //
+    // Bug B3.F18 (c12+ review Wave 2 T2): pre-fix the
+    // insertPipelineVersion + per-prompt insertPromptContent +
+    // insertPromptRefs sequence ran without a wrapping transaction;
+    // a mid-sequence error left the new pipeline_versions row visible
+    // but its prompt rows missing, so the next propose() retry hit
+    // PROMPT_REF_MISSING and the operator saw a half-installed version
+    // they couldn't propose against. We can't include
+    // insertPipelineVersion in the same outer txn (it has its own
+    // BEGIN/COMMIT internally), but its retry is idempotent so leaving
+    // it standalone is fine. The prompt + refs writes are now atomic
+    // together; partial state on error rolls back cleanly.
     if (getPipelineIR(this.db, proposedHash) === null) {
       const { source } = emitPipelineModule(proposedIR);
       insertPipelineVersion(this.db, proposedIR, {
@@ -658,17 +670,15 @@ export class KernelService {
         parentHash: args.currentVersion,
         tsSource: source,
       });
-      // Write content rows + version->ref mapping so the resolver can
-      // hydrate prompts for tasks running on the new version. Same
-      // semantics as submit() — INSERT OR IGNORE so we tolerate
-      // content_hash collisions with the base version's refs.
-      const refMap: Record<string, string> = {};
-      for (const [ref, content] of Object.entries(mergedPrompts)) {
-        const ch = promptContentHash(content);
-        insertPromptContent(this.db, ch, normalizePromptContent(content));
-        refMap[ref] = ch;
-      }
-      insertPromptRefs(this.db, proposedHash, refMap);
+      withTransaction(this.db, () => {
+        const refMap: Record<string, string> = {};
+        for (const [ref, content] of Object.entries(mergedPrompts)) {
+          const ch = promptContentHash(content);
+          insertPromptContent(this.db, ch, normalizePromptContent(content));
+          refMap[ref] = ch;
+        }
+        insertPromptRefs(this.db, proposedHash, refMap);
+      });
     }
 
     // Stage 5A — re-run the hot-update dry-run to compute diff + impact
@@ -1616,42 +1626,58 @@ export class KernelService {
       }
     }
 
-    // Write secrets to task_env_values (upsert).
+    // Bug 17 (c12+ review Wave 2 T2): pre-fix the env_values upsert,
+    // re-read of having keys, and secret_gate_queue resolved-at marks
+    // ran outside any transaction. Concurrent provideTaskSecrets calls
+    // could each see "secret still missing" between writes and trigger
+    // duplicate retries — the second migration then rejected with
+    // MIGRATION_IN_PROGRESS, masking the real first-call success in
+    // user-visible error reporting.
+    //
+    // Wrap the entire write+read+mark sequence in one IMMEDIATE
+    // transaction so concurrent callers serialise predictably (the
+    // second BEGIN throws SQLITE_BUSY synchronously, propagated up
+    // for the caller to retry). The async equipEntry persistence path
+    // stays outside the transaction since the sqlite write lock must
+    // not be held across an await.
     const now = Date.now();
-    const insertEnv = this.db.prepare(
-      `INSERT INTO task_env_values (task_id, key, value, created_at)
-       VALUES (?, ?, ?, ?)
-       ON CONFLICT(task_id, key) DO UPDATE SET value = excluded.value`,
-    );
-    for (const [k, v] of Object.entries(secrets)) {
-      insertEnv.run(taskId, k, v, now);
-    }
-
-    // Compute stillMissing per row post-write. Mark each row whose
-    // required_keys are now fully satisfied as resolved. Collect the
-    // distinct stage names that became unblocked so we trigger one
-    // retryTaskFromStage per stage (multiple rows for the same stage
-    // dedupe to one retry).
-    const havingRows = this.db.prepare(
-      `SELECT key FROM task_env_values WHERE task_id = ?`,
-    ).all(taskId) as Array<{ key: string }>;
-    const havingKeys = new Set(havingRows.map((r) => r.key));
-
-    const aggregatedStillMissing = new Set<string>();
-    const resolvedStages = new Set<string>();
-    const markResolved = this.db.prepare(
-      `UPDATE secret_gate_queue SET resolved_at = ? WHERE secret_gate_id = ?`,
-    );
-    for (const r of allRows) {
-      const required: string[] = JSON.parse(r.required_keys);
-      const missing = required.filter((k) => !havingKeys.has(k));
-      if (missing.length === 0) {
-        markResolved.run(now, r.secret_gate_id);
-        resolvedStages.add(r.stage_name);
-      } else {
-        for (const k of missing) aggregatedStillMissing.add(k);
+    const { aggregatedStillMissing, resolvedStages } = withTransaction(this.db, () => {
+      const insertEnv = this.db.prepare(
+        `INSERT INTO task_env_values (task_id, key, value, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(task_id, key) DO UPDATE SET value = excluded.value`,
+      );
+      for (const [k, v] of Object.entries(secrets)) {
+        insertEnv.run(taskId, k, v, now);
       }
-    }
+
+      // Compute stillMissing per row post-write. Mark each row whose
+      // required_keys are now fully satisfied as resolved. Collect the
+      // distinct stage names that became unblocked so we trigger one
+      // retryTaskFromStage per stage (multiple rows for the same stage
+      // dedupe to one retry).
+      const havingRows = this.db.prepare(
+        `SELECT key FROM task_env_values WHERE task_id = ?`,
+      ).all(taskId) as Array<{ key: string }>;
+      const havingKeys = new Set(havingRows.map((r) => r.key));
+
+      const stillMissing = new Set<string>();
+      const resolved = new Set<string>();
+      const markResolved = this.db.prepare(
+        `UPDATE secret_gate_queue SET resolved_at = ? WHERE secret_gate_id = ?`,
+      );
+      for (const r of allRows) {
+        const required: string[] = JSON.parse(r.required_keys);
+        const missing = required.filter((k) => !havingKeys.has(k));
+        if (missing.length === 0) {
+          markResolved.run(now, r.secret_gate_id);
+          resolved.add(r.stage_name);
+        } else {
+          for (const k of missing) stillMissing.add(k);
+        }
+      }
+      return { aggregatedStillMissing: stillMissing, resolvedStages: resolved };
+    });
 
     if (aggregatedStillMissing.size > 0 && resolvedStages.size === 0) {
       return { ok: true, resolved: false, stillMissing: Array.from(aggregatedStillMissing).sort() };
@@ -2272,23 +2298,57 @@ export class KernelService {
       }
     }
 
-    // 4. Write task_finals. INSERT OR IGNORE: if the runner's finally
-    //    fires between guard 1 and here, accept the runner's verdict
-    //    (completed/failed) over our cancel — the task genuinely
-    //    finished on its own path. deleteTaskEnvValues below still
-    //    runs for the cleanup invariant.
-    this.db.prepare(
-      `INSERT OR IGNORE INTO task_finals
-       (task_id, version_hash, final_state, reason, detail, ended_at)
-       VALUES (?, ?, 'cancelled', 'cancelled', ?, ?)`,
-    ).run(taskId, latest.version_hash, detail, Date.now());
+    // Bug 18 (c12+ review Wave 2 T2): pre-fix, cancelTask wrote
+    // task_finals + deleted env_values without touching gate_queue or
+    // secret_gate_queue. Result: getTaskStatus continued reporting the
+    // task as 'gated' or 'secret_pending' indefinitely (those checks
+    // run before task_finals is consulted), so dashboards showed a
+    // cancelled task as still waiting on a human. Cleanup is now
+    // bundled into one transaction so the cancel either lands fully
+    // or rolls back fully — no half-cancelled state.
+    //
+    // 4-6 in one transaction: task_finals INSERT + close any
+    // unresolved gate_queue rows + close any unresolved
+    // secret_gate_queue rows + drop env values.
+    const now = Date.now();
+    withTransaction(this.db, () => {
+      // INSERT OR IGNORE: if the runner's finally fires between guard
+      // 1 and here, accept the runner's verdict (completed/failed)
+      // over our cancel — the task genuinely finished on its own path.
+      this.db.prepare(
+        `INSERT OR IGNORE INTO task_finals
+         (task_id, version_hash, final_state, reason, detail, ended_at)
+         VALUES (?, ?, 'cancelled', 'cancelled', ?, ?)`,
+      ).run(taskId, latest.version_hash, detail, now);
 
-    // 5. P3.6 — plaintext env tokens must not outlive the task.
-    try {
-      deleteTaskEnvValues(this.db, taskId);
-    } catch {
-      // Swallow — env cleanup failure must not flip the cancel result.
-    }
+      // Close any unresolved gate_queue rows so getTaskStatus's
+      // pending-gates check doesn't keep flagging the task as gated.
+      // We mark them as "answered" with a sentinel; pre-existing
+      // answered rows are left alone (`answered_at IS NULL` guard).
+      this.db.prepare(
+        `UPDATE gate_queue
+            SET answered_at = ?,
+                answer = COALESCE(answer, '__cancelled__')
+          WHERE task_id = ? AND answered_at IS NULL`,
+      ).run(now, taskId);
+
+      // Same for secret_gate_queue. resolved_at IS NULL means the
+      // task is still waiting on a human to provide secrets — once
+      // we cancel, those queue rows are stale.
+      this.db.prepare(
+        `UPDATE secret_gate_queue
+            SET resolved_at = ?
+          WHERE task_id = ? AND resolved_at IS NULL`,
+      ).run(now, taskId);
+
+      // P3.6 — plaintext env tokens must not outlive the task.
+      // Inline DELETE so the whole cleanup is one transaction
+      // (deleteTaskEnvValues is a one-statement helper; calling it
+      // here would still be one statement under the same txn).
+      this.db.prepare(
+        `DELETE FROM task_env_values WHERE task_id = ?`,
+      ).run(taskId);
+    });
 
     return { ok: true, taskId, wasRunning, reason: detail };
   }

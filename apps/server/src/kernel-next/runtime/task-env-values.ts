@@ -7,6 +7,7 @@
 // Lifetime: populated on task creation (P3.4); deleted on task termination (P3.6).
 
 import type { DatabaseSync } from "node:sqlite";
+import { withTransaction } from "../ir/with-transaction.js";
 
 export function storeTaskEnvValues(
   db: DatabaseSync,
@@ -20,16 +21,16 @@ export function storeTaskEnvValues(
      ON CONFLICT(task_id, key) DO UPDATE SET value = excluded.value, created_at = excluded.created_at`,
   );
   const now = Date.now();
-  db.exec("BEGIN IMMEDIATE");
-  try {
+  // Bug 62 (c12+ review Wave 2 T2): pre-fix this hand-rolled
+  // BEGIN/COMMIT/ROLLBACK; if BEGIN itself threw, the catch's
+  // ROLLBACK threw "no transaction is active" and masked the real
+  // BEGIN failure. withTransaction routes BEGIN failures through
+  // the helper so the caller sees the underlying error.
+  withTransaction(db, () => {
     for (const [k, v] of entries) {
       upsert.run(taskId, k, v, now);
     }
-    db.exec("COMMIT");
-  } catch (e) {
-    db.exec("ROLLBACK");
-    throw e;
-  }
+  });
 }
 
 export function loadTaskEnvValues(db: DatabaseSync, taskId: string): Record<string, string> {
