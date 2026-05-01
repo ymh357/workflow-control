@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 export interface SpawnResult {
   stdout: string;
@@ -47,11 +48,37 @@ export async function spawnWithTimeout(
     let settled = false;
     let forceTimer: ReturnType<typeof setTimeout> | null = null;
 
+    // B6.#21 (2026-04-30 review): chunk.toString() decodes one buffer
+    // at a time. UTF-8 multi-byte characters that cross chunk
+    // boundaries used to truncate to U+FFFD. StringDecoder retains
+    // partial multi-byte state across calls, so the next chunk
+    // completes the codepoint correctly.
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+
     const settle = (exitCode: number) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (forceTimer !== null) clearTimeout(forceTimer);
+      // Flush any retained partial multi-byte state. If the child
+      // truncated mid-codepoint (kill signal in the middle of a
+      // UTF-8 emoji, say), end() emits U+FFFD for the dangling
+      // bytes — better than dropping them silently.
+      if (stdoutBuf.length < maxBytes) {
+        const flush = stdoutDecoder.end();
+        if (flush.length > 0) {
+          const remaining = maxBytes - stdoutBuf.length;
+          stdoutBuf += remaining >= flush.length ? flush : flush.slice(0, remaining);
+        }
+      }
+      if (stderrBuf.length < maxBytes) {
+        const flush = stderrDecoder.end();
+        if (flush.length > 0) {
+          const remaining = maxBytes - stderrBuf.length;
+          stderrBuf += remaining >= flush.length ? flush : flush.slice(0, remaining);
+        }
+      }
       resolve({
         stdout: stdoutBuf,
         stderr: stderrBuf,
@@ -80,7 +107,7 @@ export async function spawnWithTimeout(
 
     child.stdout!.on("data", (chunk: Buffer) => {
       if (stdoutBuf.length < maxBytes) {
-        const str = chunk.toString();
+        const str = stdoutDecoder.write(chunk);
         const remaining = maxBytes - stdoutBuf.length;
         stdoutBuf += remaining >= str.length ? str : str.slice(0, remaining);
       }
@@ -88,7 +115,7 @@ export async function spawnWithTimeout(
 
     child.stderr!.on("data", (chunk: Buffer) => {
       if (stderrBuf.length < maxBytes) {
-        const str = chunk.toString();
+        const str = stderrDecoder.write(chunk);
         const remaining = maxBytes - stderrBuf.length;
         stderrBuf += remaining >= str.length ? str : str.slice(0, remaining);
       }

@@ -90,4 +90,23 @@ describe("spawnWithTimeout", () => {
     expect(result.stderr).toBe("");
     expect(result.exitCode).toBe(0);
   });
+
+  // B6.#21 (2026-04-30 review) regression: chunk.toString() decoded
+  // each Buffer in isolation, so a UTF-8 multi-byte char split across
+  // two chunks would produce U+FFFD on the boundary. StringDecoder
+  // retains partial state across calls.
+  it("preserves UTF-8 multi-byte characters across chunk boundaries", async () => {
+    // 中文 = 3 bytes per char in UTF-8. Echo a long string and let
+    // node fragment it on read; the result must be byte-identical.
+    const text = "你好世界".repeat(2000); // 8000 chars × 3 bytes = 24000 bytes
+    const result = await spawnWithTimeout(
+      "node",
+      ["-e", `process.stdout.write(${JSON.stringify(text)})`],
+      { timeoutMs: 10000, maxOutputBytes: 1024 * 1024 },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(text);
+    // No replacement characters from boundary truncation.
+    expect(result.stdout).not.toContain("�");
+  });
 });
