@@ -529,3 +529,57 @@ describe("canonical: gate question.options sort (Bug 34)", () => {
     expect(out).toContain("Try again");
   });
 });
+
+// B4.F4 (2026-04-30 review): pre-fix sortKeys silently mapped
+// unsupported types (BigInt, Function, Symbol, Date) to null —
+// catastrophic for a canonical hash function. Two IRs differing
+// only in a BigInt field would collide. Post-fix throws on the first
+// unsupported value so the caller learns about it instead of seeing
+// a phantom hash collision.
+describe("sortKeys / canonical.ts B4.F4 unsupported-type rejection", () => {
+  // Use a fixture that bypasses Zod (the schema would already reject
+  // BigInt at parse time) — we want to verify the canonical layer's
+  // own defense-in-depth.
+  function irWithEmbeddedValue(value: unknown): PipelineIR {
+    // Use a script stage so canonicalizeStage passes config straight to
+    // sortKeys instead of going through the field-allowlist of
+    // canonicalizeAgentConfig. Script config is opaque on purpose so
+    // arbitrary script params reach sortKeys unchanged.
+    return {
+      name: "t",
+      stages: [
+        {
+          name: "A",
+          type: "script",
+          inputs: [],
+          outputs: [{ name: "o", type: "string" }],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          config: { source: "registry", moduleId: "noop", embedded: value as any } as any,
+        },
+      ],
+      wires: [],
+    } as PipelineIR;
+  }
+
+  it("throws on BigInt embedded in IR config", () => {
+    expect(() => canonicalJSON(irWithEmbeddedValue(BigInt(42)))).toThrow(/bigint/i);
+  });
+
+  it("throws on Date embedded in IR config", () => {
+    expect(() => canonicalJSON(irWithEmbeddedValue(new Date("2026-05-01")))).toThrow(/Date/);
+  });
+
+  it("throws on function embedded in IR config", () => {
+    expect(() => canonicalJSON(irWithEmbeddedValue(() => 42))).toThrow(/function/i);
+  });
+
+  it("throws on symbol embedded in IR config", () => {
+    expect(() => canonicalJSON(irWithEmbeddedValue(Symbol("oops")))).toThrow(/symbol/i);
+  });
+
+  it("still tolerates undefined inside object (filtered before recursion)", () => {
+    // sortKeys' object branch filters undefined values before recursing.
+    // This prevents IR fixtures with optional fields from breaking.
+    expect(() => canonicalJSON(irWithEmbeddedValue(undefined))).not.toThrow();
+  });
+});

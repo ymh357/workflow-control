@@ -36,6 +36,16 @@ function sortKeys(value: unknown): CanonicalValue {
   if (Array.isArray(value)) {
     return value.map((v) => sortKeys(v));
   }
+  // B4.F4: Date is `typeof === "object"` but its own-properties are
+  // empty (state lives on the prototype) — without an explicit check
+  // it would canonicalise to `{}`, hashing identically to a real
+  // empty object. Reject before the generic object branch.
+  if (value instanceof Date) {
+    throw new Error(
+      `sortKeys: Date instances are not allowed in IR (Date(${value.toISOString()})). ` +
+        `Use ISO 8601 strings if a timestamp is part of the canonical IR.`,
+    );
+  }
   if (typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>)
       .filter(([, v]) => v !== undefined)
@@ -47,8 +57,26 @@ function sortKeys(value: unknown): CanonicalValue {
   if (typeof value === "number" || typeof value === "boolean" || typeof value === "string") {
     return value;
   }
-  // Unsupported type (function, symbol, bigint, undefined): skip.
-  return null;
+  // B4.F4 (2026-04-30 review): unsupported types (function, symbol,
+  // bigint, undefined, Date) used to silently coerce to null. That is
+  // dangerous for a canonical-hash function — two IRs with field=BigInt(1)
+  // vs field=BigInt(2) would hash identically and collide in
+  // pipeline_versions. The IR schema (Zod) already rejects these at
+  // submit time, so reaching this branch indicates either a programmer
+  // error (passing raw runtime objects to canonical) or a corrupt
+  // PipelineIR — either way the safer answer is to fail loud.
+  const t = typeof value;
+  const repr =
+    t === "bigint" ? `bigint(${(value as bigint).toString()})`
+      : t === "function" ? "function"
+      : t === "symbol" ? `symbol(${(value as symbol).description ?? ""})`
+      : t === "undefined" ? "undefined"
+      : value instanceof Date ? `Date(${value.toISOString()})`
+      : `unknown(${String(value)})`;
+  throw new Error(
+    `sortKeys: unsupported value type ${t} (${repr}) — IR must contain only ` +
+      `JSON-serialisable primitives (string/number/boolean/null), arrays, and plain objects.`,
+  );
 }
 
 // Custom canonicalizer for gate stage config. Route targets may be a string
