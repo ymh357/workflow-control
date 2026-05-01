@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { withTransaction } from "../ir/with-transaction.js";
 import type {
   InventoryRow,
   InventoryStatus,
@@ -122,15 +123,22 @@ export function deleteAllSecrets(db: DatabaseSync, entryId: string): void {
   db.prepare("DELETE FROM mcp_inventory_secrets WHERE entry_id = ?").run(entryId);
 }
 
+// B6.#27 (2026-04-30 review): adopt withTransaction so this site
+// uses the same BEGIN IMMEDIATE / ROLLBACK / COMMIT pattern as the
+// rest of kernel-next. The hand-rolled try/catch here was correct
+// but easy to drift out of shape on the next edit; the helper
+// centralises the rollback-also-throws case via
+// TransactionRollbackError so observability tooling sees both
+// errors.
+//
+// Nestability note: withTransaction does not nest (SQLite has no
+// nested BEGIN). Current callers of unequipTransaction never run
+// inside another transaction, so this is fine; if a future caller
+// adds a nesting layer, the helper docstring explains the
+// SAVEPOINT-based extension that would be needed.
 export function unequipTransaction(db: DatabaseSync, entryId: string): void {
-  db.exec("BEGIN IMMEDIATE");
-  try {
+  withTransaction(db, () => {
     deleteInventoryRow(db, entryId);
     deleteAllSecrets(db, entryId);
-    db.exec("COMMIT");
-  } catch (e) {
-    // Wrap ROLLBACK so a "no transaction active" error doesn't mask the real one.
-    try { db.exec("ROLLBACK"); } catch { /* already rolled back */ }
-    throw e;
-  }
+  });
 }
