@@ -466,6 +466,11 @@ export const DiagnosticSchema = z.object({
     "GATE_FANOUT_FORBIDDEN",
     "GATE_ROUTING_TARGET_MISSING",
     "GATE_TARGET_SHARED",
+    // Bug 28: a gate routing answer with multiple targets where some are
+    // transitive ancestors of the gate (rollback semantics) and others are
+    // not (forward semantics). The compiler can't infer one or the other,
+    // so the IR is rejected and the LLM must regenerate a coherent route.
+    "GATE_ROLLBACK_MIXED_TARGETS",
     "FANOUT_INPUT_MISSING",
     // A1.2 additions — gate lifecycle
     "GATE_NOT_FOUND",

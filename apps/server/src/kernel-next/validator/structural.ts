@@ -280,6 +280,72 @@ export function validateStructural(
   // first-class supported.
   void gateTargetOwners; // retained for potential future diagnostics
 
+  // --- Bug 28: multi-target rollback coherence ---
+  //
+  // A gate routing answer may declare multiple targets (`reject: [a, b]`).
+  // The compiler treats the answer as rollback when ALL targets are
+  // transitive ancestors of the gate (reverse-BFS via stage-sourced wires,
+  // excluding `__gate_feedback__` back-edges so we mirror the compiler's
+  // ancestor view). Mixed-semantics answers — some targets ancestors,
+  // some not — collapse silently to "forward route" in the compiler,
+  // which means a true reject answer to a partial-ancestor list would
+  // never trigger rollback. Surface this clearly so the LLM regenerates
+  // a coherent IR.
+  {
+    const downstreamAdj = new Map<string, Set<string>>();
+    for (const w of ir.wires) {
+      const fromStage = wireFromStage(w);
+      if (fromStage === null) continue;
+      if (w.from.port === "__gate_feedback__") continue;
+      const set = downstreamAdj.get(fromStage);
+      if (set) set.add(w.to.stage);
+      else downstreamAdj.set(fromStage, new Set([w.to.stage]));
+    }
+    const bfsReaches = (start: string, target: string): boolean => {
+      if (start === target) return true;
+      const visited = new Set<string>([start]);
+      const queue: string[] = [start];
+      while (queue.length > 0) {
+        const cur = queue.shift()!;
+        const nexts = downstreamAdj.get(cur);
+        if (!nexts) continue;
+        for (const n of nexts) {
+          if (n === target) return true;
+          if (visited.has(n)) continue;
+          visited.add(n);
+          queue.push(n);
+        }
+      }
+      return false;
+    };
+    for (const s of ir.stages) {
+      if (s.type !== "gate") continue;
+      for (const [answer, rawTarget] of Object.entries(s.config.routing.routes)) {
+        if (!Array.isArray(rawTarget)) continue;
+        if (rawTarget.length < 2) continue;
+        const ancestor: boolean[] = rawTarget.map((t) => bfsReaches(t, s.name));
+        const allAncestors = ancestor.every((b) => b);
+        const noneAncestors = ancestor.every((b) => !b);
+        if (!allAncestors && !noneAncestors) {
+          diagnostics.push({
+            code: "GATE_ROLLBACK_MIXED_TARGETS",
+            message:
+              `Gate '${s.name}' routes answer '${answer}' to multiple targets ` +
+              `[${rawTarget.join(", ")}], some of which are upstream ancestors of ` +
+              `the gate (rollback semantics) and others are not (forward semantics). ` +
+              `Multi-target answers must be either all-rollback or all-forward.`,
+            context: {
+              stage: s.name,
+              answer,
+              targets: rawTarget,
+              ancestorMask: ancestor,
+            },
+          });
+        }
+      }
+    }
+  }
+
   // --- Wire validity ---
   const drivenInputs = new Set<string>();
   for (const w of ir.wires) {

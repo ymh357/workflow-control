@@ -34,6 +34,7 @@ import type { AnyStateMachine } from "xstate";
 import type { PipelineIR, StageIR } from "../ir/schema.js";
 import { buildDag } from "../validator/dag.js";
 import { evaluateGuard } from "../runtime/guard-evaluator.js";
+import { isStageSourcedWire, wireFromStage } from "../ir/wire-helpers.js";
 
 export interface MachineContext {
   taskId: string;
@@ -149,7 +150,10 @@ export type MachineEvent =
       gateId: string;
       stageName: string;
       answer: string;
-      targetStage: string;
+      // Bug 28: multi-target reject (`reject: [a, b]`) carries a string[].
+      // Single-target reject preserves the string shape for callers that
+      // compare via `===`.
+      targetStage: string | string[];
       affectedStages: string[];
     };
 
@@ -200,9 +204,13 @@ function computeGateAncestors(ir: PipelineIR): Map<string, Set<string>> {
   const upstreamOf = new Map<string, Set<string>>();
   for (const s of ir.stages) upstreamOf.set(s.name, new Set());
   for (const w of ir.wires) {
-    if (w.from.source !== "stage") continue;
+    // Bug 29: route through wire-helpers so legacy un-Zod-preprocessed
+    // IRs (missing `from.source`) are treated as stage-sourced rather
+    // than silently dropped from the BFS adjacency.
+    const fromStage = wireFromStage(w);
+    if (fromStage === null) continue;
     if (w.from.port === "__gate_feedback__") continue;
-    upstreamOf.get(w.to.stage)?.add(w.from.stage);
+    upstreamOf.get(w.to.stage)?.add(fromStage);
   }
 
   const ancestorsByGate = new Map<string, Set<string>>();
@@ -278,9 +286,12 @@ function indexStages(ir: PipelineIR): Map<string, StageMeta> {
   for (const w of ir.wires) {
     const entry = index.get(w.to.stage);
     if (!entry) continue;
-    // Bridge: Task 1.2 introduced WireSource. Task 1.3+ will wire external
-    // sources into the inbound set via a dedicated external stage record.
-    const fromStage = w.from.source === "external" ? "__external__" : w.from.stage;
+    // Bug 29: route through wire-helpers.wireSourceKeyPrefix so external
+    // wires resolve to "__external__" and stage wires resolve to the
+    // stage name even when from.source is unset (legacy IR).
+    const fromStage = isStageSourcedWire(w)
+      ? (wireFromStage(w) ?? "__external__")
+      : "__external__";
     entry.inbound.push({
       sourceKey: `${fromStage}.${w.from.port}`,
       from: { stage: fromStage, port: w.from.port },
@@ -359,7 +370,14 @@ function buildInitialPortValues(
 
 export interface RejectRollback {
   answer: string;
-  targetStage: string;
+  // Bug 28: a reject answer may route to multiple targets (LLM-emitted
+  // multi-target syntax `reject: [a, b]`). All targets must be transitive
+  // ancestors of the gate; mixed semantics (some ancestors, some not) is
+  // surfaced as a validator diagnostic and refuses to compile.
+  // `targetStages` is always normalised to an array, even when the IR
+  // declares a single string. Single-string callers compare against
+  // targetStages[0] when targetStages.length === 1.
+  targetStages: string[];
   affectedStages: string[];
 }
 
@@ -465,9 +483,10 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
   // forward and the rollback detection accurate.
   const downstreamAdj = new Map<string, Set<string>>();
   for (const w of ir.wires) {
-    if (w.from.source !== "stage") continue;
+    // Bug 29: same un-Zod-preprocessed-IR concern as computeGateAncestors.
+    const src = wireFromStage(w);
+    if (src === null) continue;
     if (w.from.port === "__gate_feedback__") continue;
-    const src = w.from.stage;
     const dst = w.to.stage;
     if (!downstreamAdj.has(src)) downstreamAdj.set(src, new Set());
     downstreamAdj.get(src)!.add(dst);
@@ -489,26 +508,47 @@ export function compileIRToMachine(ir: PipelineIR, options: CompileOptions): Com
     return Array.from(visited);
   }
 
-  // For each gate stage, check whether any routing answer's target is a
-  // transitive ancestor of the gate (i.e. BFS-downstream(target) reaches
-  // the gate). If so, that answer triggers rollback: record the answer,
-  // target stage, and the full set of affected stages (BFS-downstream of
-  // target, which includes target itself and the gate). Only the first
-  // matching rollback answer per gate is recorded; pipelines with multiple
-  // rollback answers are not supported in this milestone.
+  // For each gate stage, check whether any routing answer's targets are
+  // transitive ancestors of the gate (BFS-downstream(target) reaches the
+  // gate). When all targets of an answer are ancestors, that answer
+  // triggers rollback: record the answer, normalised target list, and
+  // the union of BFS-downstream sets across all targets (each closure
+  // includes its target and the gate itself).
+  //
+  // Bug 28: previously the code skipped multi-target answers entirely
+  // (`typeof target !== "string"` continue), so `reject: [a, b]` where
+  // both a and b are ancestors was treated as a forward route — the
+  // gate's GATE_REJECTED handler never fired and the pipeline kept
+  // marching forward through the rejected branch. The validator allows
+  // multi-target answers (see structural.ts GATE_ROUTING_TARGET_MISSING
+  // loop), so the compiler must handle them too.
+  //
+  // Mixed-semantics case (some targets are ancestors, others not) is
+  // skipped here — it neither classifies cleanly as rollback nor as
+  // forward. The structural validator emits
+  // GATE_ROLLBACK_MIXED_TARGETS for this so the LLM regenerates a
+  // coherent IR rather than the runner silently picking one branch.
+  //
+  // Only the first matching rollback answer per gate is recorded;
+  // pipelines with multiple rollback answers per gate are not supported
+  // in this milestone.
   const rejectRollbackMap = new Map<string, RejectRollback>();
   for (const s of ir.stages) {
     if (s.type !== "gate") continue;
     for (const [answer, target] of Object.entries(s.config.routing.routes)) {
-      if (typeof target !== "string") continue;
-      // Transitive rollback check: if BFS-downstream(target) reaches the gate,
-      // target is an ancestor and answer triggers rollback.
-      const downstream = new Set(bfsDownstream(target));
-      if (!downstream.has(s.name)) continue;
+      const targets: string[] = Array.isArray(target) ? target : [target];
+      if (targets.length === 0) continue;
+      const downstreamSets = targets.map((t) => new Set(bfsDownstream(t)));
+      const allAncestors = downstreamSets.every((d) => d.has(s.name));
+      if (!allAncestors) continue; // forward route, or mixed (validator will flag).
+      const affected = new Set<string>();
+      for (const d of downstreamSets) {
+        for (const stage of d) affected.add(stage);
+      }
       rejectRollbackMap.set(s.name, {
         answer,
-        targetStage: target,
-        affectedStages: Array.from(downstream), // includes target and gate
+        targetStages: targets,
+        affectedStages: Array.from(affected),
       });
       break; // one rollback answer per gate
     }

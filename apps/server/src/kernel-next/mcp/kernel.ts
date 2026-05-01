@@ -49,6 +49,7 @@ import {
 } from "../hot-update/stats.js";
 import { equipEntry } from "../mcp-catalog/inventory.js";
 import type { ExecFn } from "../mcp-catalog/healthcheck.js";
+import { wireFromStage } from "../ir/wire-helpers.js";
 
 // Stage 5B — per-task migration lock now lives in
 // hot-update/migration-orchestrator.ts. The test hooks below forward to
@@ -203,7 +204,10 @@ export type AnswerGateResult =
       gateId: string;
       taskId: string;
       stageName: string;
-      targetStage: string;
+      // Bug 28: a reject answer may route to multiple stages
+      // (`reject: [a, b]` syntax). Normalised to `string` for the
+      // single-target case to preserve callers that compare with `===`.
+      targetStage: string | string[];
       answer: string;
       affectedStages: string[];
     }
@@ -1197,8 +1201,10 @@ export class KernelService {
     const upstreamSet = new Set<string>();
     for (const w of ir.wires) {
       if (w.to.stage !== row.stage_name) continue;
-      if (w.from.source !== "stage") continue;
-      upstreamSet.add(w.from.stage);
+      // Bug 29: route through wireFromStage to handle un-Zod-preprocessed IRs.
+      const fromStage = wireFromStage(w);
+      if (fromStage === null) continue;
+      upstreamSet.add(fromStage);
     }
 
     // Per upstream, fetch latest successful output per port for the
@@ -1377,11 +1383,21 @@ export class KernelService {
     // classification, not a side-effectful compile.
     const compiled = compileIRToMachine(ir, { taskId: row.task_id });
     const rollback = compiled.rejectRollbackMap.get(row.stage_name);
+    // Bug 28: `targetStage` may be string or string[] depending on the
+    // gate's routing entry. `rollback.targetStages` is always an array.
+    // Match when answer + the normalised target sets are equal.
+    const targetStagesNormalised = Array.isArray(targetStage)
+      ? targetStage
+      : typeof targetStage === "string"
+        ? [targetStage]
+        : null;
     const isReject =
       rollback !== undefined &&
       rollback.answer === answer &&
-      typeof targetStage === "string" &&
-      targetStage === rollback.targetStage;
+      targetStagesNormalised !== null &&
+      targetStagesNormalised.length === rollback.targetStages.length &&
+      new Set(targetStagesNormalised).size === rollback.targetStages.length &&
+      rollback.targetStages.every((t) => targetStagesNormalised.includes(t));
 
     // Atomic answer write + concurrent-answer defense. Both updates live
     // in a single transaction so the gate row and the attempt row stay
@@ -1484,7 +1500,13 @@ export class KernelService {
         gateId,
         taskId: row.task_id,
         stageName: row.stage_name,
-        targetStage: rollback!.targetStage,
+        // Bug 28: preserve the single-string shape when only one target
+        // was declared so existing single-target callers see no behavioural
+        // change; multi-target answers surface as the array.
+        targetStage:
+          rollback!.targetStages.length === 1
+            ? rollback!.targetStages[0]!
+            : rollback!.targetStages,
         answer,
         affectedStages: rollback!.affectedStages,
       };

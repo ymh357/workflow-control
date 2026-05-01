@@ -739,3 +739,100 @@ describe("validateStructural: mcpServers envKeys ⊆ ${VAR} refs (Bug G)", () =>
     expect(validateStructural(ir)).toEqual({ ok: true });
   });
 });
+
+// Bug 28 (c12+ review) — multi-target rollback coherence.
+//
+// A gate routing answer with `[a, b]` syntax must be either all-rollback
+// (every target is a transitive ancestor of the gate) or all-forward
+// (no target is an ancestor). Mixed semantics — one ancestor + one not —
+// is rejected so the LLM regenerates a coherent route rather than the
+// runner silently classifying it as forward and skipping rollback.
+describe("validateStructural — Bug 28 multi-target rollback coherence", () => {
+  it("accepts an all-ancestor multi-target rollback answer", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent", inputs: [], outputs: [{ name: "oa", type: "string" }], config: { promptRef: "p" } },
+        { name: "B", type: "agent", inputs: [], outputs: [{ name: "ob", type: "string" }], config: { promptRef: "p" } },
+        {
+          name: "G",
+          type: "gate",
+          inputs: [{ name: "ia", type: "string" }, { name: "ib", type: "string" }],
+          outputs: [],
+          config: {
+            question: { text: "?", options: [{ value: "approve" }, { value: "reject" }] },
+            routing: { routes: { approve: "C", reject: ["A", "B"] } },
+          },
+        },
+        { name: "C", type: "agent", inputs: [], outputs: [{ name: "x", type: "string" }], config: { promptRef: "p" } },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "oa" }, to: { stage: "G", port: "ia" } },
+        { from: { source: "stage", stage: "B", port: "ob" }, to: { stage: "G", port: "ib" } },
+      ],
+    };
+    const r = validateStructural(ir);
+    if (!r.ok) {
+      expect(r.diagnostics.find((d) => d.code === "GATE_ROLLBACK_MIXED_TARGETS")).toBeUndefined();
+    } else {
+      expect(r.ok).toBe(true);
+    }
+  });
+
+  it("accepts an all-forward multi-target route", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        {
+          name: "G",
+          type: "gate",
+          inputs: [],
+          outputs: [],
+          config: {
+            question: { text: "?", options: [{ value: "approve" }] },
+            routing: { routes: { approve: ["X", "Y"] } },
+          },
+        },
+        { name: "X", type: "agent", inputs: [], outputs: [{ name: "o", type: "string" }], config: { promptRef: "p" } },
+        { name: "Y", type: "agent", inputs: [], outputs: [{ name: "o", type: "string" }], config: { promptRef: "p" } },
+      ],
+      wires: [],
+    };
+    const r = validateStructural(ir);
+    if (!r.ok) {
+      expect(r.diagnostics.find((d) => d.code === "GATE_ROLLBACK_MIXED_TARGETS")).toBeUndefined();
+    } else {
+      expect(r.ok).toBe(true);
+    }
+  });
+
+  it("rejects a mixed-semantics multi-target answer", () => {
+    const ir: PipelineIR = {
+      name: "t",
+      stages: [
+        // A is an ancestor of G; X is NOT an ancestor of G — mixed semantics.
+        { name: "A", type: "agent", inputs: [], outputs: [{ name: "oa", type: "string" }], config: { promptRef: "p" } },
+        {
+          name: "G",
+          type: "gate",
+          inputs: [{ name: "ia", type: "string" }],
+          outputs: [],
+          config: {
+            question: { text: "?", options: [{ value: "approve" }, { value: "reject" }] },
+            routing: { routes: { approve: "C", reject: ["A", "X"] } },
+          },
+        },
+        { name: "C", type: "agent", inputs: [], outputs: [{ name: "o", type: "string" }], config: { promptRef: "p" } },
+        { name: "X", type: "agent", inputs: [], outputs: [{ name: "o", type: "string" }], config: { promptRef: "p" } },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "oa" }, to: { stage: "G", port: "ia" } },
+      ],
+    };
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.diagnostics.some((d) => d.code === "GATE_ROLLBACK_MIXED_TARGETS")).toBe(true);
+    }
+  });
+});

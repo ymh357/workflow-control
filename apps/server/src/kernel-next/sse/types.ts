@@ -124,7 +124,9 @@ export interface StageRolledBackData {
   // The gate stage whose reject decision triggered the rollback.
   fromGate: string;
   // The earliest stage being re-executed after rollback.
-  toStage: string;
+  // Bug 28: a multi-target reject (`reject: [a, b]` syntax) carries an
+  // array of target stages; single-target rejects keep the string shape.
+  toStage: string | string[];
   // All stage IDs whose port writes were pruned (toStage … fromGate inclusive).
   affectedStages: string[];
 }

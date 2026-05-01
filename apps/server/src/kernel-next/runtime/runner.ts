@@ -181,7 +181,9 @@ type AttemptVerdict =
       verdict: "rollback";
       contextAtRollback: MachineContext;
       fromGate: string;
-      toStage: string;
+      // Bug 28: matches MachineEvent.GATE_REJECTED.targetStage — string for
+      // single-target reject, string[] for multi-target reject.
+      toStage: string | string[];
       affectedStages: string[];
     };
 

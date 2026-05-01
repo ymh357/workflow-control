@@ -774,7 +774,7 @@ describe("compileIRToMachine — rejectRollbackMap (gate-feedback exclusion)", (
     expect(rb).toBeDefined();
     // CRITICAL: rejectRollbackMap must register the REJECT answer (not approve).
     expect(rb!.answer).toBe("reject");
-    expect(rb!.targetStage).toBe("MID");
+    expect(rb!.targetStages).toEqual(["MID"]);
     // affectedStages should include MID and G itself, but NOT FWD
     // (which is downstream of G, not upstream).
     expect(rb!.affectedStages).toContain("MID");
@@ -843,12 +843,12 @@ describe("compileIRToMachine — rejectRollbackMap (gate-feedback exclusion)", (
     const fsg = compiled.rejectRollbackMap.get("findingsSynthesisGate");
     expect(fsg).toBeDefined();
     expect(fsg!.answer).toBe("reject");
-    expect(fsg!.targetStage).toBe("hypothesize");
+    expect(fsg!.targetStages).toEqual(["hypothesize"]);
     // humanReviewGate similarly.
     const hrg = compiled.rejectRollbackMap.get("humanReviewGate");
     expect(hrg).toBeDefined();
     expect(hrg!.answer).toBe("reject");
-    expect(hrg!.targetStage).toBe("hypothesize");
+    expect(hrg!.targetStages).toEqual(["hypothesize"]);
   });
 });
 
@@ -873,7 +873,7 @@ describe("compileIRToMachine — rejectRollbackMap", () => {
     const entry = rejectRollbackMap.get("G");
     expect(entry).toBeDefined();
     expect(entry!.answer).toBe("reject");
-    expect(entry!.targetStage).toBe("A");
+    expect(entry!.targetStages).toEqual(["A"]);
     // BFS downstream of A, then include G itself.
     expect(new Set(entry!.affectedStages)).toEqual(new Set(["A", "B", "G"]));
   });
@@ -911,6 +911,67 @@ describe("compileIRToMachine — rejectRollbackMap", () => {
       ],
     } as unknown as PipelineIR;
     const { rejectRollbackMap } = compileIRToMachine(ir, { taskId: "t3" });
+    expect(rejectRollbackMap.has("G")).toBe(false);
+  });
+
+  // Bug 28 (c12+ review): multi-target reject answers must be detected
+  // as rollback when ALL targets are transitive ancestors of the gate.
+  // Pre-fix the compiler skipped Array targets via
+  // `if (typeof target !== "string") continue` and the validator allowed
+  // the IR through, so the runner never observed GATE_REJECTED for a
+  // legitimate multi-target rollback.
+  it("Bug 28: multi-target reject (all ancestors) is detected as rollback", () => {
+    const ir: PipelineIR = {
+      name: "multi-rollback",
+      version: "1.0.0",
+      externalInputs: [],
+      stages: [
+        { name: "A", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [{ name: "oa", type: "unknown" }] } as any,
+        { name: "B", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [{ name: "ob", type: "unknown" }] } as any,
+        { name: "G", type: "gate",
+          config: {
+            question: { text: "?", options: [{ value: "approve" }, { value: "reject" }] },
+            routing: { routes: { approve: "C", reject: ["A", "B"] } },
+          },
+          inputs: [{ name: "ia", type: "unknown" }, { name: "ib", type: "unknown" }],
+          outputs: [],
+        } as any,
+        { name: "C", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [] } as any,
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "oa" }, to: { stage: "G", port: "ia" } },
+        { from: { source: "stage", stage: "B", port: "ob" }, to: { stage: "G", port: "ib" } },
+      ],
+    } as unknown as PipelineIR;
+    const { rejectRollbackMap } = compileIRToMachine(ir, { taskId: "tm" });
+    const entry = rejectRollbackMap.get("G");
+    expect(entry).toBeDefined();
+    expect(entry!.answer).toBe("reject");
+    expect(new Set(entry!.targetStages)).toEqual(new Set(["A", "B"]));
+    // affectedStages should include A, B, and G itself.
+    expect(new Set(entry!.affectedStages)).toEqual(new Set(["A", "B", "G"]));
+  });
+
+  it("Bug 28: multi-target route where no targets are ancestors stays forward", () => {
+    const ir: PipelineIR = {
+      name: "multi-forward",
+      version: "1.0.0",
+      externalInputs: [],
+      stages: [
+        { name: "G", type: "gate",
+          config: {
+            question: { text: "?", options: [{ value: "approve" }] },
+            routing: { routes: { approve: ["X", "Y"] } },
+          },
+          inputs: [],
+          outputs: [],
+        } as any,
+        { name: "X", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [] } as any,
+        { name: "Y", type: "agent", config: { promptRef: "p", reads: [] }, inputs: [], outputs: [] } as any,
+      ],
+      wires: [],
+    } as unknown as PipelineIR;
+    const { rejectRollbackMap } = compileIRToMachine(ir, { taskId: "tmf" });
     expect(rejectRollbackMap.has("G")).toBe(false);
   });
 });

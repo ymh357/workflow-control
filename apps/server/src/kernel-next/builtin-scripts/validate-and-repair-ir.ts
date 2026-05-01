@@ -34,6 +34,7 @@
 
 import type { ScriptModule } from "../runtime/script-module-resolver.js";
 import type { PipelineIR, PortIR, WireIR } from "../ir/schema.js";
+import { wireFromStage } from "../ir/wire-helpers.js";
 
 // ---------- Public entry point ----------
 
@@ -309,11 +310,14 @@ function repairFanoutShape(ir: PipelineIR): RepairOutcome {
   // matching declared output.
   const newWiresA: WireIR[] = [];
   for (const w of wires) {
-    if (w.from.source !== "stage") {
+    // Bug 29: route through wireFromStage so legacy IRs without an explicit
+    // source field are treated as stage-sourced (matches schema preprocess).
+    const fromStageName = wireFromStage(w);
+    if (fromStageName === null) {
       newWiresA.push(w);
       continue;
     }
-    const srcStage = stageByName.get(w.from.stage);
+    const srcStage = stageByName.get(fromStageName);
     if (!srcStage) {
       newWiresA.push(w);
       continue;
@@ -343,7 +347,7 @@ function repairFanoutShape(ir: PipelineIR): RepairOutcome {
         const chosen = fuzzy[0]!;
         repairs.push(
           `repairFanoutShape (non-fanout source): rewrote wire source ` +
-            `'${w.from.stage}.${w.from.port}' -> '${w.from.stage}.${chosen}'`,
+            `'${fromStageName}.${w.from.port}' -> '${fromStageName}.${chosen}'`,
         );
         newWiresA.push({ ...w, from: { ...w.from, port: chosen } });
         continue;
@@ -375,8 +379,8 @@ function repairFanoutShape(ir: PipelineIR): RepairOutcome {
       if (objectOutputs.length === 1) {
         repairs.push(
           `repairFanoutShape: rewrote fanout wire source ` +
-            `'${w.from.stage}.${w.from.port}' -> ` +
-            `'${w.from.stage}.${objectOutputs[0]!.name}' ` +
+            `'${fromStageName}.${w.from.port}' -> ` +
+            `'${fromStageName}.${objectOutputs[0]!.name}' ` +
             `(single object output port matches target Array<{...}>)`,
         );
         newWiresA.push({
@@ -412,8 +416,8 @@ function repairFanoutShape(ir: PipelineIR): RepairOutcome {
       if (elementOutput) {
         repairs.push(
           `repairFanoutShape: rewrote fanout wire source ` +
-            `'${w.from.stage}.${w.from.port}' -> ` +
-            `'${w.from.stage}.${elementOutput.name}' ` +
+            `'${fromStageName}.${w.from.port}' -> ` +
+            `'${fromStageName}.${elementOutput.name}' ` +
             `(target input '${w.to.port}' is ${targetType})`,
         );
         newWiresA.push({
@@ -443,10 +447,12 @@ function repairFanoutShape(ir: PipelineIR): RepairOutcome {
   // bundles the fields, and replace the N wires with 1.
   const groups = new Map<string, WireIR[]>();
   for (const w of wires) {
-    if (w.from.source !== "stage") continue;
-    const srcStage = stageByName.get(w.from.stage);
+    // Bug 29: route through wireFromStage (legacy IR support).
+    const fromStageName = wireFromStage(w);
+    if (fromStageName === null) continue;
+    const srcStage = stageByName.get(fromStageName);
     if (!srcStage || !isFanoutStage(srcStage)) continue;
-    const k = `${w.from.stage}|${w.to.stage}|${w.to.port}`;
+    const k = `${fromStageName}|${w.to.stage}|${w.to.port}`;
     const list = groups.get(k);
     if (list) list.push(w);
     else groups.set(k, [w]);
