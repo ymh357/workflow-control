@@ -26,6 +26,23 @@ const STATUS_COLOR: Record<string, string> = {
 
 export const RecommendedMcpsCard = ({ recommendedMcps }: Props) => {
   const [statuses, setStatuses] = useState<Record<string, string>>({});
+  // B7.F22 (2026-04-30 review): when the user equips an MCP in
+  // another tab and returns to this one, the card kept showing the
+  // pre-equip status. visibilitychange + a refresh-counter forces a
+  // refetch when this tab regains focus, which is the empirically
+  // common path between "I equipped it" and "I'm now back here
+  // confirming the gate".
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  useEffect(() => {
+    const onVisibility = (): void => {
+      if (document.visibilityState === "visible") {
+        setRefreshTick((n) => n + 1);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
 
   useEffect(() => {
     if (recommendedMcps.length === 0) return;
@@ -70,9 +87,10 @@ export const RecommendedMcpsCard = ({ recommendedMcps }: Props) => {
     return () => ac.abort();
   // The dependency is a stable string derived from the entry ids; envKeys
   // changes within the same id set are not expected to occur for an
-  // already-rendered awaitingConfirm gate context.
+  // already-rendered awaitingConfirm gate context. refreshTick re-runs
+  // the effect when the tab regains visibility (B7.F22).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recommendedMcps.map((r) => r.entryId).sort().join("|")]);
+  }, [recommendedMcps.map((r) => r.entryId).sort().join("|"), refreshTick]);
 
   if (recommendedMcps.length === 0) return null;
 
