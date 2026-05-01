@@ -13,11 +13,50 @@ const EXTRA_PATH = process.env.EXTRA_PATH || "/opt/homebrew/bin:/usr/local/bin";
 const GIT_TIMEOUT_MS = 60_000;
 const INSTALL_TIMEOUT_MS = 5 * 60_000;
 
+// Bug 54 (c12+ review): pre-fix, `branch` flowed unsanitized into the
+// derived `worktreePath` (`join(worktreesBase, branch.replace(/\//g, "-"))`)
+// AND into the git invocation. execFile's argv mode prevents shell
+// injection, but git itself accepts `..` in ref names (it normalises
+// most of them, but the worktree directory path follows OS rules and
+// `..` segments WOULD escape worktreesBase). Null bytes also survive
+// the JS string layer and trip the underlying syscall in unpredictable
+// ways. Validate against git's documented refname rules with extra
+// rejections for path-traversal and control characters.
+function assertValidBranchName(branch: string): void {
+  if (typeof branch !== "string" || branch.length === 0 || branch.length > 200) {
+    throw new Error(`invalid branch name (length): ${JSON.stringify(branch)}`);
+  }
+  // Disallow:
+  //   - any path-traversal segment (".." or path containing "..")
+  //   - any control character (including NUL, \r, \n)
+  //   - whitespace (git refname rules forbid)
+  //   - `~^:?*[\` (git refname forbids)
+  //   - leading `-` (would be interpreted as a CLI flag)
+  //   - `@{` (git reflog syntax)
+  //   - trailing `.lock` or trailing `/`
+  if (branch.includes("..")) {
+    throw new Error(`invalid branch name (contains ".."): ${JSON.stringify(branch)}`);
+  }
+  if (/[\x00-\x1f\x7f\s~^:?*\[\\]/.test(branch)) {
+    throw new Error(`invalid branch name (contains control / forbidden char): ${JSON.stringify(branch)}`);
+  }
+  if (branch.startsWith("-") || branch.startsWith("/")) {
+    throw new Error(`invalid branch name (leading "-" or "/"): ${JSON.stringify(branch)}`);
+  }
+  if (branch.endsWith("/") || branch.endsWith(".lock") || branch.endsWith(".")) {
+    throw new Error(`invalid branch name (trailing "/" / ".lock" / "."): ${JSON.stringify(branch)}`);
+  }
+  if (branch.includes("@{")) {
+    throw new Error(`invalid branch name (contains "@{"): ${JSON.stringify(branch)}`);
+  }
+}
+
 export async function createWorktree(
   repoPath: string,
   branch: string,
   worktreesBase: string,
 ): Promise<string> {
+  assertValidBranchName(branch);
   await mkdir(worktreesBase, { recursive: true });
   const worktreePath = join(worktreesBase, branch.replace(/\//g, "-"));
 

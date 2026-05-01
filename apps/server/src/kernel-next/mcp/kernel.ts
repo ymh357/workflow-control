@@ -691,6 +691,11 @@ export class KernelService {
       patch: args.patch,
       rerunFrom: args.rerunFrom ?? null,
       migrateRunningTasks: args.migrateRunningTasks,
+      // Bug 39: pass mergedPrompts so dry-run's proposedVersion uses
+      // pipelineVersionHash({ir,prompts}), matching propose()'s real
+      // hash scheme. Pre-fix the dry-run answer diverged from the
+      // proposal hash whenever any prompt was carried.
+      prompts: mergedPrompts,
     });
     if (!dry.ok) {
       return { ok: false, diagnostics: dry.diagnostics };

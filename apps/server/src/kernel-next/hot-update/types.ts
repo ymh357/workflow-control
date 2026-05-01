@@ -86,6 +86,13 @@ export interface DryRunInput {
   patch: import("../ir/schema.js").IRPatch;
   rerunFrom?: string | null;
   migrateRunningTasks?: "all" | "none" | string[];
+  // Bug 39 (c12+ review): when the proposal includes prompts, the
+  // dry-run must hash IR + prompts via pipelineVersionHash so the
+  // returned proposedVersion matches what the real propose() would
+  // persist. Pre-fix dry-run always returned versionHash(ir) which
+  // diverged from propose() for any prompt-laden proposal — callers
+  // comparing the two saw a phantom version mismatch.
+  prompts?: Record<string, string>;
 }
 
 export type DryRunResult =

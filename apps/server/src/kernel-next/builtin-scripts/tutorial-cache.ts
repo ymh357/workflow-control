@@ -25,6 +25,7 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import type { ScriptModule } from "../runtime/script-module-resolver.js";
+import { withTransaction } from "../ir/with-transaction.js";
 
 const TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
@@ -184,13 +185,24 @@ export function buildWriteTutorialCache(db: DatabaseSync): ScriptModule {
            sources_json = excluded.sources_json,
            created_at   = excluded.created_at`,
       );
-      let written = 0;
-      for (let i = 0; i < slugs.length; i++) {
-        // sources_json kept as "[]" placeholder — see file header
-        // comment for why we don't expose sources as a port.
-        stmt.run(slugs[i]!, subjectDomain, contents[i]!, "[]", now);
-        written++;
-      }
+      // Bug 44 (c12+ review): pre-fix this looped N inserts without a
+      // transaction — each upsert was its own implicit transaction
+      // with its own fsync, so writing 20 tutorial rows incurred 20
+      // disk syncs. Worse, a mid-loop failure (e.g. SQLITE_BUSY from
+      // concurrent reader, or kernel SIGTERM in the middle) left a
+      // partial cache the next read would see as "some entries
+      // present, some not". Wrap so the batch commits atomically
+      // with one fsync.
+      const written = withTransaction(db, () => {
+        let n = 0;
+        for (let i = 0; i < slugs.length; i++) {
+          // sources_json kept as "[]" placeholder — see file header
+          // comment for why we don't expose sources as a port.
+          stmt.run(slugs[i]!, subjectDomain, contents[i]!, "[]", now);
+          n++;
+        }
+        return n;
+      });
       return { written };
     },
   };

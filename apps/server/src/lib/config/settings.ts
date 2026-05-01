@@ -171,6 +171,14 @@ export function loadSystemSettings(): SystemSettings {
 
   // 3. AUTO-MAP: Merge environment variables following SETTING_SECTION_KEY convention
   // e.g., SETTING_NOTION_TOKEN -> merged.notion.token
+  //
+  // Bug 51 (c12+ review): pre-fix this stored every env value as a
+  // string, regardless of the target field's declared type. Setting
+  // SETTING_AGENT_MAX_BUDGET_USD=5 produced agent.max_budget_usd = "5",
+  // which downstream code that checked `> threshold` did via string
+  // comparison — and certain budget guards silently broke. Coerce
+  // when the existing field on `merged` is a number / boolean,
+  // matching the type contract expressed in SystemSettingsSchema.
   for (const [envKey, envVal] of Object.entries(process.env)) {
     if (envKey.startsWith("SETTING_") && envVal) {
       const parts = envKey.split("_").slice(1); // ["NOTION", "TOKEN"]
@@ -178,7 +186,19 @@ export function loadSystemSettings(): SystemSettings {
         const section = parts[0].toLowerCase();
         const key = parts.slice(1).join("_").toLowerCase();
         if (!merged[section]) merged[section] = {};
-        merged[section][key] = envVal;
+        const existing = merged[section][key];
+        let coerced: unknown = envVal;
+        if (typeof existing === "number") {
+          const n = Number(envVal);
+          if (Number.isFinite(n)) coerced = n;
+          // If the env value isn't a finite number, leave as string;
+          // SystemSettingsSchema's safeParse will surface a warning.
+        } else if (typeof existing === "boolean") {
+          if (envVal === "true" || envVal === "1") coerced = true;
+          else if (envVal === "false" || envVal === "0") coerced = false;
+          // Unknown truthiness encoding — leave as string for warning.
+        }
+        merged[section][key] = coerced;
       }
     }
   }

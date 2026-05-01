@@ -63,6 +63,29 @@ export function createKernelNextStream(
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let closed = false;
 
+  // Bug 40 (c12+ review): pre-fix, when controller.enqueue threw
+  // (client disconnected) the catch only set `closed = true` and
+  // waited for the heartbeat interval to discover and tidy up. In
+  // the meantime the broadcaster kept dispatching events to this
+  // already-dead listener — every event paid the JSON.stringify +
+  // formatEvent cost just to land in a no-op closure. With many
+  // tabs opening/closing and a chatty pipeline this added up to
+  // measurable wasted CPU. Fix: unsubscribe + clear the heartbeat
+  // interval the moment we observe a write failure, so the
+  // broadcaster stops calling us back. Identical cleanup runs from
+  // cancel() on a clean disconnect.
+  const cleanup = (): void => {
+    closed = true;
+    if (unsubscribe) {
+      try { unsubscribe(); } catch { /* unsubscribe must never throw the cleanup */ }
+      unsubscribe = null;
+    }
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+  };
+
   return new ReadableStream<Uint8Array>({
     start(controller) {
       // Broadcaster will synchronously replay existing history (filtered
@@ -73,9 +96,9 @@ export function createKernelNextStream(
         try {
           controller.enqueue(formatEvent(event));
         } catch {
-          // Controller already closed (client dropped). Next
-          // heartbeat / cancel will clean up.
-          closed = true;
+          // Controller already closed (client dropped). Tear down
+          // immediately so we don't keep receiving callbacks.
+          cleanup();
         }
       }, { fromSeq });
 
@@ -87,21 +110,12 @@ export function createKernelNextStream(
         try {
           controller.enqueue(encoder.encode(": heartbeat\n\n"));
         } catch {
-          closed = true;
-          if (heartbeat) clearInterval(heartbeat);
+          cleanup();
         }
       }, heartbeatMs);
     },
     cancel() {
-      closed = true;
-      if (unsubscribe) {
-        unsubscribe();
-        unsubscribe = null;
-      }
-      if (heartbeat) {
-        clearInterval(heartbeat);
-        heartbeat = null;
-      }
+      cleanup();
     },
   });
 }

@@ -121,4 +121,30 @@ describe("createWorktree adversarial", () => {
     const { createWorktree } = await import("./git.js");
     await expect(createWorktree("/repo", "existing", "/tmp/wt")).rejects.toThrow("branch already exists");
   });
+
+  // Bug 54 (c12+ review): branch name must be sanitized before being
+  // joined into worktreePath / passed as a git argument. Malformed
+  // names that contain `..`, control characters, leading `-`, or git
+  // refname-forbidden tokens are now refused at the helper level.
+  it("Bug 54: rejects branch containing path-traversal segments", async () => {
+    const { createWorktree } = await import("./git.js");
+    await expect(createWorktree("/repo", "../escape", "/tmp/wt")).rejects.toThrow(/invalid branch name/);
+  });
+
+  it("Bug 54: rejects branch containing null bytes", async () => {
+    const { createWorktree } = await import("./git.js");
+    await expect(createWorktree("/repo", "name\0evil", "/tmp/wt")).rejects.toThrow(/invalid branch name/);
+  });
+
+  it("Bug 54: rejects branch starting with '-' (would parse as CLI flag)", async () => {
+    const { createWorktree } = await import("./git.js");
+    await expect(createWorktree("/repo", "-flag", "/tmp/wt")).rejects.toThrow(/invalid branch name/);
+  });
+
+  it("Bug 54: rejects branch with whitespace and other refname-forbidden chars", async () => {
+    const { createWorktree } = await import("./git.js");
+    await expect(createWorktree("/repo", "with space", "/tmp/wt")).rejects.toThrow(/invalid branch name/);
+    await expect(createWorktree("/repo", "with~tilde", "/tmp/wt")).rejects.toThrow(/invalid branch name/);
+    await expect(createWorktree("/repo", "with?question", "/tmp/wt")).rejects.toThrow(/invalid branch name/);
+  });
 });

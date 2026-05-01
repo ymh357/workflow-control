@@ -144,6 +144,35 @@ describe("read_file / write_file", () => {
       BUILTIN_SCRIPT_MODULES.read_file!.run({ path: join(tmp, "nope.txt") }, ctx()),
     ).rejects.toThrow();
   });
+
+  // Bug 45 (c12+ review): write_file must refuse system roots and
+  // user-sensitive dotfiles to prevent LLM-driven credential overwrite.
+  it("Bug 45: refuses /etc and similar system roots", async () => {
+    await expect(
+      BUILTIN_SCRIPT_MODULES.write_file!.run(
+        { path: "/etc/cron.d/evil", content: "x" },
+        ctx(),
+      ),
+    ).rejects.toThrow(/sensitive root/);
+  });
+
+  it("Bug 45: refuses ~/.ssh and similar credential dirs", async () => {
+    await expect(
+      BUILTIN_SCRIPT_MODULES.write_file!.run(
+        { path: join(homedir(), ".ssh", "authorized_keys"), content: "x" },
+        ctx(),
+      ),
+    ).rejects.toThrow(/user-sensitive/);
+  });
+
+  it("Bug 45: allows OS tmpdir even though it lives under /var on macOS", async () => {
+    const target = join(tmp, "still-allowed.txt");
+    const out = await BUILTIN_SCRIPT_MODULES.write_file!.run(
+      { path: target, content: "ok" },
+      ctx(),
+    );
+    expect(out.absolutePath).toBe(target);
+  });
 });
 
 describe("http_fetch / http_request placeholder expansion", () => {

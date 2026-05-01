@@ -120,6 +120,20 @@ function statusForRollbackDiagnostic(code: string | undefined): 404 | 409 | 500 
   return 500;
 }
 
+// Bug 52 (c12+ review): the cancel route used to JSON.parse + cast
+// to { reason?, actor? } without zod, inconsistent with every other
+// route in this file. A malformed body (non-string fields, deeply
+// nested object) would propagate raw into KernelService.cancelTask
+// and either land in task_finals.detail as garbage or trip a
+// downstream type assertion. Validate via zod like every other
+// /kernel/tasks endpoint.
+const CancelBodySchema = z
+  .object({
+    reason: z.string().max(2048).optional(),
+    actor: z.string().max(128).optional(),
+  })
+  .strict();
+
 // 2026-04-27 B5 — cancel a running task from the web UI.
 // Diagnostic mapping:
 //   TASK_NOT_FOUND        → 404
@@ -130,11 +144,21 @@ kernelTasksRoute.post("/kernel/tasks/:taskId/cancel", async (c) => {
   const raw = await c.req.text();
   let body: { reason?: string; actor?: string } = {};
   if (raw.trim().length > 0) {
+    let parsed: unknown;
     try {
-      body = JSON.parse(raw) as { reason?: string; actor?: string };
+      parsed = JSON.parse(raw);
     } catch {
       return badRequest(c, "INVALID_JSON_BODY", "invalid JSON body");
     }
+    const result = CancelBodySchema.safeParse(parsed);
+    if (!result.success) {
+      return badRequest(
+        c,
+        "INVALID_REQUEST_BODY",
+        `body must be { reason?: string; actor?: string }: ${result.error.issues.map((i) => `${i.path.join(".") || "<root>"}: ${i.message}`).join("; ")}`,
+      );
+    }
+    body = result.data;
   }
 
   const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });

@@ -21,7 +21,7 @@ import { applyPatch, PatchApplyError } from "../mcp/patch.js";
 import { validateStructural } from "../validator/structural.js";
 import { validateDag } from "../validator/dag.js";
 import { validateStoreSchema } from "../validator/store-schema.js";
-import { versionHash } from "../ir/canonical.js";
+import { versionHash, pipelineVersionHash } from "../ir/canonical.js";
 import { computePipelineDiff } from "./diff.js";
 import { computeImpact } from "./impact.js";
 import { classifySafeRange } from "./safe-range.js";
@@ -90,8 +90,15 @@ export function dryRunProposal(
   const safeRange = classifySafeRange(diff, impact);
   const wouldAutoApprove = safeRange.verdict === "safe";
 
-  // 5. IR-only version hash — matches KernelService.propose (kernel.ts §388).
-  const proposedVersion = versionHash(proposedIR);
+  // 5. Bug 39 (c12+ review): when the caller supplies prompts, hash
+  //    IR+prompts so the dry-run answer matches what real propose()
+  //    would persist. Without prompts, fall back to the IR-only hash —
+  //    matches the legacy behaviour for prompt-less proposals and
+  //    keeps existing fixtures stable.
+  const proposedVersion =
+    input.prompts !== undefined && Object.keys(input.prompts).length > 0
+      ? pipelineVersionHash({ ir: proposedIR, prompts: input.prompts })
+      : versionHash(proposedIR);
 
   return {
     ok: true,

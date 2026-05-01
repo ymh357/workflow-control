@@ -18,7 +18,7 @@
 import type { ScriptModule } from "../runtime/script-module-resolver.js";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, resolve as pathResolve, join as pathJoin } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { validate_and_repair_ir } from "./validate-and-repair-ir.js";
 import { assemble_investigation_ir } from "./assemble-investigation-ir.js";
 
@@ -315,6 +315,77 @@ const read_file: ScriptModule = {
   },
 };
 
+// Bug 45 (c12+ review): write_file is reachable from any pipeline via
+// ScriptStage { moduleId: "write_file" }. Pre-fix it accepted any
+// `path` and did pathResolve() — including absolute paths to system
+// directories or dotfiles. An LLM-emitted pipeline could write to
+// `/etc/cron.d/...`, `~/.ssh/authorized_keys`, `~/.aws/credentials`,
+// or any other UID-writable target.
+//
+// Defense: deny-list a set of well-known sensitive roots. This is
+// looser than "only writes inside process.cwd()" but matches reality —
+// pipelines legitimately write across the user's home (project files,
+// scratch dirs in /tmp, downloads). Pure "inside cwd" would require
+// every legitimate pipeline to also call path_join or path_expand
+// first, breaking existing flows.
+//
+// If an LLM truly needs to write to a denied root, the human owner
+// must take that action explicitly outside the pipeline.
+const WRITE_FILE_DENY_PREFIXES_ABSOLUTE = [
+  "/etc",
+  "/usr",
+  "/bin",
+  "/sbin",
+  "/var",
+  "/boot",
+  "/dev",
+  "/proc",
+  "/sys",
+  "/System",  // macOS
+  "/Library", // macOS
+];
+const WRITE_FILE_DENY_HOME_RELATIVE = [
+  ".ssh",
+  ".aws",
+  ".gnupg",
+  ".kube",
+  ".docker",
+  ".gcloud",
+  ".azure",
+  ".npmrc",   // file under home
+  ".netrc",
+  ".pypirc",
+  ".gitconfig",
+];
+
+function assertWriteFilePathSafe(absPath: string): void {
+  // The OS tmp dir is always allowed even if it lives under one of the
+  // denied prefixes (macOS uses /var/folders/.../T/, Linux uses /tmp).
+  // Pipelines legitimately scratch into tmp.
+  const tmp = tmpdir();
+  if (absPath === tmp || absPath.startsWith(tmp + "/")) return;
+  for (const prefix of WRITE_FILE_DENY_PREFIXES_ABSOLUTE) {
+    if (absPath === prefix || absPath.startsWith(prefix + "/")) {
+      throw new Error(
+        `write_file refuses path under sensitive root '${prefix}': ` +
+        `${absPath}. Edit such files manually outside the pipeline.`,
+      );
+    }
+  }
+  const home = homedir();
+  if (absPath === home || absPath.startsWith(home + "/")) {
+    const rest = absPath.slice(home.length + 1);
+    for (const segment of WRITE_FILE_DENY_HOME_RELATIVE) {
+      if (rest === segment || rest.startsWith(segment + "/")) {
+        throw new Error(
+          `write_file refuses path under user-sensitive home directory '~/${segment}': ` +
+          `${absPath}. Credentials / dotfiles are off-limits to LLM-driven writes.`,
+        );
+      }
+    }
+  }
+}
+
 // write_file — UTF-8 text write, with mkdir -p on the parent. Returns the
 // absolute resolved path so downstream stages can wire it to other steps
 // without duplicating path logic.
@@ -323,6 +394,7 @@ const write_file: ScriptModule = {
     const path = requireString(inputs, "path");
     const content = requireString(inputs, "content");
     const absPath = pathResolve(path);
+    assertWriteFilePathSafe(absPath);
     await mkdir(dirname(absPath), { recursive: true });
     await writeFile(absPath, content, "utf8");
     return { absolutePath: absPath };
