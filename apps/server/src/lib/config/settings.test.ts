@@ -11,12 +11,14 @@ import {
 vi.mock("node:fs", () => ({
   readFileSync: vi.fn(),
   existsSync: vi.fn(),
+  statSync: vi.fn(),
 }));
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
 
 const mockReadFileSync = vi.mocked(readFileSync);
 const mockExistsSync = vi.mocked(existsSync);
+const mockStatSync = vi.mocked(statSync);
 
 // ---------- getNestedValue ----------
 
@@ -213,6 +215,32 @@ describe("loadSystemSettings", () => {
     clearSettingsCache();
     const second = loadSystemSettings();
     expect(first).not.toBe(second);
+  });
+
+  // B6.#15 (2026-04-30 review): pre-fix the cache had a 60s TTL with
+  // no invalidator, so a mid-write read returned the pre-edit value
+  // for up to a minute. Cache now keys on the YAML mtime, so any
+  // disk write busts the cache on the next call.
+  it("invalidates cache when system-settings.yaml mtime advances", () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue("paths: { data_dir: /v1 }");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockStatSync.mockReturnValue({ mtimeMs: 1000 } as any);
+    clearSettingsCache();
+    const first = loadSystemSettings();
+    expect(first.paths?.data_dir).toBe("/v1");
+
+    // Same mtime → still cached (object identity).
+    const second = loadSystemSettings();
+    expect(second).toBe(first);
+
+    // mtime advances + new file content → cache busts and reads fresh.
+    mockReadFileSync.mockReturnValue("paths: { data_dir: /v2 }");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockStatSync.mockReturnValue({ mtimeMs: 2000 } as any);
+    const third = loadSystemSettings();
+    expect(third).not.toBe(first);
+    expect(third.paths?.data_dir).toBe("/v2");
   });
 
   it("reads SETTING_* env vars into settings", () => {
