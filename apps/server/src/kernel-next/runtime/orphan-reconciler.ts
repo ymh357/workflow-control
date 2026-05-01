@@ -75,12 +75,51 @@ export function classifyOrphan(
     };
   }
 
-  const successStages = new Set(
-    (db.prepare(
-      `SELECT DISTINCT stage_name FROM stage_attempts
+  // Bug 58 (c12+ review Wave 2 T3): pre-fix, any stage_attempt with
+  // status='success' marked the stage as completed — but for fanout
+  // stages, only the `fanout_aggregate` row represents the whole
+  // stage. A `fanout_element` success marks a single element; if
+  // some elements succeeded but the aggregate never landed (runner
+  // crashed mid-fanout), the pre-fix logic mistakenly considered the
+  // stage "succeeded" and advanced resumeFrom past it. The next
+  // stage's wires would then never see the aggregated array and the
+  // run would hit NO_ACTIVE_WIRE forever.
+  //
+  // Correct rule: a fanout stage is successful when its
+  // fanout_aggregate row is success. A non-fanout stage is
+  // successful when any of its attempts is success (fanout_element
+  // is irrelevant for non-fanout stages, and regular is the
+  // canonical kind there).
+  //
+  // We compute it as "stages whose latest authoritative success row
+  // exists with the right kind" by joining against the IR-known
+  // fanout map. Stages we don't recognise from the IR (legacy IR
+  // GC'd) fall back to the permissive pre-fix rule so we don't
+  // regress recoverability for those — but the IR-not-found case is
+  // already classified as `unresolvable` upstream.
+  const fanoutStageNames = new Set<string>();
+  for (const s of ir.stages) {
+    if ((s.type === "agent" || s.type === "script") && s.fanout) {
+      fanoutStageNames.add(s.name);
+    }
+  }
+  const successStages = new Set<string>();
+  {
+    const rows = db.prepare(
+      `SELECT stage_name, kind, status FROM stage_attempts
         WHERE task_id = ? AND status = 'success'`,
-    ).all(taskId) as Array<{ stage_name: string }>).map((r) => r.stage_name),
-  );
+    ).all(taskId) as Array<{ stage_name: string; kind: string; status: string }>;
+    for (const r of rows) {
+      if (fanoutStageNames.has(r.stage_name)) {
+        // Fanout stage: only fanout_aggregate counts as the stage
+        // having succeeded. Element successes alone are a partial
+        // state we must NOT treat as terminal.
+        if (r.kind === "fanout_aggregate") successStages.add(r.stage_name);
+      } else {
+        successStages.add(r.stage_name);
+      }
+    }
+  }
   // BUG-1 fix: a gate stage is only skippable once it has been answered.
   // Previously every gate was skippable unconditionally — an orphan task
   // that died while blocked on an unanswered gate would have its resume
@@ -124,7 +163,28 @@ export interface BootResumabilityInput {
   }) => Promise<unknown>;
   /** Monorepo tsc binary path; forwarded verbatim to startPipelineRun. */
   tscPath?: string;
+  /**
+   * Bug 56 (c12+ review Wave 2 T3): cap on concurrent resume
+   * dispatches. Pre-fix the reconciler used Promise.allSettled with N
+   * resumes spawned in one tick — a multi-task crash boot synthesised
+   * an instant rate-limit storm against the Anthropic API. Default
+   * keeps boot fast while bounding the fan-out; callers running on a
+   * heavily-throttled key can dial it lower. 0 / negative falls back
+   * to default.
+   */
+  resumeConcurrency?: number;
+  /**
+   * Inter-resume stagger in ms. The first batch fires immediately,
+   * each subsequent slot waits this long before kicking the next
+   * resume. Smooths the per-task SDK warm-up cost across the boot
+   * window rather than hammering the connection pool. 0 disables
+   * the stagger entirely (back to "as fast as possible").
+   */
+  resumeStaggerMs?: number;
 }
+
+const DEFAULT_RESUME_CONCURRENCY = 4;
+const DEFAULT_RESUME_STAGGER_MS = 250;
 
 export interface BootResumabilityResult {
   resumed: number;
@@ -141,11 +201,30 @@ export async function bootResumability(
   // runner sees a clean world. Classifier then reads the post-reconcile
   // state consistently.
   reconcileRunningAttempts(db, orphans);
+
+  // Bug 43 (c12+ review Wave 2 T3): a migration that ended in
+  // RESUME_FAILED (or whose runner died after supersede but before
+  // the new attempts opened) can leave fanout_element rows still
+  // tagged status='running'. They aren't covered by
+  // reconcileRunningAttempts above (which only handles task-level
+  // running) — sweep them per-orphan task here so the resumed runner
+  // sees a clean world.
+  reconcileFanoutElementOrphans(db, orphans);
+
   let resumed = 0;
   let terminalRecovered = 0;
   let unresolvable = 0;
   const now = Date.now();
-  const promises: Array<Promise<unknown>> = [];
+  // Tasks queued for actual resume after classification — held in a
+  // separate list so we can throttle concurrency rather than spawning
+  // every single resume in one tick (Bug 56).
+  const resumeQueue: Array<{
+    taskId: string;
+    versionHash: string;
+    resumeFrom: string;
+    resumeSessionId: string | undefined;
+  }> = [];
+
   for (const taskId of orphans) {
     const cls = classifyOrphan(db, taskId);
     if (cls.kind === "terminal") {
@@ -180,19 +259,95 @@ export async function bootResumability(
       continue;
     }
     const resumeSessionId = lookupResumeSessionId(db, taskId, cls.resumeFrom);
-    promises.push(
-      input.startPipelineRun({
-        taskId,
-        versionHash: cls.versionHash,
-        resumeFrom: cls.resumeFrom,
-        resumeSessionId,
-        tscPath: input.tscPath,
-      }).catch((err: unknown) => err),
-    );
+    resumeQueue.push({
+      taskId,
+      versionHash: cls.versionHash,
+      resumeFrom: cls.resumeFrom,
+      resumeSessionId,
+    });
     resumed += 1;
   }
-  await Promise.allSettled(promises);
+
+  // Bug 56: throttled fan-out. Cap concurrent in-flight resumes at
+  // resumeConcurrency and stagger each new dispatch by
+  // resumeStaggerMs to smooth API connection-pool pressure during
+  // multi-task crash recovery. The original Promise.allSettled
+  // approach kicked N resumes simultaneously and hit Anthropic rate
+  // limits within the first second on any non-trivial run.
+  const maxConcurrent =
+    input.resumeConcurrency && input.resumeConcurrency > 0
+      ? input.resumeConcurrency
+      : DEFAULT_RESUME_CONCURRENCY;
+  const staggerMs =
+    input.resumeStaggerMs !== undefined && input.resumeStaggerMs >= 0
+      ? input.resumeStaggerMs
+      : DEFAULT_RESUME_STAGGER_MS;
+
+  const dispatch = async (job: typeof resumeQueue[number]): Promise<unknown> => {
+    try {
+      return await input.startPipelineRun({
+        taskId: job.taskId,
+        versionHash: job.versionHash,
+        resumeFrom: job.resumeFrom,
+        resumeSessionId: job.resumeSessionId,
+        tscPath: input.tscPath,
+      });
+    } catch (err) {
+      return err;
+    }
+  };
+
+  const inFlight = new Set<Promise<unknown>>();
+  for (const job of resumeQueue) {
+    if (inFlight.size >= maxConcurrent) {
+      await Promise.race(inFlight);
+    }
+    if (staggerMs > 0 && inFlight.size > 0) {
+      await new Promise<void>((res) => setTimeout(res, staggerMs));
+    }
+    const p = dispatch(job).finally(() => { inFlight.delete(p); });
+    inFlight.add(p);
+  }
+  await Promise.allSettled(inFlight);
+
   return { resumed, terminalRecovered, unresolvable };
+}
+
+/**
+ * Bug 43 (c12+ review Wave 2 T3): RESUME_FAILED migrations can leave
+ * fanout_element attempts tagged status='running' even though the
+ * orchestrator that owned them is gone. The reconciler-style sweep
+ * handles them the same way as task-level running attempts:
+ * supersede-with-AED-update so the resumed runner doesn't
+ * mis-attribute their port_values to live execution.
+ *
+ * Limited to orphan task ids so we don't touch live runners' fanout
+ * mid-flight on a fresh boot (live runners would not be in the
+ * orphan set yet — task_finals doesn't exist for them, but the
+ * runner is also not live; the boot sequence is the only caller).
+ */
+function reconcileFanoutElementOrphans(db: DatabaseSync, taskIds: string[]): void {
+  if (taskIds.length === 0) return;
+  const placeholders = taskIds.map(() => "?").join(",");
+  const now = Date.now();
+  const rows = db.prepare(
+    `SELECT attempt_id FROM stage_attempts
+      WHERE task_id IN (${placeholders})
+        AND status = 'running'
+        AND kind = 'fanout_element'`,
+  ).all(...taskIds) as Array<{ attempt_id: string }>;
+  if (rows.length === 0) return;
+  const ids = rows.map((r) => r.attempt_id);
+  const idPh = ids.map(() => "?").join(",");
+  db.prepare(
+    `UPDATE stage_attempts SET status = 'superseded'
+      WHERE attempt_id IN (${idPh})`,
+  ).run(...ids);
+  db.prepare(
+    `UPDATE agent_execution_details
+        SET termination_reason = 'interrupted', ended_at = ?
+      WHERE attempt_id IN (${idPh}) AND ended_at IS NULL`,
+  ).run(now, ...ids);
 }
 
 export function lookupResumeSessionId(

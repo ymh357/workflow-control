@@ -171,4 +171,40 @@ describe("allocator + resolver (W3)", () => {
       db.close();
     }
   });
+
+  // Bug 59 (c12+ review Wave 2 T3): when a kernel crashed between
+  // `git worktree add` succeeding and the task_worktrees INSERT, the
+  // disk worktree existed and git knew about it, but the DB row was
+  // missing. Pre-fix the next allocateWorktree call hit
+  // `fatal: '...' already exists` and recorded status='unavailable'.
+  // Post-fix the allocator probes `git worktree list` first and
+  // adopts a pre-existing worktree at the expected path.
+  it("Bug 59: adopts a pre-existing on-disk worktree when DB row was lost", async () => {
+    const db = makeDb();
+    try {
+      await initRepo(repo);
+      // First allocation creates worktree + DB row.
+      const r1 = await allocateWorktree(db, "t-resurrect", {
+        repo, worktreeRoot: wtRoot,
+      });
+      expect(r1.status).toBe("active");
+
+      // Simulate the kernel-crashed-after-git-success scenario: drop
+      // the DB row but leave the on-disk worktree intact.
+      db.prepare(`DELETE FROM task_worktrees WHERE task_id = ?`).run("t-resurrect");
+
+      const r2 = await allocateWorktree(db, "t-resurrect", {
+        repo, worktreeRoot: wtRoot,
+      });
+      // Post-fix: adoption succeeds — status active, DB row reinstated.
+      expect(r2.status).toBe("active");
+      expect(r2.workdir).toBe(join(wtRoot, "t-resurrect"));
+      const row = db.prepare(
+        `SELECT status FROM task_worktrees WHERE task_id = ?`,
+      ).get("t-resurrect") as { status: string } | undefined;
+      expect(row?.status).toBe("active");
+    } finally {
+      db.close();
+    }
+  });
 });

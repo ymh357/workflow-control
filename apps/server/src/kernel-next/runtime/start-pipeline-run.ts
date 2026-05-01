@@ -44,7 +44,7 @@ import { logger } from "../../lib/logger.js";
 import type { CheckpointConfig } from "./checkpoint/checkpoint.js";
 import { allocateWorktree } from "./worktree/allocator.js";
 import { slugifyPipelineName } from "./name-slug.js";
-import { storeTaskEnvValues } from "./task-env-values.js";
+import { storeTaskEnvValues, deleteTaskEnvValues } from "./task-env-values.js";
 
 export interface StartPipelineRunInput {
   db: DatabaseSync;
@@ -520,6 +520,41 @@ export async function startPipelineRun(
       { taskId, versionHash, err },
       "[startPipelineRun] background runPipeline rejected",
     );
+    // Bug 57 (c12+ review Wave 2 T3): pre-fix this catch only
+    // published a synthetic run_final SSE event, leaving:
+    //   - no task_finals row (so getTaskStatus reported "running")
+    //   - leaked task_env_values (plaintext tokens persisting)
+    //   - leaked worktree row (next allocateWorktree treated it as
+    //     in-flight)
+    //   - orphan reconciler couldn't see the task on next boot
+    //     because it scans `stage_attempts NOT IN task_finals` —
+    //     but if the failure happened before any stage_attempts row
+    //     existed, scanOrphanTaskIds returned an empty set and the
+    //     leaked task_env_values stayed forever.
+    // Now we synthesize a task_finals row + tear down env values
+    // before publishing the SSE event, mirroring the cleanup
+    // KernelService.cancelTask does for explicit cancellation.
+    try {
+      const message = (err as Error).message ?? String(err);
+      db.prepare(
+        `INSERT OR IGNORE INTO task_finals
+           (task_id, version_hash, final_state, reason, detail, ended_at)
+         VALUES (?, ?, 'failed', 'error', ?, ?)`,
+      ).run(taskId, versionHash, `runPipeline_rejected:${message.slice(0, 500)}`, Date.now());
+    } catch (finalsErr) {
+      logger.error(
+        { taskId, err: finalsErr },
+        "[startPipelineRun] failed to write synthetic task_finals after runPipeline reject",
+      );
+    }
+    try {
+      deleteTaskEnvValues(db, taskId);
+    } catch (envErr) {
+      logger.error(
+        { taskId, err: envErr },
+        "[startPipelineRun] failed to delete task_env_values after runPipeline reject",
+      );
+    }
     try {
       input.broadcaster.publish({
         type: "run_final",

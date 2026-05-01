@@ -4,6 +4,7 @@ import { initKernelNextSchema } from "../ir/sql.js";
 import { scanOrphanTaskIds, classifyOrphan, lookupResumeSessionId, bootResumability } from "./orphan-reconciler.js";
 import { loadBuiltinPipelineIR } from "./load-builtin-pipeline.js";
 import { KernelService } from "../mcp/kernel.js";
+import type { PipelineIR } from "../ir/schema.js";
 
 describe("scanOrphanTaskIds", () => {
   it("returns task ids with attempts but no task_finals row", async () => {
@@ -557,5 +558,100 @@ describe("classifyOrphan — secret_pending (F17)", () => {
     const cls = classifyOrphan(db, taskId);
     // Resolved secret gate → normal classification; next stage is pending
     expect(cls.kind).not.toBe("secret_pending");
+  });
+});
+
+// Bug 58 (c12+ review Wave 2 T3): fanout stages count as "succeeded"
+// only when the fanout_aggregate row is success. Pre-fix the scan
+// admitted any status='success' row, so a partially-complete fanout
+// (some elements succeeded, no aggregate) advanced resumeFrom past
+// the fanout stage; downstream wires never received the aggregated
+// array and resume hit NO_ACTIVE_WIRE permanently.
+describe("classifyOrphan — partially-complete fanout (Bug 58)", () => {
+  it("does NOT mark a fanout stage successful when only fanout_element rows succeeded", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    // Hand-built IR (avoid relying on a builtin that happens to contain
+    // a fanout stage). Two stages: A (entry, fanout) and B (downstream).
+    const ir = {
+      name: "fanout-orphan",
+      stages: [
+        {
+          name: "A", type: "agent",
+          inputs: [{ name: "items", type: "string[]" }],
+          outputs: [{ name: "out", type: "string" }],
+          config: { promptRef: "p" },
+          fanout: { input: "items" },
+        },
+        {
+          name: "B", type: "agent",
+          inputs: [{ name: "values", type: "string[]" }],
+          outputs: [{ name: "result", type: "string" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "out" }, to: { stage: "B", port: "values" } },
+      ],
+    } as unknown as PipelineIR;
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const sub = await svc.submit(ir, { prompts: { p: "x" } });
+    if (!sub.ok) throw new Error("seed failed");
+    const vh = sub.versionHash;
+    const now = Date.now();
+
+    // Two fanout_element rows succeeded for stage A; aggregate never landed.
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, fanout_element_idx, version_hash, kind, status, started_at)
+       VALUES ('e1','t1','A',0,0,?,'fanout_element','success',?)`,
+    ).run(vh, now);
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, fanout_element_idx, version_hash, kind, status, started_at)
+       VALUES ('e2','t1','A',0,1,?,'fanout_element','success',?)`,
+    ).run(vh, now + 1);
+
+    const cls = classifyOrphan(db, "t1");
+    // Pre-fix this returned `terminal` (every stage was "success" since
+    // element rows leaked into successStages). Post-fix it returns
+    // resume from A so the runner re-attempts the aggregate.
+    expect(cls.kind).toBe("resume");
+    if (cls.kind === "resume") {
+      expect(cls.resumeFrom).toBe("A");
+    }
+  });
+
+  it("DOES mark a fanout stage successful when fanout_aggregate is success", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const ir = {
+      name: "fanout-aggregate",
+      stages: [
+        {
+          name: "A", type: "agent",
+          inputs: [{ name: "items", type: "string[]" }],
+          outputs: [{ name: "out", type: "string" }],
+          config: { promptRef: "p" },
+          fanout: { input: "items" },
+        },
+      ],
+      wires: [],
+    } as unknown as PipelineIR;
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const sub = await svc.submit(ir, { prompts: { p: "x" } });
+    if (!sub.ok) throw new Error("seed failed");
+    const vh = sub.versionHash;
+    const now = Date.now();
+
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, fanout_element_idx, version_hash, kind, status, started_at)
+       VALUES ('e1','t1','A',0,0,?,'fanout_element','success',?)`,
+    ).run(vh, now);
+    db.prepare(
+      `INSERT INTO stage_attempts (attempt_id, task_id, stage_name, attempt_idx, version_hash, kind, status, started_at)
+       VALUES ('agg','t1','A',1,?,'fanout_aggregate','success',?)`,
+    ).run(vh, now + 10);
+
+    const cls = classifyOrphan(db, "t1");
+    expect(cls.kind).toBe("terminal");
   });
 });

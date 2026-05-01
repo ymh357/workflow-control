@@ -11,7 +11,8 @@
 
 import type { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
-import { addWorktree } from "./git-worktree-ops.js";
+import { realpath } from "node:fs/promises";
+import { addWorktree, listWorktrees } from "./git-worktree-ops.js";
 
 export interface AllocateOptions {
   /** Source git repository path. */
@@ -83,6 +84,48 @@ export async function allocateWorktree(
   const branchName = branchNameFor(taskId);
   const workdir = join(opts.worktreeRoot, taskId);
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const now = Date.now();
+
+  // Bug 59 (c12+ review Wave 2 T3): self-heal pre-existing worktrees.
+  // Pre-fix, if the task_worktrees row was missing (kernel crashed
+  // between `git worktree add` succeeding and the INSERT) but git
+  // already knew about a worktree at the expected path, the next
+  // allocateWorktree call hit `fatal: '...' already exists` and
+  // recorded the row as 'unavailable' — the workdir was actually
+  // perfectly usable. Probe `git worktree list --porcelain` first;
+  // if our target path is already registered, adopt it into
+  // task_worktrees and return active.
+  const list = await listWorktrees(opts.repo, timeoutMs);
+  if (list.ok) {
+    // Path comparison must tolerate symlink resolution differences —
+    // git emits resolved paths (e.g. /private/var/folders/... on
+    // macOS) while our `workdir` is the original join. Realpath both
+    // sides; fall back to literal comparison if realpath fails (e.g.
+    // workdir doesn't exist yet, or filesystem permissions).
+    let workdirReal = workdir;
+    try { workdirReal = await realpath(workdir); } catch { /* keep workdir */ }
+    const adopt = list.entries.find((e) => {
+      if (e.path === workdir) return true;
+      if (e.path === workdirReal) return true;
+      return false;
+    });
+    if (adopt) {
+      db.prepare(
+        `INSERT INTO task_worktrees
+         (task_id, workdir, base_branch, branch_name, status,
+          created_at, last_used_at, diagnostic)
+         VALUES (?, ?, ?, ?, 'active', ?, ?, NULL)`,
+      ).run(
+        taskId,
+        workdir,
+        opts.baseBranch ?? null,
+        adopt.branch ?? branchName,
+        now,
+        now,
+      );
+      return { status: "active", workdir, branchName: adopt.branch ?? branchName };
+    }
+  }
 
   const git = await addWorktree(
     {
@@ -94,7 +137,6 @@ export async function allocateWorktree(
     timeoutMs,
   );
 
-  const now = Date.now();
   if (git.ok) {
     db.prepare(
       `INSERT INTO task_worktrees
