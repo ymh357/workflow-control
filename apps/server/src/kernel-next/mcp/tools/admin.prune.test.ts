@@ -39,8 +39,13 @@ function seedAttempt(
     taskId: string;
     stageName?: string;
     startedAtOffset: number; // negative = in the past
+    // Bug 22 (c12+ review): prune now requires task_finals to exist for
+    // a task to be deletable. Default true preserves the pre-fix
+    // behaviour of these tests.
+    taskFinalised?: boolean;
   },
 ): void {
+  const startedAt = Date.now() + opts.startedAtOffset;
   db.prepare(
     `INSERT INTO stage_attempts
      (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
@@ -49,8 +54,15 @@ function seedAttempt(
     opts.attemptId,
     opts.taskId,
     opts.stageName ?? "S",
-    Date.now() + opts.startedAtOffset,
+    startedAt,
   );
+  if (opts.taskFinalised !== false) {
+    db.prepare(
+      `INSERT OR IGNORE INTO task_finals
+         (task_id, version_hash, final_state, reason, ended_at)
+       VALUES (?, 'v-stub', 'completed', 'natural', ?)`,
+    ).run(opts.taskId, startedAt);
+  }
 }
 
 describe("prune_records MCP tool", () => {

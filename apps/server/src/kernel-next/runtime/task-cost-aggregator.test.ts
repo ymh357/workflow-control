@@ -111,4 +111,20 @@ describe("task-cost-aggregator: sum across agent_execution_details rows for a ta
     expect(b.cumulativeUsd).toBeCloseTo(0.99, 6);
     expect(b.inputTokens).toBe(999);
   });
+
+  // Bug 55 (c12+ review): pre-fix, every attempt's AED row contributed
+  // to the running sum regardless of stage_attempts.status. After
+  // hot-update or retry the discarded attempts (status='superseded')
+  // kept their AED rows for forensics, so the live cost SSE event
+  // double-counted across the supersede.
+  it("Bug 55: excludes superseded attempt rows from the sum", () => {
+    seedRow(db, { attemptId: "a-live", taskId: "tk", costUsd: 0.10, tokenInput: 100, tokenOutput: 50 });
+    seedRow(db, { attemptId: "a-stale", taskId: "tk", stageName: "s2", costUsd: 0.20, tokenInput: 200, tokenOutput: 80 });
+    // Flip the stale row to superseded.
+    db.prepare("UPDATE stage_attempts SET status='superseded' WHERE attempt_id='a-stale'").run();
+    const result = computeTaskCost(db, "tk");
+    expect(result.cumulativeUsd).toBeCloseTo(0.10, 6);
+    expect(result.inputTokens).toBe(100);
+    expect(result.outputTokens).toBe(50);
+  });
 });

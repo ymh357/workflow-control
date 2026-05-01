@@ -25,6 +25,19 @@ interface SeedArgs {
   withGate?: boolean;
   withCheckpoint?: boolean;
   withMigrationHint?: boolean;
+  // Bug 22: prune now refuses to touch a task without a task_finals row.
+  // Default true so existing tests keep their pre-fix expectation that
+  // prune walks the lineage successfully. Tests that want to verify the
+  // guard pass `taskFinalised: false`.
+  taskFinalised?: boolean;
+}
+
+function seedFinal(db: DatabaseSync, taskId: string, startedAt: number): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO task_finals
+       (task_id, version_hash, final_state, reason, ended_at)
+     VALUES (?, 'v1', 'completed', 'natural', ?)`,
+  ).run(taskId, startedAt);
 }
 
 function seedAttempt(db: DatabaseSync, a: SeedArgs): void {
@@ -37,6 +50,7 @@ function seedAttempt(db: DatabaseSync, a: SeedArgs): void {
     withGate = false,
     withCheckpoint = false,
     withMigrationHint = false,
+    taskFinalised = true,
   } = a;
 
   db.prepare(
@@ -44,6 +58,8 @@ function seedAttempt(db: DatabaseSync, a: SeedArgs): void {
      (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status, kind)
      VALUES (?, ?, 'v1', 's1', 1, ?, 'success', 'regular')`,
   ).run(attemptId, taskId, startedAt);
+
+  if (taskFinalised) seedFinal(db, taskId, startedAt);
 
   if (withAed) {
     // agent_execution_details requires a prompt_contents row it FK's into.
@@ -246,6 +262,33 @@ describe("pruneAttempts", () => {
     (db as unknown as { prepare: typeof db.prepare }).prepare = origPrepare;
     expect((db.prepare(`SELECT COUNT(*) AS n FROM stage_attempts`).get() as { n: number }).n).toBe(1);
     expect((db.prepare(`SELECT COUNT(*) AS n FROM agent_execution_details`).get() as { n: number }).n).toBe(1);
+  });
+
+  // Bug 22 (c12+ review): prune must refuse to touch tasks without a
+  // task_finals row. Pre-fix, an active long-running task whose first
+  // attempt was older than the threshold would have its early lineage
+  // nuked mid-run, turning the live task into an orphaned ghost.
+  it("Bug 22: skips tasks without a task_finals row even when filter matches", () => {
+    seedAttempt(db, { attemptId: "a-live", taskId: "t-live", taskFinalised: false, withAed: true, withPortValue: true });
+    seedAttempt(db, { attemptId: "a-done", taskId: "t-done", taskFinalised: true });
+    const countsByTask = pruneAttempts(db, { taskId: "t-live" });
+    expect(countsByTask.attempts).toBe(0);
+    // Live task's lineage is intact.
+    expect((db.prepare(`SELECT COUNT(*) AS n FROM stage_attempts WHERE task_id='t-live'`).get() as { n: number }).n).toBe(1);
+    expect((db.prepare(`SELECT COUNT(*) AS n FROM port_values WHERE attempt_id='a-live'`).get() as { n: number }).n).toBe(1);
+    // The finalised task is touchable normally.
+    const counts2 = pruneAttempts(db, { taskId: "t-done" });
+    expect(counts2.attempts).toBe(1);
+  });
+
+  it("Bug 22: olderThanMs sweep also skips non-finalised tasks", () => {
+    const now = Date.now();
+    seedAttempt(db, { attemptId: "a-old-live", taskId: "t-old-live", taskFinalised: false, startedAt: now - 100_000 });
+    seedAttempt(db, { attemptId: "a-old-done", taskId: "t-old-done", taskFinalised: true,  startedAt: now - 100_000 });
+    const counts = pruneAttempts(db, { olderThanMs: 50_000 });
+    expect(counts.attempts).toBe(1); // only the finalised one
+    // Live task survives.
+    expect((db.prepare(`SELECT COUNT(*) AS n FROM stage_attempts WHERE task_id='t-old-live'`).get() as { n: number }).n).toBe(1);
   });
 });
 

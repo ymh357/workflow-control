@@ -76,6 +76,12 @@ function loadStages(
 ): Map<string, AttemptAed> {
   const placeholders = SELECTED_KINDS.map(() => "?").join(",");
   // Pick the latest attempt_idx per stage across the selected kinds.
+  // Bug 19 (c12+ review): pre-fix this had no status filter, so after a
+  // hot-update the latest-attempt-by-attempt_idx scan picked
+  // status='superseded' rows from the discarded migration prefix and
+  // reported their cost/tool calls as the run's authoritative output —
+  // i.e. compared discarded work. Exclude superseded so the latest
+  // surviving authoritative attempt wins.
   const rows = db.prepare(
     `SELECT sa.stage_name, sa.attempt_idx,
             aed.prompt_content_hash, aed.cost_usd,
@@ -83,7 +89,9 @@ function loadStages(
             aed.termination_reason, aed.tool_calls_json, aed.compact_events_json
      FROM stage_attempts sa
      LEFT JOIN agent_execution_details aed ON aed.attempt_id = sa.attempt_id
-     WHERE sa.task_id = ? AND sa.kind IN (${placeholders})
+     WHERE sa.task_id = ?
+       AND sa.kind IN (${placeholders})
+       AND sa.status <> 'superseded'
      ORDER BY sa.stage_name, sa.attempt_idx DESC`,
   ).all(taskId, ...SELECTED_KINDS) as Array<{
     stage_name: string;

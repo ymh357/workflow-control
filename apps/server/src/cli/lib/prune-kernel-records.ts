@@ -73,6 +73,21 @@ function buildAttemptSelectWhere(filter: PruneFilter): {
     clauses.push("started_at < ?");
     params.push(cutoff);
   }
+  // Bug 22 (c12+ review): pre-fix, prune deleted lineage rows for ANY
+  // attempt matching the filter, including those whose task was still
+  // in-flight (no task_finals row). Worst-case symptom: an active
+  // long-running task whose first attempt was older than the threshold
+  // had its early stage_attempts + AED + port_values nuked mid-run,
+  // turning the live task into an orphaned ghost the next time
+  // getTaskStatus walked stage_attempts.
+  //
+  // Require task_finals to exist for every attempt we delete. Tasks
+  // still in flight, paused on a gate, or paused on a secret-gate
+  // have no task_finals and are now untouchable. Operators who really
+  // want to nuke active state have ad-hoc SQL; this tool refuses.
+  clauses.push(
+    "EXISTS (SELECT 1 FROM task_finals tf WHERE tf.task_id = stage_attempts.task_id)",
+  );
   if (clauses.length === 0) {
     // Defense in depth — assertFilterNonEmpty should have caught this.
     return { clause: "WHERE 1 = 0", params };

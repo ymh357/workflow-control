@@ -1416,9 +1416,18 @@ export class KernelService {
       if (gateChanges > 0) {
         // Finalize the stage_attempt that was opened when the gate entered
         // `executing`. Gate answering is the attempt's natural completion.
+        //
+        // Bug 20 (c12+ review): pre-fix this UPDATE had no status guard,
+        // so a stage_attempt that had already been finalised
+        // (status='superseded' from a hot-update, 'error' from a
+        // concurrent failure path, or anything other than 'running')
+        // would be flipped back to 'success'. Add the guard so the
+        // gate answer can only finalise a still-running attempt; if
+        // the attempt was concurrently superseded, the gate answer's
+        // intent is moot — leave the attempt's terminal status alone.
         this.db.prepare(
           `UPDATE stage_attempts SET ended_at = ?, status = 'success'
-           WHERE attempt_id = ?`,
+           WHERE attempt_id = ? AND status = 'running'`,
         ).run(now, row.attempt_id);
 
         // A (gate feedback): write the builtin `__gate_feedback__`
@@ -1860,17 +1869,38 @@ export class KernelService {
     // so a wedged task still surfaces as orphaned eventually.
     const HEARTBEAT_LIVENESS_MS = 60 * 1000;
     const now = Date.now();
+    // Bug 27 (c12+ review): pre-fix both liveness scans included
+    // superseded attempts. After a hot-update, the discarded attempts'
+    // AED rows kept their last_heartbeat_at intact (the writer flushes
+    // one final tick before being torn down) — so getTaskStatus
+    // reported "running" for tasks whose post-migration runner had
+    // quietly wedged or never started.
+    //
+    // Heartbeat filter: a heartbeat from a non-authoritative attempt
+    // is meaningless — exclude superseded.
+    //
+    // started_at fallback: C10's fresh-attempt-as-liveness rule
+    // accepts a recent 'success' row as the inter-stage transition
+    // window (one stage just completed, the next hasn't opened its
+    // attempt row yet). That's still a live signal, so we keep the
+    // pre-fix permissive scan. We just exclude 'superseded' so
+    // historical attempts from a discarded migration prefix can't
+    // pretend the post-migration runner is alive.
     const recentHeartbeat = this.db.prepare(
       `SELECT MAX(aed.last_heartbeat_at) AS hb
        FROM agent_execution_details aed
        INNER JOIN stage_attempts sa ON sa.attempt_id = aed.attempt_id
-       WHERE sa.task_id = ?`,
+       WHERE sa.task_id = ?
+         AND sa.status <> 'superseded'`,
     ).get(taskId) as { hb: number | null };
     if (recentHeartbeat.hb && now - recentHeartbeat.hb < HEARTBEAT_LIVENESS_MS) {
       return { ok: true, status: "running", taskId };
     }
     const recentAttempt = this.db.prepare(
-      `SELECT MAX(started_at) AS s FROM stage_attempts WHERE task_id = ?`,
+      `SELECT MAX(started_at) AS s
+         FROM stage_attempts
+        WHERE task_id = ?
+          AND status <> 'superseded'`,
     ).get(taskId) as { s: number | null };
     if (recentAttempt.s && now - recentAttempt.s < HEARTBEAT_LIVENESS_MS) {
       return { ok: true, status: "running", taskId };
@@ -2016,6 +2046,38 @@ export class KernelService {
       };
     }
     const currentVersion = currentRow.version_hash;
+
+    // Bug 21 (c12+ review): pre-fix, retryTaskFromStage had no
+    // task_finals guard. Calling retry on a task already finalised as
+    // 'cancelled' / 'completed' / 'failed' would resurrect the runner
+    // — but the sticky task_finals row stayed in place, so the
+    // freshly running task immediately reported its prior terminal
+    // state via getTaskStatus (see §3.3 — task_finals is the only
+    // source of truth for terminal states). The dashboards then
+    // showed a "running" task that was actually 'cancelled'.
+    //
+    // Refuse retry once a task is finalised. Callers (admin tooling,
+    // dashboards) wanting to fork a finalised task have a separate
+    // path; retry is only for in-flight or orphaned tasks where the
+    // last failure is genuinely recoverable.
+    const finalRow = this.db.prepare(
+      `SELECT final_state FROM task_finals WHERE task_id = ?`,
+    ).get(taskId) as { final_state: string } | undefined;
+    if (finalRow) {
+      return {
+        ok: false,
+        diagnostics: [{
+          code: "TASK_ALREADY_TERMINAL",
+          message:
+            `task '${taskId}' is already finalised as '${finalRow.final_state}' ` +
+            `(task_finals row exists). Retry would resurrect the runner ` +
+            `but getTaskStatus would still report the terminal state. ` +
+            `If you want to start a fresh run from this pipeline, use ` +
+            `run_pipeline; the retry path is only for in-flight or orphaned tasks.`,
+          context: { taskId, finalState: finalRow.final_state },
+        }],
+      };
+    }
 
     // 2. Resolve fromStage. Explicit -> validate against IR. Omitted ->
     //    earliest 'error' stage by started_at, first attempt in history.

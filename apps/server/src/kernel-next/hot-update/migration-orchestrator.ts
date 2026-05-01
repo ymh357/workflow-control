@@ -245,6 +245,26 @@ export async function executeMigration(
              AND NOT (kind = 'fanout_element' AND status = 'success')`,
         );
         for (const s of supersedeSet) upd.run(taskId, s);
+
+        // Bug 23 (c12+ review): close any unresolved gate_queue rows
+        // referencing attempts we just superseded. Pre-fix the gate
+        // rows stayed open with answered_at IS NULL, so a stale
+        // answer_gate call (e.g. a user clicking the gate UI between
+        // the supersede and the new runner opening a fresh gate) would
+        // try to resolve routes against the OLD IR — and potentially
+        // route to a stage that no longer exists in the new pipeline.
+        // Mark these gates as cancelled-by-supersede with the migration
+        // event timestamp; answerGate's `answered_at IS NULL` guard
+        // then refuses the stale call cleanly.
+        const closeGate = db.prepare(
+          `UPDATE gate_queue
+              SET answered_at = ?,
+                  answer = COALESCE(answer, '__superseded_by_migration__')
+            WHERE task_id = ?
+              AND stage_name = ?
+              AND answered_at IS NULL`,
+        );
+        for (const s of supersedeSet) closeGate.run(Date.now(), taskId, s);
       }
       db.prepare(
         `INSERT INTO hot_update_events
