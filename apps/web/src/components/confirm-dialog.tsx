@@ -42,12 +42,39 @@ export const ConfirmDialog = ({
   const latest = useRef({ onCancel, onConfirm });
   latest.current = { onCancel, onConfirm };
 
+  // B7.F27 (2026-04-30 review): aria-modal="true" implies the focus
+  // is trapped within the dialog, but the implementation didn't
+  // actually trap it — Tab from the last focusable button would
+  // escape to the underlying page. Wrap focus around the dialog's
+  // interactive descendants on Tab / Shift+Tab.
+  const dialogRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") latest.current.onCancel();
-      else if (e.key === "Enter" && document.activeElement?.tagName !== "TEXTAREA") {
+      if (e.key === "Escape") {
+        latest.current.onCancel();
+        return;
+      }
+      if (e.key === "Enter" && document.activeElement?.tagName !== "TEXTAREA") {
         latest.current.onConfirm();
+        return;
+      }
+      if (e.key === "Tab" && dialogRef.current) {
+        const focusables = dialogRef.current.querySelectorAll<HTMLElement>(
+          "button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex='-1'])",
+        );
+        if (focusables.length === 0) return;
+        const first = focusables[0]!;
+        const last = focusables[focusables.length - 1]!;
+        const active = document.activeElement;
+        if (e.shiftKey && active === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
     window.addEventListener("keydown", handler);
@@ -66,6 +93,7 @@ export const ConfirmDialog = ({
   const overlayMouseDown = useRef(false);
   return (
     <div
+      ref={dialogRef}
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-dialog-title"
