@@ -1036,3 +1036,269 @@ describe("answer_gate MCP handler — reject dispatch", () => {
     }
   });
 });
+
+// Bug 68 (dogfood 2026-04-30): write_port previously returned a bare
+// "attemptId not found" string and silently accepted writes to terminal
+// attempts (c12+ review P2#209). Agents seeing those errors had no
+// recovery path and resorted to building stand-alone reproducers.
+//
+// These tests pin the upgraded behaviour: every error response carries
+// a structured `reason` and, where applicable, the active attemptId
+// the caller should retry against.
+describe("write_port: actionable errors + terminal-attempt rejection (Bug 68)", () => {
+  async function seedAttempt(opts: {
+    taskId: string;
+    stageName: string;
+    status?: "running" | "success" | "error" | "superseded" | "secret_pending";
+  }): Promise<{ db: DatabaseSync; versionHash: string; attemptId: string }> {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, skipTypeCheck: true, surface: "combined" });
+    const t = getTools(mcp);
+    const ir = diamondIR();
+    const submitResp = await t.get("submit_pipeline")!.handler({
+      ir,
+      prompts: promptsForIR(ir),
+    });
+    const submit = JSON.parse(submitResp.content[0]!.text) as { versionHash: string };
+    const attemptId = `attempt-${opts.taskId}`;
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+       VALUES (?, ?, ?, ?, 1, ?, ?)`,
+    ).run(attemptId, opts.taskId, submit.versionHash, opts.stageName, Date.now(), opts.status ?? "running");
+    return { db, versionHash: submit.versionHash, attemptId };
+  }
+
+  async function callWritePortAsync(
+    db: DatabaseSync,
+    args: { taskId: string; attemptId: string; stage: string; port: string; value: unknown },
+  ): Promise<{
+    ok: boolean;
+    error?: string;
+    reason?: string;
+    latestActiveAttemptId?: string;
+    attemptStatus?: string;
+    taskFinalState?: string;
+  }> {
+    const mcp = createKernelMcp(db, { tscPath: TSC_PATH, skipTypeCheck: true, surface: "combined" });
+    const t = getTools(mcp);
+    const resp = await t.get("write_port")!.handler(args);
+    return JSON.parse((resp as { content: { text: string }[] }).content[0]!.text);
+  }
+
+  it("returns reason='task_not_found' with explanatory message when no rows reference taskId", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const result = await callWritePortAsync(db, {
+      taskId: "ghost-task-xyz",
+      attemptId: "ghost-attempt-uuid",
+      stage: "A",
+      port: "x",
+      value: 42,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("task_not_found");
+    expect(result.error).toContain("ghost-task-xyz");
+    expect(result.error).toContain("never seen it");
+    db.close();
+  });
+
+  it("returns reason='task_finalized' with final_state when task_finals row exists", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    db.prepare(
+      `INSERT INTO task_finals (task_id, version_hash, final_state, reason, ended_at)
+       VALUES (?, 'h', 'completed', 'natural', ?)`,
+    ).run("done-task", Date.now());
+    const result = await callWritePortAsync(db, {
+      taskId: "done-task",
+      attemptId: "stale-id",
+      stage: "A",
+      port: "x",
+      value: 42,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("task_finalized");
+    expect(result.taskFinalState).toBe("completed");
+    expect(result.error).toContain("already finalized");
+    db.close();
+  });
+
+  it("returns reason='stage_advanced' with latestActiveAttemptId when stage has a fresher running attempt", async () => {
+    const taskId = "stage-advanced-task";
+    const { db, versionHash, attemptId: oldAttempt } = await seedAttempt({
+      taskId,
+      stageName: "A",
+      status: "superseded",
+    });
+    // Insert a newer running attempt for the same stage.
+    const newAttempt = "attempt-new";
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+       VALUES (?, ?, ?, 'A', 2, ?, 'running')`,
+    ).run(newAttempt, taskId, versionHash, Date.now() + 1);
+
+    // Caller passes a wholly bogus attemptId — classifier should
+    // surface the active one rather than the superseded one.
+    void oldAttempt;
+    const result = await callWritePortAsync(db, {
+      taskId,
+      attemptId: "bogus-uuid-not-in-db",
+      stage: "A",
+      port: "x",
+      value: 42,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("stage_advanced");
+    expect(result.latestActiveAttemptId).toBe(newAttempt);
+    expect(result.error).toContain(newAttempt);
+    db.close();
+  });
+
+  it("returns reason='no_attempt_for_stage' when task has other stages but not this one", async () => {
+    const taskId = "wrong-stage-task";
+    const { db } = await seedAttempt({ taskId, stageName: "A", status: "running" });
+    // Caller mistypes the stage name (D doesn't exist on task even
+    // though A does). diamondIR has A/B/C/D so D is a valid stage in
+    // the IR, just not yet dispatched on the task.
+    const result = await callWritePortAsync(db, {
+      taskId,
+      attemptId: "fabricated-uuid",
+      stage: "D",
+      port: "final",
+      value: 99,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("no_attempt_for_stage");
+    expect(result.error).toContain("'D'");
+    expect(result.error).toContain("no attempts yet");
+    db.close();
+  });
+
+  it("rejects writes to a terminal 'success' attempt with reason='attempt_terminal' (P2#209)", async () => {
+    const taskId = "terminal-success-task";
+    const { db, attemptId } = await seedAttempt({ taskId, stageName: "A", status: "success" });
+    const result = await callWritePortAsync(db, {
+      taskId,
+      attemptId,
+      stage: "A",
+      port: "x",
+      value: 42,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("attempt_terminal");
+    expect(result.attemptStatus).toBe("success");
+    expect(result.error).toContain("terminal status 'success'");
+    db.close();
+  });
+
+  it("rejects writes to a 'superseded' attempt and points at the active replacement", async () => {
+    const taskId = "superseded-task";
+    const { db, versionHash, attemptId: oldAttempt } = await seedAttempt({
+      taskId,
+      stageName: "A",
+      status: "superseded",
+    });
+    const newAttempt = "attempt-replacement";
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx, started_at, status)
+       VALUES (?, ?, ?, 'A', 2, ?, 'running')`,
+    ).run(newAttempt, taskId, versionHash, Date.now() + 1);
+
+    const result = await callWritePortAsync(db, {
+      taskId,
+      attemptId: oldAttempt,
+      stage: "A",
+      port: "x",
+      value: 42,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("attempt_terminal");
+    expect(result.attemptStatus).toBe("superseded");
+    expect(result.latestActiveAttemptId).toBe(newAttempt);
+    db.close();
+  });
+
+  it("rejects writes to a terminal 'error' attempt", async () => {
+    const taskId = "terminal-error-task";
+    const { db, attemptId } = await seedAttempt({ taskId, stageName: "A", status: "error" });
+    const result = await callWritePortAsync(db, {
+      taskId,
+      attemptId,
+      stage: "A",
+      port: "x",
+      value: 42,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("attempt_terminal");
+    expect(result.attemptStatus).toBe("error");
+    db.close();
+  });
+
+  it("accepts writes to a 'secret_pending' attempt (still active, paused on secrets)", async () => {
+    const taskId = "secret-pending-task";
+    const { db, attemptId } = await seedAttempt({
+      taskId,
+      stageName: "A",
+      status: "secret_pending",
+    });
+    const result = await callWritePortAsync(db, {
+      taskId,
+      attemptId,
+      stage: "A",
+      port: "x",
+      value: 42,
+    });
+    expect(result.ok).toBe(true);
+    db.close();
+  });
+
+  it("preserves existing 'task_mismatch' / 'stage_mismatch' diagnostics with structured reason field", async () => {
+    const taskId = "real-task";
+    const { db, attemptId } = await seedAttempt({ taskId, stageName: "A", status: "running" });
+
+    // Wrong taskId for a real attempt.
+    const r1 = await callWritePortAsync(db, {
+      taskId: "wrong-task-id",
+      attemptId,
+      stage: "A",
+      port: "x",
+      value: 42,
+    });
+    expect(r1.ok).toBe(false);
+    expect(r1.reason).toBe("task_mismatch");
+    expect((r1 as { actualTaskId?: string }).actualTaskId).toBe(taskId);
+
+    // Wrong stage for a real attempt.
+    const r2 = await callWritePortAsync(db, {
+      taskId,
+      attemptId,
+      stage: "D",
+      port: "x",
+      value: 42,
+    });
+    expect(r2.ok).toBe(false);
+    expect(r2.reason).toBe("stage_mismatch");
+    expect((r2 as { actualStage?: string }).actualStage).toBe("A");
+
+    db.close();
+  });
+
+  it("returns reason='external_sentinel' when stage='__external__' (existing rejection now structured)", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    const result = await callWritePortAsync(db, {
+      taskId: "any",
+      attemptId: "any",
+      stage: "__external__",
+      port: "x",
+      value: 42,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe("external_sentinel");
+    db.close();
+  });
+});

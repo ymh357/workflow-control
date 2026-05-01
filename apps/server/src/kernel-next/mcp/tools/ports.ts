@@ -92,7 +92,17 @@ export function buildPortsTools(deps: ToolsDeps): ToolDef[] {
         "on the stage of the pipeline version associated with the attempt. " +
         "Dispatches PORT_WRITTEN via an inert dispatcher — this tool is " +
         "intended for authors / agents recording outputs, not for driving " +
-        "the XState runner (the runner owns its own PortRuntime).",
+        "the XState runner (the runner owns its own PortRuntime). " +
+        "On failure the response includes `reason`: " +
+        "'task_not_found' (taskId never seen — verify it), " +
+        "'task_finalized' (task already ended; further writes refused — `taskFinalState` indicates completed/failed/cancelled), " +
+        "'stage_advanced' (caller passed a stale attemptId — `latestActiveAttemptId` gives the active one, retry with it), " +
+        "'no_attempt_for_stage' (task exists but stage hasn't been dispatched yet — wait), " +
+        "'attempt_terminal' (this attempt finished; `attemptStatus` is success/error/superseded — `latestActiveAttemptId` if a replacement exists), " +
+        "'task_mismatch' / 'stage_mismatch' (attemptId belongs to a different task/stage; `actualTaskId` / `actualStage` is in the response), " +
+        "'stage_not_declared' / 'port_not_declared' (typo in stage or port name), " +
+        "'external_sentinel' (stage='__external__' is reserved for the runner). " +
+        "Always inspect `reason` and `latestActiveAttemptId` before retrying.",
       inputSchema: {
         taskId: z.string(),
         attemptId: z.string(),
@@ -116,29 +126,77 @@ export function buildPortsTools(deps: ToolsDeps): ToolDef[] {
           if (stage === "__external__") {
             return errorResponse(
               "stage '__external__' is reserved for runner-initiated seed values; write_port cannot target it",
+              { reason: "external_sentinel" },
             );
           }
 
+          // Bug 68 (dogfood 2026-04-30): bare 'attemptId not found' was
+          // unactionable. Agents seeing it could not tell whether the
+          // task was finalized, whether the stage had a different
+          // active attempt, or whether the entire taskId was wrong —
+          // so they fell back to building stand-alone reproducers.
+          // The classifier returns the actionable next step.
+          //
+          // Also handles c12+ review P2#209: writes to a terminal
+          // attempt (success/error/superseded) are now rejected,
+          // not silently accepted.
+          //
           // Resolve the pipeline version this attempt belongs to, so we can
           // validate that (stage, port) is declared as an output on that
           // specific version (not just any version in the DB).
           const attemptRow = db.prepare(
-            `SELECT version_hash, task_id, stage_name
+            `SELECT version_hash, task_id, stage_name, status
              FROM stage_attempts WHERE attempt_id = ?`,
           ).get(attemptId) as
-            | { version_hash: string; task_id: string; stage_name: string }
+            | { version_hash: string; task_id: string; stage_name: string; status: string }
             | undefined;
           if (!attemptRow) {
-            return errorResponse(`attemptId '${attemptId}' not found`);
+            const cls = classifyMissingAttempt(db, taskId, stage);
+            const extra: Record<string, unknown> = { reason: cls.reason };
+            if (cls.latestActiveAttemptId !== undefined) {
+              extra.latestActiveAttemptId = cls.latestActiveAttemptId;
+            }
+            if (cls.taskFinalState !== undefined) {
+              extra.taskFinalState = cls.taskFinalState;
+            }
+            return errorResponse(
+              buildMissingAttemptMessage(attemptId, taskId, stage, cls),
+              extra,
+            );
           }
           if (attemptRow.task_id !== taskId) {
             return errorResponse(
               `attemptId '${attemptId}' belongs to task '${attemptRow.task_id}', not '${taskId}'`,
+              { reason: "task_mismatch", actualTaskId: attemptRow.task_id },
             );
           }
           if (attemptRow.stage_name !== stage) {
             return errorResponse(
               `attemptId '${attemptId}' belongs to stage '${attemptRow.stage_name}', not '${stage}'`,
+              { reason: "stage_mismatch", actualStage: attemptRow.stage_name },
+            );
+          }
+          // c12+ review P2#209: writes to terminal attempts are
+          // semantically wrong. The attempt that wrote port_values for
+          // success/error/superseded states already finished; another
+          // attempt may have superseded it. Accepting this write would
+          // either re-fire onPortWritten for a stage already past, or
+          // produce port_values rows that no downstream stage can
+          // legitimately reference.
+          if (attemptRow.status !== "running" && attemptRow.status !== "secret_pending") {
+            const latest = latestActiveAttemptForStage(db, taskId, stage);
+            return errorResponse(
+              `attemptId '${attemptId}' is in terminal status '${attemptRow.status}'; ` +
+                (latest
+                  ? `the active attempt for stage '${stage}' is now '${latest}'. Use that attemptId.`
+                  : `stage '${stage}' has no active attempt — the task may have advanced past it or finalized.`),
+              latest !== undefined
+                ? {
+                    reason: "attempt_terminal",
+                    attemptStatus: attemptRow.status,
+                    latestActiveAttemptId: latest,
+                  }
+                : { reason: "attempt_terminal", attemptStatus: attemptRow.status },
             );
           }
 
@@ -148,16 +206,21 @@ export function buildPortsTools(deps: ToolsDeps): ToolDef[] {
           if (!versionRow) {
             return errorResponse(
               `pipeline version '${attemptRow.version_hash}' not found for attempt`,
+              { reason: "version_missing" },
             );
           }
           const ir = JSON.parse(versionRow.ir_json) as PipelineIR;
           const stageDef = ir.stages.find((s) => s.name === stage);
           if (!stageDef) {
-            return errorResponse(`stage '${stage}' not declared in pipeline version`);
+            return errorResponse(
+              `stage '${stage}' not declared in pipeline version`,
+              { reason: "stage_not_declared" },
+            );
           }
           if (!stageDef.outputs.some((p) => p.name === port)) {
             return errorResponse(
               `port '${port}' is not a declared output of stage '${stage}'`,
+              { reason: "port_not_declared" },
             );
           }
 
@@ -313,5 +376,104 @@ function isPortDeclared(
     return stageDef.outputs.some((p) => p.name === port);
   } catch {
     return undefined;
+  }
+}
+
+// Bug 68 (dogfood 2026-04-30): structured classification of "attemptId
+// not found in stage_attempts" so write_port can return an actionable
+// next step. Returns the most specific reason that matches plus, when
+// applicable, the active attemptId the caller should retry against.
+type MissingAttemptReason =
+  | "task_finalized"
+  | "stage_advanced"
+  | "task_not_found"
+  | "no_attempt_for_stage"
+  | "stale_or_typo";
+interface MissingAttemptClassification {
+  reason: MissingAttemptReason;
+  latestActiveAttemptId?: string;
+  taskFinalState?: string;
+}
+
+function classifyMissingAttempt(
+  db: DatabaseSync,
+  taskId: string,
+  stage: string,
+): MissingAttemptClassification {
+  // 1. Task is fully finalized — task_finals row exists.
+  const finalRow = db.prepare(
+    `SELECT final_state FROM task_finals WHERE task_id = ?`,
+  ).get(taskId) as { final_state: string } | undefined;
+  if (finalRow) {
+    return { reason: "task_finalized", taskFinalState: finalRow.final_state };
+  }
+
+  // 2. Stage has a current active attempt — caller passed a stale id.
+  const active = latestActiveAttemptForStage(db, taskId, stage);
+  if (active) {
+    return { reason: "stage_advanced", latestActiveAttemptId: active };
+  }
+
+  // 3. Task exists somewhere — disambiguate "task never existed" from
+  //    "task exists but this stage hasn't been dispatched".
+  const anyAttemptRow = db.prepare(
+    `SELECT 1 FROM stage_attempts WHERE task_id = ? LIMIT 1`,
+  ).get(taskId) as { 1: number } | undefined;
+  if (!anyAttemptRow) {
+    // No stage_attempts and no task_finals — the kernel has never
+    // seen this taskId. Could be a typo or a wholly fabricated id.
+    return { reason: "task_not_found" };
+  }
+  return { reason: "no_attempt_for_stage" };
+}
+
+function latestActiveAttemptForStage(
+  db: DatabaseSync,
+  taskId: string,
+  stage: string,
+): string | undefined {
+  // Active = status writers can legitimately target. 'superseded'
+  // attempts are by construction not the live one; 'success'/'error'
+  // are terminal. Match the same set the handler accepts.
+  const row = db.prepare(
+    `SELECT attempt_id FROM stage_attempts
+     WHERE task_id = ? AND stage_name = ?
+       AND status IN ('running','secret_pending')
+     ORDER BY started_at DESC LIMIT 1`,
+  ).get(taskId, stage) as { attempt_id: string } | undefined;
+  return row?.attempt_id;
+}
+
+function buildMissingAttemptMessage(
+  attemptId: string,
+  taskId: string,
+  stage: string,
+  cls: MissingAttemptClassification,
+): string {
+  const head = `attemptId '${attemptId}' not found`;
+  switch (cls.reason) {
+    case "task_finalized":
+      return (
+        `${head}: task '${taskId}' is already finalized ` +
+        `(${cls.taskFinalState ?? "unknown"}); no further writes are accepted.`
+      );
+    case "stage_advanced":
+      return (
+        `${head}: the active attempt for stage '${stage}' on task '${taskId}' ` +
+        `is now '${cls.latestActiveAttemptId}'. Use that attemptId.`
+      );
+    case "task_not_found":
+      return (
+        `${head}: no stage_attempts or task_finals row exists for task '${taskId}'. ` +
+        `Verify the taskId — the kernel has never seen it.`
+      );
+    case "no_attempt_for_stage":
+      return (
+        `${head}: task '${taskId}' exists but stage '${stage}' has no attempts yet. ` +
+        `Wait for the stage to be dispatched, or verify the stage name.`
+      );
+    case "stale_or_typo":
+    default:
+      return `${head} (no matching row in stage_attempts).`;
   }
 }
