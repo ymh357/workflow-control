@@ -246,14 +246,26 @@ async function invokeWithTimeout(
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
   const run = Promise.resolve(mod.run(inputs, ctx));
+  // B4.F37 (2026-04-30 review): pre-fix the setTimeout handle was
+  // captured inside the timer promise's executor and unref'd, but
+  // never explicitly cleared when `run` won the race. Memory of the
+  // pending closure stuck around until the timer fired naturally.
+  // Cosmetic for one-shot calls, but the contract check runs once
+  // per inline-script submit; the timer is still scheduled for
+  // timeoutMs (default a few seconds) before finalisation. Clear
+  // it when run wins.
+  let timerId: ReturnType<typeof setTimeout> | null = null;
   const timer = new Promise<never>((_resolve, reject) => {
-    const id = setTimeout(() => {
+    timerId = setTimeout(() => {
       reject(new Error(`contract test exceeded ${timeoutMs}ms`));
     }, timeoutMs);
-    // unref so an outer process exit isn't delayed by a lingering handle.
-    if (typeof (id as NodeJS.Timeout).unref === "function") {
-      (id as NodeJS.Timeout).unref();
+    if (typeof (timerId as NodeJS.Timeout).unref === "function") {
+      (timerId as NodeJS.Timeout).unref();
     }
   });
-  return (await Promise.race([run, timer])) as Record<string, unknown>;
+  try {
+    return (await Promise.race([run, timer])) as Record<string, unknown>;
+  } finally {
+    if (timerId !== null) clearTimeout(timerId);
+  }
 }
