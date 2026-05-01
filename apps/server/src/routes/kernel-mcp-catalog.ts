@@ -98,8 +98,19 @@ export function createKernelMcpCatalogRoute(
     } catch {
       return badRequest(c, "INVALID_JSON_BODY", "invalid JSON");
     }
+    // B6.#1 (2026-04-30 review): pre-fix `body as object` covered a
+    // primitive / array / null body and let `{ ...body, ... }`
+    // produce silently-wrong shapes that Zod then rejected with a
+    // confusing diagnostic. Narrow the body to a plain object before
+    // spreading; arrays / null / primitives get a precise error.
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      return badRequest(
+        c, "INVALID_REQUEST_BODY",
+        "request body must be a JSON object",
+      );
+    }
     // Force source='custom' before validation (clients may omit or set 'builtin' incorrectly)
-    const candidate = { ...(body as object), source: "custom" };
+    const candidate = { ...(body as Record<string, unknown>), source: "custom" };
     const parsed = CatalogEntrySchema.safeParse(candidate);
     if (!parsed.success) {
       return c.json({
@@ -152,7 +163,14 @@ export function createKernelMcpCatalogRoute(
     } catch {
       return badRequest(c, "INVALID_JSON_BODY", "invalid JSON");
     }
-    const candidate = { ...(body as object), id, source: "custom" };
+    // B6.#1: same narrow as POST.
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      return badRequest(
+        c, "INVALID_REQUEST_BODY",
+        "request body must be a JSON object",
+      );
+    }
+    const candidate = { ...(body as Record<string, unknown>), id, source: "custom" };
     const parsed = CatalogEntrySchema.safeParse(candidate);
     if (!parsed.success) {
       return c.json({
