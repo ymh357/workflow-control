@@ -1035,6 +1035,50 @@ describe("answer_gate MCP handler — reject dispatch", () => {
       db.close();
     }
   });
+
+  // B3.F14 (2026-04-30 review) regression: a dispatcher that throws
+  // mid-handler must NOT roll back the gate answer (already
+  // committed) or surface as a generic error. answer_gate now
+  // returns the success result with a dispatchWarning so callers can
+  // detect the half-success.
+  it("returns success+dispatchWarning when dispatcher.send throws after answerGate commit", async () => {
+    const taskId = "t-mcp-reject-throw";
+    const { db, gateId } = await setupRejectReadyDb(taskId);
+
+    // Dispatcher that throws on every send. Two sends happen:
+    // 1) PORT_WRITTEN for __gate_feedback__ (from answerGate inside
+    //    KernelService — that side is in its own try/catch and is
+    //    not the subject here).
+    // 2) GATE_REJECTED from answer_gate handler — this is the one
+    //    B3.F14 cares about.
+    const captured: unknown[] = [];
+    taskRegistry.register(taskId, {
+      send: (ev: unknown) => {
+        captured.push(ev);
+        if ((ev as { type: string }).type === "GATE_REJECTED") {
+          throw new Error("simulated: machine rejected stale event");
+        }
+      },
+    } as never);
+
+    try {
+      const mcp = createKernelMcp(db, { surface: "external", skipTypeCheck: true });
+      const tool = getTools(mcp).get("answer_gate")!;
+      const resp = await tool.handler({ gateId, answer: "reject" });
+      const text = (resp as { content: { text: string }[] }).content[0]!.text;
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      // Answer is committed (ok: true) — DB state is the source of truth.
+      expect(parsed.ok).toBe(true);
+      // Warning surfaces the dispatch failure for the caller.
+      expect(typeof parsed.dispatchWarning).toBe("string");
+      expect(parsed.dispatchWarning).toContain("simulated");
+      // GATE_REJECTED was attempted (and threw) — captured before throw.
+      const types = captured.map((e) => (e as { type: string }).type);
+      expect(types).toContain("GATE_REJECTED");
+    } finally {
+      db.close();
+    }
+  });
 });
 
 // Bug 68 (dogfood 2026-04-30): write_port previously returned a bare

@@ -4,6 +4,7 @@
 
 import { z } from "zod";
 import { taskRegistry } from "../../runtime/task-registry.js";
+import { logger } from "../../../lib/logger.js";
 import type { ToolDef, ToolsDeps } from "../tool-types.js";
 import { jsonResponse, errorResponse } from "../tool-helpers.js";
 
@@ -106,24 +107,60 @@ export function buildGateTools(deps: ToolsDeps): ToolDef[] {
           const comment = typeof args.comment === "string" ? args.comment : undefined;
           const result = kernel.answerGate(String(args.gateId), String(args.answer), comment);
           if (result.ok) {
+            // B3.F14 (2026-04-30 review): pre-fix, dispatcher.send was
+            // inside the outer try/catch. A throw from the running
+            // XState machine (broken transition, invalid event in a
+            // weird state) would bubble up as a synthetic
+            // errorResponse — but kernel.answerGate had ALREADY
+            // committed the answer to gate_queue. The caller would
+            // see "error" yet the gate is in fact answered, leaving
+            // the runner in a stuck state because no GATE_ANSWERED /
+            // GATE_REJECTED event was dispatched.
+            //
+            // Now: catch the dispatcher error, log it, return the
+            // success response with a `dispatchWarning` so callers
+            // can detect the half-success and decide whether to
+            // retry. The DB state is the source of truth — the next
+            // boot's orphan reconciler will see the answered gate +
+            // unfinished stage and re-dispatch on resume.
             const dispatcher = taskRegistry.get(result.taskId);
-            if (result.kind === "rejected") {
-              dispatcher?.send({
-                type: "GATE_REJECTED",
-                gateId: result.gateId,
-                stageName: result.stageName,
-                answer: result.answer,
-                targetStage: result.targetStage,
-                affectedStages: result.affectedStages,
-              });
-            } else {
-              dispatcher?.send({
-                type: "GATE_ANSWERED",
-                gateId: result.gateId,
-                stageName: result.stageName,
-                answer: result.answer,
-                targetStage: result.targetStage,
-              });
+            let dispatchWarning: string | undefined;
+            try {
+              if (result.kind === "rejected") {
+                dispatcher?.send({
+                  type: "GATE_REJECTED",
+                  gateId: result.gateId,
+                  stageName: result.stageName,
+                  answer: result.answer,
+                  targetStage: result.targetStage,
+                  affectedStages: result.affectedStages,
+                });
+              } else {
+                dispatcher?.send({
+                  type: "GATE_ANSWERED",
+                  gateId: result.gateId,
+                  stageName: result.stageName,
+                  answer: result.answer,
+                  targetStage: result.targetStage,
+                });
+              }
+            } catch (dispatchErr) {
+              const message = dispatchErr instanceof Error
+                ? dispatchErr.message
+                : String(dispatchErr);
+              dispatchWarning = `dispatch failed but gate answer is committed: ${message}`;
+              logger.error(
+                {
+                  gateId: result.gateId,
+                  stageName: result.stageName,
+                  taskId: result.taskId,
+                  err: message,
+                },
+                "[answer_gate] dispatcher.send threw after answerGate commit; relying on orphan reconciler at next boot",
+              );
+            }
+            if (dispatchWarning !== undefined) {
+              return jsonResponse({ ...result, dispatchWarning });
             }
           }
           return jsonResponse(result);
