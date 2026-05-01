@@ -69,9 +69,14 @@ describe("interpolateEnvVar", () => {
     expect(interpolateEnvVar("${MISSING_VAR:-fallback}")).toBe("fallback");
   });
 
-  it("returns MISSING sentinel when no default and var missing", () => {
+  // B6.#16 (2026-04-30 review): pre-fix returned "\0MISSING\0" as a
+  // mid-string sentinel that survived into downstream consumers
+  // (DBs, shell args). Now leaves the literal placeholder in place;
+  // interpolateObject decides field-level "disappear if missing"
+  // semantics by detecting a sole-placeholder string.
+  it("preserves the ${VAR} placeholder when no default and var missing", () => {
     const result = interpolateEnvVar("${TOTALLY_MISSING}");
-    expect(result).toContain("\0MISSING\0");
+    expect(result).toBe("${TOTALLY_MISSING}");
   });
 
   it("leaves plain strings unchanged", () => {
@@ -88,6 +93,15 @@ describe("interpolateEnvVar", () => {
     expect(interpolateEnvVar("${A}-${B}")).toBe("x-y");
     delete process.env.A;
     delete process.env.B;
+  });
+
+  // B6.#16 regression: mid-string missing var must NOT inject NUL
+  // bytes into the result. The placeholder is preserved for any
+  // downstream consumer that wants to detect it themselves.
+  it("preserves ${VAR} in mid-string when var is missing (no NUL injection)", () => {
+    const out = interpolateEnvVar("prefix${TOTALLY_MISSING_MID}suffix");
+    expect(out).toBe("prefix${TOTALLY_MISSING_MID}suffix");
+    expect(out).not.toContain("\0");
   });
 });
 
@@ -125,6 +139,15 @@ describe("interpolateObject", () => {
   it("passes through non-string primitives", () => {
     const result = interpolateObject({ num: 42, bool: true, nil: null });
     expect(result).toEqual({ num: 42, bool: true, nil: null });
+  });
+
+  // B6.#16 regression: mid-string missing var must NOT cause the
+  // entire field to disappear, NOR inject NUL bytes. The field
+  // should remain a string with the placeholder visible.
+  it("preserves the field as a string when missing var is mid-string (no undefined, no NUL)", () => {
+    const result = interpolateObject({ url: "https://${MISSING_HOST_FOO}/api" });
+    expect(result.url).toBe("https://${MISSING_HOST_FOO}/api");
+    expect(typeof result.url).toBe("string");
   });
 });
 
