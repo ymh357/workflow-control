@@ -18,8 +18,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+import { API_BASE } from "../../../../lib/api-client";
 
 type Tab = "tool-calls" | "messages" | "thinking" | "sdk-stderr" | "status" | "usage";
 

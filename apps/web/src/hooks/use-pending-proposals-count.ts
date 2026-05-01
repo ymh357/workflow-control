@@ -10,8 +10,7 @@
 // churn is low (< 10 events/hour).
 
 import { useEffect, useState, useCallback } from "react";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+import { API_BASE } from "../lib/api-client";
 
 export function usePendingProposalsCount(): number | null {
   const [count, setCount] = useState<number | null>(null);

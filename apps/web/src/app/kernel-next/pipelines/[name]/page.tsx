@@ -11,9 +11,8 @@ import { PromptsEditor } from "../../../../components/prompts-editor";
 import { PipelineGraph } from "../../../../components/pipeline-graph";
 import { LaunchPipelineDialog } from "../../../../components/launch-pipeline-dialog";
 import { CopyButton } from "../../../../components/copy-button";
+import { API_BASE } from "../../../../lib/api-client";
 import type { PipelineIRLike } from "../../../../lib/ir-to-flow";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 const ACTOR_LS_KEY = "kernelActor";
 
 interface PipelineDetail {

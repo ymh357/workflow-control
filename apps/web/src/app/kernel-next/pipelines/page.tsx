@@ -6,8 +6,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
+import { API_BASE } from "../../../lib/api-client";
 
 interface PipelineSummary {
   name: string;

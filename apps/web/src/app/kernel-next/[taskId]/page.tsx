@@ -26,6 +26,7 @@ import { PipelineGraph } from "../../../components/pipeline-graph";
 import { TaskActionsBar } from "../../../components/task-actions-bar";
 import { SecretGatePanel } from "../../../components/secret-gate-panel";
 import { CopyButton } from "../../../components/copy-button";
+import { API_BASE } from "../../../lib/api-client";
 import type { PipelineIRLike, StageState } from "../../../lib/ir-to-flow";
 
 // Payload shape for the `diagnostics_emitted` SSE event. Kept local
@@ -49,8 +50,6 @@ interface TaskCostUpdatePayload {
   outputTokens: number;
   cacheReadTokens: number;
 }
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 // Mirrors the union returned by GET /api/kernel/tasks/:id/status (server's
 // TaskStatusReport). The SSE task_state event only emits the orchestrator

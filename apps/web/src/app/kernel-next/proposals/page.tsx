@@ -9,9 +9,8 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { ProposalDiff } from "../../../components/proposal-diff";
 import { MigrateProposalDialog } from "../../../components/migrate-proposal-dialog";
+import { API_BASE } from "../../../lib/api-client";
 import type { PipelineIRLike } from "../../../lib/ir-to-flow";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:3001";
 
 interface PreviewPayload {
   baseIr: PipelineIRLike;
