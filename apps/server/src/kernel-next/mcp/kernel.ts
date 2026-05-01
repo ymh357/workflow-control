@@ -1965,6 +1965,50 @@ export class KernelService {
    * order. Without it, ORDER BY is non-deterministic under ties and
    * tests that submit proposals back-to-back are flaky.
    */
+  /**
+   * B6.#13 (2026-04-30 review): targeted lookup for a single proposal
+   * row, used by routes that just resolved an approve/reject and need
+   * the post-update view. Pre-fix the routes called listProposals({})
+   * and JS-find'd the row — O(n) per write. This is O(1) on the PK.
+   */
+  getProposal(proposalId: string): ProposalRow | null {
+    const row = this.db.prepare(
+      `SELECT pp.proposal_id, pp.base_version, pp.proposed_version, pp.actor,
+              pp.status, pp.diagnostic_json, pp.created_at, pp.rerun_from,
+              pp.migrate_running, pv.pipeline_name
+       FROM pipeline_proposals pp
+       JOIN pipeline_versions pv ON pv.version_hash = pp.base_version
+       WHERE pp.proposal_id = ?
+       LIMIT 1`,
+    ).get(proposalId) as
+      | {
+          proposal_id: string;
+          base_version: string;
+          proposed_version: string | null;
+          actor: string;
+          status: string;
+          diagnostic_json: string | null;
+          created_at: number;
+          rerun_from: string | null;
+          migrate_running: string | null;
+          pipeline_name: string;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      proposalId: row.proposal_id,
+      baseVersion: row.base_version,
+      proposedVersion: row.proposed_version,
+      actor: row.actor,
+      status: row.status as ProposalStatus,
+      diagnosticJson: row.diagnostic_json,
+      createdAt: row.created_at,
+      rerunFrom: row.rerun_from,
+      migrateRunning: parseMigrateRunning(row.migrate_running),
+      pipelineName: row.pipeline_name,
+    };
+  }
+
   listProposals(filter: { status?: ProposalStatus } = {}): ProposalRow[] {
     const rows = filter.status
       ? this.db.prepare(

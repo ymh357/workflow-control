@@ -147,7 +147,7 @@ kernelProposalsRoute.post("/kernel/proposals", async (c) => {
     // without polling. autoApprove=true proposals land with status
     // 'approved'; the type stays proposal_created because it's still
     // the creation event — approval happened atomically.
-    const row = svc.listProposals({}).find((r) => r.proposalId === result.proposalId);
+    const row = svc.getProposal(result.proposalId);
     if (row) {
       publishProposalEvent("proposal_created", {
         proposalId: row.proposalId,
@@ -181,7 +181,7 @@ kernelProposalsRoute.post("/kernel/proposals/:id/approve", (c) => {
   const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
   const result = svc.approveProposal(id);
   if (result.ok) {
-    const row = svc.listProposals({}).find((r) => r.proposalId === id);
+    const row = svc.getProposal(id);
     if (row) {
       publishProposalEvent("proposal_approved", {
         proposalId: row.proposalId,
@@ -229,7 +229,7 @@ kernelProposalsRoute.post("/kernel/proposals/:id/reject", async (c) => {
   const svc = new KernelService(getKernelNextDb(), { skipTypeCheck: true });
   const result = svc.rejectProposal(id, reason);
   if (result.ok) {
-    const row = svc.listProposals({}).find((r) => r.proposalId === id);
+    const row = svc.getProposal(id);
     if (row) {
       publishProposalEvent("proposal_rejected", {
         proposalId: row.proposalId,
