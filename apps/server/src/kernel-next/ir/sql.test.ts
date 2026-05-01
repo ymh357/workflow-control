@@ -79,6 +79,24 @@ describe("kernel-next SQL persistence", () => {
     db.close();
   });
 
+  // Bug 30 (c12+ review): if pipeline_versions exists but the
+  // normalized stages/ports/wires rows are missing or out-of-sync, the
+  // pre-fix INSERT OR IGNORE on every table silently masked the drift.
+  // Now insertPipelineVersion detects mismatches and throws.
+  it("Bug 30: drift between ir_json and wires count throws", () => {
+    const db = makeDb();
+    const ir = sampleIR();
+    const hash = versionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" });
+    // Simulate drift: a wire row was deleted (no FK violation since wires
+    // sit at the bottom of the FK chain).
+    db.prepare("DELETE FROM wires WHERE version_hash = ?").run(hash);
+    expect(() =>
+      insertPipelineVersion(db, ir, { versionHash: hash, tsSource: "" }),
+    ).toThrowError(/drift/);
+    db.close();
+  });
+
   it("listPipelineVersions filters by name when provided", () => {
     const db = makeDb();
     const a: PipelineIR = { ...sampleIR(), name: "alpha" };

@@ -245,3 +245,69 @@ describe("emitPipelineModule with externalInputs", () => {
     expect(source).not.toMatch(/export namespace X \{[\s\S]+__gate_feedback__/);
   });
 });
+
+// Bug 31 (c12+ review) — PortIR.type code-injection guard.
+//
+// emit-ts inlines `${p.type}` verbatim into emitted TS. A malicious or
+// hallucinated LLM-generated type that breaks out of its surrounding
+// `interface { ... }` body could persist arbitrary top-level code into
+// pipeline_versions.ts_source. The pre-fix code had no validation; the
+// post-fix code throws on:
+//   - newlines / carriage returns
+//   - comment markers ("//", "/*", "*/")
+//   - "=" / backtick (variable initializer / template literal escape)
+//   - characters outside the conservative TS type-expression set
+//   - unbalanced brackets ({} [] () <>)
+describe("emitPipelineModule — Bug 31 PortIR.type injection guard", () => {
+  function makeIR(typeStr: string): PipelineIR {
+    return {
+      name: "t",
+      stages: [
+        { name: "A", type: "agent", inputs: [], outputs: [{ name: "x", type: typeStr }], config: { promptRef: "p" } },
+      ],
+      wires: [],
+    } as PipelineIR;
+  }
+
+  it("rejects a type containing a newline", () => {
+    expect(() => emitPipelineModule(makeIR("string\n malicious")))
+      .toThrowError(/forbidden substring/);
+  });
+
+  it("rejects a type containing a // comment marker", () => {
+    expect(() => emitPipelineModule(makeIR("string // injected")))
+      .toThrowError(/forbidden substring/);
+  });
+
+  it("rejects a type containing a /* */ block comment", () => {
+    expect(() => emitPipelineModule(makeIR("string /* x */")))
+      .toThrowError(/forbidden substring/);
+  });
+
+  it("rejects a type containing an = (assignment)", () => {
+    expect(() => emitPipelineModule(makeIR("string = injected")))
+      .toThrowError(/forbidden substring/);
+  });
+
+  it("rejects a type with an unbalanced } that would close the host interface", () => {
+    // The classic injection: `string; }; export const rce = ...; namespace n {`.
+    // Even with `=` allowed, the imbalanced `}` is enough to catch this class.
+    expect(() => emitPipelineModule(makeIR("string }")))
+      .toThrowError(/unbalanced/);
+  });
+
+  it("rejects a type with characters outside the allowed set", () => {
+    expect(() => emitPipelineModule(makeIR("string + number")))
+      .toThrowError(/outside the allowed/);
+  });
+
+  it("accepts a complex object/array type", () => {
+    expect(() => emitPipelineModule(makeIR("Array<{ id: string; n: number }>")))
+      .not.toThrow();
+  });
+
+  it("accepts a discriminated union literal type", () => {
+    expect(() => emitPipelineModule(makeIR('"a" | "b" | "c"')))
+      .not.toThrow();
+  });
+});

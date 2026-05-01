@@ -20,6 +20,8 @@ import type { PipelineIR, ScriptStage, Diagnostic } from "../ir/schema.js";
 import type { ScriptModule, ScriptModuleContext } from "../runtime/script-module-resolver.js";
 import { compileInlineScript } from "./compile-inline-script.js";
 import { scanImports, findDisallowedImports } from "./scan-imports.js";
+// Bug 32: shared single source of truth for runtime require() allowlist.
+import { RUNTIME_REQUIRE_ALLOWLIST } from "./runtime-require-allowlist.js";
 
 export interface ContractCheckOptions {
   /**
@@ -204,18 +206,8 @@ async function checkOne(
 // Evaluate compiled CommonJS source via Function wrapper — same
 // mechanism as runtime/inline-script-executor.ts so both paths see
 // identical behaviour. `require` is restricted to the node stdlib
-// whitelist.
-const RUNTIME_REQUIRE_ALLOWLIST: ReadonlySet<string> = new Set([
-  "node:fs/promises",
-  "node:path",
-  "node:crypto",
-  "node:url",
-  "node:buffer",
-  "node:os",
-  "node:util",
-  "node:stream/promises",
-  "node:zlib",
-]);
+// whitelist (Bug 32: see ./runtime-require-allowlist.ts for the
+// single source of truth shared with the runtime executor).
 
 // ESM workaround — apps/server is type:module, so `require` is not a
 // global. createRequire(import.meta.url) gives us a CJS require for

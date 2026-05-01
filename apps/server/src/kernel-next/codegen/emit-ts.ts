@@ -13,6 +13,83 @@
 import { createHash } from "node:crypto";
 import type { PipelineIR, StageIR, PortIR } from "../ir/schema.js";
 
+// Bug 31 (c12+ review): PortIR.type is LLM-supplied free text that gets
+// inlined into the emitted TS source verbatim (`${p.name}: ${p.type};`).
+// The emitted source is then persisted in pipeline_versions.ts_source
+// and shipped to tsc for diagnostics. Without validation, the LLM could
+// craft a type that escapes its surrounding `interface { ... }` body
+// and inject arbitrary top-level statements into the persisted module:
+//   "string; }; export const x = <RCE>; namespace Stages { interface X { y"
+// We bound this attack surface by:
+//   1. Whitelisting the character class to TS type-expression syntax
+//      (letters, digits, `_.,<>[](){}?|&:'\"!`, whitespace).
+//   2. Rejecting newlines, carriage returns, and comment markers
+//      ("//", "/*", "*/") so multiline injection / commented-out code is
+//      impossible.
+//   3. Rejecting `=` and backticks so variable-initializer / template
+//      syntax can't be smuggled in.
+//   4. Requiring balanced brackets for every bracket family — `{}`,
+//      `[]`, `()`, `<>`. An imbalanced `}` would close the host
+//      interface and let downstream tokens become top-level code.
+const PORT_TYPE_ALLOWED_CHARS = /^[A-Za-z0-9_.,;<>\[\]{}()?|&:'"!\s]+$/;
+const PORT_TYPE_FORBIDDEN_SUBSTRINGS = ["//", "/*", "*/", "\n", "\r", "=", "`"];
+
+function assertBalanced(open: string, close: string, type: string): boolean {
+  let depth = 0;
+  for (const ch of type) {
+    if (ch === open) depth++;
+    else if (ch === close) {
+      depth--;
+      if (depth < 0) return false;
+    }
+  }
+  return depth === 0;
+}
+
+function assertSafePortType(
+  context: { stage: string; portName: string; direction: "in" | "out" | "external" },
+  type: string,
+): void {
+  if (typeof type !== "string" || type.length === 0) {
+    throw new Error(
+      `[emit-ts] Port type for ${context.stage}.${context.portName} ` +
+      `(direction=${context.direction}) is not a non-empty string; ` +
+      `cannot emit TS source.`,
+    );
+  }
+  if (type.length > 4096) {
+    throw new Error(
+      `[emit-ts] Port type for ${context.stage}.${context.portName} ` +
+      `is ${type.length} chars; refuse to inline (potential code-injection).`,
+    );
+  }
+  for (const bad of PORT_TYPE_FORBIDDEN_SUBSTRINGS) {
+    if (type.includes(bad)) {
+      throw new Error(
+        `[emit-ts] Port type for ${context.stage}.${context.portName} ` +
+        `contains forbidden substring ${JSON.stringify(bad)}; refuse to ` +
+        `inline (potential code-injection).`,
+      );
+    }
+  }
+  if (!PORT_TYPE_ALLOWED_CHARS.test(type)) {
+    throw new Error(
+      `[emit-ts] Port type for ${context.stage}.${context.portName} ` +
+      `contains characters outside the allowed TS type-expression set; ` +
+      `refuse to inline. Got: ${JSON.stringify(type)}`,
+    );
+  }
+  for (const [open, close] of [["{", "}"], ["[", "]"], ["(", ")"], ["<", ">"]] as const) {
+    if (!assertBalanced(open, close, type)) {
+      throw new Error(
+        `[emit-ts] Port type for ${context.stage}.${context.portName} ` +
+        `has unbalanced ${open}${close} brackets; refuse to inline ` +
+        `(potential code-injection). Got: ${JSON.stringify(type)}`,
+      );
+    }
+  }
+}
+
 export interface WireMapEntry {
   line: number;                   // 1-based line number of the assignment
   fromStage: string;
@@ -46,12 +123,18 @@ function wireIdentifier(fromStage: string, fromPort: string, toStage: string, to
   return `__wire__${fromStage}_${fromPort}__TO__${toStage}_${toPort}__${disambiguator}`;
 }
 
-function emitPortBlock(ports: PortIR[], kind: "Inputs" | "Outputs"): string[] {
+function emitPortBlock(
+  stageName: string,
+  ports: PortIR[],
+  kind: "Inputs" | "Outputs",
+): string[] {
   if (ports.length === 0) {
     return [`    export interface ${kind} {}`];
   }
   const lines: string[] = [`    export interface ${kind} {`];
+  const direction: "in" | "out" = kind === "Inputs" ? "in" : "out";
   for (const p of ports) {
+    assertSafePortType({ stage: stageName, portName: p.name, direction }, p.type);
     lines.push(`      ${p.name}: ${p.type};`);
   }
   lines.push(`    }`);
@@ -61,7 +144,7 @@ function emitPortBlock(ports: PortIR[], kind: "Inputs" | "Outputs"): string[] {
 function emitStage(stage: StageIR): string[] {
   const lines: string[] = [];
   lines.push(`  export namespace ${stage.name} {`);
-  lines.push(...emitPortBlock(stage.inputs, "Inputs"));
+  lines.push(...emitPortBlock(stage.name, stage.inputs, "Inputs"));
   // Gate stages have an implicit kernel-emitted `__gate_feedback__` output
   // carrying the user's reject comment (or empty string on approve). The
   // structural validator (validator/structural.ts:283) already special-cases
@@ -74,7 +157,7 @@ function emitStage(stage: StageIR): string[] {
     stage.type === "gate"
       ? [...stage.outputs, { name: "__gate_feedback__", type: "string" } as PortIR]
       : stage.outputs;
-  lines.push(...emitPortBlock(synthesizedOutputs, "Outputs"));
+  lines.push(...emitPortBlock(stage.name, synthesizedOutputs, "Outputs"));
   lines.push(`  }`);
   return lines;
 }
@@ -101,6 +184,10 @@ export function emitPipelineModule(ir: PipelineIR): EmitResult {
     lines.push(`export namespace __external__ {`);
     lines.push(`  export interface Outputs {`);
     for (const p of ir.externalInputs) {
+      assertSafePortType(
+        { stage: "__external__", portName: p.name, direction: "external" },
+        p.type,
+      );
       lines.push(`    ${JSON.stringify(p.name)}: ${p.type};`);
     }
     lines.push(`  }`);

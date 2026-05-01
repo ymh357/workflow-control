@@ -32,6 +32,8 @@ import type { ScriptModule } from "./script-module-resolver.js";
 import { openScriptExecutionRecordWriter } from "./script-execution-record-writer.js";
 import { loadTaskEnvValues } from "./task-env-values.js";
 import { compileInlineScript } from "../script-compile/compile-inline-script.js";
+// Bug 32: shared single source of truth for runtime require() allowlist.
+import { RUNTIME_REQUIRE_ALLOWLIST as SHARED_ALLOWLIST } from "../script-compile/runtime-require-allowlist.js";
 
 export class InlineScriptStageExecutor implements StageExecutor {
   // Cache compiled modules by versionHash+stageName: the same inline
@@ -184,14 +186,5 @@ function importJsModule(js: string): ScriptModule {
   return mod;
 }
 
-const RUNTIME_REQUIRE_ALLOWLIST: ReadonlySet<string> = new Set([
-  "node:fs/promises",
-  "node:path",
-  "node:crypto",
-  "node:url",
-  "node:buffer",
-  "node:os",
-  "node:util",
-  "node:stream/promises",
-  "node:zlib",
-]);
+// Bug 32: single source of truth — see top-of-file import.
+const RUNTIME_REQUIRE_ALLOWLIST: ReadonlySet<string> = SHARED_ALLOWLIST;

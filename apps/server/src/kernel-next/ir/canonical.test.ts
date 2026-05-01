@@ -485,3 +485,47 @@ describe("canonical: store_schema in version_hash (Bug 5)", () => {
     expect(out).toContain("s.o");
   });
 });
+
+// Bug 34 (c12+ review): gate question.options[] order leaked into the
+// canonical hash, so reordering options bumped the version for no
+// semantic change. Routing keys are looked up by `value`, so order is
+// purely presentational.
+describe("canonical: gate question.options sort (Bug 34)", () => {
+  const baseIR = (options: Array<{ value: string; description?: string }>): PipelineIR => ({
+    name: "gate-options-sort",
+    stages: [
+      {
+        name: "G", type: "gate", inputs: [], outputs: [],
+        config: {
+          question: { text: "pick one", options },
+          routing: { routes: { approve: "X", reject: "Y" } },
+        },
+      },
+      { name: "X", type: "agent", inputs: [], outputs: [{ name: "o", type: "string" }], config: { promptRef: "p" } },
+      { name: "Y", type: "agent", inputs: [], outputs: [{ name: "o", type: "string" }], config: { promptRef: "p" } },
+    ],
+    wires: [],
+  } as PipelineIR);
+
+  it("hashes identically regardless of options[] order", () => {
+    const a = versionHash(baseIR([{ value: "approve" }, { value: "reject" }]));
+    const b = versionHash(baseIR([{ value: "reject" }, { value: "approve" }]));
+    expect(a).toBe(b);
+  });
+
+  it("preserves description while sorting by value", () => {
+    const out = canonicalJSON(baseIR([
+      { value: "reject", description: "Try again" },
+      { value: "approve", description: "Looks good" },
+    ]));
+    // approve should appear before reject in the canonical form.
+    const approveIdx = out.indexOf("approve");
+    const rejectIdx = out.indexOf("reject");
+    expect(approveIdx).toBeGreaterThan(-1);
+    expect(rejectIdx).toBeGreaterThan(-1);
+    expect(approveIdx).toBeLessThan(rejectIdx);
+    // Both descriptions still present.
+    expect(out).toContain("Looks good");
+    expect(out).toContain("Try again");
+  });
+});

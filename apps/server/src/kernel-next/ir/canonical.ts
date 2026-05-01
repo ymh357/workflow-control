@@ -72,8 +72,26 @@ function canonicalizeGateConfig(cfg: GateStage["config"]): CanonicalValue {
   // hashes identically to any pre-P5.2 gate (baseline fixtures stable).
   // An explicit timeout_minutes is a meaningful hot-update — it changes
   // the cancellation policy, so it must participate in version_hash.
+  //
+  // Bug 34 (c12+ review): question.options array order leaked into the
+  // hash, so reordering the answer choices (purely presentational —
+  // routing keys are looked up by value, not index) bumped the version
+  // for no semantic change. Sort by `value` to make the canonical form
+  // permutation-stable. Pre-fix fixtures whose options were already in
+  // sorted order keep their hash; fixtures that were not (e.g.
+  // approve/reject vs reject/approve) will see a one-time hash bump,
+  // which is the right outcome — those hashes were always incoherent.
+  let canonicalQuestion: CanonicalValue;
+  if (cfg.question?.options !== undefined) {
+    const sortedOptions = [...cfg.question.options].sort((a, b) =>
+      codepointCompare(a.value, b.value),
+    );
+    canonicalQuestion = sortKeys({ ...cfg.question, options: sortedOptions });
+  } else {
+    canonicalQuestion = cfg.question;
+  }
   return sortKeys({
-    question: cfg.question,
+    question: canonicalQuestion,
     routing: { routes: routesOut },
     timeout_minutes: cfg.timeout_minutes,
   });

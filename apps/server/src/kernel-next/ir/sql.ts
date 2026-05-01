@@ -537,47 +537,101 @@ export function insertPipelineVersion(
   // Single transaction: pipeline_versions + stages + ports + wires.
   db.exec("BEGIN");
   try {
-    db.prepare(
-      `INSERT OR IGNORE INTO pipeline_versions
-       (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(
-      meta.versionHash,
-      ir.name,
-      now,
-      meta.parentHash ?? null,
-      JSON.stringify(ir),
-      meta.tsSource,
-    );
+    // Bug 30: previously this used INSERT OR IGNORE on pipeline_versions
+    // alongside INSERT OR IGNORE on stages / ports / wires. When the
+    // version_hash already existed, the parent INSERT was silently
+    // skipped — and so were the child inserts. That's correct as long as
+    // the existing rows match the IR (versionHash is a content hash, so
+    // they should), but it hides drift between pipeline_versions.ir_json
+    // and the normalized stages/ports/wires rows. We now branch
+    // explicitly: insert a brand-new version end-to-end, or do nothing
+    // and assert the existing normalized rows match the IR shape.
+    const existing = db.prepare(
+      `SELECT ir_json FROM pipeline_versions WHERE version_hash = ?`,
+    ).get(meta.versionHash) as { ir_json: string } | undefined;
 
-    const insertStage = db.prepare(
-      `INSERT OR IGNORE INTO stages (version_hash, stage_name, stage_type, config_json)
-       VALUES (?, ?, ?, ?)`,
-    );
-    const insertPort = db.prepare(
-      `INSERT OR IGNORE INTO ports
-       (version_hash, stage_name, port_name, direction, type_signature, zod_schema)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    );
-    const insertWire = db.prepare(
-      `INSERT OR IGNORE INTO wires
-       (version_hash, from_stage, from_port, to_stage, to_port)
-       VALUES (?, ?, ?, ?, ?)`,
-    );
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO pipeline_versions
+         (version_hash, pipeline_name, created_at, parent_hash, ir_json, ts_source)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        meta.versionHash,
+        ir.name,
+        now,
+        meta.parentHash ?? null,
+        JSON.stringify(ir),
+        meta.tsSource,
+      );
 
-    for (const stage of ir.stages) {
-      insertStage.run(meta.versionHash, stage.name, stage.type, JSON.stringify(stage.config));
-      for (const p of stage.inputs) {
-        insertPort.run(meta.versionHash, stage.name, p.name, "in", p.type, p.zod ?? null);
+      const insertStage = db.prepare(
+        `INSERT INTO stages (version_hash, stage_name, stage_type, config_json)
+         VALUES (?, ?, ?, ?)`,
+      );
+      const insertPort = db.prepare(
+        `INSERT INTO ports
+         (version_hash, stage_name, port_name, direction, type_signature, zod_schema)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      );
+      const insertWire = db.prepare(
+        `INSERT INTO wires
+         (version_hash, from_stage, from_port, to_stage, to_port)
+         VALUES (?, ?, ?, ?, ?)`,
+      );
+
+      for (const stage of ir.stages) {
+        insertStage.run(meta.versionHash, stage.name, stage.type, JSON.stringify(stage.config));
+        for (const p of stage.inputs) {
+          insertPort.run(meta.versionHash, stage.name, p.name, "in", p.type, p.zod ?? null);
+        }
+        for (const p of stage.outputs) {
+          insertPort.run(meta.versionHash, stage.name, p.name, "out", p.type, p.zod ?? null);
+        }
       }
-      for (const p of stage.outputs) {
-        insertPort.run(meta.versionHash, stage.name, p.name, "out", p.type, p.zod ?? null);
+      for (const w of ir.wires) {
+        insertWire.run(meta.versionHash, wireSourceKeyPrefix(w), w.from.port, w.to.stage, w.to.port);
       }
-    }
-    for (const w of ir.wires) {
-      // Bridge: Task 1.2 introduced WireSource discriminated union. Task 1.3+
-      // will add source-aware persistence (or a dedicated wires.source column).
-      insertWire.run(meta.versionHash, wireSourceKeyPrefix(w), w.from.port, w.to.stage, w.to.port);
+    } else {
+      // Drift detection: version_hash already persisted. Confirm normalized
+      // rows match the IR — if any mismatch surfaces, abort the
+      // transaction and throw rather than masking it. versionHash is a
+      // canonical content hash so equal hash with different stage/port/
+      // wire counts means the prior write was partial or external state
+      // was tampered with.
+      const stageRows = db.prepare(
+        `SELECT COUNT(*) AS n FROM stages WHERE version_hash = ?`,
+      ).get(meta.versionHash) as { n: number };
+      if (stageRows.n !== ir.stages.length) {
+        throw new Error(
+          `pipeline_versions row for ${meta.versionHash} has ${stageRows.n} ` +
+          `stages but ir.stages.length=${ir.stages.length}; normalized state ` +
+          `is out of sync with ir_json (drift).`,
+        );
+      }
+      const wireRows = db.prepare(
+        `SELECT COUNT(*) AS n FROM wires WHERE version_hash = ?`,
+      ).get(meta.versionHash) as { n: number };
+      if (wireRows.n !== ir.wires.length) {
+        throw new Error(
+          `pipeline_versions row for ${meta.versionHash} has ${wireRows.n} ` +
+          `wires but ir.wires.length=${ir.wires.length}; normalized state ` +
+          `is out of sync with ir_json (drift).`,
+        );
+      }
+      const expectedPortCount = ir.stages.reduce(
+        (n, s) => n + s.inputs.length + s.outputs.length,
+        0,
+      );
+      const portRows = db.prepare(
+        `SELECT COUNT(*) AS n FROM ports WHERE version_hash = ?`,
+      ).get(meta.versionHash) as { n: number };
+      if (portRows.n !== expectedPortCount) {
+        throw new Error(
+          `pipeline_versions row for ${meta.versionHash} has ${portRows.n} ` +
+          `ports but ir declares ${expectedPortCount}; normalized state ` +
+          `is out of sync with ir_json (drift).`,
+        );
+      }
     }
 
     db.exec("COMMIT");
