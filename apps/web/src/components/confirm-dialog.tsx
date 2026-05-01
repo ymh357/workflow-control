@@ -33,16 +33,27 @@ export const ConfirmDialog = ({
 }: ConfirmDialogProps) => {
   const confirmRef = useRef<HTMLButtonElement>(null);
 
+  // B7.F12 (2026-04-30 review): onCancel/onConfirm in the deps array
+  // re-created the keydown listener AND re-focused the confirm
+  // button on every parent re-render — focus jumped away from any
+  // input the user was typing into. Latest-callback ref pattern:
+  // listener captures `latest` once, callbacks are read at call
+  // time so updates land without re-running the effect.
+  const latest = useRef({ onCancel, onConfirm });
+  latest.current = { onCancel, onConfirm };
+
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") onCancel();
-      else if (e.key === "Enter" && document.activeElement?.tagName !== "TEXTAREA") onConfirm();
+      if (e.key === "Escape") latest.current.onCancel();
+      else if (e.key === "Enter" && document.activeElement?.tagName !== "TEXTAREA") {
+        latest.current.onConfirm();
+      }
     };
     window.addEventListener("keydown", handler);
     confirmRef.current?.focus();
     return () => window.removeEventListener("keydown", handler);
-  }, [open, onCancel, onConfirm]);
+  }, [open]);
 
   if (!open) return null;
 
