@@ -94,7 +94,24 @@ export interface ProposeResponse {
   ok: true;
   proposalId: string;
   proposedVersion: string;
+  /**
+   * @deprecated B3.F12 (2026-04-30 review): the field is named
+   * "autoApplied" but reflects auto-APPROVAL only — the proposal's
+   * status is set to 'approved', but the migration is NOT
+   * automatically executed. Existing field retained for backwards
+   * compatibility; new callers should read `autoApproved` instead,
+   * which has identical semantics under a precise name. This alias
+   * may be removed in a future major version.
+   */
   autoApplied: boolean;
+  /**
+   * True when {autoApprove: true} was supplied AND the dry-run
+   * verdict was 'safe', causing the proposal's status to be set to
+   * 'approved' on insert. Note: the underlying migration is NOT
+   * executed by propose() even when this flag is true — callers
+   * must trigger migration explicitly via the migration MCP path.
+   */
+  autoApproved: boolean;
   // Stage 5A additions: dry-run artefacts surfaced to caller.
   diff?: PipelineDiff;
   impact?: Impact;
@@ -740,7 +757,8 @@ export class KernelService {
       ok: true,
       proposalId,
       proposedVersion: proposedHash,
-      autoApplied,
+      autoApplied, // B3.F12: deprecated alias of autoApproved.
+      autoApproved: autoApplied,
       diff: dry.diff,
       impact: dry.impact,
       safeRange: dry.safeRange,
