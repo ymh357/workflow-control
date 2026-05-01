@@ -390,6 +390,23 @@ export class RealStageExecutor implements StageExecutor {
         subAgents: stage.config.subAgents ?? null,
       },
     );
+    // Bug 61 (c12+ review): when the AED row INSERT failed, the
+    // returned writer is the NoopWriter fallback. Subsequent
+    // updateSessionId / updateCost calls silently no-op, so SDK
+    // session resume on the next attempt would not find a session_id
+    // and cost reporting would stay at $0. Surface a structured log
+    // so operators see this as a real failure of the attempt's
+    // observability sidecar — the executor still runs (the writer
+    // contract preserves "never throw"), but downstream features
+    // that depend on AED rows must be considered disabled for
+    // this attempt.
+    if (writer.degraded) {
+      console.error(
+        `[real-executor] execution-record writer is degraded ` +
+        `(taskId=${taskId} attemptId=${attemptId} stage=${stageName}); ` +
+        `SDK resume + cost reporting disabled for this attempt`,
+      );
+    }
 
     // 4a. B9 migration hint (if this is the successor attempt of a
     //     superseded one). Consumed atomically so retries of the same

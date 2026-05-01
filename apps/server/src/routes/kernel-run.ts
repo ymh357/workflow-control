@@ -78,6 +78,14 @@ kernelRunRoute.post("/kernel/tasks/run", async (c) => {
     }, 400);
   }
 
+  // Bug 49 (c12+ review): wait for builtin pipeline seeding to settle
+  // before resolving any name. Pre-fix, an HTTP request landing during
+  // boot could resolve a builtin name before its INSERT had committed
+  // and got a mysterious NAME_NOT_FOUND. allSettled — we accept any
+  // single seed failure (logger already recorded it) but never start
+  // resolution until the seed phase has had its chance.
+  await seedBuiltinPipelinesPromise;
+
   const body = parsed.data;
   const name = body.name ?? body.pipeline;
 
@@ -153,9 +161,27 @@ async function seedBuiltinPipelineByName(pipelineDir: string): Promise<void> {
   }
 }
 
-void seedBuiltinPipelineByName("smoke-test");
-void seedBuiltinPipelineByName("tech-research-collector");
-void seedBuiltinPipelineByName("tech-research-writer");
-void seedBuiltinPipelineByName("pipeline-generator");
-void seedBuiltinPipelineByName("pr-description-generator");
-void seedBuiltinPipelineByName("pipeline-modifier");
+// Bug 49 (c12+ review): pre-fix these were `void seed...`, fire-and-
+// forget. An HTTP request landing during boot could resolve a
+// builtin pipeline name BEFORE its INSERT had committed and got a
+// mysterious NAME_NOT_FOUND. Worse, any seed rejection was swallowed
+// (logger.error fired but the promise was lost), so missing builtins
+// stayed broken silently.
+//
+// The fix: kick all seeds in parallel and expose a single awaitable
+// `seedBuiltinPipelinesPromise` that the route's request handler
+// awaits before resolving names. Errors are still logged per-seed
+// inside seedBuiltinPipelineByName; failures of one seed don't block
+// the others (Promise.allSettled).
+const BUILTIN_PIPELINE_NAMES = [
+  "smoke-test",
+  "tech-research-collector",
+  "tech-research-writer",
+  "pipeline-generator",
+  "pr-description-generator",
+  "pipeline-modifier",
+] as const;
+
+export const seedBuiltinPipelinesPromise: Promise<unknown> = Promise.allSettled(
+  BUILTIN_PIPELINE_NAMES.map((name) => seedBuiltinPipelineByName(name)),
+);

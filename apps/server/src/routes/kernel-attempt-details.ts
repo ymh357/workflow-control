@@ -147,8 +147,21 @@ kernelAttemptDetailsRoute.get("/kernel/attempts/:attemptId/details", (c) => {
 // common case is a valid array literal, but NULL is still possible for
 // sub_agents_json (no DEFAULT), and a corrupted write would be worse
 // than an empty list for a read-only debug view.
+//
+// Bug 53 (c12+ review): pre-fix this would JSON.parse arbitrarily
+// large columns and ship them in the HTTP response without any cap.
+// agent_stream_json can grow unbounded for long-running agents
+// (every tool result, every text delta accumulates), so a single
+// task could ship 100s of MB of JSON to a dashboard tab — and
+// JSON.parse would peak memory at ~3× the source string size.
+// Past the cap we return an empty list rather than risk an OOM
+// kill of the server process. Long-task callers can stream the
+// raw column via dedicated tooling.
+const SAFE_PARSE_MAX_BYTES = 5 * 1024 * 1024; // 5 MB
+
 const safeParseArray = (s: string | null): unknown[] => {
   if (s === null || s === "") return [];
+  if (s.length > SAFE_PARSE_MAX_BYTES) return [];
   try {
     const parsed = JSON.parse(s) as unknown;
     return Array.isArray(parsed) ? parsed : [];

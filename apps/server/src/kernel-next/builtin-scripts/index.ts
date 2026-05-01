@@ -1029,13 +1029,23 @@ const classify_evidence_bundle: ScriptModule = {
       const e = parsedEntry as Record<string, unknown>;
 
       const classifyCitationList = (
-        list: unknown,
+        listRaw: unknown,
         listName: string,
       ): Array<Record<string, unknown> & ClassifyResult> => {
-        if (list === undefined || list === null) return [];
+        if (listRaw === undefined || listRaw === null) return [];
+        // Bug 41 (c12+ review): list-level stringified-JSON tolerance.
+        // Some agents emit the entire list as a JSON string rather
+        // than as an array — `evidence[0].positiveEvidence: "[{...}]"`.
+        // Parse once before the array check; on parse failure fall
+        // through to the strict throw below so genuinely malformed
+        // input still surfaces.
+        let list: unknown = listRaw;
+        if (typeof listRaw === "string") {
+          try { list = JSON.parse(listRaw); } catch { /* leave as string */ }
+        }
         if (!Array.isArray(list)) {
           throw new Error(
-            `classify_evidence_bundle: evidence[${idx}].${listName} must be an array when present (got ${typeof list})`,
+            `classify_evidence_bundle: evidence[${idx}].${listName} must be an array when present (got ${typeof listRaw})`,
           );
         }
         return list.map((c, ci) => {

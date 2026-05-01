@@ -17,6 +17,18 @@ const FLUSH_DEBOUNCE_MS = 1_000;
 
 export interface ExecutionRecordWriter {
   readonly attemptId: string;
+  /**
+   * Bug 61 (c12+ review): true when the open INSERT failed and the
+   * writer is the silent NoopWriter fallback. Callers that depend on
+   * the AED row existing (SDK session resume looks up session_id;
+   * cost reporting joins on attempt_id) MUST check this flag and
+   * either decline the dependent operation or surface a diagnostic.
+   * Pre-fix the NoopWriter was indistinguishable from ActiveWriter,
+   * so subsequent updateSessionId / appendToolCall calls silently
+   * no-op'd and the user only discovered the break when SDK resume
+   * later failed with "no session id" or cost stayed at $0.
+   */
+  readonly degraded: boolean;
   appendToolCall(call: ToolCallRecord): void;
   completeToolCall(id: string, patch: Partial<ToolCallRecord>): void;
   appendAgentStream(event: AgentStreamEvent): void;
@@ -32,6 +44,7 @@ export interface ExecutionRecordWriter {
 }
 
 class NoopWriter implements ExecutionRecordWriter {
+  readonly degraded = true;
   constructor(public readonly attemptId: string) {}
   appendToolCall(): void {}
   completeToolCall(): void {}
@@ -47,6 +60,7 @@ class NoopWriter implements ExecutionRecordWriter {
 
 class ActiveWriter implements ExecutionRecordWriter {
   readonly attemptId: string;
+  readonly degraded = false;
   private readonly db: DatabaseSync;
   private readonly startedAt: number;
   private toolCalls: ToolCallRecord[] = [];
@@ -269,9 +283,20 @@ export function openExecutionRecordWriter(
     );
     return new ActiveWriter(db, input.attemptId, startedAt);
   } catch (err) {
-    logger.warn(
-      { attemptId: input.attemptId, err: (err as Error).message },
-      "[execution-record-writer] open failed; falling back to no-op writer",
+    // Bug 61 (c12+ review): elevated from warn -> error. The
+    // NoopWriter fallback means SDK session resume + cost reporting
+    // are silently disabled for this attempt — that's a real outage
+    // dimension that operators must see. The returned writer carries
+    // `degraded=true` so callers (real-executor) can also branch on
+    // the failure rather than discovering it indirectly through a
+    // missing session_id at resume time.
+    logger.error(
+      {
+        attemptId: input.attemptId,
+        err: (err as Error).message,
+        stack: (err as Error).stack,
+      },
+      "[execution-record-writer] open failed; SDK resume + cost reporting disabled for this attempt",
     );
     return new NoopWriter(input.attemptId);
   }

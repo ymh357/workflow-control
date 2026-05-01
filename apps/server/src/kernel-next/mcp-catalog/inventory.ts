@@ -72,6 +72,29 @@ export async function equipEntry(
   const exec = deps.exec;
   const processEnv = deps.processEnv ?? process.env;
 
+  // Bug 46 (c12+ review): pre-fix this loop wrote any envValue key
+  // unconditionally — including keys NOT in entry.envKeys[]. Result:
+  // (1) the inventory accumulated ghost rows for keys the catalog
+  // entry never declared, (2) typos like CLAUDE_KEY vs CLAUDE_API_KEY
+  // silently leaked into the inventory under both names, doubling
+  // storage and confusing audit, (3) malicious or buggy callers
+  // could persist arbitrary key names.
+  // Reject keys that aren't in the entry's declared envKeys; the
+  // declared list is the contract the catalog entry author publishes.
+  const declaredKeys = new Set(entry.envKeys.map((k) => k.name));
+  const undeclared = Object.keys(args.envValues).filter((k) => !declaredKeys.has(k));
+  if (undeclared.length > 0) {
+    return {
+      ok: false,
+      diagnostics: [{
+        code: "CATALOG_INVALID_ENTRY",
+        message:
+          `entry '${args.entryId}' does not declare envKeys [${undeclared.join(", ")}]; ` +
+          `declared keys are [${[...declaredKeys].join(", ")}]`,
+        context: { entryId: args.entryId, undeclared, declared: [...declaredKeys] },
+      }],
+    };
+  }
   for (const [k, v] of Object.entries(args.envValues)) {
     if (v.length === 0) continue;
     writeSecret(deps.db, args.entryId, k, encrypt(v));

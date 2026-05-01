@@ -3,6 +3,42 @@ import type { Diagnostic as _GlobalDiagnostic } from "../ir/schema.js";
 
 const KEBAB_ID = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 
+// Bug 47 (c12+ review): pre-fix `command` was a free-form string, so
+// a hand-crafted custom catalog entry could declare `command: "/bin/sh"`
+// (or any other binary) and persist a post-restart RCE path — every
+// time the catalog entry was equipped, the kernel would spawn the
+// declared command with the entry's args. The catalog is meant to
+// boot well-known MCP server runners (npx-published packages, uvx
+// modules, etc.) — there is no legitimate reason to point `command`
+// at an arbitrary binary.
+//
+// Allowlist below: package-runner / interpreter binaries that can
+// only execute code packaged under their own ecosystems' security
+// model. Adding to this list is a deliberate policy decision, not
+// a routine catalog change.
+const ALLOWED_CATALOG_COMMANDS = [
+  "npx",
+  "uvx",
+  "bunx",
+  "pnpx",
+  "yarn",      // `yarn dlx <pkg>` is the yarn equivalent of npx
+  "bun",
+  "node",
+  "deno",
+  "python",
+  "python3",
+  "uv",
+  "pipx",
+] as const;
+const ALLOWED_CATALOG_COMMANDS_SET = new Set<string>(ALLOWED_CATALOG_COMMANDS);
+
+const CommandSchema = z
+  .string()
+  .min(1)
+  .refine((v) => ALLOWED_CATALOG_COMMANDS_SET.has(v), {
+    message: `command must be one of [${ALLOWED_CATALOG_COMMANDS.join(", ")}] (RCE prevention)`,
+  });
+
 export const CatalogEntrySchema = z.object({
   id: z.string().min(1).max(64).regex(KEBAB_ID, "id must be kebab-case lowercase"),
   source: z.enum(["builtin", "custom"]),
@@ -14,7 +50,7 @@ export const CatalogEntrySchema = z.object({
   tags: z.array(z.string().min(1)),
   homepage: z.string().url().optional(),
 
-  command: z.string().min(1),
+  command: CommandSchema,
   args: z.array(z.string()),
   packageName: z.string().min(1).optional(),
 

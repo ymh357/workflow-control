@@ -14,6 +14,7 @@ function makeMockWriter(): { writer: ExecutionRecordWriter; events: AgentStreamE
   const events: AgentStreamEvent[] = [];
   const writer: ExecutionRecordWriter = {
     attemptId: "test",
+    degraded: false,
     appendToolCall: () => {},
     completeToolCall: () => {},
     appendAgentStream: (e) => events.push(e),
@@ -101,6 +102,7 @@ describe("filterAndAppendSdkStderr", () => {
   it("survives a writer that throws (closed mid-attempt)", () => {
     const writer: ExecutionRecordWriter = {
       attemptId: "t",
+      degraded: false,
       appendToolCall: () => {},
       completeToolCall: () => {},
       appendAgentStream: () => {
