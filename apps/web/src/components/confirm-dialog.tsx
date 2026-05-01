@@ -57,13 +57,28 @@ export const ConfirmDialog = ({
 
   if (!open) return null;
 
+  // B7.F11 (2026-04-30 review): pre-fix the overlay had a bare
+  // onClick={onCancel}. A user starting mousedown inside the dialog
+  // (e.g. selecting text) and dragging to overlay before mouseup
+  // would fire `click` on the overlay → close. Track the mousedown
+  // target instead: only close when BOTH mousedown and mouseup were
+  // on the overlay.
+  const overlayMouseDown = useRef(false);
   return (
     <div
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-dialog-title"
       className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 px-4"
-      onClick={onCancel}
+      onMouseDown={(e) => {
+        overlayMouseDown.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (overlayMouseDown.current && e.target === e.currentTarget) {
+          onCancel();
+        }
+        overlayMouseDown.current = false;
+      }}
     >
       <div
         className="w-full max-w-md rounded-lg border border-strong bg-surface p-5 shadow-xl"

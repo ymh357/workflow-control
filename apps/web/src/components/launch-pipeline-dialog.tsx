@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { apiFetch } from "../lib/api-client";
 import { useToast } from "./toast";
@@ -174,13 +174,31 @@ export const LaunchPipelineDialog = ({
     router.push(`/kernel-next/${encodeURIComponent(res.data.taskId)}`);
   };
 
+  // B7.F11 (2026-04-30 review): mousedown→drag→mouseup-on-overlay
+  // used to fire `click` on the overlay and close the dialog,
+  // discarding the user's in-progress text selection. Track the
+  // mousedown target so close only fires when both ends were on
+  // overlay.
+  const overlayMouseDown = useRef(false);
   return (
     <div
       role="dialog"
       aria-modal="true"
       aria-labelledby="launch-dialog-title"
       className="fixed inset-0 z-[10000] flex items-start justify-center overflow-y-auto bg-black/60 px-4 py-12"
-      onClick={() => !submitting && onClose()}
+      onMouseDown={(e) => {
+        overlayMouseDown.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (
+          overlayMouseDown.current
+          && e.target === e.currentTarget
+          && !submitting
+        ) {
+          onClose();
+        }
+        overlayMouseDown.current = false;
+      }}
     >
       <div
         className="w-full max-w-2xl rounded-lg border border-strong bg-surface shadow-xl"
