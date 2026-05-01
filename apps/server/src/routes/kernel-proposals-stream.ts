@@ -39,6 +39,30 @@ function createProposalsStream(
   let unsubscribe: (() => void) | null = null;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let closed = false;
+  // B5 / B6.#12 (2026-04-30 review): pre-fix the listener-throw and
+  // heartbeat-throw paths set closed=true but did NOT unsubscribe
+  // the broadcaster listener (and the listener-throw path didn't
+  // clearInterval the heartbeat either). Result: a controller that
+  // errored mid-stream kept its listener slot occupied forever, the
+  // listener kept being called for every subsequent broadcast (each
+  // call short-circuited via `closed` but still ran a method
+  // dispatch + try/catch frame), and the heartbeat kept ticking
+  // until cancel() finally tore everything down — which only fires
+  // on graceful disconnect, not on a thrown enqueue.
+  //
+  // Now: a single cleanup() function tears down both subscription
+  // and interval; both throw paths invoke it.
+  const cleanup = () => {
+    closed = true;
+    if (unsubscribe) {
+      try { unsubscribe(); } catch { /* idempotent */ }
+      unsubscribe = null;
+    }
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+  };
   return new ReadableStream<Uint8Array>({
     start(controller) {
       unsubscribe = broadcaster.subscribe((event) => {
@@ -46,7 +70,7 @@ function createProposalsStream(
         try {
           controller.enqueue(formatEvent(event));
         } catch {
-          closed = true;
+          cleanup();
         }
       });
       heartbeat = setInterval(() => {
@@ -57,21 +81,12 @@ function createProposalsStream(
         try {
           controller.enqueue(encoder.encode(": heartbeat\n\n"));
         } catch {
-          closed = true;
-          if (heartbeat) clearInterval(heartbeat);
+          cleanup();
         }
       }, heartbeatMs);
     },
     cancel() {
-      closed = true;
-      if (unsubscribe) {
-        unsubscribe();
-        unsubscribe = null;
-      }
-      if (heartbeat) {
-        clearInterval(heartbeat);
-        heartbeat = null;
-      }
+      cleanup();
     },
   });
 }
