@@ -126,11 +126,25 @@ export default function ProposalsPage() {
   const mutateStatus = useCallback(async (id: string, endpoint: "approve" | "reject") => {
     setError(null);
     try {
-      const res = await fetch(`${API_BASE}/api/kernel/proposals/${encodeURIComponent(id)}/${endpoint}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: endpoint === "reject" ? JSON.stringify({}) : "",
-      });
+      // B7.F26 (2026-04-30 review): pre-fix the approve path sent
+      // body="" with content-type=application/json — an empty
+      // string is not valid JSON. The route handler ignored the
+      // body anyway (POST /approve takes no payload), but the
+      // mismatch was misleading and any stricter middleware would
+      // reject it. Now: approve has no body and no content-type;
+      // reject still sends a JSON object (empty for the no-reason
+      // case, populated otherwise) with the matching content-type.
+      const init: RequestInit = endpoint === "reject"
+        ? {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({}),
+          }
+        : { method: "POST" };
+      const res = await fetch(
+        `${API_BASE}/api/kernel/proposals/${encodeURIComponent(id)}/${endpoint}`,
+        init,
+      );
       const body = await res.json() as { ok: boolean; diagnostics?: Array<{ message: string }> };
       if (!res.ok || !body.ok) {
         setError(body.diagnostics?.[0]?.message ?? `HTTP ${res.status}`);
