@@ -165,6 +165,23 @@ export function validateStructural(
           context: { stage: s.name },
         });
       }
+      // B4.F29: `__gate_feedback__` is a kernel-synthesized output on
+      // every gate stage (codegen/emit-ts.ts:158). If the author also
+      // declares it explicitly, codegen would emit a duplicate-key TS
+      // namespace and tsc would fail with TS2300. Catch the conflict
+      // at submit time so the diagnostic points at the IR rather than
+      // at compiled TS in a temp dir.
+      if (s.outputs.some((p) => p.name === "__gate_feedback__")) {
+        diagnostics.push({
+          code: "GATE_OUTPUT_RESERVED",
+          message:
+            `Gate stage '${s.name}' explicitly declares output port '__gate_feedback__', ` +
+            `but the kernel synthesizes that port on every gate stage. ` +
+            `Remove the explicit declaration; the wire from '${s.name}.__gate_feedback__' ` +
+            `still works without it.`,
+          context: { stage: s.name, port: "__gate_feedback__" },
+        });
+      }
       const routes = s.config.routing.routes;
       for (const [answer, rawTarget] of Object.entries(routes)) {
         // rawTarget may be a single stage name or an array of stage names

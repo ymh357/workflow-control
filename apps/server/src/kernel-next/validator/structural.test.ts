@@ -224,6 +224,33 @@ describe("structural validator", () => {
     expect(validateStructural(ir)).toEqual({ ok: true });
   });
 
+  // B4.F29 regression — gate stage author explicitly declaring the
+  // kernel-synthesized `__gate_feedback__` output would cause codegen
+  // to emit a duplicate-key TS namespace; reject at submit time.
+  it("rejects a gate stage explicitly declaring __gate_feedback__ output", () => {
+    const ir: PipelineIR = {
+      name: "t-gate-reserved",
+      stages: [
+        { name: "A", type: "agent", inputs: [],
+          outputs: [{ name: "x", type: "number" }], config: { promptRef: "p" } },
+        { name: "G", type: "gate",
+          inputs: [{ name: "x", type: "number" }],
+          outputs: [{ name: "__gate_feedback__", type: "string" }],
+          config: {
+            question: { text: "?", options: [{ value: "yes" }] },
+            routing: { routes: { yes: "A" } },
+          } },
+      ],
+      wires: [{ from: { stage: "A", port: "x" }, to: { stage: "G", port: "x" } }],
+    };
+    const r = validateStructural(ir);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      const codes = r.diagnostics.map((d) => d.code);
+      expect(codes).toContain("GATE_OUTPUT_RESERVED");
+    }
+  });
+
   // B4.F22 regression — a fanout-input port that is declared but has no
   // inbound wire would block forever at runtime; structural validator
   // must reject this at submit time.

@@ -476,6 +476,10 @@ export const DiagnosticSchema = z.object({
     // so the runtime would wait forever for an array that nothing
     // produces. Caught at submit time as a structural diagnostic.
     "FANOUT_INPUT_NOT_WIRED",
+    // B4.F29: gate stage explicitly declares the kernel-synthesized
+    // `__gate_feedback__` output port, which would produce a
+    // duplicate-key TS namespace at codegen time.
+    "GATE_OUTPUT_RESERVED",
     // A1.2 additions — gate lifecycle
     "GATE_NOT_FOUND",
     "GATE_ALREADY_ANSWERED",
