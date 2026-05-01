@@ -154,13 +154,6 @@ export function validateStructural(
   }
 
   // --- Stage-type specific rules (gate / fanout) ---
-  // Track gate target → list of gates that route to it, so we can reject
-  // targets shared across gates (F6 / concern C3). A stage that is a
-  // routing target for two different gates would be simultaneously
-  // authorized by one gate's answer and skipped by the other's, and the
-  // runtime has no defined resolution.
-  const gateTargetOwners = new Map<string, string[]>();
-
   for (const s of ir.stages) {
     if (s.type === "gate") {
       // zod-level schema already forbids `fanout` on GateStage, but patch
@@ -185,16 +178,6 @@ export function validateStructural(
                 `but '${target}' is not declared in stages[].`,
               context: { stage: s.name, answer, target },
             });
-          }
-          // Record owner for the cross-gate conflict check below. A single
-          // gate may legitimately route multiple answers to the same target
-          // (e.g. yes → SUMMARY, confirm → SUMMARY); that's not a conflict,
-          // so we de-dupe per-gate before adding.
-          const owners = gateTargetOwners.get(target);
-          if (!owners) {
-            gateTargetOwners.set(target, [s.name]);
-          } else if (!owners.includes(s.name)) {
-            owners.push(s.name);
           }
         }
       }
@@ -277,8 +260,11 @@ export function validateStructural(
   // Forcing single-owner would require collapsing all gates into one
   // monolithic review gate, throwing away the per-layer feedback loop.
   // This rule is therefore lifted. The sharing pattern is now
-  // first-class supported.
-  void gateTargetOwners; // retained for potential future diagnostics
+  // first-class supported. (B4.F20: gateTargetOwners map removed —
+  // dead code with no read sites, only kept by `void` to suppress
+  // an unused-variable warning. If a future diagnostic needs the
+  // owners-by-target view, rebuild it locally rather than carrying
+  // it across the gap.)
 
   // --- Bug 28: multi-target rollback coherence ---
   //
