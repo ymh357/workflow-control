@@ -15,7 +15,7 @@
 // runner → broadcaster → HTTP route → dashboard works; polished UX
 // is a later concern.
 
-import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { GateCard, type GateContextResponse } from "../../../components/gate-card";
@@ -178,7 +178,13 @@ export default function KernelNextTaskPage() {
   const [finalResult, setFinalResult] = useState<RunFinalPayload | null>(null);
   const [diagnostics, setDiagnostics] = useState<Diagnostic[]>([]);
   const [connected, setConnected] = useState(false);
-  const eventCountRef = useRef(0);
+  // Bug 67 (c12+ review): previously a useRef counter rendered in JSX
+  // never triggered re-renders; the displayed count stayed stuck at 0
+  // (or the value at last render) until something else dirtied the
+  // component. SSE events fire in batches inside React's automatic
+  // batching boundary, so using a plain state counter does not produce
+  // a render storm — we get one render per macrotask flush.
+  const [eventCount, setEventCount] = useState(0);
   const [pendingGateIds, setPendingGateIds] = useState<string[]>([]);
   const [gateContexts, setGateContexts] = useState<Map<string, GateContextResponse>>(new Map());
   const [cost, setCost] = useState<TaskCostUpdatePayload | null>(null);
@@ -340,7 +346,7 @@ export default function KernelNextTaskPage() {
   }, []);
 
   const handleEvent = useCallback((event: KernelEventEnvelope) => {
-    eventCountRef.current += 1;
+    setEventCount((n) => n + 1);
     switch (event.type) {
       case "task_state": {
         const d = event.data as { state: TopLevelState };
@@ -649,11 +655,24 @@ export default function KernelNextTaskPage() {
         ) {
           setTopState(body.status);
         }
-        if (body.status === "gated" && Array.isArray(body.pending)) {
-          setPendingGateIds(body.pending.map((g) => g.gateId));
-        } else {
-          setPendingGateIds([]);
-        }
+        // Bug 63 (c12+ review): de-dupe so an unchanged pending list
+        // (the common case across the 2s status poll) doesn't bump the
+        // array reference, which would re-fire the gate-context fetch
+        // effect every tick.
+        const nextIds =
+          body.status === "gated" && Array.isArray(body.pending)
+            ? body.pending.map((g) => g.gateId)
+            : [];
+        setPendingGateIds((prev) => {
+          if (prev.length === nextIds.length) {
+            let same = true;
+            for (let i = 0; i < prev.length; i++) {
+              if (prev[i] !== nextIds[i]) { same = false; break; }
+            }
+            if (same) return prev;
+          }
+          return nextIds;
+        });
       } catch {
         // network error — leave last known state and retry next tick
       }
@@ -670,26 +689,54 @@ export default function KernelNextTaskPage() {
   // B5: for every pending gateId we don't already have a context for,
   // fetch it once. Evict contexts whose gateId left pendingGateIds to
   // prevent unbounded growth on long-running tasks with many gates.
+  //
+  // Bug 63 (c12+ review): the original implementation listed
+  // `gateContexts` in deps so it could read `gateContexts.has(id)`
+  // before firing a fetch. But the effect body also called
+  // `setGateContexts(...)` (both for eviction and for storing fetched
+  // entries) — every state write re-fired the effect, which aborted
+  // the in-flight fetch and started a new one. The visible symptom was
+  // a "loading…" stutter on the gate panel as fetches were
+  // serially aborted. Fix: keep deps to `pendingGateIds` only, and
+  // use the functional setState callback to read latest gateContexts
+  // at the moment of decision (no closure-over-stale-ref).
+  //
+  // Eviction is kept inside the same effect because the eviction trigger
+  // is the same dep (`pendingGateIds` membership change); splitting it
+  // into a separate effect would not buy anything since both effects
+  // would still observe the same change tick.
   useEffect(() => {
     if (pendingGateIds.length === 0) {
       setGateContexts((prev) => (prev.size === 0 ? prev : new Map()));
       return;
     }
     const controller = new AbortController();
+    const pendingSet = new Set(pendingGateIds);
 
-    // Evict stale entries.
+    // Evict stale entries (gateIds that left pendingGateIds).
     setGateContexts((prev) => {
       let changed = false;
       const next = new Map(prev);
       for (const key of next.keys()) {
-        if (!pendingGateIds.includes(key)) { next.delete(key); changed = true; }
+        if (!pendingSet.has(key)) { next.delete(key); changed = true; }
       }
       return changed ? next : prev;
     });
 
-    // Fetch missing entries.
+    // Fetch missing entries. We can't read `gateContexts.has(id)` here
+    // (would require listing it as a dep, which causes the loop). The
+    // fetch starts unconditionally; the response handler uses functional
+    // setState to skip the write if the entry materialised meanwhile
+    // (e.g. a prior in-flight fetch we are not aware of, or React
+    // strict-mode double-invoke).
+    //
+    // Worst case: when a new gateId arrives, every existing pending
+    // entry's already-resolved context triggers a fresh fetch. We
+    // tolerate that — it's a few extra network round-trips per gate
+    // arrival, not a render-storm. The `if (prev.has(id)) return prev`
+    // inside the setState short-circuits the actual write so React
+    // bails on the re-render.
     for (const id of pendingGateIds) {
-      if (gateContexts.has(id)) continue;
       void (async () => {
         try {
           const res = await fetch(
@@ -711,7 +758,7 @@ export default function KernelNextTaskPage() {
       })();
     }
     return () => controller.abort();
-  }, [pendingGateIds, gateContexts]);
+  }, [pendingGateIds]);
 
   const answerGate = useCallback(async (gateId: string, answer: string, comment: string): Promise<{ ok: true } | { ok: false; error: string }> => {
     try {
@@ -783,7 +830,7 @@ export default function KernelNextTaskPage() {
             stream {connected ? "open" : "closed"}
           </span>
           <span>·</span>
-          <span>{eventCountRef.current} events</span>
+          <span>{eventCount} events</span>
           <span>·</span>
           <span>
             state:{" "}
@@ -810,7 +857,20 @@ export default function KernelNextTaskPage() {
         </div>
       </header>
 
-      {taskId && <SecretGatePanel taskId={taskId} />}
+      {taskId && (
+        <SecretGatePanel
+          taskId={taskId}
+          // Bug 65: stop polling /secrets once the task is in a
+          // terminal state — it can never re-enter secret_pending, and
+          // unbounded polling costs an HTTP RT every 5s per open tab.
+          enabled={
+            topState !== "completed"
+            && topState !== "failed"
+            && topState !== "cancelled"
+            && topState !== "orphaned"
+          }
+        />
+      )}
 
       {seedRows.length > 0 && (
         <section className="mb-6">

@@ -17,7 +17,19 @@ import { Button } from "../../components/ui/button";
 import { Select } from "../../components/ui/input";
 import { StatusPill } from "../../components/ui/status-pill";
 
-type TaskStatus = "running" | "gated" | "completed" | "failed" | "cancelled" | "orphaned";
+// Bug 64-web (c12+ review): the server emits `secret_pending` whenever
+// a stage is parked on the F17 secret-gate. Pre-fix this status was
+// excluded here, so list-page status filtering / pill rendering / count
+// for secret-paused tasks silently fell into undefined paths (e.g. the
+// StatusPill defaulted to a no-op). Wire it into the union explicitly.
+type TaskStatus =
+  | "running"
+  | "gated"
+  | "secret_pending"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "orphaned";
 
 interface TaskRow {
   taskId: string;
@@ -131,7 +143,8 @@ export default function TaskListPage() {
 
   const statusCounts = useMemo(() => {
     const counts: Record<TaskStatus, number> & { total: number } = {
-      running: 0, gated: 0, completed: 0, failed: 0, cancelled: 0, orphaned: 0, total: 0,
+      running: 0, gated: 0, secret_pending: 0,
+      completed: 0, failed: 0, cancelled: 0, orphaned: 0, total: 0,
     };
     for (const t of tasks ?? []) {
       counts[t.status] += 1;
@@ -150,6 +163,7 @@ export default function TaskListPage() {
               {statusCounts.total} total
               {statusCounts.running > 0 && ` · ${statusCounts.running} running`}
               {statusCounts.gated > 0 && ` · ${statusCounts.gated} gated`}
+              {statusCounts.secret_pending > 0 && ` · ${statusCounts.secret_pending} secret-paused`}
               {statusCounts.failed > 0 && ` · ${statusCounts.failed} failed`}
             </span>
           )}
@@ -164,6 +178,7 @@ export default function TaskListPage() {
             <option value="">all statuses</option>
             <option value="running">running</option>
             <option value="gated">gated</option>
+            <option value="secret_pending">secret_pending</option>
             <option value="completed">completed</option>
             <option value="failed">failed</option>
             <option value="cancelled">cancelled</option>

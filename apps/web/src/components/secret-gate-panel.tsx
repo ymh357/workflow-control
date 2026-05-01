@@ -17,6 +17,16 @@ interface PendingSecretGate {
 
 interface SecretGatePanelProps {
   taskId: string;
+  /**
+   * Bug 65 (c12+ review): when set to false, the panel renders null
+   * AND skips its 5-second polling effect. Callers should pass false
+   * once the task reaches a terminal state (completed / failed /
+   * cancelled / orphaned) so we don't burn an HTTP request every 5s
+   * on a task that can never re-enter `secret_pending`. Default true
+   * preserves the original behaviour for callers that haven't been
+   * updated yet.
+   */
+  enabled?: boolean;
   /** Called after secrets are accepted so the parent can refetch. */
   onResolved?: () => void;
 }
@@ -29,7 +39,7 @@ interface SecretGatePanelProps {
  *
  * 2026-04-27 B4.
  */
-export const SecretGatePanel = ({ taskId, onResolved }: SecretGatePanelProps) => {
+export const SecretGatePanel = ({ taskId, enabled = true, onResolved }: SecretGatePanelProps) => {
   const toast = useToast();
   const [pending, setPending] = useState<PendingSecretGate[] | null>(null);
   const [values, setValues] = useState<Record<string, string>>({});
@@ -50,11 +60,18 @@ export const SecretGatePanel = ({ taskId, onResolved }: SecretGatePanelProps) =>
   };
 
   useEffect(() => {
+    if (!enabled) {
+      // Bug 65 — clear stale state and skip polling. We also reset
+      // `pending` to [] so the early return `pending === null` doesn't
+      // briefly flicker the panel back during a state transition.
+      setPending([]);
+      return;
+    }
     void refresh();
     const id = setInterval(() => void refresh(), 5_000);
     return () => clearInterval(id);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskId]);
+  }, [taskId, enabled]);
 
   useEffect(() => {
     if (!pending || pending.length === 0) return;

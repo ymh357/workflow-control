@@ -3,6 +3,7 @@ import { Badge } from "./badge";
 type Status =
   | "running"
   | "gated"
+  | "secret_pending"
   | "completed"
   | "failed"
   | "cancelled"
@@ -23,6 +24,7 @@ const statusVariant = (
       return "info";
     case "gated":
     case "pending":
+    case "secret_pending":
       return "warning";
     case "completed":
       return "success";
