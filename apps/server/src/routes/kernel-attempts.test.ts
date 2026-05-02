@@ -157,4 +157,63 @@ describe("GET /api/kernel/tasks/:taskId/attempts", () => {
     expect(body.attempts[0]!.attempt_id).toBe("full-row");
     expect(body.attempts[0]!.status).toBe("error");
   });
+
+  // Bug 14 (dogfood 2026-05-02): the API used to elide `kind` and
+  // `fanout_element_idx`. Dashboards (and remote callers) couldn't
+  // tell a fanout_element row apart from a regular row even though
+  // the DB had the data.
+  it("exposes kind + fanout_element_idx for fanout rows", async () => {
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+        started_at, ended_at, status, kind, fanout_element_idx)
+       VALUES (?, ?, 'v-test', ?, ?, ?, ?, ?, ?, ?)`,
+    ).run("agg-1", "tF", "stageA", 0, 1000, 2000, "success", "fanout_aggregate", null);
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+        started_at, ended_at, status, kind, fanout_element_idx)
+       VALUES (?, ?, 'v-test', ?, ?, ?, ?, ?, ?, ?)`,
+    ).run("elem-0", "tF", "stageA", 1, 1100, 1500, "success", "fanout_element", 0);
+    db.prepare(
+      `INSERT INTO stage_attempts
+       (attempt_id, task_id, version_hash, stage_name, attempt_idx,
+        started_at, ended_at, status, kind, fanout_element_idx)
+       VALUES (?, ?, 'v-test', ?, ?, ?, ?, ?, ?, ?)`,
+    ).run("elem-1", "tF", "stageA", 2, 1200, 1600, "success", "fanout_element", 1);
+
+    const res = await buildApp().fetch(
+      new Request("http://t/api/kernel/tasks/tF/attempts"),
+    );
+    const body = await res.json() as {
+      attempts: Array<{
+        attempt_id: string;
+        kind: string;
+        fanout_element_idx: number | null;
+      }>;
+    };
+    expect(body.attempts).toHaveLength(3);
+    const byId = new Map(body.attempts.map((a) => [a.attempt_id, a]));
+    expect(byId.get("agg-1")!.kind).toBe("fanout_aggregate");
+    expect(byId.get("agg-1")!.fanout_element_idx).toBe(null);
+    expect(byId.get("elem-0")!.kind).toBe("fanout_element");
+    expect(byId.get("elem-0")!.fanout_element_idx).toBe(0);
+    expect(byId.get("elem-1")!.kind).toBe("fanout_element");
+    expect(byId.get("elem-1")!.fanout_element_idx).toBe(1);
+  });
+
+  it("returns kind='regular' (the default) for non-fanout rows", async () => {
+    insertAttempt(db, {
+      attemptId: "regular-row", taskId: "tR", stageName: "s1", attemptIdx: 1,
+      startedAt: 100, endedAt: 200, status: "success",
+    });
+    const res = await buildApp().fetch(
+      new Request("http://t/api/kernel/tasks/tR/attempts"),
+    );
+    const body = await res.json() as {
+      attempts: Array<{ kind: string; fanout_element_idx: number | null }>;
+    };
+    expect(body.attempts[0]!.kind).toBe("regular");
+    expect(body.attempts[0]!.fanout_element_idx).toBe(null);
+  });
 });

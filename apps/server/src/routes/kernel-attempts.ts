@@ -22,6 +22,14 @@ export interface AttemptRow {
   started_at: number;
   ended_at: number | null;
   duration_ms: number | null;
+  // Bug 14 (dogfood 2026-05-02): pre-fix the attempts API didn't
+  // surface `kind` or `fanout_element_idx`, so the dashboard
+  // (and remote callers) couldn't tell a fanout_element row apart
+  // from a regular row, nor identify which element index it
+  // represented. Both fields exist on stage_attempts and are
+  // populated correctly; this just exposes them.
+  kind: string;
+  fanout_element_idx: number | null;
 }
 
 export const kernelAttemptsRoute = new Hono();
@@ -29,7 +37,8 @@ export const kernelAttemptsRoute = new Hono();
 kernelAttemptsRoute.get("/kernel/tasks/:taskId/attempts", (c) => {
   const taskId = c.req.param("taskId");
   const rows = getKernelNextDb().prepare(
-    `SELECT attempt_id, stage_name, attempt_idx, status, started_at, ended_at
+    `SELECT attempt_id, stage_name, attempt_idx, status, started_at, ended_at,
+            kind, fanout_element_idx
        FROM stage_attempts
       WHERE task_id = ?
       ORDER BY started_at ASC`,
@@ -40,6 +49,8 @@ kernelAttemptsRoute.get("/kernel/tasks/:taskId/attempts", (c) => {
     status: string;
     started_at: number;
     ended_at: number | null;
+    kind: string;
+    fanout_element_idx: number | null;
   }>;
   const attempts: AttemptRow[] = rows.map((r) => ({
     ...r,
