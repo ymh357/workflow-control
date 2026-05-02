@@ -17,7 +17,7 @@ import { createActor, fromCallback } from "xstate";
 import type { DatabaseSync } from "node:sqlite";
 import { access } from "node:fs/promises";
 import { logger } from "../../lib/logger.js";
-import { compileIRToMachine } from "../compiler/ir-to-machine.js";
+import { compileIRToMachine, buildInitialPortValues } from "../compiler/ir-to-machine.js";
 import type {
   MachineContext, MachineEvent, StageMeta,
 } from "../compiler/ir-to-machine.js";
@@ -491,8 +491,15 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
   let outerStageMeta: Map<string, StageMeta> = new Map();
 
   // ---- Retry-preserved context (read by next compileIRToMachine) ----
+  // Bug 16 (dogfood 2026-05-02): use the compiler's
+  // buildInitialPortValues directly, which seeds gate-feedback empty
+  // strings + handles optional externalInputs. Pre-fix runner had its
+  // own buildInitialPortValuesRunner that ONLY seeded externalInputs,
+  // so resume hydration produced a persistentPortValues missing the
+  // gate-feedback seeds — and downstream gate-routed stages got stuck
+  // because their feedback wires couldn't deliver.
   let persistentPortValues: Record<string, unknown> =
-    buildInitialPortValuesRunner(opts.ir, opts.seedValues);
+    buildInitialPortValues(opts.ir, opts.seedValues);
   let persistentRetryCounts: Record<string, number> = {};
   let persistentGateAuthorized: string[] = [];
   let persistentGateSkipped: string[] = [];
@@ -2266,22 +2273,9 @@ function findStageSession(
   return r?.session_id;
 }
 
-// Local mirror of the compiler-side buildInitialPortValues. Having a
-// runner-local copy means we can prime `persistentPortValues` without
-// exporting compiler internals; values are identical to what
-// compileIRToMachine produces on the first compile.
-function buildInitialPortValuesRunner(
-  ir: PipelineIR,
-  seedValues: Record<string, unknown> | undefined,
-): Record<string, unknown> {
-  if (!seedValues || !ir.externalInputs || ir.externalInputs.length === 0) {
-    return {};
-  }
-  const out: Record<string, unknown> = {};
-  for (const port of ir.externalInputs) {
-    if (port.name in seedValues) {
-      out[`__external__.${port.name}`] = seedValues[port.name];
-    }
-  }
-  return out;
-}
+// Bug 16 (dogfood 2026-05-02): buildInitialPortValuesRunner removed —
+// runner now uses the compiler-exported buildInitialPortValues
+// directly, which seeds gate-feedback empty strings + handles
+// optional externalInputs. The previous local copy diverged from the
+// compiler version (no gate-feedback seeds, no optional fallback)
+// and caused gate-rejection-then-approve flows to wedge.

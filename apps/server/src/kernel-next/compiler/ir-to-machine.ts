@@ -335,7 +335,18 @@ export interface CompileOptions {
 // on seedValues so the resulting map is deterministic regardless of the
 // caller's object key order — this matters for the port_values row
 // persistence order in Task 1.8.
-function buildInitialPortValues(
+//
+// Bug 16 (dogfood 2026-05-02): exported so runner.ts can use it
+// instead of maintaining a divergent buildInitialPortValuesRunner
+// that omitted gate-feedback empty-string seeds. The omission caused
+// resume hydration to leave gate-feedback ports undefined in
+// persistentPortValues; downstream gate-routed stages with feedback
+// wires from un-yet-answered gates failed wireDelivers and their
+// waiting.on.GATE_ANSWERED transition guard returned false even
+// though their authorisation arrived. Result: actor wedged on
+// gate-rejection-then-approve flows because the rebuilt
+// persistentPortValues didn't carry the seed.
+export function buildInitialPortValues(
   ir: PipelineIR,
   seedValues: Record<string, unknown> | undefined,
 ): Record<string, unknown> {
