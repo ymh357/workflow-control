@@ -458,4 +458,188 @@ describe("runner — gate reject rollback", () => {
 
     db.close();
   }, 30_000);
+
+  // Bug 28 end-to-end: a gate's reject route may target multiple
+  // ancestors in a single answer (`reject: ["A", "B"]`). The compiler
+  // accepts this when every target is in G's transitive ancestor set
+  // (validator/structural.ts), and the runner must roll back ALL
+  // listed targets together — re-run each one, supersede the gate, and
+  // let G re-open with a fresh attempt. Prior tests covered only the
+  // single-target shape, so the multi-target reject path was not
+  // exercised at runner level. This test pins the contract.
+  it("multi-target reject (`reject: [A, B]`) re-runs both targets and supersedes the gate", async () => {
+    const db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    // Pipeline:
+    //   A (agent, no inputs) -> outA
+    //   B (agent, no inputs) -> outB
+    //   G (gate, inputs: A.outA + B.outB; approve->final, reject->[A,B])
+    //   final (agent)
+    //
+    // Both A and B are independent ancestors of G; rejecting with
+    // targets=[A,B] requires the runner to supersede + re-run BOTH
+    // and then re-open G with a fresh attempt.
+    const ir: PipelineIR = {
+      name: "rb-multi",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "outA", type: "string" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "B",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "outB", type: "string" }],
+          config: { promptRef: "p" },
+        },
+        {
+          name: "G",
+          type: "gate",
+          inputs: [
+            { name: "ia", type: "string" },
+            { name: "ib", type: "string" },
+          ],
+          outputs: [],
+          config: {
+            question: {
+              text: "approve or reject?",
+              options: [{ value: "approve" }, { value: "reject" }],
+            },
+            routing: { routes: { approve: "final", reject: ["A", "B"] } },
+          },
+        },
+        {
+          name: "final",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "done", type: "boolean" }],
+          config: { promptRef: "p" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "outA" }, to: { stage: "G", port: "ia" } },
+        { from: { source: "stage", stage: "B", port: "outB" }, to: { stage: "G", port: "ib" } },
+      ],
+    } as unknown as PipelineIR;
+
+    const vh = computeVersionHash(ir);
+    insertPipelineVersion(db, ir, { versionHash: vh, tsSource: "" });
+    const broadcaster = new KernelNextBroadcaster();
+
+    let aCalls = 0;
+    let bCalls = 0;
+    let finalCalls = 0;
+    const handlers: StageHandlerMap = {
+      A: () => {
+        aCalls++;
+        return { outA: `a-${aCalls}` };
+      },
+      B: () => {
+        bCalls++;
+        return { outB: `b-${bCalls}` };
+      },
+      final: () => {
+        finalCalls++;
+        return { done: true };
+      },
+    };
+
+    const rollbackEvents: Array<{ data: unknown }> = [];
+    broadcaster.subscribe("task-rb-multi", (ev) => {
+      if (ev.type === "stage_rolled_back") {
+        rollbackEvents.push({ data: ev.data });
+      }
+    });
+
+    const runPromise = runPipeline(
+      { db, ir, taskId: "task-rb-multi", versionHash: vh, handlers, broadcaster },
+      30_000,
+    );
+
+    // 1. First pass: A and B both run, G opens.
+    const firstGateId = await waitForOpenGate(db, "task-rb-multi", "G");
+    expect(aCalls).toBe(1);
+    expect(bCalls).toBe(1);
+    expect(finalCalls).toBe(0);
+
+    // 2. Reject with multi-target affectedStages = {A, B, G}.
+    //    The runner must roll back BOTH A and B, not just one.
+    const dispatcher = taskRegistry.get("task-rb-multi");
+    expect(dispatcher).toBeDefined();
+    dispatcher!.send({
+      type: "GATE_REJECTED",
+      gateId: firstGateId,
+      stageName: "G",
+      answer: "reject",
+      targetStage: ["A", "B"],
+      affectedStages: ["A", "B", "G"],
+    });
+
+    // 3. SSE event must reflect both targets in affectedStages.
+    const rbStart = Date.now();
+    while (rollbackEvents.length === 0 && Date.now() - rbStart < 5000) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(rollbackEvents).toHaveLength(1);
+    const rbData = rollbackEvents[0]!.data as {
+      fromGate: string;
+      toStage: string | string[];
+      affectedStages: string[];
+    };
+    expect(rbData.fromGate).toBe("G");
+    expect(new Set(rbData.affectedStages)).toEqual(new Set(["A", "B", "G"]));
+
+    // 4. After rebuild, BOTH A and B must re-run, and G must open as
+    //    a fresh gate row (different gate_id).
+    const secondGateId = await waitForOpenGate(db, "task-rb-multi", "G", firstGateId);
+    expect(secondGateId).not.toBe(firstGateId);
+    expect(aCalls).toBe(2);
+    expect(bCalls).toBe(2);
+    expect(finalCalls).toBe(0);
+
+    // 5. DB lineage: rollback preserves prior success rows (lineage
+    //    is intentionally retained — superseded is reserved for
+    //    hot-update migration, see handoff-dogfood-bug16.md). Both
+    //    A and B must therefore have TWO success rows: idx=1 from
+    //    the first pass and idx=2 from the rollback rerun.
+    const successByStage = db.prepare(
+      `SELECT stage_name, count(*) AS n FROM stage_attempts
+         WHERE task_id='task-rb-multi' AND status='success' AND kind='regular'
+         GROUP BY stage_name`,
+    ).all() as Array<{ stage_name: string; n: number }>;
+    const successCount = new Map(successByStage.map((r) => [r.stage_name, r.n]));
+    expect(successCount.get("A")).toBe(2);
+    expect(successCount.get("B")).toBe(2);
+
+    // The fresh attempt rows must carry attempt_idx=2; any failure to
+    // open a new attempt would manifest as missing idx=2 here.
+    const idx2Rows = db.prepare(
+      `SELECT stage_name FROM stage_attempts
+         WHERE task_id='task-rb-multi' AND attempt_idx=2 AND kind='regular'`,
+    ).all() as Array<{ stage_name: string }>;
+    const idx2Stages = new Set(idx2Rows.map((r) => r.stage_name));
+    expect(idx2Stages.has("A")).toBe(true);
+    expect(idx2Stages.has("B")).toBe(true);
+
+    // 6. Approve the second gate; pipeline runs `final` and completes.
+    dispatcher!.send({
+      type: "GATE_ANSWERED",
+      gateId: secondGateId,
+      stageName: "G",
+      answer: "approve",
+      targetStage: "final",
+    });
+
+    const result = await runPromise;
+    expect(result.finalState).toBe("completed");
+    expect(finalCalls).toBe(1);
+    expect(aCalls).toBe(2);
+    expect(bCalls).toBe(2);
+
+    db.close();
+  }, 30_000);
 });
