@@ -522,29 +522,71 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
     // leak the registry + activeTimer (the activeTimer is set up below
     // but emergencyCleanup is defensive — it null-checks).
     try {
+    // Bug 15 (dogfood 2026-05-02): for fanout stages, the rebuild
+    // logic must distinguish stage-level success (fanout_aggregate
+    // row exists) from element-level success (some fanout_element
+    // rows ran but no aggregate landed). Pre-fix used `SELECT DISTINCT
+    // stage_name` which included a fanout stage in finalizedStages
+    // as soon as ANY fanout_element row was status='success' —
+    // skipping the orchestrator's aggregate phase entirely on resume,
+    // and overwriting `tutorialAuthoring.slug` in portValues with
+    // the LAST element's single-string value (writeTutorialCache
+    // then fails with "input 'slugs' must be string[] (got string)").
+    //
+    // Mirrors the Bug 58 fix in orphan-reconciler.classifyOrphan but
+    // applied at the runner's rebuild path. Fanout stages are now
+    // only considered "done" when their kind='fanout_aggregate' row
+    // exists with status='success'. Element-only success is a
+    // partial state and the resumed runner re-enters the fanout
+    // stage so orchestrateFanoutStage's preservedByIdx skips the
+    // succeeded elements and only re-runs the missing/superseded
+    // indices, then writes the aggregate row.
+    const fanoutStageNames = new Set<string>();
+    for (const s of opts.ir.stages) {
+      if ((s.type === "agent" || s.type === "script") && (s as { fanout?: unknown }).fanout) {
+        fanoutStageNames.add(s.name);
+      }
+    }
     // 1. finalizedStages: every stage_attempt that is still status='success'
     //    for this task. Superseded stages (those the orchestrator just
-    //    marked) stay out so the retry loop re-invokes them.
+    //    marked) stay out so the retry loop re-invokes them. For fanout
+    //    stages, only count fanout_aggregate success — see Bug 15 above.
     const successRows = opts.db.prepare(
-      `SELECT DISTINCT stage_name FROM stage_attempts
+      `SELECT stage_name, kind FROM stage_attempts
        WHERE task_id = ? AND status = 'success'`,
-    ).all(opts.taskId) as Array<{ stage_name: string }>;
-    persistentFinalizedStages = successRows.map((r) => ({
-      name: r.stage_name,
+    ).all(opts.taskId) as Array<{ stage_name: string; kind: string }>;
+    const completedStageNames = new Set<string>();
+    for (const r of successRows) {
+      if (fanoutStageNames.has(r.stage_name)) {
+        if (r.kind === "fanout_aggregate") completedStageNames.add(r.stage_name);
+      } else {
+        completedStageNames.add(r.stage_name);
+      }
+    }
+    persistentFinalizedStages = [...completedStageNames].map((name) => ({
+      name,
       outcome: "done" as const,
     }));
-    // 2. portValues: every port_value row for a success stage of this
-    //    task. Stored in the machine-context shape `<stage>.<port>`.
+    // 2. portValues: every port_value row for a stage we now consider
+    //    completed (per the fanout-aware filter above). Stored in the
+    //    machine-context shape `<stage>.<port>`. For fanout stages we
+    //    only read aggregate rows; element rows are partial state and
+    //    feeding their per-element values into context would clobber
+    //    the array shape downstream.
     const portRows = opts.db.prepare(
-      `SELECT pv.stage_name, pv.port_name, pv.value_json
+      `SELECT pv.stage_name, pv.port_name, pv.value_json, sa.kind
        FROM port_values pv
        INNER JOIN stage_attempts sa ON pv.attempt_id = sa.attempt_id
        WHERE sa.task_id = ? AND sa.status = 'success'
        ORDER BY pv.written_at ASC`,
     ).all(opts.taskId) as Array<{
-      stage_name: string; port_name: string; value_json: string;
+      stage_name: string; port_name: string; value_json: string; kind: string;
     }>;
     for (const r of portRows) {
+      // Bug 15: drop fanout_element port writes during rebuild; only
+      // the fanout_aggregate row carries the aggregated array shape
+      // downstream stages depend on.
+      if (fanoutStageNames.has(r.stage_name) && r.kind !== "fanout_aggregate") continue;
       try {
         persistentPortValues[`${r.stage_name}.${r.port_name}`] = JSON.parse(r.value_json);
       } catch {
