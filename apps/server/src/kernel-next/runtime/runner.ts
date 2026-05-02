@@ -871,6 +871,27 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
             return false;
           }),
         );
+        // Bug 16 (dogfood-5 2026-05-02): the filter above drops
+        // `__gate_feedback__` entries for every affected gate
+        // EXCEPT the rejected one (fromGate). But the compiler seeds
+        // every gate's `__gate_feedback__` with empty string at
+        // first compile so downstream wires reading them can resolve
+        // before the gate fires. Without this seed, gate-routed
+        // stages whose inbound includes a feedback wire from an
+        // affected (i.e. dropped) gate fail wireDelivers and their
+        // GATE_ANSWERED transition guard returns false even when
+        // the gate they're routed from authorises them. The actor
+        // then wedges in `waiting` indefinitely.
+        //
+        // Re-seed empty-string defaults for every affected gate's
+        // feedback port (skipping fromGate which keeps the user's
+        // rejection comment).
+        for (const stage of opts.ir.stages) {
+          if (stage.type !== "gate") continue;
+          if (!affected.has(stage.name)) continue;
+          if (stage.name === fromGate) continue;
+          persistentPortValues[`${stage.name}.__gate_feedback__`] = "";
+        }
         // finalizedStages: drop entries for every affected stage so they
         // re-enter `waiting` on the rebuilt actor instead of short-
         // circuiting through the finalized-short-circuit branches.
@@ -1000,6 +1021,17 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
           return !toReset.has(stageName ?? "");
         }),
       );
+      // Bug 16 (dogfood 2026-05-02): re-seed `__gate_feedback__`
+      // empty string for every reset gate, mirroring compiler's
+      // buildInitialPortValues. Without this, downstream stages
+      // whose inbound includes a feedback wire from a reset gate
+      // fail wireDelivers when the rebuilt actor tries to advance
+      // past a successful gate answer.
+      for (const stage of opts.ir.stages) {
+        if (stage.type !== "gate") continue;
+        if (!toReset.has(stage.name)) continue;
+        persistentPortValues[`${stage.name}.__gate_feedback__`] = "";
+      }
 
       // Seed from the current actor's finalizedStages, then drop reset stages.
       persistentFinalizedStages = retryCtx.finalizedStages.filter(
