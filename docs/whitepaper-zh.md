@@ -64,6 +64,12 @@ roadmap 明确写了非目标（CLAUDE.md "What this project is not"）：
 跨用户车队的 DB 多版本迁移，以及通用编排器无法回避的绝大多数运维
 复杂度。
 
+**执行单用户、共享跨用户**。这个区别很重要：每个 Task 只跑在一个
+用户的本地 SQLite + 文件系统上，但 Pipeline、skill、fragment、hook、
+script、MCP server entry 都可以**发布**到一个共享 registry（见 §4.1
+`/registry`），被另一个用户安装。边界是"不存在两个用户共享同一个
+跑着的任务或 in-flight state"，而不是"不存在跨用户 artefact 流动"。
+
 ### 1.3 三个 surface
 
 同一个内核被三个独立 surface 共用：
@@ -421,51 +427,141 @@ server boot ─► bootResumability:
 
 ### 4.2 MCP surface
 
-外部 Claude 会话通过 MCP 工具访问内核。catalog（`/api/mcp` 上 `tools/list` 提取）：
+外部 Claude 会话通过 MCP 工具访问内核。external surface 暴露 **34 个
+工具**（`/api/mcp` 上 `tools/list` 提取），按域分组。还有一个 runner
+内部专用工具（`write_port`）从不暴露给外部 surface：
+
+**Pipeline 创作与执行**
 
 ```
   submit_pipeline(ir, prompts)            — 注册新 IR
-  validate_pipeline(ir)                   — dry-run 校验
-  describe_pipeline({ taskId | versionHash }) — IR + prompts
-  propose_pipeline_change({...})          — 发出一个提议
-  migrate_task(taskId, proposalId)        — 热更新
-  run_pipeline({ name | versionHash, ... }) — 启动任务
-  cancel_task(taskId, reason?)            — INTERRUPT + finalise
+  validate_pipeline(ir)                   — dry-run 校验，不持久化
+  describe_pipeline({ taskId | versionHash }) — 取一个版本的 IR + prompts
+  get_pipeline_definition(name)           — 从 registry / fs 取
+  run_pipeline({ name | versionHash, ... }) — 启动一个任务
+  start_pipeline_generator(taskDescription) — 便捷启动入口
+  wait_pipeline_result(taskId, ...)       — 阻塞到终态
+```
+
+**任务控制与观察**
+
+```
   get_task_status(taskId)                 — 完整状态快照
-  list_pipelines() / list_tasks()
+  cancel_task(taskId, reason?)            — INTERRUPT + finalise
+  retry_task(taskId, fromStage?)          — 从最早失败点重试
+  wait_for_task_event(taskId, predicate)  — 异步事件等待
+  list_gates(taskId?)                     — 已开 / 已答 gate
   answer_gate(gateId, answer, comment?)   — 回答人工 gate
   provide_task_secrets(taskId, secrets, persistAs?) — 解锁 secret_pending
-  read_port(taskId, stage, port)          — 查询 lineage
-  query_lineage(taskId, ...)              — 审计 / 解释
+```
+
+**热更新**
+
+```
+  propose_pipeline_change(...)            — 发出一个提议
+  dry_run_proposal(...)                   — 看 diff/impact 但不落地
+  list_proposals(status?)                 — pending / approved / rejected
+  approve_proposal(proposalId)
+  reject_proposal(proposalId, reason?)
+  migrate_task(taskId, proposalId)        — 把 proposal 应用到运行中任务
+  rollback_hot_update(taskId, toVersion)  — 撤销一次成功 migration
+  update_registry_pipeline(...)           — bump 已注册 pipeline 版本
+  query_hot_update_stats(...)             — Stage 5E 聚合统计
+```
+
+**Lineage 与调试**
+
+```
+  read_port(taskId, stage, port)          — 读最新 port_value
+  query_lineage(taskId, ...)              — 完整审计 / 解释链
+  diff_runs(taskA, taskB)                 — side-by-side diff
+  compare_runs(...)                       — 多轴对比
+  replay_stage(taskId, stage)             — 单 stage 隔离重跑
+  dry_run_stage(...)                      — 用合成输入试一个 stage
+  propose_pipeline_fix(taskId, failedStage) — 失败驱动的 modifier 快捷入口
+```
+
+**Registry / catalog**
+
+```
+  recommend_mcp_servers(query)            — Phase-1 supply-chain helper
+  get_mcp_catalog_entry(serverName)       — 按名取 manifest
+  add_mcp_catalog_entry(entry)            — 本地 catalog 修改
+```
+
+**管理**
+
+```
   prune_records({ taskId | olderThan })   — DB 清理
-  ... + write_port (runner-internal)
+```
+
+**Runner 内部（不暴露给外部 surface）**
+
+```
+  write_port(attemptId, port, value)      — 内核通过 PortRuntime 写输出
 ```
 
 每个工具返回 `{ ok: true, ... } | { ok: false, diagnostics: [...] }`
 形状，code 结构化——跟 REST API 一样的 envelope。
 
+external (34) vs internal (1) 的拆分由 `kernel-next/mcp/server.ts`
+的 `createKernelMcp({ surface })` 强制——HTTP `/api/mcp` 默认
+`surface: "external"`，而内核自己的 runner 给每个 agent attempt
+启一个 combined-surface server 暴露 `write_port`。
+
 ### 4.3 关键 DB 表（注释版）
+
+`kernel-next.db` 共 20 张应用表，按用途分组：
+
+**Pipeline 定义（按内容寻址）**
 
 | 表 | 存的是 |
 |---|---|
 | `pipeline_versions` | `(version_hash, pipeline_name, ir_json, ts_source, parent_hash, created_at)` —— 每条提交过的 IR |
-| `pipeline_prompt_refs` + `prompt_contents` | promptRef → 内容映射，按内容寻址 |
+| `stages` | `ir_json.stages` 的归一化镜像，每 (version_hash, stage_name) 一行；让 lineage 查询不必解 JSON 就能 join |
+| `ports` | stage 输入/输出端口的归一化镜像，每 (version_hash, stage_name, port_name, direction) 一行 |
+| `wires` | `ir_json.wires` 的归一化镜像，每 wire 一行；反向查询（"谁读 X？"）变成 O(index) |
+| `prompt_contents` | 内容寻址 prompt 正文存储（每个独立 content_hash 一行） |
+| `pipeline_prompt_refs` | (version_hash, promptRef) → content_hash 映射 |
+| `pipeline_proposals` | `(proposal_id, status, base_version, proposed_version, patch_json, ...)` |
+
+**任务运行时状态**
+
+| 表 | 存的是 |
+|---|---|
 | `stage_attempts` | 一行一次 attempt：`(attempt_id, task_id, version_hash, stage_name, attempt_idx, status, kind, fanout_element_idx, started_at, ended_at)` |
 | `port_values` | Lineage 行：`(value_id, attempt_id, stage_name, port_name, direction, value_json, written_at)` |
 | `gate_queue` | gate-stage 进入时一行：`(gate_id, task_id, attempt_id, question_json, answer, answered_at)` |
+| `secret_gate_queue` | 单任务 secret-pending 状态：`(secret_gate_id, task_id, stage_name, required_keys, resolved_at)` |
 | `task_finals` | 终态：`(task_id, version_hash, final_state, reason, detail, ended_at)` |
-| `hot_update_events` | 审计：`(event_id, task_id, from_version, to_version, status, started_at, finished_at, diagnostic_json)` |
 | `task_worktrees` | Worktree 拥有关系：`(task_id, workdir, status, allocated_at)` |
 | `task_env_values` | 明文 env values；任务终结后自动删除（P3.6） |
-| `secret_gate_queue` | 单任务 secret-pending 状态：`(secret_gate_id, task_id, stage_name, required_keys, resolved_at)` |
-| `mcp_servers` + `mcp_secrets` | MCP catalog，加密 at rest |
-| `migration_hints` | Hot-update 后继 attempt 的 advisory diff（B9-A） |
-| `pipeline_proposals` | `(proposal_id, status, base_version, proposed_version, patch_json, ...)` |
-| `agent_execution_details` | 单 agent attempt 的 token 用量、cost、compact 事件、cache 统计 |
-| `script_execution_details` | 单 script attempt 的终止原因、错误、运行时长 |
 | `stage_checkpoints` | B9 reset 用的 stage 前 git SHA |
 
-完整 schema：`apps/server/src/kernel-next/ir/sql.ts`。
+**Per-attempt sidecar 数据**
+
+| 表 | 存的是 |
+|---|---|
+| `agent_execution_details` | 单 agent attempt 的 token 用量、cost、compact 事件、cache 统计 |
+| `script_execution_details` | 单 script attempt 的终止原因、错误、运行时长 |
+
+**Hot-update 审计与 advisory**
+
+| 表 | 存的是 |
+|---|---|
+| `hot_update_events` | 审计：`(event_id, task_id, from_version, to_version, status, started_at, finished_at, diagnostic_json)` |
+| `migration_hints` | Hot-update 后继 attempt 的 advisory diff（B9-A） |
+
+**跨任务缓存与供应链**
+
+| 表 | 存的是 |
+|---|---|
+| `tutorial_cache` | 跨任务 tutorial 复用（D1）：键是 (subject_domain, slug)；像 web3-tech-research 这类 pipeline 在重生成昂贵 tutorial 前先读它 |
+| `mcp_servers` + `mcp_secrets` | MCP catalog，加密 at rest |
+
+完整 schema：`apps/server/src/kernel-next/ir/sql.ts`（约 600 行，含
+索引和 schema-evolution clean-slate 迁移逻辑）。`stages`/`ports`/`wires`
+镜像表跟 `pipeline_versions` 在同一个事务里原子写入。
 
 ---
 
@@ -503,9 +599,14 @@ server boot ─► bootResumability:
 3. **还没有 prompt cache 策略**。Prompt caching 在 SDK 层工作（1.18
    - 1.19 修订观测到真实流水线 60-91% cache 命中），但我们**不依据
    它做规划**——没有"single-session 决策门"用 cache 数据来选段形状。
-4. **手写流水线基本不工作**。产品假设 AI 写 IR（通过 pipeline-generator）。
-   人直接写 IR 会跟严苛的 validator 死磕；让 pipeline-generator 写出
-   好 IR 的那些 prompt 本身就是产品的大半价值。
+4. **手写 IR 受支持但很麻烦**。dogfood-13 阶段的两条 pipeline
+   （dogfood-11 多目标 rollback、dogfood-12 fanout）就是手工写
+   IR 通过 `submit_pipeline` over MCP 提交、端到端跑通的——所以契
+   约本身没坏。但 validator 对 port-type 字符串、wire 形状、gate-
+   routing 目标的祖先关系都查得很严，人手写 IR 会反复触发那些
+   guardrail。pipeline-generator 路径的存在就是让人只用自然语言
+   描述任务；驱动它的那些 prompt 本身就是产品的大半价值。任何
+   non-trivial pipeline 都建议走 generator。
 
 ---
 

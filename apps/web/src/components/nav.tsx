@@ -18,13 +18,21 @@ const Nav = () => {
   };
 
   // 2026-04-27 B1: explicit "/" launcher entry. Tasks remains active for
-  // anything under /kernel-next that is not the pipelines or proposals
-  // subtrees (covers /kernel-next list + per-task detail pages).
+  // anything under /kernel-next that is not one of the dedicated
+  // sub-routes (pipelines / proposals / mcp-catalog).
+  // 2026-05-03 (whitepaper review A.1): added mcp-catalog as a top-level
+  // entry — the page existed but was unreachable from the nav, users had
+  // to memorise the URL. Attempts pages (/kernel-next/attempts/[id]) stay
+  // under inTasks because they are entered via deep-link from task detail,
+  // not as an independent top-level surface.
   const inLauncher = pathname === "/";
   const inPipelines = pathname.startsWith("/kernel-next/pipelines");
   const inProposals = pathname.startsWith("/kernel-next/proposals");
+  const inMcpCatalog = pathname.startsWith("/kernel-next/mcp-catalog");
   const inRegistry = pathname.startsWith("/registry");
-  const inTasks = pathname.startsWith("/kernel-next") && !inPipelines && !inProposals;
+  const inTasks =
+    pathname.startsWith("/kernel-next")
+    && !inPipelines && !inProposals && !inMcpCatalog;
 
   const linkClass = (active: boolean) =>
     active
@@ -58,6 +66,9 @@ const Nav = () => {
             {pendingCount}
           </span>
         )}
+      </Link>
+      <Link href="/kernel-next/mcp-catalog" className={linkClass(inMcpCatalog)}>
+        MCP catalog
       </Link>
       <Link href="/registry" className={linkClass(inRegistry)}>
         Registry

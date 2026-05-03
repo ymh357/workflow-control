@@ -78,6 +78,14 @@ authentication, network partitioning, multi-version DB migrations
 across user fleets, and most operational complexity that
 general-purpose orchestrators cannot avoid.
 
+**Execution is single-user; sharing is cross-user.** The
+distinction matters: every Task runs against one user's local
+SQLite + filesystem, but Pipelines, skills, fragments, hooks,
+scripts, and MCP server entries can be **published** to a shared
+registry (see §4.1 `/registry`) and installed by another user. The
+boundary is "no two users share a running task or in-flight state",
+not "no cross-user artefact movement".
+
 ### 1.3 Surfaces
 
 The same kernel is reachable from three independent surfaces:
@@ -461,51 +469,137 @@ Three crucial invariants this preserves:
 ### 4.2 The MCP surface
 
 External Claude sessions reach the kernel through MCP tools. The
-catalog (extracted via `tools/list` on `/api/mcp`):
+external surface exposes **34 tools** (extracted via `tools/list` on
+`/api/mcp`), grouped by domain. One additional tool (`write_port`)
+is runner-internal only and never reaches external surfaces:
 
+**Pipeline authoring & execution**
 ```
   submit_pipeline(ir, prompts)            — register a new IR
-  validate_pipeline(ir)                   — dry-run validation
-  describe_pipeline({ taskId | versionHash }) — IR + prompts
-  propose_pipeline_change({...})          — emit a proposal
-  migrate_task(taskId, proposalId)        — hot-update
+  validate_pipeline(ir)                   — dry-run validation, no persist
+  describe_pipeline({ taskId | versionHash }) — IR + prompts for a version
+  get_pipeline_definition(name)           — fetch from registry / fs
   run_pipeline({ name | versionHash, ... }) — start a task
-  cancel_task(taskId, reason?)            — INTERRUPT + finalise
+  start_pipeline_generator(taskDescription) — convenience launch
+  wait_pipeline_result(taskId, ...)       — block until terminal
+```
+
+**Task control & observation**
+```
   get_task_status(taskId)                 — full state snapshot
-  list_pipelines() / list_tasks()
+  cancel_task(taskId, reason?)            — INTERRUPT + finalise
+  retry_task(taskId, fromStage?)          — retry from earliest failure
+  wait_for_task_event(taskId, predicate)  — async event-based wait
+  list_gates(taskId?)                     — open / answered gates
   answer_gate(gateId, answer, comment?)   — answer a human gate
   provide_task_secrets(taskId, secrets, persistAs?) — unblock secret_pending
-  read_port(taskId, stage, port)          — query lineage
-  query_lineage(taskId, ...)              — audit / explain
+```
+
+**Hot-update**
+```
+  propose_pipeline_change(...)            — emit a proposal
+  dry_run_proposal(...)                   — see diff/impact without committing
+  list_proposals(status?)                 — pending / approved / rejected
+  approve_proposal(proposalId)
+  reject_proposal(proposalId, reason?)
+  migrate_task(taskId, proposalId)        — apply a proposal to a running task
+  rollback_hot_update(taskId, toVersion)  — undo a successful migration
+  update_registry_pipeline(...)           — bump a registered pipeline version
+  query_hot_update_stats(...)             — Stage 5E aggregates
+```
+
+**Lineage & debug**
+```
+  read_port(taskId, stage, port)          — read latest port_value
+  query_lineage(taskId, ...)              — full audit / explain trail
+  diff_runs(taskA, taskB)                 — side-by-side diff
+  compare_runs(...)                       — multi-axis comparison
+  replay_stage(taskId, stage)             — re-execute one stage in isolation
+  dry_run_stage(...)                      — try a stage with synthetic inputs
+  propose_pipeline_fix(taskId, failedStage) — failure-driven modifier shortcut
+```
+
+**Registry / catalog**
+```
+  recommend_mcp_servers(query)            — Phase-1 supply-chain helper
+  get_mcp_catalog_entry(serverName)       — manifest by name
+  add_mcp_catalog_entry(entry)            — local catalog mutation
+```
+
+**Admin**
+```
   prune_records({ taskId | olderThan })   — DB cleanup
-  ... + write_port (runner-internal)
+```
+
+**Runner-internal (NOT on external surface)**
+```
+  write_port(attemptId, port, value)      — kernel writes outputs
+                                            via PortRuntime
 ```
 
 Every tool returns a `{ ok: true, ... } | { ok: false, diagnostics: [...] }`
 shape with structured codes — the same envelope used by the REST API.
 
+The split between external (34) and internal (1) is enforced in
+`kernel-next/mcp/server.ts`'s `createKernelMcp({ surface })` —
+`surface: "external"` is the default for HTTP `/api/mcp`, while the
+kernel's own runner spins up a combined-surface server per agent
+attempt to expose `write_port`.
+
 ### 4.3 Key DB tables (annotated)
+
+20 application tables in `kernel-next.db`. Grouped by purpose:
+
+**Pipeline definition (content-addressed)**
 
 | Table | What it stores |
 |---|---|
 | `pipeline_versions` | `(version_hash, pipeline_name, ir_json, ts_source, parent_hash, created_at)` — every IR ever submitted |
-| `pipeline_prompt_refs` + `prompt_contents` | promptRef → content mapping, content-addressed |
+| `stages` | Normalised mirror of `ir_json.stages` — one row per (version_hash, stage_name); used by lineage queries that join without parsing JSON |
+| `ports` | Normalised mirror of stage inputs/outputs — one row per (version_hash, stage_name, port_name, direction) |
+| `wires` | Normalised mirror of `ir_json.wires` — one row per wire so reverse-lookup ("who reads X?") is O(index) |
+| `prompt_contents` | Content-addressed prompt body store (one row per distinct content_hash) |
+| `pipeline_prompt_refs` | (version_hash, promptRef) → content_hash mapping |
+| `pipeline_proposals` | `(proposal_id, status, base_version, proposed_version, patch_json, ...)` |
+
+**Task runtime state**
+
+| Table | What it stores |
+|---|---|
 | `stage_attempts` | One row per attempt: `(attempt_id, task_id, version_hash, stage_name, attempt_idx, status, kind, fanout_element_idx, started_at, ended_at)` |
 | `port_values` | Lineage rows: `(value_id, attempt_id, stage_name, port_name, direction, value_json, written_at)` |
 | `gate_queue` | One row per gate-stage entry: `(gate_id, task_id, attempt_id, question_json, answer, answered_at)` |
+| `secret_gate_queue` | Per-task secret-pending state: `(secret_gate_id, task_id, stage_name, required_keys, resolved_at)` |
 | `task_finals` | Terminal state: `(task_id, version_hash, final_state, reason, detail, ended_at)` |
-| `hot_update_events` | Audit: `(event_id, task_id, from_version, to_version, status, started_at, finished_at, diagnostic_json)` |
 | `task_worktrees` | Worktree ownership: `(task_id, workdir, status, allocated_at)` |
 | `task_env_values` | Plaintext env values; auto-deleted when task ends (P3.6) |
-| `secret_gate_queue` | Per-task secret-pending state: `(secret_gate_id, task_id, stage_name, required_keys, resolved_at)` |
-| `mcp_servers` + `mcp_secrets` | MCP catalog with encrypted-at-rest secrets |
-| `migration_hints` | Advisory diff payload for hot-update successor attempts (B9-A) |
-| `pipeline_proposals` | `(proposal_id, status, base_version, proposed_version, patch_json, ...)` |
-| `agent_execution_details` | Per-agent-attempt token usage, cost, compact events, cache stats |
-| `script_execution_details` | Per-script-attempt termination reason, error, runtime |
 | `stage_checkpoints` | Pre-stage git SHA for B9 reset target |
 
-Full schema: `apps/server/src/kernel-next/ir/sql.ts`.
+**Per-attempt sidecar data**
+
+| Table | What it stores |
+|---|---|
+| `agent_execution_details` | Per-agent-attempt token usage, cost, compact events, cache stats |
+| `script_execution_details` | Per-script-attempt termination reason, error, runtime |
+
+**Hot-update audit + advisory**
+
+| Table | What it stores |
+|---|---|
+| `hot_update_events` | Audit: `(event_id, task_id, from_version, to_version, status, started_at, finished_at, diagnostic_json)` |
+| `migration_hints` | Advisory diff payload for hot-update successor attempts (B9-A) |
+
+**Cross-task caches & supply-chain**
+
+| Table | What it stores |
+|---|---|
+| `tutorial_cache` | Cross-task tutorial memo (D1): keyed by (subject_domain, slug); pipelines like web3-tech-research read it before regenerating expensive tutorials |
+| `mcp_servers` + `mcp_secrets` | MCP catalog with encrypted-at-rest secrets |
+
+Full schema: `apps/server/src/kernel-next/ir/sql.ts` (~600 lines including
+indexes + the schema-evolution clean-slate migration logic). The
+`stages`/`ports`/`wires` mirror tables are populated atomically with
+each `pipeline_versions` insert via the same transaction.
 
 ---
 
@@ -549,11 +643,17 @@ end-to-end with real LLM calls.
    real pipelines), but we don't *plan around* it — there's no
    "single-session decision gate" that uses cache stats to choose
    between segment shapes.
-4. **Hand-written pipelines mostly broken**. The product assumes
-   AI-written IRs (via pipeline-generator). A human writing the IR
-   directly will fight the validator's strictness; the prompts that
-   make pipeline-generator emit good IR are themselves much of the
-   product's value.
+4. **Hand-writing IR is supported but inconvenient**. Two of the
+   dogfood-13 era pipelines (multi-target rollback in dogfood-11
+   and the fanout pipeline in dogfood-12) were hand-authored via
+   `submit_pipeline` over MCP and ran end-to-end without issues —
+   so the contract isn't broken. But the validator is strict about
+   port-type strings, wire shapes, and gate-routing target
+   ancestor-relationships, and a human typing IR will hit those
+   guardrails repeatedly. The pipeline-generator path exists
+   precisely so a human only has to describe the task in NL; the
+   prompts that drive it are themselves much of the product's
+   value, and we recommend that path for any non-trivial pipeline.
 
 ---
 
