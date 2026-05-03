@@ -7,6 +7,19 @@
 // kind-coloured badge, timestamp, actor, and (for migrate/rollback)
 // truncated from/to version hashes. Returns null when entries is empty
 // so the page can omit the section entirely without extra conditionals.
+//
+// 2026-05-03: each successful `migrate` entry exposes a "Rollback"
+// button which calls POST /api/kernel/tasks/:taskId/rollback with
+// `toVersion = entry.from_version`. The server's rollback path
+// re-applies the inverse patch + supersedes affected stages; failure
+// surfaces structured diagnostics that the parent page renders via
+// the toast layer.
+
+import { useState } from "react";
+import { apiFetch } from "../lib/api-client";
+import { useToast } from "./toast";
+import { ConfirmDialog } from "./confirm-dialog";
+import { Button } from "./ui/button";
 
 export interface AuditEntry {
   event_id: string;
@@ -36,6 +49,12 @@ function formatAuditDuration(startedAt: number, finishedAt: number): string {
 
 interface AuditTimelineProps {
   entries: AuditEntry[];
+  /** Required when rollback actions are surfaced. Omit to render read-only. */
+  taskId?: string;
+  /** Whether to render the rollback button on success migrate entries. */
+  showRollback?: boolean;
+  /** Called on rollback success so the parent can reload state. */
+  onRollback?: () => void;
 }
 
 const KIND_STYLE: Record<string, { label: string; bg: string; fg: string }> = {
@@ -50,8 +69,32 @@ const PROPOSAL_STATUS_STYLE: Record<string, { bg: string; fg: string }> = {
   rejected: { bg: "bg-danger-bg",     fg: "text-danger-fg" },
 };
 
-export function AuditTimeline({ entries }: AuditTimelineProps) {
+export function AuditTimeline({ entries, taskId, showRollback, onRollback }: AuditTimelineProps) {
+  const toast = useToast();
+  const [confirmTarget, setConfirmTarget] = useState<AuditEntry | null>(null);
+  const [busyEventId, setBusyEventId] = useState<string | null>(null);
+
   if (entries.length === 0) return null;
+
+  const handleRollback = async (entry: AuditEntry): Promise<void> => {
+    if (!taskId || !entry.from_version) {
+      toast.error("Cannot roll back: missing taskId or from_version");
+      return;
+    }
+    setConfirmTarget(null);
+    setBusyEventId(entry.event_id);
+    const res = await apiFetch(`/api/kernel/tasks/${encodeURIComponent(taskId)}/rollback`, {
+      method: "POST",
+      body: { toVersion: entry.from_version, actor: "web" },
+    });
+    setBusyEventId(null);
+    if (!res.ok) {
+      toast.error(`Rollback failed: ${res.diagnostics[0]?.message ?? "unknown"}`);
+      return;
+    }
+    toast.success(`Rolled back to ${entry.from_version.slice(0, 8)}`);
+    onRollback?.();
+  };
 
   return (
     <section className="mb-6">
@@ -62,6 +105,17 @@ export function AuditTimeline({ entries }: AuditTimelineProps) {
           const proposalStyle = e.proposal_status
             ? (PROPOSAL_STATUS_STYLE[e.proposal_status] ?? { bg: "bg-elevated", fg: "text-secondary" })
             : null;
+          // Rollback is meaningful only on successful migrations: failed
+          // migrations already auto-reverse via the orchestrator's
+          // reverse-supersede path, and rollbacks themselves can't be
+          // un-rolled-back via this UI.
+          const canRollback =
+            showRollback === true
+            && taskId !== undefined
+            && e.kind === "migrate"
+            && typeof e.from_version === "string"
+            && typeof e.to_version === "string"
+            && e.from_version !== e.to_version;
 
           return (
             <li key={e.event_id} className="relative mb-3">
@@ -100,11 +154,39 @@ export function AuditTimeline({ entries }: AuditTimelineProps) {
                     proposal: {e.proposal_status}
                   </span>
                 )}
+                {canRollback && (
+                  <Button
+                    variant="secondary"
+                    disabled={busyEventId === e.event_id}
+                    onClick={() => setConfirmTarget(e)}
+                    aria-label={`Roll back this migration (back to ${e.from_version!.slice(0, 8)})`}
+                  >
+                    {busyEventId === e.event_id ? "Rolling back…" : "Rollback"}
+                  </Button>
+                )}
               </div>
             </li>
           );
         })}
       </ol>
+      <ConfirmDialog
+        open={confirmTarget !== null}
+        title="Roll back this migration?"
+        message={
+          confirmTarget
+            ? `The task will rewind from ${confirmTarget.to_version!.slice(0, 8)}` +
+              ` back to ${confirmTarget.from_version!.slice(0, 8)}. ` +
+              `Stages affected by this migration will be superseded. ` +
+              `This is itself audited as a new hot-update event.`
+            : ""
+        }
+        confirmLabel="Roll back"
+        destructive
+        onConfirm={() => {
+          if (confirmTarget) void handleRollback(confirmTarget);
+        }}
+        onCancel={() => setConfirmTarget(null)}
+      />
     </section>
   );
 }

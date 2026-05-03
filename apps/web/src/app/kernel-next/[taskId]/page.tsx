@@ -932,7 +932,14 @@ export default function KernelNextTaskPage() {
 
       <DiagnosticsPanel diagnostics={diagnostics} />
 
-      <AuditTimeline entries={auditEntries} />
+      <AuditTimeline
+        entries={auditEntries}
+        taskId={taskId ?? undefined}
+        showRollback
+        onRollback={() => {
+          void refreshAudit();
+        }}
+      />
 
       {ir && (
         <section className="mb-6">
