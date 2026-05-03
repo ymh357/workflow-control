@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+
+// next/navigation needs an app router context; for unit tests we stub
+// useRouter so PipelinesPage can call router.push() without rendering
+// inside Next.js's runtime.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), back: vi.fn() }),
+}));
+
 import PipelinesPage from "./page";
 
 describe("PipelinesPage", () => {

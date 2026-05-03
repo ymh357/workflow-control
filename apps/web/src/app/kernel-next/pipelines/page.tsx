@@ -4,9 +4,14 @@
 // version. Click-through navigates to the per-pipeline editor at
 // /kernel-next/pipelines/[name].
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { API_BASE } from "../../../lib/api-client";
+import {
+  ImportPipelineDialog,
+  type ImportSuccessResult,
+} from "../../../components/import-pipeline-dialog";
 
 interface PipelineSummary {
   name: string;
@@ -43,6 +48,13 @@ export default function PipelinesPage() {
   const [pipelines, setPipelines] = useState<PipelineSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState<string>("");
+  const [importOpen, setImportOpen] = useState(false);
+  const router = useRouter();
+
+  const handleImported = useCallback((res: ImportSuccessResult) => {
+    setImportOpen(false);
+    router.push(`/kernel-next/pipelines/${encodeURIComponent(res.pipelineName)}`);
+  }, [router]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -106,6 +118,13 @@ export default function PipelinesPage() {
           >
             proposals
           </Link>
+          <button
+            type="button"
+            onClick={() => setImportOpen(true)}
+            className="rounded border border-strong bg-surface px-3 py-1 hover:border-strong hover:bg-elevated"
+          >
+            Import
+          </button>
         </div>
       </header>
 
@@ -170,6 +189,12 @@ export default function PipelinesPage() {
       {filtered && filtered.length === 0 && pipelines !== null && pipelines.length > 0 && (
         <p className="text-sm text-muted">No pipelines match <code className="rounded bg-elevated px-1 font-mono">{query}</code>.</p>
       )}
+
+      <ImportPipelineDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={handleImported}
+      />
     </div>
   );
 }
