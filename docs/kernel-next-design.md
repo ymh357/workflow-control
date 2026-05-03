@@ -8,8 +8,11 @@
 > 在根基级缺陷。四项合并为一次 greenfield 重构，落地在新目录
 > `apps/server/src/kernel-next/`。
 >
-> 本文读者假设已读 `docs/architecture-whitepaper-zh.md` 和
+> 本文读者假设已读 `docs/whitepaper.md`（v2.0，kernel-next era）和
 > `docs/product-roadmap.md`。本文不重复背景，只写决策 + 设计 + spike 计划。
+>
+> 注：原文引用的 `architecture-whitepaper-zh.md` 已 archived（2026-05-03），
+> 新版白皮书是 `whitepaper.md`。
 
 ---
 

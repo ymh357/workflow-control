@@ -1,5 +1,14 @@
 # Workflow Control: 架构可视化
 
+> ⚠️ **已 archived（2026-05-03 标记）**。
+>
+> 当前权威可视化文档：[`whitepaper-visuals.md`](./whitepaper-visuals.md)
+> （v2.0，kernel-next era）。本文撰写于 2026-04-18，配套已退役的
+> legacy engine 白皮书，引用的所有组件路径（machine.ts、
+> pipeline-builder.ts、edge runner、Slack）均已删除。
+>
+> 仅保留以便回溯；**不要按本文操作或更新**。
+>
 > Version 1.0 | 2026-04-18 | Companion to [`architecture-whitepaper-zh.md`](./architecture-whitepaper-zh.md)
 
 本文是白皮书的**可视化补充**，用 Mermaid 把白皮书里的 ASCII 图和文字说明图形化，方便在 dashboard / GitHub / Notion 直接渲染。不覆盖白皮书的文字论述，只做图解与对照表。每张图下方给出"看图要点"与源码锚点，便于跳转核对。

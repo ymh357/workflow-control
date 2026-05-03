@@ -1,5 +1,16 @@
 # Workflow Control: Technical Architecture Whitepaper
 
+> ⚠️ **Archived 2026-05-03.**
+>
+> The current authoritative architecture document is
+> [`whitepaper.md`](./whitepaper.md) (v2.0, kernel-next era). This
+> document was written 2026-04-18 and describes the legacy engine
+> that was retired 2026-04-24 (multi-engine, Slack, edge runner,
+> YAML DSL, etc.). See CLAUDE.md "Retired areas" for the list of
+> deleted modules.
+>
+> Retained for historical reference; **do not update or follow**.
+>
 > Version 1.1 | 2026-04-18
 
 ---

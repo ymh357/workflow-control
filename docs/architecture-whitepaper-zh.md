@@ -1,5 +1,14 @@
 # Workflow Control: 技术架构白皮书
 
+> ⚠️ **已 archived（2026-05-03 标记）**。
+>
+> 当前权威架构文档：[`whitepaper.md`](./whitepaper.md)（v2.0，
+> kernel-next era）。本文撰写于 2026-04-18，描述的是 2026-04-24
+> 已退役的 legacy engine（多 engine、Slack、edge runner、YAML DSL
+> 等）。CLAUDE.md "Retired areas" 节列出了已删除的代码路径。
+>
+> 仅保留以便回溯历史；**不要按本文操作或更新**。
+>
 > Version 1.1 | 2026-04-18
 
 ---
