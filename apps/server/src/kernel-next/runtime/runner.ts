@@ -248,6 +248,15 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
   // signal a more specific termination reason to external awaiters
   // (migration orchestrator distinguishes interrupted from natural exit).
   let interruptObserved = false;
+  // Bug 81 (dogfood-13 2026-05-03): run-scoped abort controller that
+  // INTERRUPT trips. orchestrateFanoutStage receives this signal and
+  // aborts in-flight fanout elements + stops scheduling new ones.
+  // Without it, INTERRUPT only reached the XState actor via
+  // currentActor.send and the actor.stop() grace timeout — but
+  // detached fanout promises live OUTSIDE the actor and ignore both.
+  // Created per-attempt at runOneAttempt start; abort survives across
+  // dispatcher.send invocations within the same attempt.
+  let fanoutInterruptController: AbortController | null = null;
   const dispatcher: EventDispatcher = {
     send: (event: MachineEvent) => {
       if (event.type === "INTERRUPT") {
@@ -277,6 +286,18 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
         // per-stage AbortSignal logic still aborts only that stage.
         const stageScope = (event as { stage?: string }).stage;
         if (stageScope === undefined) {
+          // Bug 81: abort detached fanout promises FIRST, before the
+          // actor's own INTERRUPT handler chain runs. Fanout
+          // orchestration lives outside the actor (executorPromises in
+          // runOneAttempt push detached chains that resolve into the
+          // dispatcher), so neither currentActor.send nor actor.stop()
+          // reaches them. Aborting the controller cooperates with
+          // orchestrateFanoutStage's interruptSignal check + the per-
+          // element controller listener so in-flight LLM calls tear
+          // down via their existing AbortSignal paths.
+          if (fanoutInterruptController && !fanoutInterruptController.signal.aborted) {
+            try { fanoutInterruptController.abort(); } catch { /* already aborted */ }
+          }
           if (currentActor) {
             try { currentActor.send(event); } catch { /* already stopped */ }
             // Bound on graceful-summary execution: 1500ms covers
@@ -1412,6 +1433,13 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
   // state (publish, dispatched, stageErrors, etc.) without a
   // parameter list explosion.
   async function runOneAttempt(): Promise<AttemptVerdict> {
+    // Bug 81: per-attempt fanout INTERRUPT controller. Reset on every
+    // rebuild (retry / rollback) so a previous attempt's abort doesn't
+    // bleed into the new one. The dispatcher's INTERRUPT handler
+    // checks this controller and aborts when an external INTERRUPT
+    // arrives.
+    fanoutInterruptController = new AbortController();
+
     // Compile a fresh machine. When this is a retry rebuild we pass
     // initialContext so the new machine starts with the preserved
     // portValues / retryCounts / gate authorizations; first-attempt
@@ -2004,6 +2032,10 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
                 db: opts.db,
                 livePortRuntime: portRuntime,
                 executor,
+                // Bug 81: INTERRUPT delivered via dispatcher.send aborts
+                // this signal so in-flight fanout elements tear down
+                // and queued elements bail before starting.
+                interruptSignal: fanoutInterruptController?.signal,
               }).then((result) => {
                 if (result.status === "error") {
                   // Continuation-3 Issue #2 — STAGE_FAILED transition

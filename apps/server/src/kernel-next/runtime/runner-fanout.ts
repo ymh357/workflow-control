@@ -59,6 +59,17 @@ export interface RunFanoutArgs {
   // go through a silent runtime to avoid premature downstream dispatch.
   livePortRuntime: PortRuntime;
   executor: StageExecutor;
+  // Bug 81 (dogfood-13 2026-05-03): outer INTERRUPT signal. When the
+  // runner-level dispatcher observes INTERRUPT (from
+  // taskRegistry.cancelTask / migration-orchestrator / etc.), it
+  // aborts this signal. The fanout main loop checks signal.aborted
+  // between elements and exits early; per-element controllers
+  // listen too so the SDK abort path tears down in-flight LLM calls.
+  // Pre-fix, fanout ignored INTERRUPT entirely — the actor.stop()
+  // 1500ms grace period in runner.ts is no help because fanout
+  // promises live OUTSIDE the actor (detached executorPromises),
+  // so stopping the actor leaves the fanout queue running.
+  interruptSignal?: AbortSignal;
 }
 
 export type FanoutResult =
@@ -67,7 +78,7 @@ export type FanoutResult =
   | { status: "secret_pending"; missingKeys: string[] };
 
 export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<FanoutResult> {
-  const { ir, stageDef, taskId, versionHash, basePortValues, handlers, db, livePortRuntime, executor } = args;
+  const { ir, stageDef, taskId, versionHash, basePortValues, handlers, db, livePortRuntime, executor, interruptSignal } = args;
   const fanout = stageDef.fanout;
   if (!fanout) {
     return { status: "error", error: `stage '${stageDef.name}' has no fanout config` };
@@ -222,6 +233,22 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
       return;
     }
 
+    // Bug 81 (dogfood-13 2026-05-03): bail out if the runner-level
+    // INTERRUPT was already delivered before this worker picked up
+    // the element. Without this check, a fanout that was mid-flight
+    // when migration/cancel issued INTERRUPT would still spawn fresh
+    // elements as workers cycled — defeating the whole point of
+    // INTERRUPT. Surface as a synthetic error so firstError is set
+    // and the worker pool drains cleanly via the existing path.
+    if (interruptSignal?.aborted) {
+      // Setting firstError here matches the in-loop error path so
+      // sibling workers stop pulling new indices.
+      if (!firstError) {
+        firstError = `fanout element[${i}] aborted by INTERRUPT before start`;
+      }
+      return;
+    }
+
     // Override the fanout source in the executor's portValues view so
     // the executor reads a single element (typed T) instead of T[].
     const elementPortValues = { ...basePortValues, [sourceKey]: sourceValue[i] };
@@ -256,6 +283,20 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
       // resolves (process exit cleans up). Critically: our retry loop
       // moves on instead of waiting indefinitely.
       const elementController = new AbortController();
+      // Bug 81: parent INTERRUPT signal aborts the element controller
+      // so the SDK / mock executor's signal-aware code paths tear
+      // down promptly instead of waiting for the C10 30-min timeout.
+      // If the parent is already aborted at this point, abort
+      // synchronously so executor.executeStage observes it before
+      // its first tick.
+      const onParentInterrupt = (): void => elementController.abort();
+      if (interruptSignal) {
+        if (interruptSignal.aborted) {
+          elementController.abort();
+        } else {
+          interruptSignal.addEventListener("abort", onParentInterrupt, { once: true });
+        }
+      }
 
       const TIMEOUT_SENTINEL = Symbol("fanout-element-timeout");
       let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -283,6 +324,13 @@ export async function orchestrateFanoutStage(args: RunFanoutArgs): Promise<Fanou
 
       const raceResult = await Promise.race([executorPromise, timeoutPromise]);
       if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+      // Bug 81: detach the parent-INTERRUPT listener once this attempt
+      // has resolved. removeEventListener is a no-op when the listener
+      // already fired (we used { once: true }) but cleans up the
+      // dangling reference in the not-yet-aborted case.
+      if (interruptSignal) {
+        interruptSignal.removeEventListener("abort", onParentInterrupt);
+      }
 
       if (raceResult === TIMEOUT_SENTINEL) {
         // Detach the still-pending executor promise so it doesn't
