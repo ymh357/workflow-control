@@ -822,6 +822,7 @@ export default function KernelNextTaskPage() {
               taskId={taskId}
               topState={topState}
               hasFailedStage={stageRows.some((s) => s.state === "error")}
+              pipelineName={ir?.name ?? null}
               onStateChanged={() => { /* SSE auto-refreshes */ }}
             />
           )}
