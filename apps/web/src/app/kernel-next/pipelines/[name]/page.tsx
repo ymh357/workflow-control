@@ -155,13 +155,23 @@ export default function PipelineEditorPage() {
             <CopyButton value={detail.latestVersion} label="copy hash" />
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => setLauncherOpen(true)}
-          className="rounded border border-info-border bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover focus:outline-none focus:ring-1 focus-visible:ring-accent"
-        >
-          Launch →
-        </button>
+        <div className="flex items-center gap-2">
+          <a
+            href={`${API_BASE}/api/kernel/pipelines/${detail.latestVersion}/export`}
+            download
+            className="rounded border border-strong bg-surface px-3 py-1.5 text-sm text-secondary hover:border-strong hover:bg-elevated"
+            title="Download this pipeline as a portable JSON file"
+          >
+            Export
+          </a>
+          <button
+            type="button"
+            onClick={() => setLauncherOpen(true)}
+            className="rounded border border-info-border bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover focus:outline-none focus:ring-1 focus-visible:ring-accent"
+          >
+            Launch →
+          </button>
+        </div>
       </header>
 
       {externalInputs.length > 0 && (
