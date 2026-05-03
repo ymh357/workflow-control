@@ -362,7 +362,7 @@ export function lookupResumeSessionId(
       ORDER BY aed.started_at DESC
       LIMIT 1`,
   ).get(taskId, stageName) as { session_id: string } | undefined;
-  return row?.session_id ?? undefined;
+  return row?.session_id;
 }
 
 function isSkippable(ir: PipelineIR, name: string, answeredGates: Set<string>): boolean {

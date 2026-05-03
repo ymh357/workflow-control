@@ -935,7 +935,7 @@ export default function KernelNextTaskPage() {
 
       <AuditTimeline
         entries={auditEntries}
-        taskId={taskId ?? undefined}
+        taskId={taskId}
         showRollback
         onRollback={() => {
           void refreshAudit();

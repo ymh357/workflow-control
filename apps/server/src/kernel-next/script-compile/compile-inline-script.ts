@@ -67,9 +67,6 @@ export function compileInlineScript(source: string): CompileResult {
   const userFilename = "script.ts";
   const contractFilename = "__contract.d.ts";
 
-  const ambientLines = AMBIENT_CONTRACT.split("\n").length - 1;
-  void ambientLines;
-
   // Both files live in an in-memory CompilerHost. Dependency resolution
   // MUST fall back to the real filesystem so `import fs from "node:fs"`
   // resolves — we're compiling TS that will eventually run in node.

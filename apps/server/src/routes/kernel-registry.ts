@@ -41,7 +41,7 @@ kernelRegistryRoute.get("/registry/packages/:name", async (c) => {
 });
 
 kernelRegistryRoute.get("/registry/installed", (c) => {
-  const type = c.req.query("type") ?? undefined;
+  const type = c.req.query("type");
   const installed = registryService.listInstalled(type);
   // Convert Record<name, entry> to array form so the web client can
   // sort + filter without object-iteration semantics.

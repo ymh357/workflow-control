@@ -13,7 +13,7 @@ kernelNextStreamRoute.get("/kernel-next/tasks/:taskId/stream", (c) => {
   // EventSource auto-sets Last-Event-ID on reconnect; we let the
   // broadcaster skip events with seq <= the recorded value so the
   // client does not re-render events it already acknowledged.
-  const lastEventId = c.req.header("Last-Event-ID") ?? undefined;
+  const lastEventId = c.req.header("Last-Event-ID");
   const stream = createKernelNextStream(kernelNextBroadcaster, taskId, { lastEventId });
 
   c.header("Content-Type", "text/event-stream");
