@@ -1,4 +1,4 @@
-// migration_hints — B9-A (partial B9) helpers.
+// migration_hints — B9 advisory diff payload.
 //
 // A migration_hint carries context from a superseded attempt to the
 // successor attempt that the hot-update orchestrator opens on the new
@@ -6,12 +6,16 @@
 // supersede SQL lands; consumed (and marked consumed_at) by
 // RealStageExecutor when it opens the replacement attempt.
 //
-// This is the first half of roadmap B9 ("Worktree 切换"). Full B9
-// also calls `git reset --hard before_sha` to rewind the worktree,
-// but that requires a task-worktree ownership contract kernel-next
-// does not yet implement (see Phase 5C follow-up). For now we only
-// propagate the diff as advisory context; the agent decides whether
-// to re-apply changes.
+// Roadmap B9 ("Worktree 切换") has two halves and BOTH have landed:
+//   1. The advisory hint (this module) — propagates the previous
+//      attempt's diff as agent-visible context.
+//   2. The authoritative `git reset --hard before_sha` rewind — see
+//      migration-orchestrator.ts:tryResetWorktreeToBeforeSha,
+//      gated on a task_worktrees ownership row (allocator.ts) +
+//      stage_checkpoints.before_sha. Migration calls it inline
+//      after the supersede TX (see migration-orchestrator.ts:384).
+//      Failure is best-effort: a logger.warn drops a breadcrumb and
+//      the migration still proceeds with the advisory hint alone.
 //
 // Invariant: each hint is single-use. The "unconsumed" partial index
 // on (task_id, stage_name) WHERE consumed_at IS NULL gives O(1)

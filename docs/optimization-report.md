@@ -1,6 +1,24 @@
 # workflow-control 优化报告
 
-> 基于 Claude Code (v2.1.88) 内部架构分析，对 workflow-control 的全面优化建议。
+> ⚠️ **此文档已 archived（2026-05-03 标记）**。
+>
+> 原作于 2026-04-03，针对当时的 legacy engine 编写。该 engine
+> 已在 2026-04-24 Stage 4a 完整退役（参见 CLAUDE.md "Retired
+> areas"）。本文中引用的所有源码路径——`apps/server/src/agent/`、
+> `apps/server/src/edge/`、`apps/server/src/__audit__/`、
+> `stage-executor.ts` 等——均已物理删除。
+>
+> 工程当前唯一支持的 engine 是 kernel-next。具体优化方向（含
+> prompt caching、checkpoint、parallel group、worktree、permission
+> mode 等）在 kernel-next 已有不同的设计形态，需对照
+> `docs/kernel-next-design.md` / `docs/kernel-next-terminal-design.md`
+> + `docs/superpowers/dogfood-2026-04-28/handoff-final.md` 起的
+> handoff 系列重新评估，**不要按本文档的 file path 或代码引用直接
+> 操作**。
+>
+> 保留本文以便回顾决策路径；下次有人想按这里的建议改 engine 时，
+> 这个 header 会拦下。
+>
 > 生成日期：2026-04-03
 
 ---

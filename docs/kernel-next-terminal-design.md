@@ -1149,11 +1149,26 @@ during build-out:
   See `gate-timeout-sweeper.ts`.
 - **Cross-stage store migration during hot-update**: when rerunFrom
   is early, some port_values may be rendered obsolete. Current answer
-  is "leave them; new attempts write new rows". This may need a
-  cleanup primitive.
-- **AgentMachine's `compacting` state not yet observed**: handled in
-  schema, but first implementation must test a long-context run to
-  verify.
+  is "leave them; new attempts write new rows". ~~This may need a
+  cleanup primitive.~~ **Closed 2026-05-03**: re-evaluated against the
+  shipped behaviour. Lineage queries always join `port_values` to a
+  specific `attempt_id` (not just stage_name), so a superseded
+  attempt's port rows are unreachable from the live query path —
+  they don't pollute reads, only DB size. The existing
+  `prune-kernel-records` CLI handles bulk deletion when DB size
+  matters. No primitive added; concrete pressure (a real query that
+  surfaces stale rows, or a sustained DB-bloat report) re-opens this.
+- **AgentMachine's `compacting` state not yet observed**:
+  ~~handled in schema, but first implementation must test a long-
+  context run to verify~~ **Resolved 2026-04-24 (Phase 4.5 T1)**:
+  `agent_execution_details.compact_events_json` column added; SDK
+  adapter emits `COMPACT_STARTED` / `COMPACT_ENDED` (via the synthetic
+  end-event on next non-compact message); real-executor maps them
+  into `writer.appendCompactEvent` / `completeCompactEvent`. Each
+  event records `{ trigger, preTokens, startedAt, endedAt }`. Live
+  observation across multi-segment runs in dogfood-3 (handoff-
+  dogfood-2026-05-02) confirmed compact_events accumulating during
+  the longer fanout stages.
 
 ---
 
