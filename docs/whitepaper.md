@@ -80,13 +80,17 @@ general-purpose orchestrators cannot avoid.
 
 **Execution is single-user.** Every Task runs against one user's
 local SQLite + filesystem; there is no cross-user state of any
-kind. Cross-user sharing of artefacts (pipelines, prompts, MCP
-configurations) was prototyped via a YAML-based public registry
-(retired 2026-05-04 — the YAML schema diverged from kernel-next's
-canonical IR, leaving installed packages unrunnable). A future
-sharing channel keyed on `pipeline.ir.json` + the encrypted MCP
-catalog is on the roadmap but not currently shipping. For now,
-share by exporting + importing the IR JSON directly.
+kind. Cross-user *sharing* is supported via file-based export /
+import: every pipeline detail page exposes an **Export** button that
+downloads a `wfctl-pipeline-export/v1` JSON envelope
+(`{ format, exportedAt, source, ir, prompts }`); the pipelines list
+page exposes **Import** to upload such a file. Imports route through
+the same `KernelService.submit` validator stack as `submit_pipeline`,
+so a hand-edited file cannot bypass validation. Secrets stay on each
+machine (env vars or `run_pipeline`'s `envValues`); files contain
+`envKey` *names* but never values. The earlier YAML-based public
+registry was retired 2026-05-04 — its schema had diverged from
+kernel-next's canonical IR, leaving installed packages unrunnable.
 
 ### 1.3 Surfaces
 

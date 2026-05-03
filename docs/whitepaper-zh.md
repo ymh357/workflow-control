@@ -65,11 +65,16 @@ roadmap 明确写了非目标（CLAUDE.md "What this project is not"）：
 复杂度。
 
 **执行单用户**。每个 Task 只跑在一个用户的本地 SQLite + 文件系统
-上；不存在任何形式的跨用户状态。曾用一个 YAML 公共 registry 做跨
-用户 artefact 共享，但 YAML schema 跟 kernel-next canonical IR 不
-兼容、装上的包跑不起来——已于 2026-05-04 退役。未来基于
-`pipeline.ir.json` + 加密 MCP catalog 的共享通道在 roadmap 上但
-尚未上线。当前共享方式：直接导出 + 导入 IR JSON。
+上；不存在任何形式的跨用户状态。跨用户**共享**通过文件导入导出实
+现：每个 pipeline 详情页提供 **Export** 按钮，下载
+`wfctl-pipeline-export/v1` JSON 信封
+（`{ format, exportedAt, source, ir, prompts }`）；pipelines 列表
+页的 **Import** 按钮上传同样格式的文件。导入路径走
+`KernelService.submit` 完整 validator 链，与 `submit_pipeline`
+等价——手编辑文件无法绕过校验。Secret 留在各自机器（env vars 或
+`run_pipeline` 的 `envValues`）；文件只含 `envKey` **名字**，绝不
+含值。早期的 YAML 公共 registry 已于 2026-05-04 退役——其 schema
+跟 kernel-next canonical IR 不兼容，装上的包跑不起来。
 
 ### 1.3 三个 surface
 
