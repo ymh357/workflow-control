@@ -11,7 +11,8 @@
 import { Hono } from "hono";
 import { getKernelNextDb } from "../lib/kernel-next-db.js";
 import { getPipelineIR, getPromptsByVersion } from "../kernel-next/ir/sql.js";
-import { buildEnvelope } from "../kernel-next/ir/export-envelope.js";
+import { buildEnvelope, parseEnvelope } from "../kernel-next/ir/export-envelope.js";
+import { KernelService } from "../kernel-next/mcp/kernel.js";
 
 export const kernelPipelinesRoute = new Hono();
 
@@ -193,5 +194,81 @@ kernelPipelinesRoute.get("/kernel/pipelines/:versionHash/export", (c) => {
       "content-type": "application/json; charset=utf-8",
       "content-disposition": `attachment; filename="${filename}"`,
     },
+  });
+});
+
+// 10 MB cap on import body. Local single-user server; this prevents
+// trivial mistakes (paste of a giant file) from hanging the process.
+// Typical envelopes are < 100 KB.
+const MAX_IMPORT_BODY_BYTES = 10 * 1024 * 1024;
+
+kernelPipelinesRoute.post("/kernel/pipelines/import", async (c) => {
+  const raw = await c.req.text();
+  if (raw.length > MAX_IMPORT_BODY_BYTES) {
+    return c.json({
+      ok: false,
+      diagnostics: [{
+        code: "BODY_TOO_LARGE",
+        message: `import body exceeds ${MAX_IMPORT_BODY_BYTES} bytes`,
+        context: { received: raw.length, limit: MAX_IMPORT_BODY_BYTES },
+      }],
+    }, 413);
+  }
+  if (raw.trim().length === 0) {
+    return c.json({
+      ok: false,
+      diagnostics: [{ code: "INVALID_JSON_BODY", message: "request body is empty" }],
+    }, 400);
+  }
+  let parsedJson: unknown;
+  try {
+    parsedJson = JSON.parse(raw);
+  } catch (err) {
+    return c.json({
+      ok: false,
+      diagnostics: [{
+        code: "INVALID_JSON_BODY",
+        message: err instanceof Error ? err.message : "invalid JSON",
+      }],
+    }, 400);
+  }
+
+  const envResult = parseEnvelope(parsedJson);
+  if (!envResult.ok) {
+    return c.json({ ok: false, diagnostics: envResult.diagnostics }, 400);
+  }
+  const envelope = envResult.envelope;
+
+  const db = getKernelNextDb();
+
+  // Detect "this hash already exists locally" BEFORE submit so the
+  // response can flag idempotent re-imports. Canonical content hash
+  // is deterministic, so a faithful re-import recomputes to the same
+  // hash; if the file was tampered with mid-transport, the recomputed
+  // hash differs and alreadyExisted resolves to false (correct: a new
+  // version really is being added).
+  const sourceHashRow = db.prepare(
+    `SELECT version_hash FROM pipeline_versions WHERE version_hash = ?`,
+  ).get(envelope.source.versionHash) as { version_hash: string } | undefined;
+  const sourceAlreadyExisted = sourceHashRow !== undefined;
+
+  const svc = new KernelService(db);
+  const submitResult = await svc.submit(envelope.ir, { prompts: envelope.prompts });
+  if (!submitResult.ok) {
+    return c.json({ ok: false, diagnostics: submitResult.diagnostics }, 400);
+  }
+
+  const alreadyExisted =
+    sourceAlreadyExisted && submitResult.versionHash === envelope.source.versionHash;
+
+  const irRecord = envelope.ir as { name?: unknown };
+  const pipelineName =
+    typeof irRecord.name === "string" ? irRecord.name : envelope.source.pipelineName;
+
+  return c.json({
+    ok: true,
+    versionHash: submitResult.versionHash,
+    pipelineName,
+    alreadyExisted,
   });
 });

@@ -260,3 +260,151 @@ describe("GET /api/kernel/pipelines/:versionHash/export", () => {
     expect(cd).toMatch(/filename="weird-name-with-spaces-[a-f0-9]{8}\.wfctl\.json"/);
   });
 });
+
+describe("POST /api/kernel/pipelines/import", () => {
+  let db: DatabaseSync;
+
+  beforeEach(() => {
+    db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    __setKernelNextDbForTest(db);
+  });
+
+  afterEach(() => {
+    __setKernelNextDbForTest(undefined);
+    db.close();
+  });
+
+  async function buildEnvelopeJson(): Promise<{
+    envelope: Record<string, unknown>;
+    sourceVersionHash: string;
+  }> {
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+    const app = buildApp();
+    const res = await app.fetch(new Request(
+      `http://t/api/kernel/pipelines/${submitted.versionHash}/export`,
+    ));
+    const env = await res.json() as Record<string, unknown>;
+    return { envelope: env, sourceVersionHash: submitted.versionHash };
+  }
+
+  it("imports a valid envelope into a fresh DB", async () => {
+    const { envelope } = await buildEnvelopeJson();
+    // Fresh DB to simulate a different machine.
+    db.close();
+    db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    __setKernelNextDbForTest(db);
+
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/pipelines/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(envelope),
+    }));
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      ok: boolean;
+      versionHash: string;
+      pipelineName: string;
+      alreadyExisted: boolean;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.pipelineName).toBe(diamondIR().name);
+    expect(body.versionHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(body.alreadyExisted).toBe(false);
+
+    const row = db.prepare(
+      `SELECT version_hash FROM pipeline_versions WHERE version_hash = ?`,
+    ).get(body.versionHash);
+    expect(row).toBeDefined();
+  });
+
+  it("returns alreadyExisted=true on duplicate import", async () => {
+    const { envelope, sourceVersionHash } = await buildEnvelopeJson();
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/pipelines/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(envelope),
+    }));
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      ok: boolean;
+      versionHash: string;
+      alreadyExisted: boolean;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.versionHash).toBe(sourceVersionHash);
+    expect(body.alreadyExisted).toBe(true);
+  });
+
+  it("rejects non-JSON body with INVALID_JSON_BODY", async () => {
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/pipelines/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "not json {",
+    }));
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.diagnostics[0]!.code).toBe("INVALID_JSON_BODY");
+  });
+
+  it("rejects wrong format literal with UNSUPPORTED_FORMAT", async () => {
+    const { envelope } = await buildEnvelopeJson();
+    envelope.format = "wfctl-pipeline-export/v2";
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/pipelines/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(envelope),
+    }));
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.diagnostics[0]!.code).toBe("UNSUPPORTED_FORMAT");
+  });
+
+  it("passes through submit diagnostics for missing prompts", async () => {
+    const { envelope } = await buildEnvelopeJson();
+    envelope.prompts = {};  // strip prompts; AgentStage promptRefs become unsatisfied
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/pipelines/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(envelope),
+    }));
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.ok).toBe(false);
+    expect(body.diagnostics.some((d) => d.code === "PROMPT_REF_MISSING")).toBe(true);
+  });
+
+  it("rejects unknown top-level fields with INVALID_ENVELOPE", async () => {
+    const { envelope } = await buildEnvelopeJson();
+    (envelope as Record<string, unknown>).extra = "junk";
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/pipelines/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(envelope),
+    }));
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.diagnostics[0]!.code).toBe("INVALID_ENVELOPE");
+  });
+
+  it("rejects empty body with INVALID_JSON_BODY", async () => {
+    const app = buildApp();
+    const res = await app.fetch(new Request("http://t/api/kernel/pipelines/import", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "",
+    }));
+    expect(res.status).toBe(400);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.diagnostics[0]!.code).toBe("INVALID_JSON_BODY");
+  });
+});
