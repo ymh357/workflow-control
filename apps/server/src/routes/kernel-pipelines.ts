@@ -11,8 +11,17 @@
 import { Hono } from "hono";
 import { getKernelNextDb } from "../lib/kernel-next-db.js";
 import { getPipelineIR, getPromptsByVersion } from "../kernel-next/ir/sql.js";
+import { buildEnvelope } from "../kernel-next/ir/export-envelope.js";
 
 export const kernelPipelinesRoute = new Hono();
+
+function sanitizeFilenameSegment(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    || "pipeline";
+}
 
 interface PipelineSummary {
   name: string;
@@ -131,4 +140,58 @@ kernelPipelinesRoute.post("/kernel/pipelines/env-probe", async (c) => {
     status[k] = typeof v === "string" && v.length > 0;
   }
   return c.json({ ok: true, status });
+});
+
+// Cross-user sharing v1: returns a self-contained JSON envelope wrapping
+// the version's IR + prompts + provenance. The receiving machine pipes
+// it through POST /import, which routes to KernelService.submit.
+kernelPipelinesRoute.get("/kernel/pipelines/:versionHash/export", (c) => {
+  const hash = c.req.param("versionHash");
+  const db = getKernelNextDb();
+  const ir = getPipelineIR(db, hash);
+  if (ir === null) {
+    return c.json({
+      ok: false,
+      diagnostics: [{
+        code: "VERSION_NOT_FOUND",
+        message: `pipeline version '${hash}' not found`,
+        context: { versionHash: hash },
+      }],
+    }, 404);
+  }
+  const prompts = getPromptsByVersion(db, hash);
+  const meta = db.prepare(
+    `SELECT pipeline_name, parent_hash, created_at
+     FROM pipeline_versions WHERE version_hash = ?`,
+  ).get(hash) as
+    | { pipeline_name: string; parent_hash: string | null; created_at: number }
+    | undefined;
+  if (!meta) {
+    return c.json({
+      ok: false,
+      diagnostics: [{
+        code: "VERSION_NOT_FOUND",
+        message: `pipeline version '${hash}' not found`,
+        context: { versionHash: hash },
+      }],
+    }, 404);
+  }
+  const envelope = buildEnvelope({
+    pipelineName: meta.pipeline_name,
+    versionHash: hash,
+    parentHash: meta.parent_hash,
+    createdAt: meta.created_at,
+    ir,
+    prompts,
+  });
+  const safeName = sanitizeFilenameSegment(meta.pipeline_name);
+  const shortHash = hash.slice(0, 8);
+  const filename = `${safeName}-${shortHash}.wfctl.json`;
+  return new Response(JSON.stringify(envelope, null, 2), {
+    status: 200,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "content-disposition": `attachment; filename="${filename}"`,
+    },
+  });
 });

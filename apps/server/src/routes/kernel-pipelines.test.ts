@@ -188,3 +188,75 @@ describe("REST POST /api/kernel/pipelines/env-probe", () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe("GET /api/kernel/pipelines/:versionHash/export", () => {
+  let db: DatabaseSync;
+
+  beforeEach(() => {
+    db = new DatabaseSync(":memory:");
+    initKernelNextSchema(db);
+    __setKernelNextDbForTest(db);
+  });
+
+  afterEach(() => {
+    __setKernelNextDbForTest(undefined);
+    db.close();
+  });
+
+  it("returns a v1 envelope for an existing version", async () => {
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const submitted = await svc.submit(diamondIR(), { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+
+    const app = buildApp();
+    const res = await app.fetch(new Request(
+      `http://t/api/kernel/pipelines/${submitted.versionHash}/export`,
+    ));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("application/json");
+    const cd = res.headers.get("content-disposition") ?? "";
+    expect(cd).toContain("attachment");
+    expect(cd).toContain("filename=");
+
+    const body = await res.json() as Record<string, unknown>;
+    expect(body.format).toBe("wfctl-pipeline-export/v1");
+    expect(body.source).toMatchObject({
+      pipelineName: diamondIR().name,
+      versionHash: submitted.versionHash,
+    });
+    expect(body.ir).toBeDefined();
+    // submit() normalizes prompt content (trailing LF added by
+    // normalizePromptContent in canonical.ts), so the export reflects
+    // the stored normalized form, not the input string.
+    const expectedPrompts: Record<string, string> = {};
+    for (const [k, v] of Object.entries(diamondPrompts())) {
+      expectedPrompts[k] = v.endsWith("\n") ? v : v + "\n";
+    }
+    expect(body.prompts).toEqual(expectedPrompts);
+  });
+
+  it("returns 404 VERSION_NOT_FOUND for an unknown hash", async () => {
+    const app = buildApp();
+    const res = await app.fetch(new Request(
+      "http://t/api/kernel/pipelines/" + "0".repeat(64) + "/export",
+    ));
+    expect(res.status).toBe(404);
+    const body = await res.json() as { ok: boolean; diagnostics: Array<{ code: string }> };
+    expect(body.ok).toBe(false);
+    expect(body.diagnostics[0]!.code).toBe("VERSION_NOT_FOUND");
+  });
+
+  it("sanitizes pipeline name in Content-Disposition filename", async () => {
+    const svc = new KernelService(db, { skipTypeCheck: true });
+    const ir = { ...diamondIR(), name: "Weird/Name With Spaces!" };
+    const submitted = await svc.submit(ir, { prompts: diamondPrompts() });
+    if (!submitted.ok) throw new Error("setup submit failed");
+
+    const app = buildApp();
+    const res = await app.fetch(new Request(
+      `http://t/api/kernel/pipelines/${submitted.versionHash}/export`,
+    ));
+    const cd = res.headers.get("content-disposition") ?? "";
+    expect(cd).toMatch(/filename="weird-name-with-spaces-[a-f0-9]{8}\.wfctl\.json"/);
+  });
+});
