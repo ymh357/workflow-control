@@ -127,11 +127,49 @@ export async function executeMigration(
 
   try {
     // --- 5-6: INTERRUPT + awaitTermination ---------------------------
+    // Bug 80 (dogfood-10 2026-05-03): a task waiting at a human gate
+    // has its dispatcher in taskRegistry AND a stage_attempt row with
+    // status='running' (the gate's own attempt sits in `running` while
+    // the human deliberates), but the gate stage's executing substate
+    // is idle-by-design — it has no invoke and no INTERRUPT handler in
+    // the compiled machine (ir-to-machine.ts:878, gate executing only
+    // listens for GATE_ANSWERED). Sending {type:"INTERRUPT"} to such
+    // an actor is a noop, awaitTermination hits its 30s timeout, and
+    // migration fails with MIGRATION_INTERRUPT_TIMEOUT even though
+    // there was nothing to interrupt.
+    //
+    // Skip the INTERRUPT round-trip when every `running` stage_attempt
+    // row belongs to a gate stage. This covers gated tasks (and any
+    // future stage type whose `executing` substate is idle by design)
+    // without the orchestrator having to enumerate task statuses.
+    // Migration's correctness rests on the supersede TX below —
+    // INTERRUPT is purely an optimisation to stop in-flight executors
+    // before their writes become stale; gate attempts aren't writing
+    // anything that needs stopping.
     const interruptStart = Date.now();
     const isRunning = taskRegistry.get(taskId) !== undefined;
     let terminationReason: TerminationReason | null = null;
 
+    let hasNonGateRunningAttempt = false;
     if (isRunning) {
+      const fromIR = loadIR(db, fromVersion);
+      const gateStageNames = new Set(
+        fromIR
+          ? fromIR.stages.filter((s) => s.type === "gate").map((s) => s.name)
+          : [],
+      );
+      const runningRows = db
+        .prepare(
+          `SELECT stage_name FROM stage_attempts
+           WHERE task_id = ? AND status = 'running'`,
+        )
+        .all(taskId) as Array<{ stage_name: string }>;
+      hasNonGateRunningAttempt = runningRows.some(
+        (r) => !gateStageNames.has(r.stage_name),
+      );
+    }
+
+    if (isRunning && hasNonGateRunningAttempt) {
       const dispatcher = taskRegistry.get(taskId)!;
       try {
         dispatcher.send({ type: "INTERRUPT" } as never);

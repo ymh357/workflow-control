@@ -175,6 +175,228 @@ describe("executeMigration — INTERRUPT timeout", () => {
   });
 });
 
+// Bug 80 (dogfood-10 2026-05-03): a task waiting at a human gate has
+// its dispatcher in taskRegistry AND a stage_attempt row with
+// status='running' (the gate's own attempt sits in `running` while
+// awaiting an answer). But gate.executing has no INTERRUPT handler in
+// the compiled machine, so awaitTermination always times out.
+// Migration should detect this case and skip INTERRUPT entirely —
+// gate attempts aren't writing anything that needs stopping.
+describe("executeMigration — Bug 80 idle-at-gate skips INTERRUPT wait", () => {
+  beforeEach(() => {
+    __resetOrchestratorLocksForTest();
+    taskRegistry.__clearForTest();
+  });
+
+  it("skips INTERRUPT round-trip when only gate stages are running", async () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+
+    // Mini IR: A (agent) -> G (gate, approve->B, reject->A) -> B (agent).
+    // A is upstream of G; B is gate-routed downstream of G.
+    const ir = {
+      name: "rb-gate-mini",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "out", type: "string" }],
+          config: { promptRef: "A_prompt" },
+        },
+        {
+          name: "G",
+          type: "gate",
+          inputs: [{ name: "i", type: "string" }],
+          outputs: [],
+          config: {
+            question: {
+              text: "approve or reject?",
+              options: [{ value: "approve" }, { value: "reject" }],
+            },
+            routing: { routes: { approve: "B", reject: "A" } },
+          },
+        },
+        {
+          name: "B",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "done", type: "boolean" }],
+          config: { promptRef: "B_prompt" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "out" }, to: { stage: "G", port: "i" } },
+      ],
+    } as never;
+    const submitted = await svc.submit(ir, {
+      prompts: { A_prompt: "dummyA", B_prompt: "dummyB" },
+    });
+    if (!submitted.ok) throw new Error("submit failed");
+
+    // Seed: A succeeded; G is in `running` (idle waiting for human answer).
+    seedAttempt(db, "t-gate", submitted.versionHash, "A", "success");
+    seedAttempt(db, "t-gate", submitted.versionHash, "G", "running");
+
+    // Propose: change B's promptRef, rerunFrom=B. Supersede set is {B}.
+    const propose = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: {
+        ops: [{
+          op: "update_stage_config",
+          stage: "B",
+          configPatch: { promptRef: "B_prompt_v2" },
+        }],
+      },
+      prompts: { B_prompt_v2: "dummyB-v2" },
+      actor: "test",
+      rerunFrom: "B",
+      migrateRunningTasks: ["t-gate"],
+      autoApprove: true,
+    });
+    if (!propose.ok) {
+      throw new Error("propose failed: " + JSON.stringify(propose.diagnostics));
+    }
+
+    // Register a dispatcher that would HANG on INTERRUPT — emulates the
+    // gate's executing substate (no INTERRUPT handler). Without the Bug
+    // 80 fix, awaitTermination would block on this for the full
+    // interruptWaitMsOverride and migration would fail.
+    let interruptReceived = false;
+    taskRegistry.register("t-gate", {
+      send: (ev: { type: string }) => {
+        if (ev.type === "INTERRUPT") interruptReceived = true;
+        // Never call signalTermination — emulates idle gate.
+      },
+    });
+
+    const startRunner = vi.fn(async () => ({
+      ok: true as const,
+      taskId: "t-gate",
+      versionHash: propose.proposedVersion,
+    }));
+
+    const wallStart = Date.now();
+    const r = await executeMigration({
+      db,
+      taskId: "t-gate",
+      proposalId: propose.proposalId,
+      // Use a tiny override so a regression (not skipping INTERRUPT)
+      // would manifest as a 100ms wait, not a 30s wait — keeps the
+      // test snappy while still catching the bug.
+      interruptWaitMsOverride: 100,
+      startRunnerOverride: startRunner as never,
+    });
+    const wallMs = Date.now() - wallStart;
+
+    if (!r.ok) throw new Error("expected ok: " + JSON.stringify(r));
+    expect(r.supersededStages).toContain("B");
+    expect(startRunner).toHaveBeenCalledOnce();
+    // The INTERRUPT round-trip should be skipped entirely; wall time
+    // must be well under interruptWaitMsOverride (100ms). 50ms gives
+    // us slack on slow CI without leaving room for an actual 100ms
+    // awaitTermination call.
+    expect(wallMs).toBeLessThan(50);
+    expect(interruptReceived).toBe(false);
+
+    // Audit row records success (not INTERRUPT_TIMEOUT)
+    const audit = db.prepare(
+      `SELECT status, diagnostic_json FROM hot_update_events
+       WHERE event_id = ?`,
+    ).get(r.eventId) as { status: string; diagnostic_json: string };
+    expect(audit.status).toBe("success");
+    expect(JSON.parse(audit.diagnostic_json).interruptWaitMs).toBeLessThan(50);
+
+    taskRegistry.__clearForTest();
+    db.close();
+  });
+
+  it("still issues INTERRUPT when an agent stage is also running alongside the gate", async () => {
+    const db = makeDb();
+    const svc = new KernelService(db, { skipTypeCheck: true });
+
+    // Same mini IR but seed an agent stage + a gate stage both as running.
+    const ir = {
+      name: "rb-mixed-mini",
+      stages: [
+        {
+          name: "A",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "out", type: "string" }],
+          config: { promptRef: "A_prompt" },
+        },
+        {
+          name: "G",
+          type: "gate",
+          inputs: [{ name: "i", type: "string" }],
+          outputs: [],
+          config: {
+            question: {
+              text: "ok?",
+              options: [{ value: "approve" }, { value: "reject" }],
+            },
+            routing: { routes: { approve: "B", reject: "A" } },
+          },
+        },
+        {
+          name: "B",
+          type: "agent",
+          inputs: [],
+          outputs: [{ name: "done", type: "boolean" }],
+          config: { promptRef: "B_prompt" },
+        },
+      ],
+      wires: [
+        { from: { source: "stage", stage: "A", port: "out" }, to: { stage: "G", port: "i" } },
+      ],
+    } as never;
+    const submitted = await svc.submit(ir, {
+      prompts: { A_prompt: "a", B_prompt: "b" },
+    });
+    if (!submitted.ok) throw new Error("submit failed");
+
+    // Both A (agent) and G (gate) running: must NOT skip INTERRUPT.
+    seedAttempt(db, "t-mixed", submitted.versionHash, "A", "running");
+    seedAttempt(db, "t-mixed", submitted.versionHash, "G", "running");
+
+    const propose = svc.propose({
+      currentVersion: submitted.versionHash,
+      patch: {
+        ops: [{
+          op: "update_stage_config",
+          stage: "B",
+          configPatch: { promptRef: "B_prompt_v2" },
+        }],
+      },
+      prompts: { B_prompt_v2: "b2" },
+      actor: "test",
+      rerunFrom: "B",
+      migrateRunningTasks: ["t-mixed"],
+      autoApprove: true,
+    });
+    if (!propose.ok) throw new Error("propose failed");
+
+    // Dispatcher swallows INTERRUPT — guarantees timeout if INTERRUPT
+    // is issued (which it must be, because A is a non-gate running attempt).
+    taskRegistry.register("t-mixed", { send: () => { /* swallow */ } });
+
+    const r = await executeMigration({
+      db,
+      taskId: "t-mixed",
+      proposalId: propose.proposalId,
+      interruptWaitMsOverride: 50,
+    });
+
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error("expected timeout failure");
+    expect(r.code).toBe("MIGRATION_INTERRUPT_TIMEOUT");
+
+    taskRegistry.__clearForTest();
+    db.close();
+  });
+});
+
 describe("executeMigration — resume failure reverts supersede", () => {
   beforeEach(() => {
     __resetOrchestratorLocksForTest();
