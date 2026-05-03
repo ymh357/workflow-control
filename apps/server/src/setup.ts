@@ -1,291 +1,128 @@
 /**
- * Interactive setup: configures MCP servers, .env.local, and runs preflight checks.
+ * Interactive setup for workflow-control (kernel-next era).
  *
  * Usage: pnpm setup (from repo root)
+ *
+ * What this does:
+ *   - Verify Node.js >= 22.5 (required by node:sqlite)
+ *   - Verify Claude CLI is installed (kernel-next runtime spawns it
+ *     for every agent stage)
+ *   - Verify gh CLI is installed (optional but used by some pipelines)
+ *   - Run preflight checks against the live config
+ *   - Print actionable next steps
+ *
+ * What this does NOT do (legacy artefacts removed 2026-05-03):
+ *   - Configure Notion / Figma / Vercel / Linear MCP servers — those
+ *     belong in the per-task MCP catalog (managed via the dashboard
+ *     /kernel-next/mcp-catalog page or the add_mcp_catalog_entry MCP
+ *     tool). Putting them in ~/.claude/settings.json was the legacy
+ *     engine's mechanism; kernel-next stages declare their own
+ *     mcpServers in the IR + read encrypted secrets from the catalog.
+ *   - Write SETTING_NOTION_TOKEN / etc. to .env.local — no kernel-next
+ *     code consumed those.
+ *   - Install builtin pipelines from pipeline.yaml — those are now
+ *     pipeline.ir.json files seeded automatically by the runtime via
+ *     seedBuiltinPipelineByName at module load.
+ *   - Install a Claude Code stop hook pointing at /api/edge/* — the
+ *     edge router was retired with the legacy engine.
  */
 
-import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, copyFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { join, dirname } from "node:path";
-import { createInterface } from "node:readline";
+import { join } from "node:path";
 
 // --- Node.js version check (node:sqlite requires >= 22.5) ---
 const [major, minor] = process.versions.node.split(".").map(Number);
 if (major < 22 || (major === 22 && minor < 5)) {
   console.error(`\n  ERROR: Node.js >= 22.5 required (current: ${process.version})`);
-  console.error("  Install via https://nodejs.org or nvm install 22\n");
+  console.error("  Install via https://nodejs.org or `nvm install 22`\n");
   process.exit(1);
 }
 
-const SETTINGS_PATH = join(process.env.HOME ?? "", ".claude", "settings.json");
-
-function loadSettings(): Record<string, unknown> {
-  try {
-    return JSON.parse(readFileSync(SETTINGS_PATH, "utf-8"));
-  } catch {
-    return {};
-  }
+interface ToolCheck {
+  name: string;
+  bin: string;
+  required: boolean;
+  rationale: string;
+  installHint: string;
 }
 
-function saveSettings(settings: Record<string, unknown>): void {
-  writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + "\n", "utf-8");
-}
-
-const rl = createInterface({ input: process.stdin, output: process.stdout });
-const ask = (q: string): Promise<string> => new Promise((res) => rl.question(q, res));
+const TOOL_CHECKS: ToolCheck[] = [
+  {
+    name: "Claude CLI",
+    bin: "claude",
+    required: true,
+    rationale:
+      "kernel-next spawns the Claude SDK subprocess for every agent stage.",
+    installHint: "https://docs.anthropic.com/en/docs/claude-code",
+  },
+  {
+    name: "gh CLI",
+    bin: "gh",
+    required: false,
+    rationale:
+      "Optional — used by pipelines that operate on GitHub PRs/issues.",
+    installHint: "https://cli.github.com",
+  },
+];
 
 async function main() {
-  console.log("\n  workflow-control Setup");
+  console.log("\n  workflow-control setup");
   console.log("  " + "=".repeat(50));
+  console.log(`  Node.js: ${process.version} (>= 22.5 required ✓)`);
 
-  // ============================================================
-  // MCP Server Configuration
-  // ============================================================
-
-  const settings = loadSettings();
-  const mcpServers = (settings.mcpServers ?? {}) as Record<string, unknown>;
-  let mcpChanged = false;
-  let notionToken = "";
-
-  // --- Notion MCP (required) ---
-  if (!mcpServers.notion) {
-    console.log("\n  [Notion MCP] Required for ticket reading and Sprint Board.");
-    console.log("  Steps:");
-    console.log("    1. Go to https://www.notion.so/my-integrations");
-    console.log("    2. Create integration with Read+Update+Insert permissions");
-    console.log("    3. Copy the Internal Integration Secret (ntn_...)");
-    console.log("    4. In Notion, share your Sprint Board + test pages with the integration");
-    const token = await ask("\n  Paste Notion token (or press Enter to skip): ");
-    if (token.trim()) {
-      notionToken = token.trim();
-      mcpServers.notion = {
-        command: "npx",
-        args: ["-y", "@notionhq/notion-mcp-server"],
-        env: {
-          OPENAPI_MCP_HEADERS: JSON.stringify({
-            Authorization: `Bearer ${notionToken}`,
-            "Notion-Version": "2022-06-28",
-          }),
-        },
-      };
-      mcpChanged = true;
-      console.log("  -> Notion MCP configured.");
-    } else {
-      console.log("  -> Skipped. S1/S2/S3/S7 will fail without Notion.");
-    }
-  } else {
-    console.log("\n  [Notion MCP] Already configured.");
-  }
-
-  // --- Context7 MCP (required) ---
-  if (!mcpServers.context7) {
-    console.log("\n  [Context7 MCP] Required for library documentation lookup.");
-    console.log("  No API key needed.");
-    const confirm = await ask("  Install Context7 MCP? (Y/n): ");
-    if (confirm.trim().toLowerCase() !== "n") {
-      mcpServers.context7 = {
-        command: "npx",
-        args: ["-y", "@upstash/context7-mcp@latest"],
-      };
-      mcpChanged = true;
-      console.log("  -> Context7 MCP configured.");
-    }
-  } else {
-    console.log("\n  [Context7 MCP] Already configured.");
-  }
-
-  // --- Figma MCP (optional) ---
-  if (!mcpServers.figma) {
-    console.log("\n  [Figma MCP] Optional. For extracting design specs from Figma.");
-    const token = await ask("  Paste Figma access token (or press Enter to skip): ");
-    if (token.trim()) {
-      mcpServers.figma = {
-        command: "npx",
-        args: ["-y", "figma-developer-mcp", "--stdio"],
-        env: {
-          FIGMA_API_KEY: token.trim(),
-        },
-      };
-      mcpChanged = true;
-      console.log("  -> Figma MCP configured.");
-    } else {
-      console.log("  -> Skipped. Figma design extraction will be unavailable.");
-    }
-  } else {
-    console.log("\n  [Figma MCP] Already configured.");
-  }
-
-  // --- Vercel MCP (optional) ---
-  if (!mcpServers.vercel) {
-    console.log("\n  [Vercel MCP] Optional. For deployment monitoring.");
-    const token = await ask("  Paste Vercel token (or press Enter to skip): ");
-    if (token.trim()) {
-      mcpServers.vercel = {
-        command: "npx",
-        args: ["-y", "vercel-mcp-server"],
-        env: {
-          VERCEL_TOKEN: token.trim(),
-        },
-      };
-      mcpChanged = true;
-      console.log("  -> Vercel MCP configured.");
-    } else {
-      console.log("  -> Skipped. Vercel deployment monitoring will be unavailable.");
-    }
-  } else {
-    console.log("\n  [Vercel MCP] Already configured.");
-  }
-
-  // --- Save MCP settings ---
-  if (mcpChanged) {
-    settings.mcpServers = mcpServers;
-    saveSettings(settings);
-    console.log("\n  Settings saved to " + SETTINGS_PATH);
-    console.log("  Restart Claude Code for changes to take effect.");
-  } else {
-    console.log("\n  No MCP changes made.");
-  }
-
-  // ============================================================
-  // Agent engine check (at least one of Claude / Gemini / Codex)
-  // ============================================================
-
-  console.log("");
-  const engines: { name: string; bin: string; found: string | null }[] = [];
-  for (const [name, bin] of [["Claude", "claude"], ["Gemini", "gemini"], ["Codex", "codex"]] as const) {
+  // ---- External tool checks --------------------------------------
+  let allRequiredFound = true;
+  for (const t of TOOL_CHECKS) {
+    let found: string | null = null;
     try {
-      const found = execFileSync("which", [bin], { encoding: "utf-8", timeout: 5_000 }).trim();
-      engines.push({ name, bin, found });
-      console.log(`  [${name} CLI] ${found}`);
+      found = execFileSync("which", [t.bin], { encoding: "utf-8", timeout: 5_000 }).trim();
     } catch {
-      engines.push({ name, bin, found: null });
-      console.log(`  [${name} CLI] Not found.`);
+      found = null;
+    }
+    if (found) {
+      console.log(`  [${t.name}] ${found}`);
+      if (t.bin === "gh") {
+        try {
+          execFileSync("gh", ["auth", "status"], { encoding: "utf-8", stdio: "pipe", timeout: 5_000 });
+          console.log("  [gh auth] Authenticated.");
+        } catch {
+          console.log("  [gh auth] Not authenticated. Run: gh auth login");
+        }
+      }
+    } else {
+      console.log(`  [${t.name}] Not found.`);
+      console.log(`    rationale: ${t.rationale}`);
+      console.log(`    install:   ${t.installHint}`);
+      if (t.required) allRequiredFound = false;
     }
   }
-  if (!engines.some(e => e.found)) {
-    console.log("\n  WARNING: No agent engine found. At least one of Claude, Gemini, or Codex CLI is required.");
-    console.log("    Claude: https://docs.anthropic.com/en/docs/claude-code");
-    console.log("    Gemini: https://github.com/google-gemini/gemini-cli");
-    console.log("    Codex:  https://github.com/openai/codex");
+  if (!allRequiredFound) {
+    console.log("\n  ERROR: required tools missing — see install hints above.");
+    process.exit(1);
   }
 
-  // ============================================================
-  // gh CLI check
-  // ============================================================
-
-  console.log("");
-  try {
-    const ghVersion = execFileSync("gh", ["--version"], { encoding: "utf-8", timeout: 5_000 }).split("\n")[0];
-    console.log(`  [gh CLI] ${ghVersion}`);
-    try {
-      execFileSync("gh", ["auth", "status"], { encoding: "utf-8", stdio: "pipe", timeout: 5_000 });
-      console.log("  [gh auth] Authenticated.");
-    } catch {
-      console.log("  [gh auth] Not authenticated. Run: gh auth login");
-    }
-  } catch {
-    console.log("  [gh CLI] Not found. Install: https://cli.github.com");
-  }
-
-  // ============================================================
-  // .env.local generation
-  // ============================================================
-
+  // ---- .env.local stub ------------------------------------------
   const envLocalPath = join(process.cwd(), "apps", "server", ".env.local");
   if (!existsSync(envLocalPath)) {
-    console.log("\n  [.env.local] Not found. Creating from template...");
+    console.log("\n  [.env.local] Not found. Creating empty stub at " + envLocalPath);
+    console.log("    Add per-task MCP secrets via the dashboard");
+    console.log("    (/kernel-next/mcp-catalog) — they are encrypted on disk.");
     try {
-      const home = process.env.HOME ?? "";
-      const lines = [
-        `REPOS_BASE_PATH=${home}/`,
-        `WORKTREES_BASE_PATH=${home}/wfc-worktrees/`,
-      ];
-
-      // Add detected engine paths
-      for (const e of engines) {
-        if (e.found) lines.push(`${e.bin.toUpperCase()}_PATH=${e.found}`);
-      }
-
-      if (notionToken) {
-        lines.push(`SETTING_NOTION_TOKEN=${notionToken}`);
-      }
-
-      writeFileSync(envLocalPath, lines.join("\n") + "\n", "utf-8");
-      console.log("  -> Created " + envLocalPath);
-    } catch {
-      console.log("  -> Could not auto-detect paths. Copy .env.local.example manually.");
+      writeFileSync(
+        envLocalPath,
+        "# workflow-control runtime env. Add server-process variables here.\n" +
+          "# Per-task MCP secrets belong in the dashboard MCP catalog, not here.\n",
+        "utf-8",
+      );
+    } catch (err) {
+      console.log(`    Could not write: ${err instanceof Error ? err.message : String(err)}`);
     }
   } else {
     console.log("\n  [.env.local] Already exists.");
   }
 
-  rl.close();
-
-  // ============================================================
-  // Install Claude Code slash commands (~/.claude/commands/)
-  // ============================================================
-
-  const commandsSrc = join(dirname(import.meta.dirname ?? process.cwd()), "config", "claude-commands");
-  const commandsDest = join(process.env.HOME ?? "", ".claude", "commands");
-  try {
-    mkdirSync(commandsDest, { recursive: true });
-    const files = readdirSync(commandsSrc).filter((f) => f.endsWith(".md"));
-    for (const file of files) {
-      copyFileSync(join(commandsSrc, file), join(commandsDest, file));
-    }
-    if (files.length > 0) {
-      console.log(`\n  [Claude Commands] Installed ${files.length} command(s) to ${commandsDest}`);
-      console.log(`  -> Available: ${files.map((f) => "/" + f.replace(".md", "")).join(", ")}`);
-    }
-  } catch {
-    console.log("\n  [Claude Commands] Could not install slash commands. Copy manually from config/claude-commands/");
-  }
-
-  // ============================================================
-  // Install workflow stop hook (project-level .claude/settings.json)
-  // ============================================================
-
-  const projectClaudeDir = join(process.cwd(), ".claude");
-  const projectSettingsPath = join(projectClaudeDir, "settings.json");
-  try {
-    mkdirSync(projectClaudeDir, { recursive: true });
-    let projectSettings: Record<string, unknown> = {};
-    if (existsSync(projectSettingsPath)) {
-      try { projectSettings = JSON.parse(readFileSync(projectSettingsPath, "utf-8")); } catch { /* start fresh */ }
-    }
-    const hooks = (projectSettings.hooks ?? {}) as Record<string, unknown[]>;
-    const stopHookCmd = "bash apps/server/config/stop-hook-workflow.sh";
-    const existingStop = (hooks.Stop ?? []) as Array<{ hooks?: Array<{ command?: string }> }>;
-    const alreadyInstalled = existingStop.some(rule =>
-      rule.hooks?.some(h => h.command?.includes("stop-hook-workflow")),
-    );
-    if (!alreadyInstalled) {
-      if (!hooks.Stop) hooks.Stop = [];
-      (hooks.Stop as unknown[]).push({
-        hooks: [{
-          type: "command",
-          command: stopHookCmd,
-          timeout: 5,
-        }],
-      });
-      projectSettings.hooks = hooks;
-      writeFileSync(projectSettingsPath, JSON.stringify(projectSettings, null, 2) + "\n", "utf-8");
-      console.log("\n  [Stop Hook] Installed workflow continuation hook to " + projectSettingsPath);
-    } else {
-      console.log("\n  [Stop Hook] Already installed.");
-    }
-  } catch {
-    console.log("\n  [Stop Hook] Could not install. Add manually to .claude/settings.json");
-  }
-
-  // ============================================================
-  // Run preflight checks
-  // ============================================================
-
-  // Install builtin pipelines before preflight (preflight checks for pipeline dirs)
-  const { installBuiltinPipelines } = await import("./lib/builtin-installer.js");
-  installBuiltinPipelines();
-
+  // ---- Live preflight (config-loader checks against system-settings.yaml) ----
   console.log("\n  Running preflight checks...");
   const { loadEnv } = await import("./lib/env.js");
   loadEnv();
@@ -295,10 +132,14 @@ async function main() {
 
   console.log("  " + "=".repeat(50));
   if (passed) {
-    console.log("  Setup complete. Run: pnpm dev\n");
+    console.log("  Setup complete.");
   } else {
-    console.log("  Setup complete (some checks failed). Fix the issues above, then run: pnpm dev\n");
+    console.log("  Setup complete (some checks failed). Fix the issues above.");
   }
+  console.log("  Next: pnpm dev   # Server (:3001) + Dashboard (:3000)\n");
 }
 
-main().catch(console.error);
+main().catch((err) => {
+  console.error("\n  Setup failed:", err instanceof Error ? err.message : String(err));
+  process.exit(1);
+});

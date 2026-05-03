@@ -157,12 +157,6 @@ getDb();
 cleanupOldData(7);
 startPeriodicCleanup();
 
-// --- Install builtin pipelines ---
-{
-  const { installBuiltinPipelines } = await import("./lib/builtin-installer.js");
-  installBuiltinPipelines();
-}
-
 // --- Recover from encryption key loss (spec §6.3) ---
 // MUST run before any crypto operation. If the key file is missing but
 // inventory has stored secrets, mark all equipped/pending rows unhealthy
