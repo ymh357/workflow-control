@@ -78,13 +78,15 @@ authentication, network partitioning, multi-version DB migrations
 across user fleets, and most operational complexity that
 general-purpose orchestrators cannot avoid.
 
-**Execution is single-user; sharing is cross-user.** The
-distinction matters: every Task runs against one user's local
-SQLite + filesystem, but Pipelines, skills, fragments, hooks,
-scripts, and MCP server entries can be **published** to a shared
-registry (see §4.1 `/registry`) and installed by another user. The
-boundary is "no two users share a running task or in-flight state",
-not "no cross-user artefact movement".
+**Execution is single-user.** Every Task runs against one user's
+local SQLite + filesystem; there is no cross-user state of any
+kind. Cross-user sharing of artefacts (pipelines, prompts, MCP
+configurations) was prototyped via a YAML-based public registry
+(retired 2026-05-04 — the YAML schema diverged from kernel-next's
+canonical IR, leaving installed packages unrunnable). A future
+sharing channel keyed on `pipeline.ir.json` + the encrypted MCP
+catalog is on the roadmap but not currently shipping. For now,
+share by exporting + importing the IR JSON directly.
 
 ### 1.3 Surfaces
 
@@ -94,7 +96,7 @@ The same kernel is reachable from three independent surfaces:
 |---|---|
 | **HTTP REST + SSE** at `:3001` | Web dashboard, dogfood scripts, curl |
 | **MCP over HTTP** at `:3001/api/mcp` | External Claude Code sessions, Cursor, Codex CLI |
-| **CLI** (`pnpm tsx src/cli/...`) | Registry install/publish, prune-records |
+| **CLI** (`pnpm --filter server prune-records`) | DB cleanup |
 
 All three call into the same `KernelService` + same SQLite database.
 There's no separate "API tier" — surfaces are thin adapters over the
@@ -186,14 +188,14 @@ choice".
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Surfaces                                 │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐   │
-│  │  Web (Next.js)│  │ MCP HTTP     │  │ CLI (registry,       │   │
-│  │  /kernel-next │  │ /api/mcp     │  │ prune-records)       │   │
+│  │  Web (Next.js)│  │ MCP HTTP     │  │ CLI                  │   │
+│  │  /kernel-next │  │ /api/mcp     │  │ (prune-records)      │   │
 │  └───────┬──────┘  └───────┬──────┘  └──────────┬───────────┘   │
 │          │ REST + SSE       │ JSON-RPC 2.0      │ direct invoke  │
 │          ▼                  ▼                   ▼                │
 │  ┌──────────────────────────────────────────────────────────┐   │
 │  │                   Hono HTTP server                        │   │
-│  │  /api/kernel/*   /api/registry/*   /api/mcp              │   │
+│  │             /api/kernel/*       /api/mcp                 │   │
 │  └──────────────────────────┬───────────────────────────────┘   │
 │                             │                                    │
 │                             ▼                                    │
@@ -463,7 +465,6 @@ Three crucial invariants this preserves:
 /kernel-next/proposals          ← Hot-update proposals (approve / reject / migrate)
 /kernel-next/attempts/[id]      ← Per-attempt deep-dive (lineage, diff, sidecar)
 /kernel-next/mcp-catalog        ← MCP server inventory (encrypted secrets)
-/registry                       ← Cross-user package registry (browse + install)
 ```
 
 ### 4.2 The MCP surface
@@ -606,8 +607,8 @@ each `pipeline_versions` insert via the same transaction.
 ## Part 5 — The visible test surface
 
 The product is **defined by its tests** as much as by its code.
-2,374 server tests + 66 web tests + 65 registry-service tests cover
-the contracts the user actually depends on:
+~1,955 server tests + 66 web tests cover the contracts the user
+actually depends on:
 
 | Suite | What it pins |
 |---|---|
@@ -620,7 +621,6 @@ the contracts the user actually depends on:
 | `validator/*.test.ts` | Type compat, store schema, structural rules |
 | `compiler/ir-to-machine.test.ts` | IR → machine compile, multi-target rollback compile |
 | `kernel.test.ts` (KernelService) | submit, propose, approve, migrate, rollback, cancel, answer, provide_secrets |
-| `services/registry-service*.test.ts` | install, uninstall, update, publish, dependency closure |
 
 Every commit that lands a fix lands a regression test. The dogfood
 chain (handoffs `dogfood-2026-04-28/handoff-final.md` →

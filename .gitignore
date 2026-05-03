@@ -7,25 +7,8 @@ dist/
 .DS_Store
 coverage/
 
-# Registry generated artifacts (rebuild with `pnpm --filter server registry:build`)
-registry/packages/
-registry/index.json
-
 # System settings (contains secrets — use system-settings.yaml.example as template)
 apps/server/config/system-settings.yaml
-
-# Root-level config/ (local workflow configuration, not committed)
-/config/
-
-# config/ managed by registry (use `pnpm registry bootstrap` after clone)
-apps/server/config/pipelines/
-apps/server/config/skills/
-apps/server/config/hooks/
-apps/server/config/prompts/
-apps/server/config/gates/
-apps/server/config/scripts/
-apps/server/.wfctl-registry.lock
-apps/server/.publish-tmp/
 
 # Agent-generated stray prompt files (refinePrompts may write to wrong paths)
 apps/server/prompts/
@@ -87,9 +70,4 @@ apps/*/.workflow/
 # Team env (shared secrets — use .env.team.example as template)
 .env.team
 
-# User-specific config (these are registry-managed; only global.md and stage/ are tracked)
-apps/server/config/claude-md/*.md
-!apps/server/config/claude-md/global.md
-apps/server/config/system-prompts/
-apps/server/config/claude-commands/
 apps/server/scratch-*.mjs

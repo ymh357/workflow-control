@@ -194,11 +194,11 @@ describe("loadSystemSettings adversarial", () => {
 
   it("YAML section overrides core defaults with shallow merge", () => {
     mockExistsSync.mockReturnValue(true);
-    // Only override repos_base; other paths defaults should be preserved
-    mockReadFileSync.mockReturnValue('paths:\n  repos_base: "/override"\n');
+    // Only override data_dir; other paths defaults should be preserved
+    mockReadFileSync.mockReturnValue('paths:\n  data_dir: "/override"\n');
 
     const settings = loadSystemSettings();
-    expect(settings.paths!.repos_base).toBe("/override");
+    expect(settings.paths!.data_dir).toBe("/override");
     // Other paths defaults should still exist via { ...merged[key], ...value }
     expect(settings.paths!.claude_executable).toBeDefined();
   });

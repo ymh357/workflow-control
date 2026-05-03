@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { loadSystemSettings } from "./config-loader.js";
 
@@ -15,7 +14,7 @@ export function runPreflight(): { passed: boolean; results: CheckResult[] } {
   const results: CheckResult[] = [];
   const settings = loadSystemSettings();
 
-  // 1. Core Framework Paths
+  // Claude CLI: kernel-next runtime spawns it for every agent stage.
   const claudePath = settings.paths?.claude_executable || "claude";
   try {
     const found = execFileSync("which", [claudePath], { encoding: "utf-8", timeout: 5_000 }).trim();
@@ -24,30 +23,16 @@ export function runPreflight(): { passed: boolean; results: CheckResult[] } {
     results.push({ name: "Claude Executable", ok: false, detail: `Not found: ${claudePath}` });
   }
 
-  const reposBase = settings.paths?.repos_base || "";
-  if (reposBase && existsSync(reposBase)) {
-    results.push({ name: "Repos Base", ok: true, detail: reposBase });
-  } else {
-    // Repos base is only needed if scripts depend on it, otherwise warn
-    results.push({ name: "Repos Base", ok: true, detail: "(Optional) Use current directory or absolute paths" });
-  }
-
-  const worktreesBase = settings.paths?.worktrees_base || "";
-  results.push({ 
-    name: "Worktrees Base", 
-    ok: true, 
-    detail: worktreesBase || "Not set (will fallback to temp dir)" 
-  });
-
-  // 2. Tool availability
+  // gh CLI: optional, only required by pipelines that operate on GitHub.
   try {
     const ghVersion = execFileSync("gh", ["--version"], { encoding: "utf-8", timeout: 5_000 }).split("\n")[0];
     results.push({ name: "gh CLI", ok: true, detail: ghVersion });
   } catch {
-    results.push({ name: "gh CLI", ok: false, detail: "gh CLI not installed" });
+    results.push({ name: "gh CLI", ok: false, detail: "gh CLI not installed (optional — only needed for GitHub-touching pipelines)" });
   }
 
-  const passed = results.filter((r) => !r.ok).length === 0;
+  // gh CLI is optional; treat its absence as a warning, not a failure.
+  const passed = results.filter((r) => !r.ok && r.name !== "gh CLI").length === 0;
   return { passed, results };
 }
 

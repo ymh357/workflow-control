@@ -179,11 +179,11 @@ describe("loadSystemSettings", () => {
   it("merges YAML config over defaults", () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(
-      'paths:\n  repos_base: "/custom/repos"\nagent:\n  max_budget_usd: 25\n',
+      'paths:\n  data_dir: "/custom/data"\nagent:\n  max_budget_usd: 25\n',
     );
 
     const settings = loadSystemSettings();
-    expect(settings.paths!.repos_base).toBe("/custom/repos");
+    expect(settings.paths!.data_dir).toBe("/custom/data");
     expect(settings.agent!.max_budget_usd).toBe(25);
     // Defaults still present
     expect(settings.paths!.claude_executable).toBeDefined();

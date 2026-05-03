@@ -20,7 +20,7 @@ flowchart TB
   subgraph SURFACES["Surfaces (单用户、无 auth)"]
     WEB["Web (Next.js)<br/>:3000"]
     MCP_CLIENT["MCP 客户端<br/>(其他 Claude Code、<br/>Cursor、Codex)"]
-    CLI["CLI<br/>(registry, prune)"]
+    CLI["CLI<br/>(prune-records)"]
   end
 
   subgraph HONO["Hono server (:3001)"]
@@ -28,17 +28,14 @@ flowchart TB
     REST["/api/kernel/* REST"]
     SSE["/api/kernel-next/<br/>tasks/:id/stream SSE"]
     MCP_HTTP["/api/mcp<br/>JSON-RPC 2.0"]
-    REGAPI["/api/registry/*"]
   end
 
   subgraph CORE["服务层"]
     KSVC["KernelService"]
-    REGSVC["RegistryService"]
   end
 
   subgraph STATE["持久化状态"]
     DB[("kernel-next.db<br/>(SQLite WAL)")]
-    LOCK[/".wfctl-registry.lock"/]
   end
 
   subgraph RUNTIME["Runtime"]
@@ -51,13 +48,11 @@ flowchart TB
   WEB -->|HTTP| REST
   WEB -->|EventSource| SSE
   MCP_CLIENT -->|JSON-RPC over HTTP| MCP_HTTP
-  CLI -->|进程内调用| REGSVC
-  WEB -->|HTTP| REGAPI
+  CLI -->|直连 DB| DB
 
   REST --> KSVC
   SSE --> KSVC
   MCP_HTTP --> KSVC
-  REGAPI --> REGSVC
 
   KSVC <--> DB
   KSVC -->|spawn| RUNNER
@@ -65,9 +60,6 @@ flowchart TB
   MACHINE --> EXEC
   EXEC --> SDK
   EXEC --> DB
-
-  REGSVC <--> LOCK
-  REGSVC -->|HTTP| GH["GitHub<br/>workflow-control-registry"]
 ```
 
 ---
@@ -392,9 +384,6 @@ flowchart LR
 
   ROOT --> CAT["/kernel-next/mcp-catalog"]
   CAT --> SECRET["添加 MCP entry +<br/>加密 secret"]
-
-  ROOT --> REG["/registry<br/>(本次会话新增)"]
-  REG --> INSTALL["Install / Uninstall /<br/>Update / Outdated 角标"]
 ```
 
 ---

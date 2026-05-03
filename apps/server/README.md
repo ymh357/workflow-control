@@ -8,18 +8,26 @@ The **authoritative** onboarding/overview docs live in the [top-level README](..
 
 ```
 src/
-  index.ts                # server entry: lock, DB init, resumability boot, route wiring
+  index.ts                # server entry: lock, resumability boot, route wiring
+  setup.ts                # interactive `pnpm setup` (Node/Claude/gh checks)
   kernel-next/
     ir/                   # PipelineIR zod schema + SQLite DDL + sql helpers
     runtime/              # runner, real-executor, stream-pump, writer, resumability
+                          #   + worktree allocator (B9 / Phase 5C)
     mcp/                  # in-process MCP server (createKernelMcp) + KernelService
     hot-update/           # propose / migrate / rollback engine
     validator/            # structural / DAG / store-schema / types (tsc)
     sse/                  # broadcaster + SSE HTTP format
     codegen/              # IR → pipeline.ts for type validation
-  builtin-pipelines/      # seeded builtins (smoke-test + 3 research + pipeline-generator)
-  routes/                 # Hono HTTP routes (kernel-run, proposals, pipelines, gates, tasks, stream)
-  lib/                    # db singletons, logger, SystemSettings
+    debug/                # replay-stage / dry-run-stage / propose-pipeline-fix tools
+    mcp-catalog/          # encrypted MCP secret store
+  builtin-pipelines/      # 6 seeded builtins: smoke-test, pipeline-generator,
+                          #   pipeline-modifier, pr-description-generator,
+                          #   tech-research-collector, tech-research-writer
+  routes/                 # Hono HTTP routes (kernel-run, proposals, pipelines,
+                          #   gates, tasks, stream)
+  lib/                    # logger, error-response, env loader, preflight,
+                          #   spawn-utils, kernel-next-db singleton, SystemSettings
 ```
 
 ## Running
@@ -27,23 +35,22 @@ src/
 ```bash
 pnpm dev             # tsx watch src/index.ts  — server on :3001
 pnpm build           # tsc
-pnpm test            # vitest (~1500 cases, ~40s)
+pnpm test            # vitest (~2150 cases, ~55s)
 ```
 
 ## Environment
 
-See `.env.local.example`. The minimum for a real pipeline run:
+See `.env.local.example`. There are no required server-process env
+vars — Claude CLI is auto-detected from `$PATH`. Optional overrides:
 
-- `REPOS_BASE_PATH` — where your git repos live (used by script stages)
-- `WORKTREES_BASE_PATH` — where per-task worktrees are created
-- `CLAUDE_PATH` — auto-detected if `claude` is on PATH; override if needed
+- `CLAUDE_PATH` — pin a specific `claude` binary (otherwise PATH-resolved).
+- `DATA_DIR` — persistent SQLite location (default `/tmp/workflow-control-data/`,
+  volatile on macOS reboot — set this for any non-throwaway use).
+- `LOG_LEVEL` — `info` (default) or `debug` for verbose runtime traces.
 
-Optional (only when a pipeline uses the corresponding feature):
-`SETTING_NOTION_TOKEN`, `SETTING_FIGMA_ACCESS_TOKEN`,
-`VERCEL_PROJECT_ID` / `VERCEL_TEAM_ID` / `VERCEL_WEBHOOK_SECRET`,
-`GITHUB_WEBHOOK_SECRET`.
-
-Runtime data dir defaults to `/tmp/workflow-control-data/`. Override via `DATA_DIR` for persistent storage across macOS reboots.
+Per-task MCP secrets (API tokens) live in the encrypted MCP catalog
+managed via the dashboard `/kernel-next/mcp-catalog` page or the
+`add_mcp_catalog_entry` MCP tool — **not** in `.env.local`.
 
 ## Routes
 

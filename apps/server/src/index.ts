@@ -23,11 +23,9 @@ import { kernelMcpRoute } from "./routes/kernel-mcp.js";
 import { kernelTaskListRoute } from "./routes/kernel-task-list.js";
 import { kernelTaskPortsRoute } from "./routes/kernel-task-ports.js";
 import { createKernelMcpCatalogRoute } from "./routes/kernel-mcp-catalog.js";
-import { kernelRegistryRoute } from "./routes/kernel-registry.js";
 import { runPreflight, printPreflightResults } from "./lib/preflight.js";
 import { logger } from "./lib/logger.js";
 import { loadSystemSettings } from "./lib/config-loader.js";
-import { getDb, cleanupOldData, startPeriodicCleanup } from "./lib/db.js";
 import { errorResponse, ErrorCode } from "./lib/error-response.js";
 import { mkdirSync } from "node:fs";
 import { writeFile, unlink } from "node:fs/promises";
@@ -139,10 +137,6 @@ async function gracefulExit(signal: NodeJS.Signals | "manual"): Promise<void> {
   try { clearInterval(gateTimeoutTimer); } catch { /* best-effort */ }
   try { server.close(); } catch { /* best-effort */ }
   try {
-    const { closeDb } = await import("./lib/db.js");
-    closeDb();
-  } catch { /* best-effort */ }
-  try {
     const { closeKernelNextDb } = await import("./lib/kernel-next-db.js");
     closeKernelNextDb();
   } catch { /* best-effort */ }
@@ -152,10 +146,6 @@ async function gracefulExit(signal: NodeJS.Signals | "manual"): Promise<void> {
 process.on("SIGTERM", () => { void gracefulExit("SIGTERM"); });
 process.on("SIGINT", () => { void gracefulExit("SIGINT"); });
 
-// --- Initialize SQLite database and clean up old data ---
-getDb();
-cleanupOldData(7);
-startPeriodicCleanup();
 
 // --- Recover from encryption key loss (spec §6.3) ---
 // MUST run before any crypto operation. If the key file is missing but
@@ -290,7 +280,6 @@ app.route("/api", kernelMcpRoute);
 app.route("/api", kernelTaskListRoute);
 app.route("/api", kernelTaskPortsRoute);
 app.route("/api", createKernelMcpCatalogRoute(getKernelNextDb));
-app.route("/api", kernelRegistryRoute);
 
 const port = Number(process.env.PORT ?? 3001);
 

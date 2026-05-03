@@ -132,15 +132,13 @@ describe("canonical IR backward-compat (externalInputs extension)", () => {
     expect(versionHash(diamondIR())).toBe(BASELINE);
   });
 
-  it("smokeTestIR versionHash stays canonical across serialization (re-baselined 2026-04-25 Task 2)", async () => {
-    const { smokeTestIR } = await import("../builtins/smoke-test.js");
-    // Task 2: session_mode now participates in canonical form.
-    // Previous baseline: bb6511f796ede71a3b131b1eb7ed5d6e913b4963fdf822d8f3c004fcbbd9038e
-    // If this fails without a deliberate IR change, canonicalizeIR may have
-    // drifted; roll back the canonical change or update the baseline explicitly.
-    const BASELINE = "c9f051f1774171291161d9c8a041cf6c537dc33cac4b8e3cbf59654f6d1bee4f";
-    expect(versionHash(smokeTestIR())).toBe(BASELINE);
-  });
+  // 2026-05-03: removed the `smokeTestIR versionHash stays canonical`
+  // test case along with kernel-next/builtins/smoke-test.ts. The
+  // hand-ported IR was drifting from the canonical
+  // builtin-pipelines/smoke-test/pipeline.ir.json on disk, and the
+  // adjacent diamondIR baseline already covers the canonical-hash
+  // anti-drift contract. Re-add only if a future canonical change
+  // reveals a shape diamondIR doesn't cover.
 
   it("preserves hash for legacy-shaped wires (no source tag)", () => {
     const withLegacyWire: PipelineIR = {

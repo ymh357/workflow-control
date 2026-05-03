@@ -1,34 +1,27 @@
-# System Settings — copy to system-settings.yaml and fill in real values
-# Supports ${ENV_VAR} interpolation (reads from process.env at runtime)
+# system-settings.yaml — copy to system-settings.yaml and fill in.
+#
+# Active fields read by kernel-next (apps/server/src/lib/config/settings.ts):
+#   paths.data_dir          — SQLite + runtime data location
+#   paths.claude_executable — claude CLI path (default: PATH-resolved "claude")
+#   agent.claude_model      — default model when an IR stage doesn't pin one
+#   agent.max_budget_usd    — global cap; per-stage budgets in IR override
+#   sandbox.*               — currently advisory only (no enforcement;
+#                             see docs/whitepaper.md §6 limitations)
+#
+# Per-task MCP secrets do NOT live here — they go in the encrypted
+# MCP catalog (dashboard /kernel-next/mcp-catalog).
+#
+# Supports ${ENV_VAR} interpolation (reads from process.env at runtime).
 
 paths:
-  repos_base: ${HOME}
-  worktrees_base: ${HOME}/worktrees
   data_dir: /tmp/workflow-control-data
-  claude_executable: claude
-  gemini_executable: gemini
-  codex_executable: codex
+  # claude_executable: claude   # uncomment to pin a specific binary
+
 agent:
-  default_model: claude-sonnet-4-6
   claude_model: claude-sonnet-4-6
-  gemini_model: auto
-  codex_model: ""
-  default_engine: claude
   max_budget_usd: 10
-notion:
-  sprint_board_id: ""
-  ds_id: ""
-github:
-  org: ""
-figma:
-  access_token: ""
+
+# Sandbox config is advisory in kernel-next; no runtime enforcement layer.
+# Keep `enabled: false` until that lands.
 sandbox:
   enabled: false
-  auto_allow_bash: true
-  allow_unsandboxed_commands: true
-  network:
-    allowed_domains: []
-  filesystem:
-    allow_write: []
-    deny_write: []
-    deny_read: []

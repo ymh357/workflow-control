@@ -4,7 +4,7 @@ A **local, single-user** workflow engine for running AI coding agents — primar
 
 Pipelines are **YAML-free and AI-authored**: you describe a workflow in natural language, the built-in `pipeline-generator` drives Claude through design → review → registration, and the result is a reproducible, interruptible, observable pipeline stored in a local SQLite database.
 
-> **Positioning.** Workflow Control runs entirely on your own machine. No shared server. No multi-tenant model. No team scheduling. Pipelines can be shared across machines via the Registry, but execution always happens locally. See `docs/product-roadmap.md` for the scope and roadmap.
+> **Positioning.** Workflow Control runs entirely on your own machine. No shared server. No multi-tenant model. No team scheduling. Cross-user artefact sharing previously rode on a YAML-based public registry; that surface was retired 2026-05-04 because the YAML schema was incompatible with kernel-next's canonical IR. Until a successor sharing channel keyed on `pipeline.ir.json` ships, share by exporting/importing the IR JSON directly. See `docs/product-roadmap.md`.
 
 ## Why
 
@@ -20,7 +20,7 @@ Workflow Control delivers all five on top of a single-user SQLite store and a Ho
 
 ## Prerequisites
 
-- **Node.js >= 20** (required for `node:sqlite`)
+- **Node.js >= 22.5** (required for `node:sqlite`; setup.ts hard-fails below this)
 - **pnpm** — `npm install -g pnpm`
 - **Claude Code CLI** — the only supported agent engine. Install from [claude.com/claude-code](https://claude.com/claude-code) and run `claude login` before using Workflow Control.
 - **gh CLI** (optional) — needed only if your pipelines use GitHub PR creation scripts.
@@ -33,11 +33,11 @@ git clone https://github.com/ymh357/workflow-control.git
 cd workflow-control
 pnpm install
 
-# 2. Configure per-developer env (paths, optional tokens)
+# 2. Optional: configure runtime env
 cp apps/server/.env.local.example apps/server/.env.local
-# Edit apps/server/.env.local:
-#   REPOS_BASE_PATH        = absolute path where your git repos live
-#   WORKTREES_BASE_PATH    = absolute path where per-task worktrees will be created
+# .env.local is for server-process variables. Per-task MCP secrets
+# live in the encrypted catalog managed via the dashboard
+# (/kernel-next/mcp-catalog) — do NOT put them here.
 
 # 3. Start server + dashboard
 pnpm dev
@@ -45,14 +45,16 @@ pnpm dev
 # Dashboard: http://localhost:3000
 ```
 
-Open http://localhost:3000 — you'll land on the kernel-next dashboard. The system ships with four built-in pipelines:
+Open http://localhost:3000 — you'll land on the kernel-next dashboard. The system ships with six built-in pipelines:
 
 | Pipeline | Purpose |
 |---|---|
 | `smoke-test` | Minimal 2-stage sanity run (<30s, <$0.01) |
+| `Pipeline Generator` | **The primary authoring tool.** Natural-language → validated AI pipeline stored in the DB |
+| `pipeline-modifier` | Hot-update authoring tool: produces an IR patch proposal targeting an existing pipeline |
+| `pr-description-generator` | Generates a PR description from a branch + base; canary for `single-session` mode |
 | `Tech Research Collector` | Crawl primary/domain sources, emit structured research facts |
 | `Tech Research Writer` | Turn research facts into a Markdown deliverable with verification tiers |
-| `Pipeline Generator` | **The primary authoring tool.** Natural-language → validated AI pipeline stored in the DB |
 
 ## First Run
 
@@ -104,7 +106,7 @@ apps/
         hot-update/        # propose/approve/migrate/rollback engine
         validator/         # structural / DAG / store-schema / types (tsc)
       routes/              # Hono HTTP routes
-      builtin-pipelines/   # smoke-test + 3 research + pipeline-generator (IR JSON)
+      builtin-pipelines/   # 6 seeded pipelines (IR JSON; see Quick Start table)
   web/                # Next.js 16 dashboard (:3000), React 19 + Tailwind 4
     src/app/kernel-next/   # task view, pipelines list, proposals UI
 packages/
@@ -114,7 +116,7 @@ packages/
 ### Key concepts
 
 - **Pipeline IR**: a JSON document describing stages, wires, external inputs, and an optional `store_schema`. AI-authored via `pipeline-generator`; stored verbatim in SQLite under a content-hash `versionHash`.
-- **Stage**: an `agent` (Claude, MCP tools + system prompt), a `script` (deterministic automation), or a `gate` (human approval).
+- **Stage**: an `agent` (Claude, MCP tools + system prompt), a `script` (deterministic automation), or a `gate` (human approval). Both `agent` and `script` may be marked `fanout` to iterate over an array input concurrently.
 - **Port**: typed value produced or consumed by a stage. Writes go through the MCP `write_port` tool; reads go through `read_port`. Type compatibility is validated at submit-time by running `tsc` over a generated pipeline.ts.
 - **Run**: a task bound to a specific `versionHash`. Each stage attempt is persisted; if the server crashes mid-run, `bootResumability` picks it back up on restart (including SDK session resume on the in-flight agent stage).
 - **Hot update**: propose a patch against an existing `versionHash`, dry-run its impact, approve/reject, and optionally migrate running tasks to the new version (with `rerunFrom` controlling which stages get superseded). Rollback via `POST /api/kernel/tasks/:taskId/rollback`.
@@ -140,24 +142,18 @@ The in-process MCP server exposes the same surface to agents via `mcp____kernel_
 ## Development
 
 ```bash
-pnpm --filter server test       # server tests (~1500 cases, 40s)
+pnpm --filter server test       # server tests (~2150 cases, ~55s)
 pnpm --filter server build      # tsc check
 pnpm --filter web test          # web tests
 pnpm --filter web test:e2e      # playwright E2E (requires server running)
 ```
 
-Data lives in `/tmp/workflow-control-data/` by default (`kernel-next.db` + SSE history). Override via `DATA_DIR` env. On macOS `/tmp` is volatile across reboots — set `DATA_DIR` to a persistent path for real use.
+Data lives in `/tmp/workflow-control-data/` by default (the entire `kernel-next.db` SQLite file). Override via `DATA_DIR` env. On macOS `/tmp` is volatile across reboots — set `DATA_DIR` to a persistent path for real use. SSE history is in-process only (broadcaster ring buffer); no SSE persistence on disk.
 
 ## Configuration
 
-Two files control the system, both gitignored:
-
-- **`apps/server/.env.local`** — per-developer paths and optional API tokens. Required keys:
-  - `REPOS_BASE_PATH` — where your git repos live (used by script stages that operate on repos)
-  - `WORKTREES_BASE_PATH` — where per-task worktrees are created
-- **CLI paths** — `CLAUDE_PATH` is auto-detected from PATH; override if needed.
-
-Optional tokens for script integrations (Notion, Figma, GitHub PR scripts) live in `.env.local` as well — see `.env.local.example`.
+- **`apps/server/.env.local`** (gitignored) — server-process variables only (e.g. `DATA_DIR`, log level, `CLAUDE_PATH` override). Per-task MCP secrets do NOT belong here; they live in the encrypted MCP catalog (manage via the dashboard `/kernel-next/mcp-catalog` page or the `add_mcp_catalog_entry` MCP tool).
+- **CLI paths** — `CLAUDE_PATH` is auto-detected from `$PATH`; override only if needed.
 
 ## Docker
 
@@ -175,9 +171,7 @@ Ports:
 
 Volumes (see `docker-compose.yml` for exact mounts):
 
-- `./data` → `/data` — persistent SQLite store + SSE history (`DATA_DIR`).
-- `$HOME/projects` → `/repos` (read-only) — git repos script stages read from.
-- `$HOME/worktrees` → `/worktrees` — per-task worktrees script stages create.
+- `./data` → `/data` — persistent SQLite store (`DATA_DIR`).
 
 The `claude` CLI is **not** bundled in the image. Script stages that invoke it will fail unless you either mount a host `claude` binary into the container at `/usr/local/bin/claude` or extend the server image to install it. The Dockerfile gives you a runnable server + dashboard; agent-driven pipelines that shell out to `claude` require that extra wiring.
 

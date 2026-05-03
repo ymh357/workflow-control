@@ -6,23 +6,12 @@
   "scripts": {
     "dev": "tsx watch --ignore 'src/builtin-pipelines/**' src/index.ts",
     "setup": "tsx src/setup.ts",
-    "preflight": "tsx src/scripts/preflight-run.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "edge": "tsx src/edge/runner.ts",
-    "registry": "tsx src/cli/registry.ts",
-    "registry:gen": "tsx ../../registry/generate-manifests.ts",
-    "registry:index": "tsx ../../registry/build-index.ts",
-    "registry:build": "tsx ../../registry/generate-manifests.ts && tsx ../../registry/build-index.ts",
-    "registry:bootstrap": "tsx src/cli/registry.ts bootstrap",
-    "execution-record": "tsx src/cli/execution-record.ts",
+    "prune-records": "tsx src/cli/prune-kernel-records.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "postinstall": "chmod +x node_modules/.pnpm/node-pty@*/node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true"
-  },
-  "bin": {
-    "wfctl-edge": "src/edge/runner.ts",
-    "wfctl": "src/cli/registry.ts"
   },
   "dependencies": {
     "@workflow-control/shared": "workspace:*",

@@ -5,12 +5,18 @@
 #   - :3000  Next.js dashboard (web)
 #
 # Volumes:
-#   - ./data              -> /data              (SQLite + SSE history; persistent)
-#   - $HOME/projects      -> /repos (ro)        (git repos scanned by script stages)
-#   - $HOME/worktrees     -> /worktrees         (per-task git worktrees)
+#   - ./data              -> /data              (SQLite store; persistent)
 #
 # The browser hits the server directly on localhost:3001, so NEXT_PUBLIC_API_URL
 # must be the host URL — not the in-network `http://server:3001`.
+#
+# Worktree allocation (B9 / Phase 5C) is opt-in per task via
+# `worktreeSourceRepo` + `worktreeRoot` in the run_pipeline call;
+# there's no longer a global REPOS_BASE_PATH / WORKTREES_BASE_PATH
+# requirement. If your pipelines need worktrees, mount a writable
+# host volume into the container (e.g.
+# `- $HOME/worktrees:/worktrees`) and pass `worktreeRoot:/worktrees`
+# at task launch.
 
 services:
   server:
@@ -23,14 +29,10 @@ services:
     environment:
       NODE_ENV: production
       DATA_DIR: /data
-      REPOS_BASE_PATH: /repos
-      WORKTREES_BASE_PATH: /worktrees
       CLAUDE_PATH: /usr/local/bin/claude
       PORT: "3001"
     volumes:
       - ./data:/data
-      - ${HOME}/projects:/repos:ro
-      - ${HOME}/worktrees:/worktrees
     restart: unless-stopped
 
   web:
