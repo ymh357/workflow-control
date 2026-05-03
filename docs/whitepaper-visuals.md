@@ -3,6 +3,8 @@
 > Version 2.0 · 2026-05-03 · companion to [`whitepaper.md`](./whitepaper.md)
 >
 > Supersedes `architecture-visual.md` (archived 2026-04-24).
+>
+> **Chinese version**: [`whitepaper-visuals-zh.md`](./whitepaper-visuals-zh.md).
 
 This file is the **visual companion** to the v2.0 whitepaper. Every
 diagram below renders in GitHub-flavoured Markdown via Mermaid. Pair
@@ -279,7 +281,7 @@ sequenceDiagram
       Note over R: NEW Runner picks up<br/>at rerunFrom on toVersion<br/>fanout_element idx=0..N (B17)<br/>preserved as lineage
     end
   else no rerunFrom (forward-only)
-    Note over ORCH: prompts-only proposal<br/>doesn't trigger rerun;<br/>new tasks use toVersion
+    Note over ORCH: prompts-only proposal<br/>does not trigger rerun.<br/>new tasks use toVersion
   end
 
   K-->>API: { ok: true, eventId, supersededStages }

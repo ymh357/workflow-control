@@ -4,6 +4,10 @@
 >
 > Supersedes `architecture-whitepaper.md` / `architecture-whitepaper-zh.md`
 > (archived 2026-04-24 — those describe the retired legacy engine).
+>
+> **Chinese version**: [`whitepaper-zh.md`](./whitepaper-zh.md).
+> **Visuals (mermaid)**: [`whitepaper-visuals.md`](./whitepaper-visuals.md)
+> · [`whitepaper-visuals-zh.md`](./whitepaper-visuals-zh.md)
 
 ---
 
