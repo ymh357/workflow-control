@@ -23,6 +23,7 @@ const Nav = () => {
   const inLauncher = pathname === "/";
   const inPipelines = pathname.startsWith("/kernel-next/pipelines");
   const inProposals = pathname.startsWith("/kernel-next/proposals");
+  const inRegistry = pathname.startsWith("/registry");
   const inTasks = pathname.startsWith("/kernel-next") && !inPipelines && !inProposals;
 
   const linkClass = (active: boolean) =>
@@ -57,6 +58,9 @@ const Nav = () => {
             {pendingCount}
           </span>
         )}
+      </Link>
+      <Link href="/registry" className={linkClass(inRegistry)}>
+        Registry
       </Link>
       <div className="ml-auto flex items-center gap-1 text-xs">
         <ThemeToggle />

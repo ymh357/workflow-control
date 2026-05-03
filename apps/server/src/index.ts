@@ -23,6 +23,7 @@ import { kernelMcpRoute } from "./routes/kernel-mcp.js";
 import { kernelTaskListRoute } from "./routes/kernel-task-list.js";
 import { kernelTaskPortsRoute } from "./routes/kernel-task-ports.js";
 import { createKernelMcpCatalogRoute } from "./routes/kernel-mcp-catalog.js";
+import { kernelRegistryRoute } from "./routes/kernel-registry.js";
 import { runPreflight, printPreflightResults } from "./lib/preflight.js";
 import { logger } from "./lib/logger.js";
 import { loadSystemSettings } from "./lib/config-loader.js";
@@ -295,6 +296,7 @@ app.route("/api", kernelMcpRoute);
 app.route("/api", kernelTaskListRoute);
 app.route("/api", kernelTaskPortsRoute);
 app.route("/api", createKernelMcpCatalogRoute(getKernelNextDb));
+app.route("/api", kernelRegistryRoute);
 
 const port = Number(process.env.PORT ?? 3001);
 
