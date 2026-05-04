@@ -95,33 +95,41 @@ roadmap 明确写了非目标（CLAUDE.md "What this project is not"）：
 该跑哪个 pipeline，或者**怎么意识到**某件他反复手动做的事其实值得
 自动化？
 
-**Forge** 是闭合这个 gap 的用户触发回路。用户结束一段 Claude Code
-session 后，在 `/forge` 页面点击 **Forge Now**（或调
-`POST /api/forge/analyze`）。Forge 会：
+**Forge** 是闭合这个 gap 的用户触发回路。触发器有两个入口：web
+`/forge` 页面（一个按钮：**Forge Now**），或者直接在 Claude Code
+session 内调 **`forge_analyze` MCP 工具**——同一个后端，无需切到
+浏览器。Forge 流程：
 
 1. 把 session JSONL 读进自己的 `forge.db`（幂等——重跑成本极低；
    边界处脱敏）。
 2. 跑 `forge-distill` builtin pipeline（一个 Claude agent stage），
-   把 session 萃取为 0..N 个 **episode** —— 意图 + 抽象化的步骤 +
-   结果 + `pipeline_able` 判断。
-3. 对主 episode 做 embedding（默认：完全本地的 hash-based
-   embedder；通过 env key 可选 Voyage / OpenAI）。
-4. 与所有现有 pipeline 的描述符 embedding 缓存做匹配（每次见到新
-   `version_hash` 时 lazy 刷新）。
-5. 分支：
+   把 session 萃取为 **多个 episode** —— 意图 + 抽象化的步骤 +
+   结果 + `pipeline_able` 判断。**典型一次 session 产生 3-7 个
+   episode**，而不是一个。用户在一次 session 里基本都在干多件事
+   （修个 bug、加个测试、写个 doc），Forge 把每一件值得自动化的
+   都抽出来。
+3. 对每个 pipeline-able episode 做 embedding（一次批量调用；默认：
+   完全本地的 hash-based embedder；通过 env key 可选 Voyage / OpenAI）。
+4. **每个 episode 各自**与所有现有 pipeline 的描述符 embedding 缓存
+   做匹配（每次见到新 `version_hash` 时 lazy 刷新）。
+5. 每个 episode 独立分支：
    - **cosine ≥ 0.78** → "用现有 pipeline X" 一键直达。
    - **否则** → "新建" + 一份可直接粘贴给 `pipeline-generator` 的
      prompt + 已抽象到合适形态的外部输入建议。
-   - **无 episode** → "没探测到模式；这次是探索性 session。"
+6. 返回一个响应，含 `recommendations: PerEpisodeRec[]`（排序：先
+   match，再 create-new）和 `skippedEpisodes`（distiller 标记为非
+   pipeline-able 的探索性 / 一次性的 episode）。用户看到的是**每一个**
+   自动化候选，不是只有一个最大的。
 
-Forge 是 **请求级**的，不是常驻 daemon。每次分析用户都在 loop
-里。`forge.db` schema 同时记录跨 session 聚类作为信息性信号
-（"这件事过去 2 天你做了 3 次"），但**不再用作 gating 条件**——
-用户的点击就是触发器。
+Forge 是 **请求级**的，不是常驻 daemon。每次分析用户都在 loop 里。
+`forge.db` schema 同时记录跨 session 聚类作为信息性信号（"这件事过
+去 2 天你做了 3 次"），但**不**用作 gating 条件——用户的点击就是
+触发器。
 
 Surface：web `/forge` 页面 + HTTP `POST /api/forge/analyze` /
-`GET /api/forge/sessions` 等。forge.db 是本地独占的，**不**会进
-1.28 导出信封；共享仍然在 pipeline 粒度。
+`GET /api/forge/sessions` 等 + MCP 工具 `forge_analyze`（通过
+`/api/mcp` 暴露）。forge.db 是本地独占的，**不**会进 1.28 导出信封；
+共享仍然在 pipeline 粒度。
 
 ---
 
