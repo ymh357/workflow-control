@@ -1,0 +1,26 @@
+{
+  "name": "forge-distill",
+  "session_mode": "single",
+  "externalInputs": [
+    { "name": "session_payload", "type": "string" }
+  ],
+  "stages": [
+    {
+      "name": "distill",
+      "type": "agent",
+      "inputs": [
+        { "name": "session_payload", "type": "string" }
+      ],
+      "outputs": [
+        { "name": "episodes_json", "type": "string" }
+      ],
+      "config": { "promptRef": "system/distill" }
+    }
+  ],
+  "wires": [
+    {
+      "from": { "source": "external", "port": "session_payload" },
+      "to": { "stage": "distill", "port": "session_payload" }
+    }
+  ]
+}

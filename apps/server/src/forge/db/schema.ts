@@ -92,6 +92,16 @@ const DDL_STATEMENTS: string[] = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_candidates_cluster ON pipeline_candidates(cluster_id)`,
   `CREATE INDEX IF NOT EXISTS idx_candidates_status ON pipeline_candidates(dry_run_status, adopted_at, dismissed_at)`,
+  `CREATE TABLE IF NOT EXISTS pipeline_embeddings (
+    version_hash    TEXT PRIMARY KEY,
+    pipeline_name   TEXT NOT NULL,
+    descriptor_text TEXT NOT NULL,
+    embedding       BLOB NOT NULL,
+    embedding_model TEXT NOT NULL,
+    embedding_dim   INTEGER NOT NULL,
+    created_at      INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_pipeline_embeddings_name ON pipeline_embeddings(pipeline_name)`,
   `CREATE TABLE IF NOT EXISTS forge_jobs (
     job_id          TEXT PRIMARY KEY,
     kind            TEXT NOT NULL CHECK(kind IN ('tail','distill','cluster','synthesize','dryrun')),
