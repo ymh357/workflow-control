@@ -46,4 +46,12 @@ export interface ToolsDeps {
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   createMcpServer: (surface: "external" | "internal" | "combined", portRuntime?: PortRuntime) => any;
+  /**
+   * Optional forge.db handle. When provided, the kernel exposes the
+   * `forge_analyze` MCP tool that runs the user-triggered Forge
+   * analysis (session JSONL → distill → match → recommend) directly
+   * from inside Claude Code. The tool is omitted from the surface
+   * when forgeDb is absent (e.g. tests that don't need it).
+   */
+  forgeDb?: DatabaseSync;
 }

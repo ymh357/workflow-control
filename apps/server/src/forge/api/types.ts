@@ -1,4 +1,10 @@
 // API DTOs for /api/forge/* endpoints.
+//
+// IMPORTANT: a single Claude Code session typically contains MULTIPLE
+// pipeline-able episodes (the user did N distinct things in one
+// session). The analyze response surfaces ALL of them — one
+// recommendation per pipeline-able episode — so the user sees every
+// automation candidate, not just the one biggest task.
 
 import type { SessionEpisode } from "../types.js";
 
@@ -12,9 +18,49 @@ export interface AnalyzeRequest {
   jsonlPath?: string;
 }
 
+/**
+ * Per-episode recommendation. The session as a whole has 0..N of
+ * these — one per pipeline-able episode the distillation agent
+ * found. Episodes the agent marked `pipeline_able: false` are listed
+ * separately under `skippedEpisodes` for transparency but get no
+ * recommendation.
+ */
+export type PerEpisodeRecommendation =
+  | UseExistingRec
+  | CreateNewRec;
+
+export interface UseExistingRec {
+  kind: "use-existing";
+  episode: SessionEpisode;
+  pipelineName: string;
+  versionHash: string;
+  cosine: number;
+  why: string;
+  runUrl: string;
+  alternatives: Array<{ pipelineName: string; versionHash: string; cosine: number }>;
+}
+
+export interface CreateNewRec {
+  kind: "create-new";
+  episode: SessionEpisode;
+  proposal: {
+    suggestedName: string;
+    intent: string;
+    description: string;
+    pipelineGeneratorPrompt: string;
+    suggestedExternalInputs: Array<{ name: string; type: string; description: string }>;
+    nearestExisting: Array<{ pipelineName: string; cosine: number }>;
+    whyNotExisting: string;
+  };
+}
+
+export interface SkippedEpisode {
+  episode: SessionEpisode;
+  reason: string;
+}
+
 export type AnalyzeResponse =
-  | AnalyzeUseExisting
-  | AnalyzeCreateNew
+  | AnalyzeOk
   | AnalyzeNoPattern
   | AnalyzeError;
 
@@ -23,44 +69,23 @@ export interface AnalyzeBase {
   jsonlPath: string;
   cwd: string;
   episodeCount: number;
-  episodes: SessionEpisode[];
   truncated: boolean;
   embeddingModel: string;
 }
 
-export interface AnalyzeUseExisting extends AnalyzeBase {
-  kind: "use-existing";
-  recommendation: {
-    pipelineName: string;
-    versionHash: string;
-    cosine: number;
-    why: string;
-    runUrl: string;
-  };
+export interface AnalyzeOk extends AnalyzeBase {
+  kind: "ok";
+  /** One per pipeline-able episode. Order: matches first, then create-new. */
+  recommendations: PerEpisodeRecommendation[];
+  /** Episodes the distiller said are NOT pipeline-able (one-off debug etc). */
+  skippedEpisodes: SkippedEpisode[];
   /**
-   * Top-K matches above and at the recommendation; the user can
-   * still override and adopt-new, in which case Forge returns
-   * `kind: "create-new"` on a follow-up call with `forceCreate: true`.
+   * Summary counts for quick UI rendering / MCP text output.
    */
-  alternatives: Array<{ pipelineName: string; versionHash: string; cosine: number }>;
-}
-
-export interface AnalyzeCreateNew extends AnalyzeBase {
-  kind: "create-new";
-  proposal: {
-    suggestedName: string;
-    intent: string;
-    description: string;
-    /**
-     * The text the user can paste verbatim to pipeline-generator
-     * (or pipe via the MCP run_pipeline tool) to create a real
-     * pipeline. Already abstracted — includes "the file the user
-     * wants to refactor" not literal paths.
-     */
-    pipelineGeneratorPrompt: string;
-    suggestedExternalInputs: Array<{ name: string; type: string; description: string }>;
-    nearestExisting: Array<{ pipelineName: string; cosine: number }>;
-    whyNotExisting: string;
+  summary: {
+    useExistingCount: number;
+    createNewCount: number;
+    skippedCount: number;
   };
 }
 

@@ -2,20 +2,18 @@
 // runs the full pipeline:
 //   1. load session into forge.db
 //   2. distill via forge-distill builtin (inline, awaits result)
-//   3. select primary episode
-//   4. embed episode + refresh pipeline embedding cache
-//   5. match against existing pipelines
-//   6. branch:
-//      - cosine ≥ MATCH_THRESHOLD → return use-existing
-//      - else → return create-new (with pipeline-generator prompt)
-//      - episodes empty → return no-pattern
+//   3. embed each pipeline-able episode + refresh pipeline cache
+//   4. for each episode: match against existing pipelines
+//   5. per-episode branch: use-existing / create-new
+//   6. assemble AnalyzeOk { recommendations[], skippedEpisodes[] }
 //
-// All steps are inline (request-scoped). Caller awaits.
+// Multi-episode is the norm — one session usually contains several
+// distinct units of work. The handler surfaces ALL of them.
 
 import type { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { distillSession } from "../distillation/submit-distill.js";
+import { distillSession, type DistillResult } from "../distillation/submit-distill.js";
 import {
   loadSession, resolveSessionPath, findMostRecentSessionFile,
 } from "../ingestion/session-loader.js";
@@ -28,7 +26,10 @@ import {
   MATCH_THRESHOLD,
 } from "../matching/pipeline-matcher.js";
 import { clusterEpisode } from "../similarity/cluster-episode.js";
-import type { AnalyzeRequest, AnalyzeResponse } from "./types.js";
+import type {
+  AnalyzeRequest, AnalyzeResponse, AnalyzeBase,
+  PerEpisodeRecommendation, UseExistingRec, CreateNewRec, SkippedEpisode,
+} from "./types.js";
 import type { SessionEpisode } from "../types.js";
 
 export interface AnalyzeContext {
@@ -38,9 +39,17 @@ export interface AnalyzeContext {
   projectsRoot?: string;
   /** Default: buildEmbeddingClient() — local-hash provider. */
   embedder?: EmbeddingClient;
-  /** Override for tests; default 5 min. */
   distillTimeoutMs?: number;
   distillPollIntervalMs?: number;
+  /**
+   * Test seam — replace the distillation step entirely. Default
+   * implementation calls the real `distillSession` (which runs
+   * `forge-distill` against kernel-next runtime). Tests inject a
+   * pre-canned result so they can exercise downstream branching
+   * (multi-episode partitioning, matching, etc.) without spinning
+   * up a real Claude SDK call.
+   */
+  distill?: (sessionId: string) => Promise<DistillResult>;
 }
 
 export async function analyze(
@@ -64,7 +73,7 @@ export async function analyze(
     };
   }
 
-  // 2. Load events (idempotent)
+  // 2. Load events
   let load;
   try {
     load = await loadSession(ctx.forgeDb, jsonlPath);
@@ -76,14 +85,16 @@ export async function analyze(
     };
   }
 
-  // 3. Distill
-  const distill = await distillSession({
-    forgeDb: ctx.forgeDb,
-    kernelDb: ctx.kernelDb,
-    sessionId: load.sessionId,
-    timeoutMs: ctx.distillTimeoutMs,
-    pollIntervalMs: ctx.distillPollIntervalMs,
-  });
+  // 3. Distill (real or test-injected)
+  const distill = ctx.distill
+    ? await ctx.distill(load.sessionId)
+    : await distillSession({
+      forgeDb: ctx.forgeDb,
+      kernelDb: ctx.kernelDb,
+      sessionId: load.sessionId,
+      timeoutMs: ctx.distillTimeoutMs,
+      pollIntervalMs: ctx.distillPollIntervalMs,
+    });
   if (!distill.ok) {
     return {
       kind: "error",
@@ -94,164 +105,181 @@ export async function analyze(
   }
 
   const sessionRow = getSession(ctx.forgeDb, load.sessionId)!;
-
-  if (distill.episodes.length === 0) {
-    return {
-      kind: "no-pattern",
-      sessionId: load.sessionId,
-      jsonlPath,
-      cwd: sessionRow.cwd,
-      episodeCount: 0,
-      episodes: [],
-      truncated: distill.truncated,
-      embeddingModel: embedder.model,
-      reason: distill.reasonNoEpisodes ?? "distillation produced no episodes",
-    };
-  }
-
-  // 4. Select primary episode (largest by event range; tie-break: most recent)
-  const primary = selectPrimaryEpisode(distill.episodes);
-
-  // 5. Embed + record cluster signal (non-gating)
-  const epText = buildEpisodeText(primary);
-  const [primaryEmb] = await embedder.embed([epText]);
-  if (!primaryEmb) {
-    return {
-      kind: "error",
-      code: "EMBEDDING_FAILED",
-      message: "embedder returned no vector for the primary episode",
-    };
-  }
-  // Best-effort cluster recording — failures here don't block the response
-  try {
-    clusterEpisode(ctx.forgeDb, primary, {
-      embedding: primaryEmb,
-      embeddingModel: embedder.model,
-      signatureKey: signatureKeyFromEpisode(primary),
-      threshold: 0.85,
-    });
-  } catch { /* swallow */ }
-
-  // 6. Refresh pipeline embeddings + match
-  await refreshPipelineEmbeddings({
-    forgeDb: ctx.forgeDb, kernelDb: ctx.kernelDb, embedder,
-  });
-  const match = matchEpisodeAgainstPipelines({
-    forgeDb: ctx.forgeDb,
-    episodeEmbedding: primaryEmb,
-    embeddingModel: embedder.model,
-    topK: 5,
-  });
-
-  const base = {
+  const base: AnalyzeBase = {
     sessionId: load.sessionId,
     jsonlPath,
     cwd: sessionRow.cwd,
     episodeCount: distill.episodes.length,
-    episodes: distill.episodes,
     truncated: distill.truncated,
     embeddingModel: embedder.model,
   };
 
-  if (match.isMatch && match.bestPipelineName && match.bestVersionHash) {
+  if (distill.episodes.length === 0) {
     return {
       ...base,
-      kind: "use-existing",
-      recommendation: {
-        pipelineName: match.bestPipelineName,
-        versionHash: match.bestVersionHash,
-        cosine: match.bestCosine,
-        why: buildWhyExisting(primary, match.bestPipelineName, match.bestCosine),
-        runUrl: `/kernel-next/pipelines/${encodeURIComponent(match.bestPipelineName)}`,
-      },
-      alternatives: match.ranking.slice(1).map((r) => ({
-        pipelineName: r.pipelineName,
-        versionHash: r.versionHash,
-        cosine: r.cosine,
-      })),
+      kind: "no-pattern",
+      reason: distill.reasonNoEpisodes ?? "distillation produced no episodes",
     };
   }
 
-  // create-new branch
-  const proposal = buildCreateProposal(primary, distill.episodes, match.ranking);
+  // 4. Partition pipeline-able vs skipped
+  const pipelineAble = distill.episodes.filter((e) => e.pipelineAble);
+  const skipped: SkippedEpisode[] = distill.episodes
+    .filter((e) => !e.pipelineAble)
+    .map((episode) => ({
+      episode,
+      reason: episode.rationale || "marked not pipeline-able by distiller",
+    }));
+
+  // If every episode was skipped, no recommendations to make.
+  if (pipelineAble.length === 0) {
+    return {
+      ...base,
+      kind: "ok",
+      recommendations: [],
+      skippedEpisodes: skipped,
+      summary: {
+        useExistingCount: 0,
+        createNewCount: 0,
+        skippedCount: skipped.length,
+      },
+    };
+  }
+
+  // 5. Batch-embed all pipeline-able episodes in ONE provider call.
+  const epTexts = pipelineAble.map(buildEpisodeText);
+  const epEmbeddings = await embedder.embed(epTexts);
+  if (epEmbeddings.length !== pipelineAble.length) {
+    return {
+      kind: "error",
+      code: "EMBEDDING_BATCH_MISMATCH",
+      message: `embedder returned ${epEmbeddings.length} vectors for ${pipelineAble.length} inputs`,
+    };
+  }
+
+  // Best-effort cluster recording (non-gating): fire-and-track for each.
+  for (let i = 0; i < pipelineAble.length; i++) {
+    try {
+      clusterEpisode(ctx.forgeDb, pipelineAble[i]!, {
+        embedding: epEmbeddings[i]!,
+        embeddingModel: embedder.model,
+        signatureKey: signatureKeyFromEpisode(pipelineAble[i]!),
+        threshold: 0.85,
+      });
+    } catch { /* swallow */ }
+  }
+
+  // 6. Refresh pipeline cache once for all episodes
+  await refreshPipelineEmbeddings({
+    forgeDb: ctx.forgeDb, kernelDb: ctx.kernelDb, embedder,
+  });
+
+  // 7. Per-episode match
+  const recommendations: PerEpisodeRecommendation[] = [];
+  for (let i = 0; i < pipelineAble.length; i++) {
+    const ep = pipelineAble[i]!;
+    const emb = epEmbeddings[i]!;
+    const match = matchEpisodeAgainstPipelines({
+      forgeDb: ctx.forgeDb,
+      episodeEmbedding: emb,
+      embeddingModel: embedder.model,
+      topK: 5,
+    });
+
+    if (match.isMatch && match.bestPipelineName && match.bestVersionHash) {
+      const rec: UseExistingRec = {
+        kind: "use-existing",
+        episode: ep,
+        pipelineName: match.bestPipelineName,
+        versionHash: match.bestVersionHash,
+        cosine: match.bestCosine,
+        why: buildWhyExisting(ep, match.bestPipelineName, match.bestCosine),
+        runUrl: `/kernel-next/pipelines/${encodeURIComponent(match.bestPipelineName)}`,
+        alternatives: match.ranking.slice(1).map((r) => ({
+          pipelineName: r.pipelineName,
+          versionHash: r.versionHash,
+          cosine: r.cosine,
+        })),
+      };
+      recommendations.push(rec);
+    } else {
+      const rec: CreateNewRec = {
+        kind: "create-new",
+        episode: ep,
+        proposal: buildCreateProposal(ep, match.ranking),
+      };
+      recommendations.push(rec);
+    }
+  }
+
+  // Sort: use-existing first (immediate value), then create-new.
+  recommendations.sort((a, b) => {
+    if (a.kind !== b.kind) return a.kind === "use-existing" ? -1 : 1;
+    if (a.kind === "use-existing" && b.kind === "use-existing") return b.cosine - a.cosine;
+    return 0;
+  });
+
+  const useExistingCount = recommendations.filter((r) => r.kind === "use-existing").length;
+  const createNewCount = recommendations.filter((r) => r.kind === "create-new").length;
+
   return {
     ...base,
-    kind: "create-new",
-    proposal,
+    kind: "ok",
+    recommendations,
+    skippedEpisodes: skipped,
+    summary: {
+      useExistingCount,
+      createNewCount,
+      skippedCount: skipped.length,
+    },
   };
 }
 
-function selectPrimaryEpisode(episodes: SessionEpisode[]): SessionEpisode {
-  if (episodes.length === 1) return episodes[0]!;
-  // Largest range; tie break by most recent endSeq.
-  return episodes
-    .slice()
-    .sort((a, b) => {
-      const ra = a.endSeq - a.startSeq;
-      const rb = b.endSeq - b.startSeq;
-      if (rb !== ra) return rb - ra;
-      return b.endSeq - a.endSeq;
-    })[0]!;
-}
-
 function signatureKeyFromEpisode(ep: SessionEpisode): string {
-  // Coarse signature: first 5 verb-ish tokens of the intent. Used as a
-  // cheap filter elsewhere; not load-bearing for the analyze flow.
   return ep.intent.toLowerCase().split(/\s+/).filter((w) => w.length > 2).slice(0, 5).join("-");
 }
 
 function buildWhyExisting(ep: SessionEpisode, pipelineName: string, cosine: number): string {
-  return `Your session intent ("${ep.intent}") matches the existing `
+  return `Episode "${ep.intent}" matches the existing `
     + `pipeline '${pipelineName}' at cosine similarity ${cosine.toFixed(3)} `
     + `(threshold ${MATCH_THRESHOLD}). Run that pipeline instead of building a new one.`;
 }
 
 function buildCreateProposal(
-  primary: SessionEpisode,
-  allEpisodes: SessionEpisode[],
+  ep: SessionEpisode,
   ranking: Array<{ pipelineName: string; cosine: number }>,
-): {
-  suggestedName: string;
-  intent: string;
-  description: string;
-  pipelineGeneratorPrompt: string;
-  suggestedExternalInputs: Array<{ name: string; type: string; description: string }>;
-  nearestExisting: Array<{ pipelineName: string; cosine: number }>;
-  whyNotExisting: string;
-} {
-  const slug = primary.intent
+): CreateNewRec["proposal"] {
+  const slug = ep.intent
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48) || "new-pipeline";
 
-  // Suggest external inputs from the primary episode's first step's
-  // abstract `inputs` array. These are already abstract (the
-  // distillation prompt enforces it).
   const seenNames = new Set<string>();
   const inputs: Array<{ name: string; type: string; description: string }> = [];
-  for (const step of primary.steps) {
+  for (const step of ep.steps) {
     for (const input of step.inputs ?? []) {
-      const slugName = input.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 32);
+      const slugName = input.toLowerCase()
+        .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 32);
       if (!slugName || seenNames.has(slugName)) continue;
       seenNames.add(slugName);
       inputs.push({ name: slugName || `input_${inputs.length + 1}`, type: "string", description: input });
     }
   }
 
-  const stepsText = primary.steps.map((s, i) =>
+  const stepsText = ep.steps.map((s, i) =>
     `${i + 1}. [${s.stageKind}] ${s.description}`
     + (s.inputs && s.inputs.length > 0 ? `\n   inputs: ${s.inputs.join(", ")}` : "")
     + (s.outputs && s.outputs.length > 0 ? `\n   outputs: ${s.outputs.join(", ")}` : "")
-    + (s.toolCalls && s.toolCalls.length > 0 ? `\n   tools: ${s.toolCalls.join(", ")}` : "")
+    + (s.toolCalls && s.toolCalls.length > 0 ? `\n   tools: ${s.toolCalls.join(", ")}` : ""),
   ).join("\n");
 
-  const description = `${primary.intent}\n\n${stepsText}`;
+  const description = `${ep.intent}\n\n${stepsText}`;
 
   const generatorPrompt = [
     `Build a pipeline named '${slug}' that automates this task:`,
     "",
-    primary.intent,
+    ep.intent,
     "",
     "The user demonstrated this in a Claude Code session. Steps observed:",
     "",
@@ -262,11 +290,8 @@ function buildCreateProposal(
         + inputs.map((i) => `- ${i.name} (${i.type}): ${i.description}`).join("\n")
       : "No clearly-parameterizable inputs detected; design the pipeline with whatever externalInputs make sense.",
     "",
-    `Outcome of the demonstration: ${primary.outcome}.`,
-    `Rationale (why this is automatable): ${primary.rationale}`,
-    allEpisodes.length > 1
-      ? `\nNote: the session contained ${allEpisodes.length} distinct episodes; the primary one is summarized above.`
-      : "",
+    `Outcome of the demonstration: ${ep.outcome}.`,
+    `Rationale (why this is automatable): ${ep.rationale}`,
   ].filter(Boolean).join("\n");
 
   const whyNotExisting = ranking.length > 0 && ranking[0]
@@ -277,7 +302,7 @@ function buildCreateProposal(
 
   return {
     suggestedName: slug,
-    intent: primary.intent,
+    intent: ep.intent,
     description,
     pipelineGeneratorPrompt: generatorPrompt,
     suggestedExternalInputs: inputs,

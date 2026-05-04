@@ -1,50 +1,52 @@
 "use client";
 
-// /forge — the user-triggered "Forge Now" entry point. One big button.
-// Click it → POST /api/forge/analyze → render the recommendation.
+// /forge — the user-triggered "Forge Now" entry point.
 //
-// The user is in flow when they hit this button — they want a fast,
-// clear answer ("use existing" / "create new" / "no pattern") with
-// the next click already obvious.
+// One Claude Code session usually contains MULTIPLE pipeline-able
+// episodes (the user did 3-7 distinct things in one session). We
+// render one recommendation card per episode.
 
 import { useCallback, useState } from "react";
 import { useRouter } from "next/navigation";
 import { API_BASE } from "../../lib/api-client";
 
+interface SessionEpisodeDTO {
+  episodeId: string;
+  intent: string;
+  outcome: string;
+  pipelineAble: boolean;
+  rationale: string;
+  steps: Array<{ stageKind: string; description: string }>;
+}
+
 type AnalyzeResponse =
-  | UseExisting | CreateNew | NoPattern | ErrorResp;
+  | AnalyzeOk | AnalyzeNoPattern | AnalyzeError;
 
 interface AnalyzeBase {
   sessionId: string;
   jsonlPath: string;
   cwd: string;
   episodeCount: number;
-  episodes: Array<{
-    episodeId: string;
-    intent: string;
-    outcome: string;
-    pipelineAble: boolean;
-    rationale: string;
-    steps: Array<{ stageKind: string; description: string }>;
-  }>;
   truncated: boolean;
   embeddingModel: string;
 }
 
-interface UseExisting extends AnalyzeBase {
+type PerEpisodeRec = UseExistingRec | CreateNewRec;
+
+interface UseExistingRec {
   kind: "use-existing";
-  recommendation: {
-    pipelineName: string;
-    versionHash: string;
-    cosine: number;
-    why: string;
-    runUrl: string;
-  };
+  episode: SessionEpisodeDTO;
+  pipelineName: string;
+  versionHash: string;
+  cosine: number;
+  why: string;
+  runUrl: string;
   alternatives: Array<{ pipelineName: string; versionHash: string; cosine: number }>;
 }
 
-interface CreateNew extends AnalyzeBase {
+interface CreateNewRec {
   kind: "create-new";
+  episode: SessionEpisodeDTO;
   proposal: {
     suggestedName: string;
     intent: string;
@@ -56,16 +58,26 @@ interface CreateNew extends AnalyzeBase {
   };
 }
 
-interface NoPattern extends AnalyzeBase {
+interface AnalyzeOk extends AnalyzeBase {
+  kind: "ok";
+  recommendations: PerEpisodeRec[];
+  skippedEpisodes: Array<{ episode: SessionEpisodeDTO; reason: string }>;
+  summary: {
+    useExistingCount: number;
+    createNewCount: number;
+    skippedCount: number;
+  };
+}
+
+interface AnalyzeNoPattern extends AnalyzeBase {
   kind: "no-pattern";
   reason: string;
 }
 
-interface ErrorResp {
+interface AnalyzeError {
   kind: "error";
   code: string;
   message: string;
-  details?: Record<string, unknown>;
 }
 
 export default function ForgePage() {
@@ -107,10 +119,11 @@ export default function ForgePage() {
       <header className="space-y-1">
         <h1 className="text-2xl font-semibold tracking-tight">Forge</h1>
         <p className="text-sm text-secondary">
-          Analyze a Claude Code session and find out whether it can be
-          automated as a workflow pipeline. We&apos;ll either point you at
-          an existing pipeline that already does the work, or hand you
-          a prompt you can paste into <code className="rounded bg-elevated px-1 font-mono">pipeline-generator</code> to build a new one.
+          Analyze a Claude Code session for automation candidates. One session
+          usually contains multiple distinct tasks — Forge surfaces every one
+          that is pipeline-worthy and tells you per-task whether to{" "}
+          <strong>run an existing pipeline</strong> or{" "}
+          <strong>create a new one</strong>.
         </p>
       </header>
 
@@ -137,7 +150,7 @@ export default function ForgePage() {
           </button>
           {busy && (
             <span className="text-xs text-muted">
-              This may take 10-60s. Distillation is running.
+              Distillation runs as a Claude agent; this typically takes 10–60s.
             </span>
           )}
         </div>
@@ -149,6 +162,7 @@ export default function ForgePage() {
 }
 
 interface RouterLike { push: (href: string) => void }
+
 function ResultView({ result, router }: { result: AnalyzeResponse; router: RouterLike }) {
   if (result.kind === "error") {
     return (
@@ -173,36 +187,85 @@ function ResultView({ result, router }: { result: AnalyzeResponse; router: Route
     );
   }
 
-  if (result.kind === "use-existing") {
-    const r = result.recommendation;
+  // kind: "ok" — multi-episode response
+  const summaryText = [
+    result.summary.useExistingCount > 0 && `${result.summary.useExistingCount} can run an existing pipeline`,
+    result.summary.createNewCount > 0 && `${result.summary.createNewCount} would need a new pipeline`,
+    result.summary.skippedCount > 0 && `${result.summary.skippedCount} not pipeline-able`,
+  ].filter(Boolean).join(" · ");
+
+  return (
+    <div className="space-y-4">
+      <section className="rounded border border-default bg-surface px-3 py-2 text-xs text-secondary">
+        Session <code className="font-mono">{result.sessionId}</code> ·
+        cwd <code className="font-mono">{result.cwd}</code> ·
+        embedding {result.embeddingModel}
+        {result.truncated && <span className="ml-1 text-warning-fg">· truncated</span>}
+        <br />
+        Detected {result.episodeCount} episode{result.episodeCount !== 1 ? "s" : ""}
+        {summaryText && `: ${summaryText}`}.
+      </section>
+
+      {result.recommendations.length === 0 && result.skippedEpisodes.length > 0 && (
+        <section className="rounded-lg border border-default bg-surface p-4 text-sm text-secondary">
+          All detected episodes were one-off / exploratory. No automation
+          candidates this session.
+        </section>
+      )}
+
+      {result.recommendations.map((rec, i) => (
+        <RecommendationCard key={rec.episode.episodeId + i} rec={rec} router={router} />
+      ))}
+
+      {result.skippedEpisodes.length > 0 && (
+        <details className="text-xs text-secondary rounded border border-default bg-surface p-3">
+          <summary className="cursor-pointer">
+            {result.skippedEpisodes.length} skipped episode{result.skippedEpisodes.length > 1 ? "s" : ""} (not pipeline-able)
+          </summary>
+          <ul className="mt-2 space-y-2">
+            {result.skippedEpisodes.map((s) => (
+              <li key={s.episode.episodeId} className="border-l-2 border-default pl-2">
+                <p className="font-semibold">{s.episode.intent}</p>
+                <p className="text-xs italic text-muted">{s.reason}</p>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function RecommendationCard({ rec, router }: { rec: PerEpisodeRec; router: RouterLike }) {
+  if (rec.kind === "use-existing") {
     return (
-      <section className="rounded-lg border border-success-border bg-success-bg p-5 space-y-4">
-        <div className="space-y-1">
+      <section className="rounded-lg border border-success-border bg-success-bg p-5 space-y-3">
+        <header className="space-y-0.5">
           <p className="text-xs font-semibold uppercase tracking-wide text-success-fg">
             Use existing pipeline
           </p>
-          <h2 className="text-xl font-semibold">{r.pipelineName}</h2>
+          <h2 className="text-lg font-semibold">{rec.pipelineName}</h2>
           <p className="text-xs text-muted">
-            cosine {r.cosine.toFixed(3)} · session {result.sessionId}
+            episode: {rec.episode.intent} · cosine {rec.cosine.toFixed(3)}
           </p>
-        </div>
-        <p className="text-sm">{r.why}</p>
-        <div className="flex gap-2">
+        </header>
+        <p className="text-sm">{rec.why}</p>
+        <div className="flex gap-2 flex-wrap">
           <button
             type="button"
-            onClick={() => router.push(r.runUrl)}
+            onClick={() => router.push(rec.runUrl)}
             className="rounded border border-info-border bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
           >
-            Open {r.pipelineName} →
+            Open {rec.pipelineName} →
           </button>
         </div>
-        {result.alternatives.length > 0 && (
+        {rec.alternatives.length > 0 && (
           <details className="text-xs text-secondary">
             <summary className="cursor-pointer">
-              {result.alternatives.length} alternative{result.alternatives.length > 1 ? "s" : ""}
+              {rec.alternatives.length} alternative{rec.alternatives.length > 1 ? "s" : ""}
             </summary>
             <ul className="mt-2 space-y-1">
-              {result.alternatives.map((a) => (
+              {rec.alternatives.map((a) => (
                 <li key={a.versionHash}>
                   <a
                     href={`/kernel-next/pipelines/${encodeURIComponent(a.pipelineName)}`}
@@ -217,23 +280,23 @@ function ResultView({ result, router }: { result: AnalyzeResponse; router: Route
             </ul>
           </details>
         )}
-        <EpisodeList episodes={result.episodes} />
+        <EpisodeStepList episode={rec.episode} />
       </section>
     );
   }
 
   // create-new
-  const p = result.proposal;
+  const p = rec.proposal;
   return (
-    <section className="rounded-lg border border-info-border bg-info-bg p-5 space-y-4">
-      <div className="space-y-1">
+    <section className="rounded-lg border border-info-border bg-info-bg p-5 space-y-3">
+      <header className="space-y-0.5">
         <p className="text-xs font-semibold uppercase tracking-wide text-info-fg">
           Create a new pipeline
         </p>
-        <h2 className="text-xl font-semibold">{p.suggestedName}</h2>
+        <h2 className="text-lg font-semibold">{p.suggestedName}</h2>
         <p className="text-sm">{p.intent}</p>
-      </div>
-      <p className="text-sm text-secondary">{p.whyNotExisting}</p>
+      </header>
+      <p className="text-xs text-secondary">{p.whyNotExisting}</p>
 
       {p.suggestedExternalInputs.length > 0 && (
         <div>
@@ -256,7 +319,7 @@ function ResultView({ result, router }: { result: AnalyzeResponse; router: Route
           </p>
           <CopyButton text={p.pipelineGeneratorPrompt} />
         </div>
-        <pre className="rounded border border-default bg-surface p-3 font-mono text-xs whitespace-pre-wrap">
+        <pre className="rounded border border-default bg-surface p-3 font-mono text-xs whitespace-pre-wrap max-h-64 overflow-auto">
 {p.pipelineGeneratorPrompt}
         </pre>
       </div>
@@ -270,29 +333,25 @@ function ResultView({ result, router }: { result: AnalyzeResponse; router: Route
         </a>
       </div>
 
-      <EpisodeList episodes={result.episodes} />
+      <EpisodeStepList episode={rec.episode} />
     </section>
   );
 }
 
-function EpisodeList({ episodes }: { episodes: AnalyzeBase["episodes"] }) {
-  if (episodes.length === 0) return null;
+function EpisodeStepList({ episode }: { episode: SessionEpisodeDTO }) {
+  if (episode.steps.length === 0) return null;
   return (
     <details className="text-xs text-secondary">
       <summary className="cursor-pointer">
-        {episodes.length} episode{episodes.length > 1 ? "s" : ""} detected
+        {episode.steps.length} step{episode.steps.length > 1 ? "s" : ""} · outcome {episode.outcome}
       </summary>
-      <div className="mt-2 space-y-2">
-        {episodes.map((ep) => (
-          <div key={ep.episodeId} className="rounded border border-default bg-surface p-2">
-            <p className="font-semibold">{ep.intent}</p>
-            <p className="text-xs text-muted">
-              {ep.outcome} · {ep.pipelineAble ? "pipeline-able" : "one-off"} · {ep.steps.length} steps
-            </p>
-            <p className="text-xs italic">{ep.rationale}</p>
-          </div>
+      <ol className="mt-2 space-y-0.5 list-decimal list-inside">
+        {episode.steps.map((s, i) => (
+          <li key={i}>
+            <span className="font-mono text-muted">[{s.stageKind}]</span> {s.description}
+          </li>
         ))}
-      </div>
+      </ol>
     </details>
   );
 }

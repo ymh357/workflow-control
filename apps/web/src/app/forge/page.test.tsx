@@ -18,6 +18,48 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
+interface FakeRec {
+  kind: "use-existing" | "create-new";
+  episode: { episodeId: string; intent: string; outcome: string; pipelineAble: boolean; rationale: string; steps: Array<{ stageKind: string; description: string }> };
+  pipelineName?: string;
+  versionHash?: string;
+  cosine?: number;
+  why?: string;
+  runUrl?: string;
+  alternatives?: unknown[];
+  proposal?: {
+    suggestedName: string;
+    intent: string;
+    description: string;
+    pipelineGeneratorPrompt: string;
+    suggestedExternalInputs: Array<{ name: string; type: string; description: string }>;
+    nearestExisting: unknown[];
+    whyNotExisting: string;
+  };
+}
+
+function fakeOk(recommendations: FakeRec[], skipped: Array<{ episode: FakeRec["episode"]; reason: string }> = []) {
+  const useExistingCount = recommendations.filter((r) => r.kind === "use-existing").length;
+  const createNewCount = recommendations.filter((r) => r.kind === "create-new").length;
+  return {
+    kind: "ok",
+    sessionId: "s1", jsonlPath: "/x.jsonl", cwd: "/x",
+    episodeCount: recommendations.length + skipped.length,
+    truncated: false,
+    embeddingModel: "local-hash-v1",
+    recommendations,
+    skippedEpisodes: skipped,
+    summary: { useExistingCount, createNewCount, skippedCount: skipped.length },
+  };
+}
+
+function ep(intent: string, id = "e" + Math.random()) {
+  return {
+    episodeId: id, intent, outcome: "completed", pipelineAble: true, rationale: "r",
+    steps: [{ stageKind: "agent", description: "scan" }],
+  };
+}
+
 describe("ForgePage", () => {
   it("renders the Forge Now button and a session input", () => {
     render(<ForgePage />);
@@ -25,87 +67,135 @@ describe("ForgePage", () => {
     expect(screen.getByPlaceholderText(/Session ID/i)).toBeInTheDocument();
   });
 
-  it("renders a use-existing recommendation after analyze", async () => {
+  it("renders MULTIPLE recommendation cards (multi-episode)", async () => {
     (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true, status: 200,
-      json: async () => ({
-        kind: "use-existing",
-        sessionId: "s1", jsonlPath: "/x.jsonl", cwd: "/x",
-        episodeCount: 1,
-        episodes: [{
-          episodeId: "e1",
-          intent: "extract changelog",
-          outcome: "completed",
-          pipelineAble: true,
-          rationale: "structured",
-          steps: [{ stageKind: "agent", description: "scan" }],
-        }],
-        truncated: false,
-        embeddingModel: "local-hash-v1",
-        recommendation: {
+      json: async () => fakeOk([
+        {
+          kind: "use-existing",
+          episode: ep("extract changelog", "e1"),
           pipelineName: "changelog-extractor",
-          versionHash: "abc1234",
-          cosine: 0.91,
+          versionHash: "abc123", cosine: 0.91,
           why: "matches cleanly",
           runUrl: "/kernel-next/pipelines/changelog-extractor",
+          alternatives: [],
         },
-        alternatives: [],
-      }),
+        {
+          kind: "create-new",
+          episode: ep("summarize a PR", "e2"),
+          proposal: {
+            suggestedName: "summarize-pr",
+            intent: "summarize a PR",
+            description: "stuff",
+            pipelineGeneratorPrompt: "Build a pipeline named 'summarize-pr' …",
+            suggestedExternalInputs: [{ name: "pr", type: "string", description: "the PR" }],
+            nearestExisting: [],
+            whyNotExisting: "no similar pipeline",
+          },
+        },
+        {
+          kind: "create-new",
+          episode: ep("rebuild docker image", "e3"),
+          proposal: {
+            suggestedName: "rebuild-docker-image",
+            intent: "rebuild docker image",
+            description: "more",
+            pipelineGeneratorPrompt: "Build a pipeline named 'rebuild-docker-image' …",
+            suggestedExternalInputs: [],
+            nearestExisting: [],
+            whyNotExisting: "fresh task",
+          },
+        },
+      ]),
     } as unknown as Response);
 
     render(<ForgePage />);
     fireEvent.click(screen.getByRole("button", { name: /forge now/i }));
     await waitFor(() => {
-      expect(screen.getByText(/use existing pipeline/i)).toBeInTheDocument();
       expect(screen.getByText("changelog-extractor")).toBeInTheDocument();
-      expect(screen.getByText(/matches cleanly/)).toBeInTheDocument();
+      expect(screen.getByText("summarize-pr")).toBeInTheDocument();
+      expect(screen.getByText("rebuild-docker-image")).toBeInTheDocument();
+    });
+    expect(screen.getByText(/1 can run an existing pipeline/)).toBeInTheDocument();
+    expect(screen.getByText(/2 would need a new pipeline/)).toBeInTheDocument();
+  });
+
+  it("renders use-existing recommendation card", async () => {
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => fakeOk([{
+        kind: "use-existing",
+        episode: ep("extract changelog", "e1"),
+        pipelineName: "changelog-extractor",
+        versionHash: "abc123", cosine: 0.91,
+        why: "matches cleanly",
+        runUrl: "/kernel-next/pipelines/changelog-extractor",
+        alternatives: [],
+      }]),
+    } as unknown as Response);
+
+    render(<ForgePage />);
+    fireEvent.click(screen.getByRole("button", { name: /forge now/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/Use existing pipeline/i)).toBeInTheDocument();
+      expect(screen.getByText("changelog-extractor")).toBeInTheDocument();
     });
   });
 
-  it("renders a create-new proposal after analyze", async () => {
+  it("renders create-new card with copyable prompt", async () => {
     (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true, status: 200,
-      json: async () => ({
+      json: async () => fakeOk([{
         kind: "create-new",
-        sessionId: "s1", jsonlPath: "/x.jsonl", cwd: "/x",
-        episodeCount: 1,
-        episodes: [],
-        truncated: false,
-        embeddingModel: "local-hash-v1",
+        episode: ep("summarize a PR", "e1"),
         proposal: {
           suggestedName: "summarize-pr",
           intent: "summarize a PR",
           description: "stuff",
           pipelineGeneratorPrompt: "Build a pipeline named 'summarize-pr' …",
-          suggestedExternalInputs: [
-            { name: "pr_number", type: "string", description: "the PR number" },
-          ],
+          suggestedExternalInputs: [{ name: "pr_number", type: "string", description: "the PR number" }],
           nearestExisting: [],
           whyNotExisting: "no similar pipeline",
         },
-      }),
+      }]),
     } as unknown as Response);
 
     render(<ForgePage />);
     fireEvent.click(screen.getByRole("button", { name: /forge now/i }));
     await waitFor(() => {
-      expect(screen.getByText(/create a new pipeline/i)).toBeInTheDocument();
+      expect(screen.getByText(/Create a new pipeline/i)).toBeInTheDocument();
       expect(screen.getByText("summarize-pr")).toBeInTheDocument();
       expect(screen.getByText(/Build a pipeline named/)).toBeInTheDocument();
       expect(screen.getByText(/the PR number/)).toBeInTheDocument();
     });
   });
 
-  it("renders a no-pattern message when nothing is detected", async () => {
+  it("renders skipped episodes in collapsible details", async () => {
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => fakeOk(
+        [],
+        [
+          { episode: { ...ep("debug a flaky test", "e1"), pipelineAble: false }, reason: "one-off debug" },
+        ],
+      ),
+    } as unknown as Response);
+
+    render(<ForgePage />);
+    fireEvent.click(screen.getByRole("button", { name: /forge now/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/All detected episodes were one-off/)).toBeInTheDocument();
+      expect(screen.getByText(/1 skipped episode/)).toBeInTheDocument();
+    });
+  });
+
+  it("renders no-pattern response", async () => {
     (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true, status: 200,
       json: async () => ({
         kind: "no-pattern",
         sessionId: "s1", jsonlPath: "/x.jsonl", cwd: "/x",
-        episodeCount: 0,
-        episodes: [],
-        truncated: false,
-        embeddingModel: "local-hash-v1",
+        episodeCount: 0, truncated: false, embeddingModel: "local-hash-v1",
         reason: "session was too short",
       }),
     } as unknown as Response);
@@ -113,7 +203,7 @@ describe("ForgePage", () => {
     render(<ForgePage />);
     fireEvent.click(screen.getByRole("button", { name: /forge now/i }));
     await waitFor(() => {
-      expect(screen.getByText(/No automatable pattern detected/i)).toBeInTheDocument();
+      expect(screen.getByText(/No automatable pattern detected/)).toBeInTheDocument();
       expect(screen.getByText(/session was too short/)).toBeInTheDocument();
     });
   });
@@ -122,9 +212,7 @@ describe("ForgePage", () => {
     (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: false, status: 400,
       json: async () => ({
-        kind: "error",
-        code: "DISTILL_TIMEOUT",
-        message: "took too long",
+        kind: "error", code: "DISTILL_TIMEOUT", message: "took too long",
       }),
     } as unknown as Response);
 
@@ -139,11 +227,7 @@ describe("ForgePage", () => {
   it("sends jsonlPath when input looks like a file path", async () => {
     const fakeFetch = vi.fn().mockResolvedValueOnce({
       ok: true, status: 200,
-      json: async () => ({
-        kind: "no-pattern",
-        sessionId: "s1", jsonlPath: "/foo/bar.jsonl", cwd: "/foo", episodeCount: 0,
-        episodes: [], truncated: false, embeddingModel: "x", reason: "noop",
-      }),
+      json: async () => fakeOk([]),
     });
     globalThis.fetch = fakeFetch as unknown as typeof fetch;
     render(<ForgePage />);
@@ -160,11 +244,7 @@ describe("ForgePage", () => {
   it("sends sessionId when input does not look like a file path", async () => {
     const fakeFetch = vi.fn().mockResolvedValueOnce({
       ok: true, status: 200,
-      json: async () => ({
-        kind: "no-pattern",
-        sessionId: "abc-123", jsonlPath: "/x", cwd: "/x", episodeCount: 0,
-        episodes: [], truncated: false, embeddingModel: "x", reason: "n",
-      }),
+      json: async () => fakeOk([]),
     });
     globalThis.fetch = fakeFetch as unknown as typeof fetch;
     render(<ForgePage />);

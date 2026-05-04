@@ -67,9 +67,22 @@ episode is worth describing. Each episode:
    refactor", NOT `"src/foo.ts"`. This is the abstraction step that
    makes downstream pipeline synthesis possible.
 
-3. **One session may yield 0..N episodes.** Most sessions have one
-   primary task; some have multiple unrelated tasks (the user
-   switched topics). Split when there's a clear topic change.
+3. **One session typically yields MULTIPLE episodes.** A
+   real-world Claude Code session almost always contains several
+   distinct units of work — the user fixed a bug, then added a test,
+   then refactored a helper, then wrote a doc. Each is its own
+   episode. Be aggressive about splitting: if two adjacent things
+   could plausibly be invoked as separate workflows on different
+   inputs, they ARE separate episodes. The goal is to surface every
+   automation candidate, not to find "the one true task." Emit 3-7
+   episodes for a typical 1-hour session; emit 1 only when the
+   session is truly monothematic; emit 0 only when nothing is
+   pipeline-able. Two heuristics for boundaries:
+   - **Topic change**: the user pivots from one concern to another
+     (different file, different feature, different question).
+   - **Closure point**: an episode "completes" (the user got an
+     answer / the file compiles / the test passes / the PR was
+     filed) and the next thing starts. The closure is the boundary.
 
 4. **`pipeline_able: true` requires:**
    - The task's steps are enumerable.

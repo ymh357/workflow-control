@@ -21,6 +21,7 @@ import { buildPgTools } from "./tools/pg.js";
 import { buildDebugTools } from "./tools/debug.js";
 import { buildHotUpdateTools } from "./tools/hot-update.js";
 import { buildAdminTools } from "./tools/admin.js";
+import { buildForgeTools } from "./tools/forge.js";
 import { buildMcpCatalogTools } from "./tools/mcp-catalog.js";
 import { buildAddMcpCatalogEntryTools } from "./tools/add-mcp-catalog-entry.js";
 import { buildGetPipelineDefinitionTools } from "./tools/get-pipeline-definition.js";
@@ -79,6 +80,12 @@ export interface KernelMcpOptions extends KernelServiceOptions {
   pipelineGeneratorMaxTurns?: number;
   /** Per-run budget ceiling in USD for pipeline-generator. Default 8. */
   pipelineGeneratorMaxBudgetUsd?: number;
+  /**
+   * Optional forge.db handle. When provided, the external MCP surface
+   * exposes the `forge_analyze` tool. The HTTP wiring in
+   * apps/server/src/index.ts passes the singleton from openForgeDb.
+   */
+  forgeDb?: import("node:sqlite").DatabaseSync;
 }
 
 /** Every tool name emitted by createKernelMcp across all surfaces. */
@@ -111,7 +118,9 @@ type ToolName =
   | "recommend_mcp_servers"
   | "get_mcp_catalog_entry"
   | "add_mcp_catalog_entry"
-  | "get_pipeline_definition";
+  | "get_pipeline_definition"
+  // Forge — user-triggered session-mining (in-CC trigger)
+  | "forge_analyze";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "describe_pipeline", "propose_pipeline_change",
@@ -143,6 +152,8 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "add_mcp_catalog_entry",
   // 2026-04-27 pipeline-modifier
   "get_pipeline_definition",
+  // 2026-05-04 Forge — user-triggered session mining (in-CC trigger)
+  "forge_analyze",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 
@@ -180,6 +191,7 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
     pipelineGeneratorModel: options.pipelineGeneratorModel,
     pipelineGeneratorMaxTurns: options.pipelineGeneratorMaxTurns,
     pipelineGeneratorMaxBudgetUsd: options.pipelineGeneratorMaxBudgetUsd,
+    forgeDb: options.forgeDb,
     // Propagate ALL configurable options to nested MCP servers so the
     // recursively-constructed server shares the outer caller's overrides
     // (PG model / budget / maxBytes / writePortDispatcher / tscPath).
@@ -210,6 +222,7 @@ export function createKernelMcp(db: DatabaseSync, options: KernelMcpOptions = {}
       ...buildMcpCatalogTools(deps),
       ...buildAddMcpCatalogEntryTools(deps, options.catalogExec),
       ...buildGetPipelineDefinitionTools(deps),
+      ...buildForgeTools(deps),
   ];
 
   return createSdkMcpServer({

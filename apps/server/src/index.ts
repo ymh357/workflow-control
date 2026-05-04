@@ -19,7 +19,7 @@ import { kernelAuditRoute } from "./routes/kernel-audit.js";
 import { kernelDiffRoute } from "./routes/kernel-diff.js";
 import { kernelNextStreamRoute } from "./routes/kernel-next-stream.js";
 import { kernelRunRoute } from "./routes/kernel-run.js";
-import { kernelMcpRoute } from "./routes/kernel-mcp.js";
+import { buildKernelMcpRoute } from "./routes/kernel-mcp.js";
 import { kernelTaskListRoute } from "./routes/kernel-task-list.js";
 import { kernelTaskPortsRoute } from "./routes/kernel-task-ports.js";
 import { createKernelMcpCatalogRoute } from "./routes/kernel-mcp-catalog.js";
@@ -278,24 +278,26 @@ app.route("/api", kernelAuditRoute);
 app.route("/api", kernelDiffRoute);
 app.route("/api", kernelNextStreamRoute);
 app.route("/api", kernelRunRoute);
-app.route("/api", kernelMcpRoute);
+
+// Open forge.db once so both the HTTP /api/forge route AND the MCP
+// /api/mcp surface (forge_analyze tool) share a single singleton.
+const forgeDataDir = (loadSystemSettings().paths?.data_dir) || "/tmp/workflow-control-data";
+const forgeDbInstance = openForgeDb(forgeDataDir);
+
+app.route("/api", buildKernelMcpRoute({ getForgeDb: () => forgeDbInstance }));
 app.route("/api", kernelTaskListRoute);
 app.route("/api", kernelTaskPortsRoute);
 app.route("/api", createKernelMcpCatalogRoute(getKernelNextDb));
 
-// Forge — user-triggered session-mining surface (POST /api/forge/analyze
-// + read-only listing endpoints). Lives in its own forge.db; opened
-// here at startup so the route handlers can resolve the singleton.
-{
-  const forgeSettings = loadSystemSettings();
-  const forgeDataDir = forgeSettings.paths?.data_dir || "/tmp/workflow-control-data";
-  const forgeDb = openForgeDb(forgeDataDir);
-  app.route("/api", buildForgeRoute({
-    forgeDb,
-    kernelDb: getKernelNextDb(),
-    // projectsRoot defaults to $HOME/.claude-personal/projects in the handler.
-  }));
-}
+// Forge — user-triggered session-mining surface. POST /api/forge/analyze
+// + read-only listing endpoints. The same forge_analyze logic is also
+// exposed via MCP at /api/mcp (so users can trigger from inside Claude
+// Code with no web dependency).
+app.route("/api", buildForgeRoute({
+  forgeDb: forgeDbInstance,
+  kernelDb: getKernelNextDb(),
+  // projectsRoot defaults to $HOME/.claude-personal/projects in the handler.
+}));
 
 const port = Number(process.env.PORT ?? 3001);
 
