@@ -29,6 +29,7 @@ const Nav = () => {
   const inPipelines = pathname.startsWith("/kernel-next/pipelines");
   const inProposals = pathname.startsWith("/kernel-next/proposals");
   const inMcpCatalog = pathname.startsWith("/kernel-next/mcp-catalog");
+  const inForge = pathname.startsWith("/forge");
   const inTasks =
     pathname.startsWith("/kernel-next")
     && !inPipelines && !inProposals && !inMcpCatalog;
@@ -68,6 +69,9 @@ const Nav = () => {
       </Link>
       <Link href="/kernel-next/mcp-catalog" className={linkClass(inMcpCatalog)}>
         MCP catalog
+      </Link>
+      <Link href="/forge" className={linkClass(inForge)}>
+        Forge
       </Link>
       <div className="ml-auto flex items-center gap-1 text-xs">
         <ThemeToggle />
