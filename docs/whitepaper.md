@@ -106,6 +106,45 @@ All three call into the same `KernelService` + same SQLite database.
 There's no separate "API tier" — surfaces are thin adapters over the
 service layer.
 
+### 1.4 Forge — turning sessions into pipelines
+
+The system above answers "I want to run a pipeline." But how does a
+user *find* the pipeline they should run, or *notice* that a piece of
+work they keep doing manually deserves to be automated?
+
+**Forge** is the user-triggered loop that closes that gap. The user
+finishes a Claude Code session and clicks **Forge Now** at `/forge`
+(or hits `POST /api/forge/analyze`). Forge:
+
+1. Reads the session JSONL into its own `forge.db` (idempotent —
+   re-runs are cheap; redaction at the boundary).
+2. Runs the `forge-distill` builtin pipeline (one Claude agent stage)
+   that summarizes the session into zero or more **episodes** —
+   intent + abstracted steps + outcome + a `pipeline_able` verdict.
+3. Embeds the primary episode (default: a fully-local hash-based
+   embedder; Voyage / OpenAI optional via env keys).
+4. Matches against an embedding-cached descriptor of every existing
+   pipeline (refreshed lazily on first sight of each `version_hash`).
+5. Branches:
+   - **cosine ≥ 0.78** → "use existing pipeline X" with a one-click
+     link.
+   - **otherwise** → "create new" with a ready-to-paste prompt for
+     `pipeline-generator` plus suggested external inputs already
+     abstracted to the right shape.
+   - **no episodes** → "no pattern detected; this session was
+     exploratory."
+
+Forge is **request-scoped**, not a daemon. The user is in the loop
+on every analysis. The `forge.db` schema also tracks
+cross-session clusters as informational signal ("you've done this
+3 times across 2 days") but no longer gates the recommendation —
+the user's click is the trigger.
+
+Surface: web `/forge` page + HTTP `POST /api/forge/analyze` /
+`GET /api/forge/sessions` etc. forge.db is local-only and is *not*
+serialized into the 1.28 export envelope; sharing remains
+pipeline-level.
+
 ---
 
 ## Part 2 — Why

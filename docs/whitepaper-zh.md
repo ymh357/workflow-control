@@ -89,6 +89,40 @@ roadmap 明确写了非目标（CLAUDE.md "What this project is not"）：
 三者都调用同一个 `KernelService` + 同一个 SQLite 数据库。不存在独立
 的 "API 层"——surface 是 service 层之上的薄适配器。
 
+### 1.4 Forge —— 把 session 变成 pipeline
+
+上面这套系统回答的是"我想跑某个 pipeline"。但用户**怎么找到**自己
+该跑哪个 pipeline，或者**怎么意识到**某件他反复手动做的事其实值得
+自动化？
+
+**Forge** 是闭合这个 gap 的用户触发回路。用户结束一段 Claude Code
+session 后，在 `/forge` 页面点击 **Forge Now**（或调
+`POST /api/forge/analyze`）。Forge 会：
+
+1. 把 session JSONL 读进自己的 `forge.db`（幂等——重跑成本极低；
+   边界处脱敏）。
+2. 跑 `forge-distill` builtin pipeline（一个 Claude agent stage），
+   把 session 萃取为 0..N 个 **episode** —— 意图 + 抽象化的步骤 +
+   结果 + `pipeline_able` 判断。
+3. 对主 episode 做 embedding（默认：完全本地的 hash-based
+   embedder；通过 env key 可选 Voyage / OpenAI）。
+4. 与所有现有 pipeline 的描述符 embedding 缓存做匹配（每次见到新
+   `version_hash` 时 lazy 刷新）。
+5. 分支：
+   - **cosine ≥ 0.78** → "用现有 pipeline X" 一键直达。
+   - **否则** → "新建" + 一份可直接粘贴给 `pipeline-generator` 的
+     prompt + 已抽象到合适形态的外部输入建议。
+   - **无 episode** → "没探测到模式；这次是探索性 session。"
+
+Forge 是 **请求级**的，不是常驻 daemon。每次分析用户都在 loop
+里。`forge.db` schema 同时记录跨 session 聚类作为信息性信号
+（"这件事过去 2 天你做了 3 次"），但**不再用作 gating 条件**——
+用户的点击就是触发器。
+
+Surface：web `/forge` 页面 + HTTP `POST /api/forge/analyze` /
+`GET /api/forge/sessions` 等。forge.db 是本地独占的，**不**会进
+1.28 导出信封；共享仍然在 pipeline 粒度。
+
 ---
 
 ## 第二部分 —— Why
