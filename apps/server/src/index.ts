@@ -23,6 +23,8 @@ import { kernelMcpRoute } from "./routes/kernel-mcp.js";
 import { kernelTaskListRoute } from "./routes/kernel-task-list.js";
 import { kernelTaskPortsRoute } from "./routes/kernel-task-ports.js";
 import { createKernelMcpCatalogRoute } from "./routes/kernel-mcp-catalog.js";
+import { buildForgeRoute } from "./forge/api/routes.js";
+import { openForgeDb } from "./forge/db/open.js";
 import { runPreflight, printPreflightResults } from "./lib/preflight.js";
 import { logger } from "./lib/logger.js";
 import { loadSystemSettings } from "./lib/config-loader.js";
@@ -280,6 +282,20 @@ app.route("/api", kernelMcpRoute);
 app.route("/api", kernelTaskListRoute);
 app.route("/api", kernelTaskPortsRoute);
 app.route("/api", createKernelMcpCatalogRoute(getKernelNextDb));
+
+// Forge — user-triggered session-mining surface (POST /api/forge/analyze
+// + read-only listing endpoints). Lives in its own forge.db; opened
+// here at startup so the route handlers can resolve the singleton.
+{
+  const forgeSettings = loadSystemSettings();
+  const forgeDataDir = forgeSettings.paths?.data_dir || "/tmp/workflow-control-data";
+  const forgeDb = openForgeDb(forgeDataDir);
+  app.route("/api", buildForgeRoute({
+    forgeDb,
+    kernelDb: getKernelNextDb(),
+    // projectsRoot defaults to $HOME/.claude-personal/projects in the handler.
+  }));
+}
 
 const port = Number(process.env.PORT ?? 3001);
 

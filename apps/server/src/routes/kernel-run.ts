@@ -180,6 +180,7 @@ const BUILTIN_PIPELINE_NAMES = [
   "pipeline-generator",
   "pr-description-generator",
   "pipeline-modifier",
+  "forge-distill",
 ] as const;
 
 export const seedBuiltinPipelinesPromise: Promise<unknown> = Promise.allSettled(
