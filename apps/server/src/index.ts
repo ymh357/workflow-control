@@ -303,6 +303,24 @@ const port = Number(process.env.PORT ?? 3001);
 
 logger.info({ port }, "Server ready");
 
+// Forge connection hint — surface once at boot so the user knows how
+// to make `forge_analyze` callable from inside Claude Code. The MCP
+// server lives at /api/mcp and exposes 35 tools (forge_analyze among
+// them) the moment Claude Code is configured to talk to this URL.
+//
+// Format: stderr-friendly multi-line, only when not in a quiet env.
+if (process.env.FORGE_QUIET !== "1") {
+  const url = `http://localhost:${port}/api/mcp`;
+  // eslint-disable-next-line no-console
+  console.log(`
+  Forge / kernel-next MCP server: ${url}
+  To call forge_analyze (and 34 other tools) from any Claude Code session, add
+  to ~/.claude.json:
+      "mcpServers": { "workflow-control": { "type": "http", "url": "${url}" } }
+  Then open a new Claude Code session — see docs/forge-quickstart.md.
+  `);
+}
+
 const server = serve({ fetch: app.fetch, port });
 // SIGTERM/SIGINT handlers are already registered above (see gracefulExit).
 // HTTP/DB shutdown happens inside that handler; do not register a second
