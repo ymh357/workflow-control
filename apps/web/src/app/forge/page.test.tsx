@@ -30,7 +30,6 @@ interface FakeRec {
   proposal?: {
     suggestedName: string;
     intent: string;
-    description: string;
     pipelineGeneratorPrompt: string;
     suggestedExternalInputs: Array<{ name: string; type: string; description: string }>;
     nearestExisting: unknown[];
@@ -43,7 +42,7 @@ function fakeOk(recommendations: FakeRec[], skipped: Array<{ episode: FakeRec["e
   const createNewCount = recommendations.filter((r) => r.kind === "create-new").length;
   return {
     kind: "ok",
-    sessionId: "s1", jsonlPath: "/x.jsonl", cwd: "/x",
+    sessionId: "s1", jsonlPath: "/x.jsonl", cwd: "-x", projectDirEncoded: true,
     episodeCount: recommendations.length + skipped.length,
     truncated: false,
     embeddingModel: "local-hash-v1",
@@ -86,7 +85,6 @@ describe("ForgePage", () => {
           proposal: {
             suggestedName: "summarize-pr",
             intent: "summarize a PR",
-            description: "stuff",
             pipelineGeneratorPrompt: "Build a pipeline named 'summarize-pr' …",
             suggestedExternalInputs: [{ name: "pr", type: "string", description: "the PR" }],
             nearestExisting: [],
@@ -99,7 +97,6 @@ describe("ForgePage", () => {
           proposal: {
             suggestedName: "rebuild-docker-image",
             intent: "rebuild docker image",
-            description: "more",
             pipelineGeneratorPrompt: "Build a pipeline named 'rebuild-docker-image' …",
             suggestedExternalInputs: [],
             nearestExisting: [],
@@ -151,7 +148,6 @@ describe("ForgePage", () => {
         proposal: {
           suggestedName: "summarize-pr",
           intent: "summarize a PR",
-          description: "stuff",
           pipelineGeneratorPrompt: "Build a pipeline named 'summarize-pr' …",
           suggestedExternalInputs: [{ name: "pr_number", type: "string", description: "the PR number" }],
           nearestExisting: [],
@@ -194,7 +190,7 @@ describe("ForgePage", () => {
       ok: true, status: 200,
       json: async () => ({
         kind: "no-pattern",
-        sessionId: "s1", jsonlPath: "/x.jsonl", cwd: "/x",
+        sessionId: "s1", jsonlPath: "/x.jsonl", cwd: "-x", projectDirEncoded: true,
         episodeCount: 0, truncated: false, embeddingModel: "local-hash-v1",
         reason: "session was too short",
       }),

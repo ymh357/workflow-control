@@ -45,11 +45,15 @@ describe("buildForgeTools", () => {
     expect(tools).toEqual([]);
   });
 
-  it("exposes forge_analyze_start + forge_analyze_result when forgeDb is present", () => {
+  it("exposes forge_analyze_{start,result,recent} when forgeDb is present", () => {
     const tools = buildForgeTools(buildDeps({ withForge: true }));
-    expect(tools).toHaveLength(2);
+    expect(tools).toHaveLength(3);
     const names = tools.map((t) => t.name).sort();
-    expect(names).toEqual(["forge_analyze_result", "forge_analyze_start"]);
+    expect(names).toEqual([
+      "forge_analyze_recent",
+      "forge_analyze_result",
+      "forge_analyze_start",
+    ]);
   });
 
   it("forge_analyze_start returns LOAD_FAILED for a missing jsonlPath", async () => {

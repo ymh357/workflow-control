@@ -46,7 +46,10 @@ export interface CreateNewRec {
   proposal: {
     suggestedName: string;
     intent: string;
-    description: string;
+    // NOTE: `description` field intentionally omitted — it duplicated
+    // 99% of `pipelineGeneratorPrompt` (the prompt embeds the same
+    // intent + steps verbatim with a header). Callers wanting a human
+    // paragraph should build it from intent + step descriptions.
     pipelineGeneratorPrompt: string;
     suggestedExternalInputs: Array<{ name: string; type: string; description: string }>;
     nearestExisting: Array<{ pipelineName: string; cosine: number }>;
@@ -67,7 +70,18 @@ export type AnalyzeResponse =
 export interface AnalyzeBase {
   sessionId: string;
   jsonlPath: string;
+  /**
+   * Raw Claude Code project-dir name (e.g. "-Users-minghao-foo").
+   * Intentionally NOT decoded — the encoding loses literal-hyphen
+   * info, so any decode would silently mangle paths whose original
+   * directory name contained hyphens (real example:
+   * /Users/minghao/workflow-control). Callers / UIs should display
+   * `cwd` as-is and (optionally) use `projectDirEncoded` to label
+   * it as "encoded session project".
+   */
   cwd: string;
+  /** Always true. Marks `cwd` as the raw encoded form per above. */
+  projectDirEncoded: true;
   episodeCount: number;
   truncated: boolean;
   embeddingModel: string;

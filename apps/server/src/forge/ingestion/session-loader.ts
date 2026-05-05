@@ -9,7 +9,7 @@ import { basename, dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { tailFile } from "./jsonl-tail.js";
 import { parseLine } from "./parser.js";
-import { decodeProjectDir } from "./watcher.js";
+import { rawProjectDir } from "./watcher.js";
 import {
   upsertSession, advanceByteOffset, getSession, getMaxSeq, insertEvents,
 } from "../db/sessions.js";
@@ -43,7 +43,10 @@ export async function loadSession(
     throw new Error(`SESSION_NOT_FOUND: ${jsonlPath}`);
   }
   const dirName = basename(dirname(jsonlPath));
-  const cwd = decodeProjectDir(dirName);
+  // Raw encoded form (e.g. "-private-tmp-workflow-control-..."). We
+  // intentionally don't decode; see watcher.rawProjectDir for the
+  // rationale (Claude Code's encoding loses literal-hyphen info).
+  const cwd = rawProjectDir(dirName);
   // The canonical sessionId comes from the JSONL's first line (Claude
   // Code records its own UUID there). Falling back to the filename
   // basename is for fixtures / renamed files only — and only when the
@@ -158,10 +161,28 @@ export function resolveSessionPath(db: DatabaseSync, sessionId: string): string 
  * "analyze my current session" without specifying which.
  */
 export async function findMostRecentSessionFile(projectsRoot: string): Promise<string | null> {
-  if (!existsSync(projectsRoot)) return null;
+  const list = await listRecentSessionFiles(projectsRoot, 1);
+  return list[0] ?? null;
+}
+
+/**
+ * Return the absolute paths of the N most-recently-modified .jsonl
+ * files under `projectsRoot`, ordered newest first. Used by the
+ * forge_analyze_recent tool to kick off N parallel analyses without
+ * forcing the caller to enumerate session ids.
+ *
+ * Edge cases: if `projectsRoot` doesn't exist OR contains no .jsonl
+ * files, returns []. `count` is treated as a hard upper bound (the
+ * actual return may be shorter when fewer sessions exist).
+ */
+export async function listRecentSessionFiles(
+  projectsRoot: string,
+  count: number,
+): Promise<string[]> {
+  if (count <= 0 || !existsSync(projectsRoot)) return [];
   const { readdir } = await import("node:fs/promises");
   const subdirs = await readdir(projectsRoot, { withFileTypes: true });
-  let best: { path: string; mtime: number } | null = null;
+  const all: Array<{ path: string; mtime: number }> = [];
   for (const dirent of subdirs) {
     if (!dirent.isDirectory()) continue;
     const projDir = join(projectsRoot, dirent.name);
@@ -170,12 +191,11 @@ export async function findMostRecentSessionFile(projectsRoot: string): Promise<s
       if (!f.endsWith(".jsonl")) continue;
       const p = join(projDir, f);
       const st = await stat(p);
-      if (!best || st.mtimeMs > best.mtime) {
-        best = { path: p, mtime: st.mtimeMs };
-      }
+      all.push({ path: p, mtime: st.mtimeMs });
     }
   }
-  return best?.path ?? null;
+  all.sort((a, b) => b.mtime - a.mtime);
+  return all.slice(0, count).map((x) => x.path);
 }
 
 // keep export for unused-symbol audit; readFile imported for future

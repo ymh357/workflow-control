@@ -125,7 +125,10 @@ type ToolName =
   // (Claude Code included) have a ~60s tool-call timeout, but
   // forge-distill calls Claude SDK which takes 60-180s.
   | "forge_analyze_start"
-  | "forge_analyze_result";
+  | "forge_analyze_result"
+  // 2026-05-05 — multi-session kickoff for "what should I automate
+  // from my recent work?". Returns N analysisIds in parallel.
+  | "forge_analyze_recent";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "describe_pipeline", "propose_pipeline_change",
@@ -161,6 +164,8 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   // forge_analyze tool that landed 2026-05-04. See ToolName comment.
   "forge_analyze_start",
   "forge_analyze_result",
+  // Multi-session kickoff (Issue 7 of the 2026-05-05 usability round).
+  "forge_analyze_recent",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 

@@ -21,6 +21,7 @@ import {
 } from "../distillation/submit-distill.js";
 import {
   loadSession, resolveSessionPath, findMostRecentSessionFile,
+  listRecentSessionFiles,
 } from "../ingestion/session-loader.js";
 import { getSession } from "../db/sessions.js";
 import {
@@ -124,6 +125,7 @@ async function finalizeAnalyze(
     sessionId,
     jsonlPath,
     cwd: sessionRow.cwd,
+    projectDirEncoded: true,
     episodeCount: distill.episodes.length,
     truncated: distill.truncated,
     embeddingModel: embedder.model,
@@ -258,32 +260,14 @@ async function finalizeAnalyze(
 //   analyzeStart(req)   → returns { analysisId } in <1s
 //   analyzeHarvest(id)  → polls once. status="running" or kind="ok"/"no-pattern"/"error".
 //
-// analysisId is base64(json{sessionId, jsonlPath, taskId, truncated})
-// — fully self-describing, no extra DB row needed.
+// analysisId IS the kernel-next taskId (a short, ergonomic identifier
+// like `forge-distill-1777993813697-4d43d155`). The full handle —
+// sessionId, jsonlPath, truncated flag, optional empty-result cache —
+// lives server-side in the `forge_analyses` table keyed by
+// analysis_id. Empty-session shortcut paths use a synthetic
+// `empty-<ts>-<rand>` analysis_id since no kernel task spawned.
 
-export interface AnalysisHandle {
-  sessionId: string;
-  jsonlPath: string;
-  taskId: string;       // empty when session was too short (no distill spawned)
-  truncated: boolean;
-  // When the session was too short to distill, we cache the empty
-  // result here so the harvest call returns it without re-running.
-  emptyResult?: { episodes: SessionEpisode[]; reasonNoEpisodes: string };
-}
-
-export function encodeAnalysisId(h: AnalysisHandle): string {
-  return Buffer.from(JSON.stringify(h), "utf8").toString("base64url");
-}
-
-export function decodeAnalysisId(s: string): AnalysisHandle | null {
-  try {
-    const json = Buffer.from(s, "base64url").toString("utf8");
-    const obj = JSON.parse(json) as Record<string, unknown>;
-    if (typeof obj.sessionId !== "string" || typeof obj.jsonlPath !== "string"
-      || typeof obj.taskId !== "string" || typeof obj.truncated !== "boolean") return null;
-    return obj as unknown as AnalysisHandle;
-  } catch { return null; }
-}
+import { insertAnalysis, getAnalysis } from "../db/analyses.js";
 
 export type AnalyzeStartResponse =
   | { kind: "started"; analysisId: string; sessionId: string; taskId: string; jsonlPath: string }
@@ -318,22 +302,31 @@ export async function analyzeStart(
     return { kind: "error", code: start.code, message: start.message };
   }
 
-  const handle: AnalysisHandle = {
+  // analysisId = taskId for the real-distill path. For the
+  // empty-session shortcut, the start helper returns taskId === "" —
+  // synthesise a unique id so the harvest can find the row.
+  const analysisId = start.taskId !== ""
+    ? start.taskId
+    : `empty-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+
+  insertAnalysis(ctx.forgeDb, {
+    analysisId,
     sessionId: load.sessionId,
     jsonlPath,
     taskId: start.taskId,
     truncated: start.truncated,
-  };
-  if (start.emptySessionResult) {
-    handle.emptyResult = {
-      episodes: start.emptySessionResult.episodes,
-      reasonNoEpisodes: start.emptySessionResult.reasonNoEpisodes,
-    };
-  }
+    startedAt: Date.now(),
+    emptyResult: start.emptySessionResult
+      ? {
+          episodes: start.emptySessionResult.episodes,
+          reasonNoEpisodes: start.emptySessionResult.reasonNoEpisodes,
+        }
+      : undefined,
+  });
 
   return {
     kind: "started",
-    analysisId: encodeAnalysisId(handle),
+    analysisId,
     sessionId: load.sessionId,
     taskId: start.taskId,
     jsonlPath,
@@ -344,13 +337,32 @@ export type AnalyzeHarvestResponse =
   | { kind: "running"; analysisId: string; taskId: string; sessionId: string; status: string }
   | AnalyzeResponse;
 
+export interface AnalyzeHarvestOpts {
+  /**
+   * If set, internally polls the distill task until either it
+   * reaches a terminal state OR `waitMs` elapses. Designed so the
+   * caller (typically an MCP agent) doesn't have to maintain its own
+   * sleep-and-retry loop. Bounded to a hard ceiling of 50_000 ms to
+   * leave headroom under MCP tool-call timeouts (~60s).
+   *
+   *   waitMs === 0 (or omitted) → single non-blocking poll (legacy)
+   *   waitMs > 0                → poll every WAIT_POLL_INTERVAL_MS
+   *                                until done or wait elapses
+   */
+  waitMs?: number;
+}
+
+const WAIT_MS_MAX = 50_000;
+const WAIT_POLL_INTERVAL_MS = 1_000;
+
 export async function analyzeHarvest(
   ctx: AnalyzeContext,
   analysisId: string,
+  opts: AnalyzeHarvestOpts = {},
 ): Promise<AnalyzeHarvestResponse> {
-  const handle = decodeAnalysisId(analysisId);
+  const handle = getAnalysis(ctx.forgeDb, analysisId);
   if (!handle) {
-    return { kind: "error", code: "INVALID_ANALYSIS_ID", message: "analysisId could not be decoded" };
+    return { kind: "error", code: "INVALID_ANALYSIS_ID", message: "analysisId not found" };
   }
   const embedder = ctx.embedder ?? buildEmbeddingClient();
 
@@ -366,23 +378,144 @@ export async function analyzeHarvest(
     return finalizeAnalyze(ctx, embedder, handle.jsonlPath, handle.sessionId, distill);
   }
 
-  const harvest = harvestDistillResult({
-    forgeDb: ctx.forgeDb,
-    kernelDb: ctx.kernelDb,
-    sessionId: handle.sessionId,
-    taskId: handle.taskId,
-    truncated: handle.truncated,
-  });
-  if (harvest.kind === "running") {
-    return {
-      kind: "running",
-      analysisId,
-      taskId: handle.taskId,
+  const waitMs = clampWaitMs(opts.waitMs);
+  const deadline = waitMs > 0 ? Date.now() + waitMs : 0;
+
+  // First poll always runs. When waitMs > 0, keep polling until
+  // terminal or until the deadline passes (then surface "running"
+  // so the caller can re-issue with the same analysisId).
+  let lastRunningStatus = "running";
+  while (true) {
+    const harvest = harvestDistillResult({
+      forgeDb: ctx.forgeDb,
+      kernelDb: ctx.kernelDb,
       sessionId: handle.sessionId,
-      status: harvest.status,
-    };
+      taskId: handle.taskId,
+      truncated: handle.truncated,
+    });
+    if (harvest.kind === "done") {
+      return finalizeAnalyze(ctx, embedder, handle.jsonlPath, handle.sessionId, harvest.result);
+    }
+    lastRunningStatus = harvest.status;
+    if (deadline === 0 || Date.now() >= deadline) break;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await sleep(Math.min(WAIT_POLL_INTERVAL_MS, remaining));
   }
-  return finalizeAnalyze(ctx, embedder, handle.jsonlPath, handle.sessionId, harvest.result);
+
+  return {
+    kind: "running",
+    analysisId,
+    taskId: handle.taskId,
+    sessionId: handle.sessionId,
+    status: lastRunningStatus,
+  };
+}
+
+// Exported for direct testing — captures the boundary contract
+// (negative / NaN / Infinity → 0; over-cap → WAIT_MS_MAX).
+export function clampWaitMs(raw: number | undefined): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return 0;
+  return Math.min(Math.floor(raw), WAIT_MS_MAX);
+}
+
+// ---------------- Multi-session kickoff ---------------------------
+//
+// "I worked on three small things over the last hour, can you tell
+// me which ones are worth automating?" The answer used to require
+// three forge_analyze_start calls with three different sessionIds.
+// analyzeRecent kicks off N analyses in parallel so the agent can
+// poll all of them with the existing forge_analyze_result tool.
+
+export interface AnalyzeRecentRequest {
+  /** Default 3, capped at RECENT_COUNT_MAX (10). */
+  count?: number;
+}
+
+export type AnalyzeRecentResponse =
+  | {
+      kind: "started";
+      analyses: Array<{
+        sessionId: string;
+        analysisId: string;
+        taskId: string;
+        jsonlPath: string;
+      }>;
+      // Sessions that we tried but couldn't start. Surfaced
+      // explicitly so the agent doesn't silently see "we asked for 3,
+      // got 1, must be normal". Common causes: stale jsonl path,
+      // permission errors, distill submit failure on a single
+      // session.
+      failures: Array<{
+        jsonlPath: string;
+        code: string;
+        message: string;
+      }>;
+    }
+  | AnalyzeError;
+
+const RECENT_COUNT_DEFAULT = 3;
+const RECENT_COUNT_MAX = 10;
+
+export async function analyzeRecent(
+  ctx: AnalyzeContext,
+  req: AnalyzeRecentRequest = {},
+): Promise<AnalyzeRecentResponse> {
+  const projectsRoot = ctx.projectsRoot ?? join(homedir(), ".claude-personal", "projects");
+  const requested = typeof req.count === "number" && Number.isFinite(req.count) && req.count > 0
+    ? Math.floor(req.count)
+    : RECENT_COUNT_DEFAULT;
+  const count = Math.min(requested, RECENT_COUNT_MAX);
+
+  const paths = await listRecentSessionFiles(projectsRoot, count);
+  if (paths.length === 0) {
+    return { kind: "started", analyses: [], failures: [] };
+  }
+
+  // Run starts in parallel — each one is sub-second by design (no
+  // distill SDK call until kernel-next picks the task up).
+  const settled = await Promise.allSettled(
+    paths.map(async (p) => ({ path: p, result: await analyzeStart(ctx, { jsonlPath: p }) })),
+  );
+
+  type RecentSuccess = {
+    sessionId: string;
+    analysisId: string;
+    taskId: string;
+    jsonlPath: string;
+  };
+  type RecentFailure = { jsonlPath: string; code: string; message: string };
+  const analyses: RecentSuccess[] = [];
+  const failures: RecentFailure[] = [];
+
+  for (let i = 0; i < settled.length; i++) {
+    const s = settled[i]!;
+    const path = paths[i]!;
+    if (s.status === "rejected") {
+      failures.push({
+        jsonlPath: path,
+        code: "START_THREW",
+        message: s.reason instanceof Error ? s.reason.message : String(s.reason),
+      });
+      continue;
+    }
+    const v = s.value.result;
+    if (v.kind === "error") {
+      failures.push({ jsonlPath: path, code: v.code, message: v.message });
+      continue;
+    }
+    analyses.push({
+      sessionId: v.sessionId,
+      analysisId: v.analysisId,
+      taskId: v.taskId,
+      jsonlPath: v.jsonlPath,
+    });
+  }
+  return { kind: "started", analyses, failures };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function signatureKeyFromEpisode(ep: SessionEpisode): string {
@@ -395,27 +528,46 @@ function buildWhyExisting(ep: SessionEpisode, pipelineName: string, cosine: numb
     + `(threshold ${MATCH_THRESHOLD}). Run that pipeline instead of building a new one.`;
 }
 
+// Word-boundary-aware slug truncation. Tokenises on non-alphanumeric
+// runs, joins with `sep`, and stops appending tokens once adding the
+// next one would exceed `maxLen`. Never cuts inside a word — the
+// previous .slice(0, N) approach produced live regressions like
+// "discovered_urls_from_search_resu" (cut at "resu") and
+// "research-a-web3-protocol-s-cross-chain-bridge-ar".
+//
+// Edge case: a single token longer than maxLen is returned in full
+// rather than mid-word truncated. The caller decides whether to
+// truncate or fall back. (Empirically the longest single tokens we
+// see are user-typed identifiers like step names; a long-but-whole
+// slug is more useful than a shortened-but-broken one.)
+export function safeSlug(text: string, maxLen: number, sep: "-" | "_"): string {
+  const tokens = text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/);
+  let out = "";
+  for (const t of tokens) {
+    if (!t) continue;
+    if (!out) { out = t; continue; }
+    const next = out + sep + t;
+    if (next.length > maxLen) break;
+    out = next;
+  }
+  return out;
+}
+
 function buildCreateProposal(
   ep: SessionEpisode,
   ranking: Array<{ pipelineName: string; cosine: number }>,
 ): CreateNewRec["proposal"] {
-  // Slice BEFORE the trailing-strip so we don't end up with a slug
-  // like "create-database-schema-and-type-definitions-for-" (the
-  // truncation cut mid-word and left a trailing hyphen).
-  const slug = (ep.intent
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .slice(0, 48)
-    .replace(/^-+|-+$/g, "")) || "new-pipeline";
+  // Truncate at a word boundary so slugs never end mid-word (real
+  // regression: "research-a-web3-protocol-s-cross-chain-bridge-ar"
+  // and "discovered_urls_from_search_resu" both leaked through old
+  // .slice(0, N) approach).
+  const slug = safeSlug(ep.intent, 48, "-") || "new-pipeline";
 
   const seenNames = new Set<string>();
   const inputs: Array<{ name: string; type: string; description: string }> = [];
   for (const step of ep.steps) {
     for (const input of step.inputs ?? []) {
-      const slugName = input.toLowerCase()
-        .replace(/[^a-z0-9]+/g, "_")
-        .slice(0, 32)
-        .replace(/^_+|_+$/g, "");
+      const slugName = safeSlug(input, 32, "_");
       if (!slugName || seenNames.has(slugName)) continue;
       seenNames.add(slugName);
       inputs.push({ name: slugName || `input_${inputs.length + 1}`, type: "string", description: input });
@@ -428,8 +580,6 @@ function buildCreateProposal(
     + (s.outputs && s.outputs.length > 0 ? `\n   outputs: ${s.outputs.join(", ")}` : "")
     + (s.toolCalls && s.toolCalls.length > 0 ? `\n   tools: ${s.toolCalls.join(", ")}` : ""),
   ).join("\n");
-
-  const description = `${ep.intent}\n\n${stepsText}`;
 
   const generatorPrompt = [
     `Build a pipeline named '${slug}' that automates this task:`,
@@ -458,7 +608,6 @@ function buildCreateProposal(
   return {
     suggestedName: slug,
     intent: ep.intent,
-    description,
     pipelineGeneratorPrompt: generatorPrompt,
     suggestedExternalInputs: inputs,
     nearestExisting: ranking.slice(0, 3).map((r) => ({ pipelineName: r.pipelineName, cosine: r.cosine })),

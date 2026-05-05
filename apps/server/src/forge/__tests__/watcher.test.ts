@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startWatcher, decodeProjectDir, type WatcherEvent, type Watcher } from "../ingestion/watcher.js";
+import { startWatcher, rawProjectDir, type WatcherEvent, type Watcher } from "../ingestion/watcher.js";
 
 let dir: string;
 let watcher: Watcher | undefined;
@@ -14,17 +14,22 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe("decodeProjectDir", () => {
-  it("decodes a typical Claude Code encoded path", () => {
-    expect(decodeProjectDir("-Users-minghao-foo")).toBe("/Users/minghao/foo");
+describe("rawProjectDir", () => {
+  // Returns the encoded dir name verbatim. We intentionally do NOT
+  // decode "-" → "/" because Claude Code's encoding can't round-trip
+  // names containing literal hyphens (e.g. workflow-control).
+  it("passes through a typical Claude Code encoded path unchanged", () => {
+    expect(rawProjectDir("-Users-minghao-foo")).toBe("-Users-minghao-foo");
+  });
+
+  it("preserves literal hyphens in the dir name", () => {
+    expect(rawProjectDir("-Users-minghao-workflow-control")).toBe(
+      "-Users-minghao-workflow-control",
+    );
   });
 
   it("returns empty for empty input", () => {
-    expect(decodeProjectDir("")).toBe("");
-  });
-
-  it("decodes single segment", () => {
-    expect(decodeProjectDir("-tmp")).toBe("/tmp");
+    expect(rawProjectDir("")).toBe("");
   });
 });
 
@@ -45,7 +50,7 @@ describe("startWatcher", () => {
     const e = events[0]!;
     expect(e.sessionId).toBe("abc-123");
     expect(e.jsonlPath).toBe(join(projDir, "abc-123.jsonl"));
-    expect(e.cwd).toBe("/tmp/fake");
+    expect(e.cwd).toBe("-tmp-fake");
   });
 
   it("debounces multiple rapid writes to the same file", async () => {

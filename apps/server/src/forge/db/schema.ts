@@ -114,6 +114,23 @@ const DDL_STATEMENTS: string[] = [
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_forge_jobs_dedup ON forge_jobs(kind, job_key) WHERE status IN ('pending','in_progress')`,
   `CREATE INDEX IF NOT EXISTS idx_forge_jobs_status ON forge_jobs(status, enqueued_at)`,
+  // Per-analysis handle for the async analyze API. analysis_id IS the
+  // kernel-next taskId (so callers see a short, kernel-style id like
+  // forge-distill-1777993813697-4d43d155 rather than a 1.2KB base64
+  // blob carrying everything inline). For the empty-session shortcut
+  // (loadSession produced too few events to distill), we synthesise
+  // an analysis_id that doesn't exist in kernel-next and store the
+  // pre-baked empty result in empty_result_json.
+  `CREATE TABLE IF NOT EXISTS forge_analyses (
+    analysis_id        TEXT PRIMARY KEY,
+    session_id         TEXT NOT NULL,
+    jsonl_path         TEXT NOT NULL,
+    task_id            TEXT NOT NULL,
+    truncated          INTEGER NOT NULL,
+    started_at         INTEGER NOT NULL,
+    empty_result_json  TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_forge_analyses_session ON forge_analyses(session_id, started_at)`,
 ];
 
 export function initForgeSchema(db: DatabaseSync): void {

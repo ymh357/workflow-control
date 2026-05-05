@@ -25,7 +25,11 @@ type AnalyzeResponse =
 interface AnalyzeBase {
   sessionId: string;
   jsonlPath: string;
+  // Raw Claude Code project-dir encoding (e.g. "-Users-minghao-foo").
+  // Not decoded server-side because the encoding is lossy for dirs
+  // that contain literal hyphens. Render as-is.
   cwd: string;
+  projectDirEncoded: true;
   episodeCount: number;
   truncated: boolean;
   embeddingModel: string;
@@ -50,7 +54,6 @@ interface CreateNewRec {
   proposal: {
     suggestedName: string;
     intent: string;
-    description: string;
     pipelineGeneratorPrompt: string;
     suggestedExternalInputs: Array<{ name: string; type: string; description: string }>;
     nearestExisting: Array<{ pipelineName: string; cosine: number }>;
@@ -179,7 +182,9 @@ function ResultView({ result, router }: { result: AnalyzeResponse; router: Route
         <p className="text-sm font-semibold">No automatable pattern detected</p>
         <p className="text-sm text-secondary">{result.reason}</p>
         <p className="text-xs text-muted">
-          Session: <code className="font-mono">{result.sessionId}</code> ({result.cwd})
+          Session: <code className="font-mono">{result.sessionId}</code>
+          {" · project (encoded): "}
+          <code className="font-mono">{result.cwd}</code>
           · {result.episodeCount} episodes
           {result.truncated && " · truncated"}
         </p>
@@ -198,7 +203,7 @@ function ResultView({ result, router }: { result: AnalyzeResponse; router: Route
     <div className="space-y-4">
       <section className="rounded border border-default bg-surface px-3 py-2 text-xs text-secondary">
         Session <code className="font-mono">{result.sessionId}</code> ·
-        cwd <code className="font-mono">{result.cwd}</code> ·
+        project (encoded) <code className="font-mono">{result.cwd}</code> ·
         embedding {result.embeddingModel}
         {result.truncated && <span className="ml-1 text-warning-fg">· truncated</span>}
         <br />

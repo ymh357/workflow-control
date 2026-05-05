@@ -22,10 +22,12 @@ import { z } from "zod";
 import {
   analyzeStart,
   analyzeHarvest,
+  analyzeRecent,
 } from "../../../forge/api/analyze-handler.js";
 import type {
   AnalyzeStartResponse,
   AnalyzeHarvestResponse,
+  AnalyzeRecentResponse,
 } from "../../../forge/api/analyze-handler.js";
 import type { AnalyzeResponse } from "../../../forge/api/types.js";
 import type { ToolDef, ToolsDeps } from "../tool-types.js";
@@ -68,28 +70,98 @@ export function buildForgeTools(deps: ToolsDeps): ToolDef[] {
       },
     },
     {
+      name: "forge_analyze_recent",
+      description:
+        "Start Forge analyses on the N most-recently-modified Claude Code "
+        + "session JSONLs in parallel. Default count=3, max=10. Returns "
+        + "one analysisId per session immediately (sub-second total — no "
+        + "blocking on distill). Poll each analysisId with "
+        + "`forge_analyze_result` (typically with waitMs=50000) to harvest "
+        + "the recommendations. Use this when the user says \"tell me "
+        + "what I should automate from my recent work\".",
+      inputSchema: {
+        count: z.number().int().min(1).max(10).optional().describe(
+          "Number of recent sessions to analyze. Default 3, max 10.",
+        ),
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      handler: async (args: any) => {
+        const count = typeof args.count === "number" ? args.count : undefined;
+        const result = await analyzeRecent({ forgeDb, kernelDb }, { count });
+        return jsonResponse(formatRecentForMcp(result));
+      },
+    },
+    {
       name: "forge_analyze_result",
       description:
         "Poll a running Forge analysis. Pass the `analysisId` returned by "
-        + "`forge_analyze_start`. Returns either {status: 'running'} (call again "
-        + "after a short wait — typically 5-10s) or the final recommendations. "
-        + "When the result is final, each pipeline-able episode in the session "
-        + "has its own recommendation (use-existing or create-new with a "
-        + "ready-to-paste pipeline-generator prompt).",
+        + "`forge_analyze_start`. By default the server blocks for up to "
+        + "`waitMs` (default 50000, max 50000) waiting for the distill task "
+        + "to finish — so a typical analysis returns the final result in a "
+        + "single call. If the task is still running when waitMs elapses, "
+        + "the response is {status: 'running'} and the caller should re-issue "
+        + "with the same analysisId. Pass `waitMs: 0` for a single "
+        + "non-blocking poll.",
       inputSchema: {
         analysisId: z.string().describe(
-          "The analysisId from forge_analyze_start. Self-describing token; "
-            + "no server-side state to look up.",
+          "The analysisId from forge_analyze_start (a short kernel-next "
+            + "task id like `forge-distill-1777993813697-4d43d155`). "
+            + "Resolved server-side against the forge_analyses table.",
+        ),
+        waitMs: z.number().int().min(0).max(50000).optional().describe(
+          "How long to block waiting for the task to finish, in ms. "
+            + "Default 50000 (50s — leaves ~10s headroom under the MCP "
+            + "tool-call timeout). 0 = single non-blocking poll.",
         ),
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       handler: async (args: any) => {
         const id = typeof args.analysisId === "string" ? args.analysisId : "";
-        const result = await analyzeHarvest({ forgeDb, kernelDb }, id);
+        const waitMs = typeof args.waitMs === "number" ? args.waitMs : 50_000;
+        const result = await analyzeHarvest({ forgeDb, kernelDb }, id, { waitMs });
         return jsonResponse(formatHarvestForMcp(result));
       },
     },
   ];
+}
+
+function formatRecentForMcp(result: AnalyzeRecentResponse): unknown {
+  if (result.kind === "error") {
+    return {
+      ...result,
+      humanSummary: `forge_analyze_recent failed: ${result.code} — ${result.message}`,
+    };
+  }
+  if (result.analyses.length === 0 && result.failures.length === 0) {
+    return {
+      ...result,
+      humanSummary:
+        "No recent Claude Code sessions found under the configured projects "
+        + "root. Have you used Claude Code recently?",
+    };
+  }
+  const lines: string[] = [];
+  if (result.analyses.length > 0) {
+    lines.push(`Started ${result.analyses.length} parallel analyses:`);
+    for (let i = 0; i < result.analyses.length; i++) {
+      const a = result.analyses[i]!;
+      lines.push(`  ${i + 1}. session ${a.sessionId} → analysisId ${a.analysisId}`);
+    }
+    lines.push("");
+    lines.push(
+      "Poll each analysisId with forge_analyze_result (waitMs=50000 will "
+      + "typically return the final result in one call). Distill takes 60-180s "
+      + "per session — they run in parallel so total wait is ~the slowest one.",
+    );
+  }
+  if (result.failures.length > 0) {
+    if (lines.length > 0) lines.push("");
+    lines.push(`${result.failures.length} session(s) could not be started:`);
+    for (const f of result.failures) {
+      lines.push(`  - ${f.jsonlPath}: ${f.code} — ${f.message}`);
+    }
+  }
+  return { ...result, humanSummary: lines.join("\n") };
 }
 
 function formatStartForMcp(result: AnalyzeStartResponse): unknown {

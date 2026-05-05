@@ -1,8 +1,11 @@
 // Recursive directory watcher with per-file debounce. Watches for
-// .jsonl writes under the projects root and emits decoded events.
+// .jsonl writes under the projects root and emits raw (encoded) events.
 //
-// Decoding: Claude Code encodes /Users/minghao/foo as -Users-minghao-foo
-// (replaces / with -). decodeProjectDir reverses that.
+// Encoding note: Claude Code encodes /Users/minghao/foo as
+// -Users-minghao-foo (replaces / with -). This encoding is ambiguous —
+// directory names containing literal hyphens (e.g. workflow-control)
+// cannot be losslessly recovered. We therefore surface the raw
+// encoded form verbatim and leave it to the consumer to display.
 
 import { watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
@@ -39,7 +42,7 @@ export function startWatcher(opts: WatcherOpts): Watcher {
         const dirName = parts[parts.length - 2] ?? "";
         const file = parts[parts.length - 1] ?? "";
         const sessionId = file.replace(/\.jsonl$/, "");
-        const cwd = decodeProjectDir(dirName);
+        const cwd = rawProjectDir(dirName);
         opts.onEvent({ jsonlPath: fullPath, cwd, sessionId });
       }, debounceMs));
     });
@@ -58,12 +61,11 @@ export function startWatcher(opts: WatcherOpts): Watcher {
   };
 }
 
-// Claude Code encodes /Users/minghao/foo as -Users-minghao-foo.
-// First leading dash → /, all other dashes → /. (We intentionally
-// don't try to handle directory names that themselves contain dashes;
-// Claude Code's encoding does not round-trip those, and the resulting
-// "wrong" cwd is informational only.)
-export function decodeProjectDir(dirName: string): string {
-  if (!dirName) return "";
-  return dirName.replace(/^-/, "/").replace(/-/g, "/");
+// Return the raw Claude Code project-dir encoding (e.g. -Users-minghao-foo)
+// untransformed. We deliberately do NOT decode it: the encoding is
+// lossy for directory names that contain literal hyphens. Surface the
+// raw form so callers / UIs render an honest "encoded session project"
+// hint rather than fabricating a wrong-looking absolute path.
+export function rawProjectDir(dirName: string): string {
+  return dirName ?? "";
 }

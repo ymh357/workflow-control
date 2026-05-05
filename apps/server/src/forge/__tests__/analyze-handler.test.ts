@@ -10,7 +10,10 @@ import { DatabaseSync } from "node:sqlite";
 import { initKernelNextSchema } from "../../kernel-next/ir/sql.js";
 import { KernelService } from "../../kernel-next/mcp/kernel.js";
 import { initForgeSchema } from "../db/schema.js";
-import { analyze } from "../api/analyze-handler.js";
+import {
+  analyze, safeSlug, clampWaitMs, analyzeHarvest, analyzeStart, analyzeRecent,
+} from "../api/analyze-handler.js";
+import { insertAnalysis, getAnalysis } from "../db/analyses.js";
 import type { SessionEpisode } from "../types.js";
 import type { DistillResult } from "../distillation/submit-distill.js";
 import type { PipelineIR } from "../../kernel-next/ir/schema.js";
@@ -290,6 +293,229 @@ describe("analyze (multi-episode via stub)", () => {
     if (r.kind === "ok" && r.summary.useExistingCount > 0) {
       // First entry must be use-existing
       expect(r.recommendations[0]!.kind).toBe("use-existing");
+    }
+  });
+});
+
+describe("safeSlug", () => {
+  // The previous .slice(0, N) approach produced live regressions like
+  // "discovered_urls_from_search_resu" (cut at "resu") and
+  // "research-a-web3-protocol-s-cross-chain-bridge-ar". These tests
+  // pin the word-boundary contract.
+
+  it("never cuts mid-word — drops the would-be-overflowing token", () => {
+    // 32-char limit. "discovered urls from search results" → 35 chars
+    // joined; the trailing "results" pushes over so we stop at
+    // "discovered_urls_from_search". 27 chars, all whole words.
+    expect(safeSlug("discovered URLs from search results", 32, "_"))
+      .toBe("discovered_urls_from_search");
+  });
+
+  it("hyphenates kebab-style with the same boundary rule", () => {
+    // 48-char limit. The original mid-word truncation produced
+    // "research-a-web3-protocol-s-cross-chain-bridge-ar"; with safe
+    // slug the trailing "architecture" gets dropped wholesale.
+    const out = safeSlug(
+      "Research a Web3 protocol's cross-chain bridge architecture",
+      48,
+      "-",
+    );
+    expect(out).toBe("research-a-web3-protocol-s-cross-chain-bridge");
+    expect(out.length).toBeLessThanOrEqual(48);
+    expect(out.endsWith("-ar")).toBe(false);
+  });
+
+  it("returns empty string for input with no alphanumeric tokens", () => {
+    expect(safeSlug("---", 32, "_")).toBe("");
+    expect(safeSlug("", 32, "_")).toBe("");
+  });
+
+  it("keeps a single oversized token whole rather than mid-word truncating", () => {
+    // Single token over the limit → return the whole token. The
+    // caller can fall back to a placeholder. This is preferable to
+    // emitting "supercalifragilis" mid-word.
+    const out = safeSlug("supercalifragilisticexpialidocious", 10, "_");
+    expect(out).toBe("supercalifragilisticexpialidocious");
+  });
+
+  it("collapses runs of non-alphanumerics into a single separator", () => {
+    expect(safeSlug("foo___bar...baz!!!qux", 32, "_")).toBe("foo_bar_baz_qux");
+  });
+
+  it("strips leading/trailing non-alphanumerics", () => {
+    expect(safeSlug("  hello world  ", 32, "_")).toBe("hello_world");
+  });
+});
+
+describe("clampWaitMs", () => {
+  it("treats undefined / 0 / negative / NaN / Infinity as 0 (no wait)", () => {
+    expect(clampWaitMs(undefined)).toBe(0);
+    expect(clampWaitMs(0)).toBe(0);
+    expect(clampWaitMs(-1)).toBe(0);
+    expect(clampWaitMs(Number.NaN)).toBe(0);
+    expect(clampWaitMs(Number.POSITIVE_INFINITY)).toBe(0);
+  });
+
+  it("passes through values within range", () => {
+    expect(clampWaitMs(1_000)).toBe(1_000);
+    expect(clampWaitMs(50_000)).toBe(50_000);
+  });
+
+  it("caps over-spec values at 50_000 to leave headroom under MCP timeout", () => {
+    expect(clampWaitMs(60_000)).toBe(50_000);
+    expect(clampWaitMs(120_000)).toBe(50_000);
+  });
+
+  it("floors fractional values", () => {
+    expect(clampWaitMs(1_234.9)).toBe(1_234);
+  });
+});
+
+describe("analyzeHarvest waitMs behavior (empty-session shortcut)", () => {
+  // The empty-session path returns the cached result without ever
+  // hitting the kernel-next task surface. waitMs is irrelevant here,
+  // but we verify it still finalizes promptly (single poll, no
+  // pointless sleep).
+  it("returns the empty result immediately regardless of waitMs", async () => {
+    // Empty-session shortcut still calls finalizeAnalyze, which reads
+    // sessions table for cwd → seed a sessions row.
+    forgeDb.prepare(
+      `INSERT INTO sessions(session_id, cwd, jsonl_path, first_seen_at, last_event_at, status, event_count)
+       VALUES ('stub-session', '-tmp', '/tmp/stub.jsonl', 0, 0, 'skipped', 0)`,
+    ).run();
+    insertAnalysis(forgeDb, {
+      analysisId: "empty-test",
+      sessionId: "stub-session",
+      jsonlPath: "/tmp/stub.jsonl",
+      taskId: "",
+      truncated: false,
+      startedAt: 0,
+      emptyResult: { episodes: [], reasonNoEpisodes: "too few events" },
+    });
+    const t0 = Date.now();
+    const r = await analyzeHarvest({ forgeDb, kernelDb }, "empty-test", { waitMs: 5_000 });
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(500); // No sleep loop entered.
+    expect(r.kind).toBe("no-pattern");
+  });
+});
+
+describe("analyzeHarvest INVALID_ANALYSIS_ID", () => {
+  it("returns INVALID_ANALYSIS_ID for unknown id", async () => {
+    const r = await analyzeHarvest({ forgeDb, kernelDb }, "no-such-analysis-id");
+    expect(r.kind).toBe("error");
+    if (r.kind === "error") expect(r.code).toBe("INVALID_ANALYSIS_ID");
+  });
+});
+
+describe("analyzeStart sub-second contract", () => {
+  it("returns LOAD_FAILED quickly for a missing jsonlPath (no distill spawn)", async () => {
+    const t0 = Date.now();
+    const r = await analyzeStart(
+      { forgeDb, kernelDb, projectsRoot: dir },
+      { jsonlPath: "/nope/does/not/exist.jsonl" },
+    );
+    const elapsed = Date.now() - t0;
+    expect(elapsed).toBeLessThan(1_000);
+    expect(r.kind).toBe("error");
+    if (r.kind === "error") expect(r.code).toBe("LOAD_FAILED");
+  });
+});
+
+describe("analyzeRecent", () => {
+  // We use the < 3 events shortcut in startDistill to avoid spawning
+  // a real kernel-next task. Each tiny session loads, analyzeStart
+  // returns an empty-session handle (taskId="", emptyResult set).
+
+  function writeTinyJsonl(parent: string, fname: string, sid: string): string {
+    const projDir = join(parent, "-tmp-recent");
+    mkdirSync(projDir, { recursive: true });
+    const p = join(projDir, fname);
+    const lines = [
+      JSON.stringify({ sessionId: sid, message: { role: "user", content: "hello" } }),
+      JSON.stringify({ sessionId: sid, message: { role: "assistant", content: "hi" } }),
+    ].join("\n") + "\n";
+    writeFileSync(p, lines);
+    return p;
+  }
+
+  it("returns empty analyses + empty failures when no recent sessions exist", async () => {
+    const r = await analyzeRecent({ forgeDb, kernelDb, projectsRoot: dir }, {});
+    expect(r.kind).toBe("started");
+    if (r.kind === "started") {
+      expect(r.analyses).toEqual([]);
+      expect(r.failures).toEqual([]);
+    }
+  });
+
+  it("happy path returns empty failures array", async () => {
+    const proj = join(dir, "-tmp-good");
+    mkdirSync(proj, { recursive: true });
+    writeFileSync(join(proj, "good.jsonl"),
+      JSON.stringify({ sessionId: "good", message: { role: "user", content: "x" } }) + "\n"
+      + JSON.stringify({ sessionId: "good", message: { role: "assistant", content: "y" } }) + "\n");
+    const r = await analyzeRecent({ forgeDb, kernelDb, projectsRoot: dir }, { count: 1 });
+    expect(r.kind).toBe("started");
+    if (r.kind === "started") {
+      expect(r.failures).toEqual([]);
+      expect(r.analyses).toHaveLength(1);
+    }
+  });
+
+  it("response shape always carries an analyses[] and failures[] (no undefined fields)", async () => {
+    // Even on the empty-projects-root path the API contract holds.
+    const r = await analyzeRecent({ forgeDb, kernelDb, projectsRoot: dir }, {});
+    expect(r.kind).toBe("started");
+    if (r.kind === "started") {
+      expect(Array.isArray(r.analyses)).toBe(true);
+      expect(Array.isArray(r.failures)).toBe(true);
+    }
+  });
+
+  it("kicks off N analyses for N tiny sessions in newest-first order", async () => {
+    writeTinyJsonl(dir, "s1.jsonl", "s1");
+    await new Promise((r) => setTimeout(r, 15));
+    writeTinyJsonl(dir, "s2.jsonl", "s2");
+    await new Promise((r) => setTimeout(r, 15));
+    writeTinyJsonl(dir, "s3.jsonl", "s3");
+
+    const r = await analyzeRecent({ forgeDb, kernelDb, projectsRoot: dir }, { count: 3 });
+    expect(r.kind).toBe("started");
+    if (r.kind === "started") {
+      expect(r.analyses).toHaveLength(3);
+      // Each analysisId resolves to a forge_analyses row.
+      for (const a of r.analyses) {
+        const row = getAnalysis(forgeDb, a.analysisId);
+        expect(row).not.toBeNull();
+      }
+      // Newest first: s3 then s2 then s1.
+      expect(r.analyses[0]!.sessionId).toBe("s3");
+      expect(r.analyses[1]!.sessionId).toBe("s2");
+      expect(r.analyses[2]!.sessionId).toBe("s1");
+    }
+  });
+
+  it("defaults count to 3", async () => {
+    for (let i = 0; i < 5; i++) {
+      writeTinyJsonl(dir, `s${i}.jsonl`, `s${i}`);
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const r = await analyzeRecent({ forgeDb, kernelDb, projectsRoot: dir }, {});
+    expect(r.kind).toBe("started");
+    if (r.kind === "started") {
+      expect(r.analyses).toHaveLength(3);
+    }
+  });
+
+  it("caps count at 10 even when caller asks for more", async () => {
+    for (let i = 0; i < 12; i++) {
+      writeTinyJsonl(dir, `s${i}.jsonl`, `s${i}`);
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    const r = await analyzeRecent({ forgeDb, kernelDb, projectsRoot: dir }, { count: 100 });
+    expect(r.kind).toBe("started");
+    if (r.kind === "started") {
+      expect(r.analyses).toHaveLength(10);
     }
   });
 });

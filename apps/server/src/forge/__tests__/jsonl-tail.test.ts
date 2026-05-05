@@ -70,4 +70,53 @@ describe("tailFile", () => {
     expect(r.lines).toEqual([line.slice(0, -1)]);
     expect(r.newOffset).toBe(Buffer.byteLength(line, "utf8"));
   });
+
+  // Streaming-read regression: previous implementation did
+  // Buffer.alloc(file_size - offset), which OOM'd on a 522MB session.
+  // We don't reproduce 522MB here (slow CI) but we DO exceed the
+  // CHUNK_SIZE boundary so the chunked read path is exercised end-to-end.
+
+  it("reads correctly across CHUNK_SIZE (64KB) boundary", async () => {
+    const p = join(dir, "big.jsonl");
+    // 5000 lines of ~80 bytes each → ~400KB, easily 6 chunks.
+    const lines: string[] = [];
+    for (let i = 0; i < 5000; i++) {
+      lines.push(`{"i":${i},"pad":"${"x".repeat(60)}"}`);
+    }
+    writeFileSync(p, lines.join("\n") + "\n");
+    const r = await tailFile(p, 0);
+    expect(r.lines).toHaveLength(5000);
+    expect(r.lines[0]).toBe(lines[0]);
+    expect(r.lines[4999]).toBe(lines[4999]);
+    expect(r.newOffset).toBe(Buffer.byteLength(lines.join("\n") + "\n", "utf8"));
+  });
+
+  it("emits complete lines + holds partial across chunk boundary", async () => {
+    const p = join(dir, "boundary.jsonl");
+    // Construct so a line straddles the 64KB chunk boundary.
+    const filler = "x".repeat(70 * 1024); // 70KB single line
+    writeFileSync(p, `${filler}\n{"after":1}\n`);
+    const r = await tailFile(p, 0);
+    expect(r.lines).toHaveLength(2);
+    expect(r.lines[0]).toBe(filler);
+    expect(r.lines[1]).toBe('{"after":1}');
+  });
+
+  it("memory: 10MB file does not blow up (sanity for the streaming path)", async () => {
+    const p = join(dir, "10m.jsonl");
+    // 100k lines × ~100 bytes → ~10MB
+    const buf: string[] = [];
+    for (let i = 0; i < 100_000; i++) {
+      buf.push(`{"i":${i},"pad":"${"y".repeat(80)}"}`);
+    }
+    writeFileSync(p, buf.join("\n") + "\n");
+    const before = process.memoryUsage().heapUsed;
+    const r = await tailFile(p, 0);
+    const after = process.memoryUsage().heapUsed;
+    expect(r.lines).toHaveLength(100_000);
+    // A naïve Buffer.alloc(10MB) + the string array + GC churn means
+    // the delta will exceed 10MB; we just assert it didn't allocate
+    // anything pathologically larger than the input (e.g. 200MB).
+    expect(after - before).toBeLessThan(200 * 1024 * 1024);
+  });
 });
