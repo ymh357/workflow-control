@@ -78,6 +78,37 @@ describe("redact", () => {
     expect(r.redacted).toBe("ghp_short");
   });
 
+  it("does NOT redact 'sk-' as a substring of an identifier (real-world filename)", () => {
+    // Found 2026-05-05 by running redactor against a real Claude Code
+    // session: filenames like 'task-finals.sticky-cancel.test.ts' were
+    // matching the openai-key pattern via 'sk-cancel.test.ts' substring.
+    // The fix: require non-word boundary on the left.
+    const r = redact("see task-finals.sticky-cancel.test.ts and update.spec.ts");
+    expect(r.hits).toHaveLength(0);
+    expect(r.redacted).toBe("see task-finals.sticky-cancel.test.ts and update.spec.ts");
+  });
+
+  it("does NOT redact 'ghp_' as a substring of an identifier", () => {
+    // Symmetric to the openai-key case.
+    const r = redact("the_ghp_helper_function_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa() returns");
+    expect(r.hits).toHaveLength(0);
+  });
+
+  it("still redacts real keys that follow whitespace / punctuation", () => {
+    // Sanity: non-word LEFT boundary still triggers.
+    const r1 = redact("token=ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(r1.hits).toHaveLength(1);
+    expect(r1.redacted).toContain("<REDACTED:github-token>");
+    const r2 = redact("OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(r2.hits).toHaveLength(1);
+    expect(r2.redacted).toContain("<REDACTED:openai-key>");
+  });
+
+  it("still redacts real keys at start of string (no preceding char)", () => {
+    const r = redact("ghp_abcdefghijklmnopqrstuvwxyz0123456789 is the token");
+    expect(r.hits).toHaveLength(1);
+  });
+
   it("redacts adjacent secrets without merging them", () => {
     const r = redact("ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa AKIAIOSFODNN7EXAMPLE");
     expect(r.hits).toHaveLength(2);

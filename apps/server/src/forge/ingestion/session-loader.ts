@@ -44,7 +44,20 @@ export async function loadSession(
   }
   const dirName = basename(dirname(jsonlPath));
   const cwd = decodeProjectDir(dirName);
-  const sessionId = basename(jsonlPath).replace(/\.jsonl$/, "");
+  // The canonical sessionId comes from the JSONL's first line (Claude
+  // Code records its own UUID there). Falling back to the filename
+  // basename is for fixtures / renamed files only — and only when the
+  // file has no usable sessionId in its content.
+  //
+  // Why this matters: parser.parseLine() per line sets event.sessionId
+  // from `obj.sessionId ?? ctx.sessionId`. If the filename basename
+  // differs from the in-file sessionId, the events' sessionId column
+  // diverges from the sessions row's session_id, and the FK on
+  // session_events fails. (Real-world repro 2026-05-05: copying the
+  // session JSONL to /tmp/anything.jsonl then loading it.)
+  const filenameSessionId = basename(jsonlPath).replace(/\.jsonl$/, "");
+  const inFileSessionId = await peekSessionId(jsonlPath);
+  const sessionId = inFileSessionId ?? filenameSessionId;
 
   const st = await stat(jsonlPath);
   const now = Date.now();
@@ -100,6 +113,33 @@ async function ingestLines(
     totalEventCount: session.eventCount,
     truncatedFromOffset: truncated,
   };
+}
+
+/**
+ * Read the first 64KB of a JSONL file and return the first sessionId
+ * field encountered, or null if no line in that window has one. Used
+ * to align our `sessions.session_id` column with what the parser
+ * extracts per-event from `obj.sessionId`.
+ */
+async function peekSessionId(path: string): Promise<string | null> {
+  const { open: openFile } = await import("node:fs/promises");
+  const handle = await openFile(path, "r");
+  try {
+    const buf = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await handle.read(buf, 0, buf.length, 0);
+    const text = buf.subarray(0, bytesRead).toString("utf8");
+    for (const line of text.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+        const obj = JSON.parse(line) as Record<string, unknown>;
+        const sid = obj.sessionId;
+        if (typeof sid === "string" && sid.length > 0) return sid;
+      } catch { /* skip */ }
+    }
+    return null;
+  } finally {
+    await handle.close();
+  }
 }
 
 /**

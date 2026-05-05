@@ -249,18 +249,23 @@ function buildCreateProposal(
   ep: SessionEpisode,
   ranking: Array<{ pipelineName: string; cosine: number }>,
 ): CreateNewRec["proposal"] {
-  const slug = ep.intent
+  // Slice BEFORE the trailing-strip so we don't end up with a slug
+  // like "create-database-schema-and-type-definitions-for-" (the
+  // truncation cut mid-word and left a trailing hyphen).
+  const slug = (ep.intent
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48) || "new-pipeline";
+    .slice(0, 48)
+    .replace(/^-+|-+$/g, "")) || "new-pipeline";
 
   const seenNames = new Set<string>();
   const inputs: Array<{ name: string; type: string; description: string }> = [];
   for (const step of ep.steps) {
     for (const input of step.inputs ?? []) {
       const slugName = input.toLowerCase()
-        .replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 32);
+        .replace(/[^a-z0-9]+/g, "_")
+        .slice(0, 32)
+        .replace(/^_+|_+$/g, "");
       if (!slugName || seenNames.has(slugName)) continue;
       seenNames.add(slugName);
       inputs.push({ name: slugName || `input_${inputs.length + 1}`, type: "string", description: input });

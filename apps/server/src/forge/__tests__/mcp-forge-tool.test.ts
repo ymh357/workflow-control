@@ -44,18 +44,17 @@ describe("buildForgeTools", () => {
     expect(tools[0]!.description).toContain("automation candidates");
   });
 
-  it("forge_analyze handler returns NO_SESSION_FOUND for empty projects-root", async () => {
-    // Without a real session under HOME and no jsonlPath provided,
-    // the handler should produce a structured error.
+  it("forge_analyze handler returns LOAD_FAILED for a missing jsonlPath", async () => {
+    // Pass an explicit non-existent path so the handler short-circuits
+    // before calling forge-distill — keeps the test fast and
+    // deterministic regardless of what's under $HOME.
     const tools = buildForgeTools(buildDeps({ withForge: true }));
-    const result = await tools[0]!.handler({});
-    // CallToolResult shape: { content: [{ type: "text", text: "..." }] }
+    const result = await tools[0]!.handler({ jsonlPath: "/definitely/does/not/exist.jsonl" });
     const content = (result as { content: Array<{ type: string; text: string }> }).content;
     expect(content[0]!.type).toBe("text");
     const parsed = JSON.parse(content[0]!.text) as Record<string, unknown>;
-    // Either error (no session found) or no-pattern (auto-detected
-    // session was empty) — both are acceptable depending on host env.
-    // We just assert humanSummary is populated.
+    expect(parsed.kind).toBe("error");
+    expect(parsed.code).toBe("LOAD_FAILED");
     expect(parsed.humanSummary).toBeDefined();
     expect(typeof parsed.humanSummary).toBe("string");
   });

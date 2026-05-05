@@ -12,12 +12,21 @@ export interface RedactionPattern {
 }
 
 // Order matters when patterns overlap; we resolve via earliest-start.
+//
+// IMPORTANT (2026-05-05): every secret pattern must require a non-word
+// LEFT boundary (start-of-string OR a non-[A-Za-z0-9_] character).
+// Without this, real-world session text like filenames
+// "task-finals.sticky-cancel.test.ts" or code like "sk-name-here" gets
+// false-positive-redacted because the prefix `sk-` matches as a
+// substring inside an identifier. We use a non-capturing lookbehind
+// + lookbehind-style anchor via `(?:^|[^A-Za-z0-9_])` and capture the
+// secret in group 1; the redactor below handles capture-group offsets.
 export const REDACTION_PATTERNS: RedactionPattern[] = [
-  { kind: "github-token",   regex: /ghp_[A-Za-z0-9]{30,}/g },
-  { kind: "openai-key",     regex: /sk-(?:proj-)?[A-Za-z0-9_-]{20,}/g },
-  { kind: "slack-token",    regex: /xox[baprs]-[A-Za-z0-9-]{10,}/g },
-  { kind: "aws-access-key", regex: /AKIA[0-9A-Z]{16}/g },
-  { kind: "bearer-token",   regex: /Bearer\s+[A-Za-z0-9._~+/=-]{20,}/g },
+  { kind: "github-token",   regex: /(?:^|[^A-Za-z0-9_])(ghp_[A-Za-z0-9]{30,})/g },
+  { kind: "openai-key",     regex: /(?:^|[^A-Za-z0-9_])(sk-(?:proj-)?[A-Za-z0-9_-]{20,})/g },
+  { kind: "slack-token",    regex: /(?:^|[^A-Za-z0-9_])(xox[baprs]-[A-Za-z0-9-]{10,})/g },
+  { kind: "aws-access-key", regex: /(?:^|[^A-Za-z0-9_])(AKIA[0-9A-Z]{16})/g },
+  { kind: "bearer-token",   regex: /(?:^|[^A-Za-z0-9_])(Bearer\s+[A-Za-z0-9._~+/=-]{20,})/g },
 ];
 
 export interface RedactResult {
@@ -33,11 +42,17 @@ export function redact(text: string): RedactResult {
     regex.lastIndex = 0;
     let m: RegExpExecArray | null;
     while ((m = regex.exec(text)) !== null) {
+      // Use capture group 1 (the secret itself) when present, so the
+      // redaction range covers ONLY the secret and not the leading
+      // boundary character. Patterns without a capture group fall back
+      // to the full match (legacy / hypothetical patterns).
+      const secret = m[1] ?? m[0];
+      const start = m[1] !== undefined ? m.index + m[0].length - m[1].length : m.index;
       allHits.push({
         kind,
-        startIndex: m.index,
-        endIndex: m.index + m[0].length,
-        length: m[0].length,
+        startIndex: start,
+        endIndex: start + secret.length,
+        length: secret.length,
       });
     }
   }
