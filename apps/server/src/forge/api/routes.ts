@@ -1,13 +1,15 @@
 // HTTP API for Forge.
 //
-//   POST /api/forge/analyze       — main entry (user click "Forge Now")
-//   GET  /api/forge/sessions      — debug list
-//   GET  /api/forge/episodes/:id  — single episode detail
-//   GET  /api/forge/health        — daemon health (returns "manual" mode)
+//   POST /api/forge/analyze            — sync entry (web UI; blocks 60-180s)
+//   POST /api/forge/analyze/start      — async start; returns analysisId in <1s
+//   GET  /api/forge/analyze/result?id=  — poll for completion (returns running OR final)
+//   GET  /api/forge/sessions           — debug list
+//   GET  /api/forge/episodes/:id       — single episode detail
+//   GET  /api/forge/health             — health (returns "manual" mode)
 
 import { Hono } from "hono";
 import type { DatabaseSync } from "node:sqlite";
-import { analyze } from "./analyze-handler.js";
+import { analyze, analyzeStart, analyzeHarvest } from "./analyze-handler.js";
 import { listAllSessions, getSession } from "../db/sessions.js";
 import { getEpisode, listEpisodesBySession } from "../db/episodes.js";
 import type { AnalyzeRequest } from "./types.js";
@@ -27,17 +29,38 @@ export function buildForgeRoute(deps: ForgeRouteDeps): Hono {
       const raw = await c.req.text();
       if (raw.trim().length > 0) body = JSON.parse(raw) as AnalyzeRequest;
     } catch {
-      return c.json({
-        kind: "error",
-        code: "INVALID_JSON_BODY",
-        message: "request body is not valid JSON",
-      }, 400);
+      return c.json({ kind: "error", code: "INVALID_JSON_BODY", message: "request body is not valid JSON" }, 400);
     }
     const result = await analyze({
-      forgeDb: deps.forgeDb,
-      kernelDb: deps.kernelDb,
-      projectsRoot: deps.projectsRoot,
+      forgeDb: deps.forgeDb, kernelDb: deps.kernelDb, projectsRoot: deps.projectsRoot,
     }, body);
+    if (result.kind === "error") return c.json(result, 400);
+    return c.json(result, 200);
+  });
+
+  route.post("/forge/analyze/start", async (c) => {
+    let body: AnalyzeRequest = {};
+    try {
+      const raw = await c.req.text();
+      if (raw.trim().length > 0) body = JSON.parse(raw) as AnalyzeRequest;
+    } catch {
+      return c.json({ kind: "error", code: "INVALID_JSON_BODY", message: "request body is not valid JSON" }, 400);
+    }
+    const result = await analyzeStart({
+      forgeDb: deps.forgeDb, kernelDb: deps.kernelDb, projectsRoot: deps.projectsRoot,
+    }, body);
+    if (result.kind === "error") return c.json(result, 400);
+    return c.json(result, 200);
+  });
+
+  route.get("/forge/analyze/result", async (c) => {
+    const analysisId = c.req.query("id");
+    if (!analysisId) {
+      return c.json({ kind: "error", code: "MISSING_ANALYSIS_ID", message: "query param 'id' is required" }, 400);
+    }
+    const result = await analyzeHarvest({
+      forgeDb: deps.forgeDb, kernelDb: deps.kernelDb, projectsRoot: deps.projectsRoot,
+    }, analysisId);
     if (result.kind === "error") return c.json(result, 400);
     return c.json(result, 200);
   });

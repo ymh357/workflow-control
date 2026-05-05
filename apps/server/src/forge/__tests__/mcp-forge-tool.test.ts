@@ -1,6 +1,8 @@
-// Test the forge_analyze MCP tool factory directly. The tool wraps
-// `analyze` with humanSummary formatting; we verify the wrapping
-// without invoking the full MCP transport layer.
+// Test the forge_analyze_start / forge_analyze_result MCP tool factory.
+// Async pair (2026-05-05) replaced the original single forge_analyze
+// because MCP tool calls have a ~60s timeout but forge-distill takes
+// 60-180s. Tests assert the start tool short-circuits fast and the
+// result tool decodes analysisIds correctly.
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { DatabaseSync } from "node:sqlite";
@@ -31,31 +33,41 @@ function buildDeps(opts: { withForge: boolean }): ToolsDeps {
   };
 }
 
+function parseToolResult(result: unknown): Record<string, unknown> {
+  const content = (result as { content: Array<{ type: string; text: string }> }).content;
+  expect(content[0]!.type).toBe("text");
+  return JSON.parse(content[0]!.text) as Record<string, unknown>;
+}
+
 describe("buildForgeTools", () => {
   it("returns no tools when forgeDb is absent", () => {
     const tools = buildForgeTools(buildDeps({ withForge: false }));
     expect(tools).toEqual([]);
   });
 
-  it("returns the forge_analyze tool when forgeDb is present", () => {
+  it("exposes forge_analyze_start + forge_analyze_result when forgeDb is present", () => {
     const tools = buildForgeTools(buildDeps({ withForge: true }));
-    expect(tools).toHaveLength(1);
-    expect(tools[0]!.name).toBe("forge_analyze");
-    expect(tools[0]!.description).toContain("automation candidates");
+    expect(tools).toHaveLength(2);
+    const names = tools.map((t) => t.name).sort();
+    expect(names).toEqual(["forge_analyze_result", "forge_analyze_start"]);
   });
 
-  it("forge_analyze handler returns LOAD_FAILED for a missing jsonlPath", async () => {
-    // Pass an explicit non-existent path so the handler short-circuits
-    // before calling forge-distill — keeps the test fast and
-    // deterministic regardless of what's under $HOME.
+  it("forge_analyze_start returns LOAD_FAILED for a missing jsonlPath", async () => {
     const tools = buildForgeTools(buildDeps({ withForge: true }));
-    const result = await tools[0]!.handler({ jsonlPath: "/definitely/does/not/exist.jsonl" });
-    const content = (result as { content: Array<{ type: string; text: string }> }).content;
-    expect(content[0]!.type).toBe("text");
-    const parsed = JSON.parse(content[0]!.text) as Record<string, unknown>;
+    const startTool = tools.find((t) => t.name === "forge_analyze_start")!;
+    const result = await startTool.handler({ jsonlPath: "/definitely/does/not/exist.jsonl" });
+    const parsed = parseToolResult(result);
     expect(parsed.kind).toBe("error");
     expect(parsed.code).toBe("LOAD_FAILED");
     expect(parsed.humanSummary).toBeDefined();
-    expect(typeof parsed.humanSummary).toBe("string");
+  });
+
+  it("forge_analyze_result returns INVALID_ANALYSIS_ID for garbage input", async () => {
+    const tools = buildForgeTools(buildDeps({ withForge: true }));
+    const resultTool = tools.find((t) => t.name === "forge_analyze_result")!;
+    const result = await resultTool.handler({ analysisId: "not-a-real-id" });
+    const parsed = parseToolResult(result);
+    expect(parsed.kind).toBe("error");
+    expect(parsed.code).toBe("INVALID_ANALYSIS_ID");
   });
 });

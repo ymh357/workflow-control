@@ -119,8 +119,13 @@ type ToolName =
   | "get_mcp_catalog_entry"
   | "add_mcp_catalog_entry"
   | "get_pipeline_definition"
-  // Forge — user-triggered session-mining (in-CC trigger)
-  | "forge_analyze";
+  // Forge — user-triggered session-mining (in-CC trigger). Async pair:
+  // start returns analysisId in <1s; result polls completion. The old
+  // single `forge_analyze` was retired 2026-05-05 because MCP clients
+  // (Claude Code included) have a ~60s tool-call timeout, but
+  // forge-distill calls Claude SDK which takes 60-180s.
+  | "forge_analyze_start"
+  | "forge_analyze_result";
 
 const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "submit_pipeline", "validate_pipeline", "describe_pipeline", "propose_pipeline_change",
@@ -152,8 +157,10 @@ const EXTERNAL_TOOLS: ReadonlySet<ToolName> = new Set([
   "add_mcp_catalog_entry",
   // 2026-04-27 pipeline-modifier
   "get_pipeline_definition",
-  // 2026-05-04 Forge — user-triggered session mining (in-CC trigger)
-  "forge_analyze",
+  // 2026-05-05 Forge — async pair (start + result) replaces the single
+  // forge_analyze tool that landed 2026-05-04. See ToolName comment.
+  "forge_analyze_start",
+  "forge_analyze_result",
 ]);
 const INTERNAL_TOOLS: ReadonlySet<ToolName> = new Set(["write_port"]);
 

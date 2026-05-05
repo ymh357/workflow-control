@@ -13,7 +13,12 @@
 import type { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { distillSession, type DistillResult } from "../distillation/submit-distill.js";
+import {
+  distillSession,
+  startDistill,
+  harvestDistillResult,
+  type DistillResult,
+} from "../distillation/submit-distill.js";
 import {
   loadSession, resolveSessionPath, findMostRecentSessionFile,
 } from "../ingestion/session-loader.js";
@@ -27,7 +32,7 @@ import {
 } from "../matching/pipeline-matcher.js";
 import { clusterEpisode } from "../similarity/cluster-episode.js";
 import type {
-  AnalyzeRequest, AnalyzeResponse, AnalyzeBase,
+  AnalyzeRequest, AnalyzeResponse, AnalyzeBase, AnalyzeError,
   PerEpisodeRecommendation, UseExistingRec, CreateNewRec, SkippedEpisode,
 } from "./types.js";
 import type { SessionEpisode } from "../types.js";
@@ -95,6 +100,16 @@ export async function analyze(
       timeoutMs: ctx.distillTimeoutMs,
       pollIntervalMs: ctx.distillPollIntervalMs,
     });
+  return finalizeAnalyze(ctx, embedder, jsonlPath, load.sessionId, distill);
+}
+
+async function finalizeAnalyze(
+  ctx: AnalyzeContext,
+  embedder: EmbeddingClient,
+  jsonlPath: string,
+  sessionId: string,
+  distill: DistillResult,
+): Promise<AnalyzeResponse> {
   if (!distill.ok) {
     return {
       kind: "error",
@@ -104,9 +119,9 @@ export async function analyze(
     };
   }
 
-  const sessionRow = getSession(ctx.forgeDb, load.sessionId)!;
+  const sessionRow = getSession(ctx.forgeDb, sessionId)!;
   const base: AnalyzeBase = {
-    sessionId: load.sessionId,
+    sessionId,
     jsonlPath,
     cwd: sessionRow.cwd,
     episodeCount: distill.episodes.length,
@@ -233,6 +248,141 @@ export async function analyze(
       skippedCount: skipped.length,
     },
   };
+}
+
+// ---------------- Async API (split for MCP) ------------------------
+//
+// MCP tool calls have a ~60s timeout; the agent stage inside
+// forge-distill takes 60-180s. So we expose a 2-step API:
+//
+//   analyzeStart(req)   → returns { analysisId } in <1s
+//   analyzeHarvest(id)  → polls once. status="running" or kind="ok"/"no-pattern"/"error".
+//
+// analysisId is base64(json{sessionId, jsonlPath, taskId, truncated})
+// — fully self-describing, no extra DB row needed.
+
+export interface AnalysisHandle {
+  sessionId: string;
+  jsonlPath: string;
+  taskId: string;       // empty when session was too short (no distill spawned)
+  truncated: boolean;
+  // When the session was too short to distill, we cache the empty
+  // result here so the harvest call returns it without re-running.
+  emptyResult?: { episodes: SessionEpisode[]; reasonNoEpisodes: string };
+}
+
+export function encodeAnalysisId(h: AnalysisHandle): string {
+  return Buffer.from(JSON.stringify(h), "utf8").toString("base64url");
+}
+
+export function decodeAnalysisId(s: string): AnalysisHandle | null {
+  try {
+    const json = Buffer.from(s, "base64url").toString("utf8");
+    const obj = JSON.parse(json) as Record<string, unknown>;
+    if (typeof obj.sessionId !== "string" || typeof obj.jsonlPath !== "string"
+      || typeof obj.taskId !== "string" || typeof obj.truncated !== "boolean") return null;
+    return obj as unknown as AnalysisHandle;
+  } catch { return null; }
+}
+
+export type AnalyzeStartResponse =
+  | { kind: "started"; analysisId: string; sessionId: string; taskId: string; jsonlPath: string }
+  | AnalyzeError;
+
+export async function analyzeStart(
+  ctx: AnalyzeContext,
+  req: AnalyzeRequest,
+): Promise<AnalyzeStartResponse> {
+  const projectsRoot = ctx.projectsRoot ?? join(homedir(), ".claude-personal", "projects");
+
+  let jsonlPath: string | null = null;
+  if (req.jsonlPath) jsonlPath = req.jsonlPath;
+  else if (req.sessionId) jsonlPath = resolveSessionPath(ctx.forgeDb, req.sessionId);
+  else jsonlPath = await findMostRecentSessionFile(projectsRoot);
+
+  if (!jsonlPath) {
+    return { kind: "error", code: "NO_SESSION_FOUND", message: "no session JSONL provided or detectable" };
+  }
+
+  let load;
+  try {
+    load = await loadSession(ctx.forgeDb, jsonlPath);
+  } catch (err) {
+    return { kind: "error", code: "LOAD_FAILED", message: err instanceof Error ? err.message : String(err) };
+  }
+
+  const start = await startDistill({
+    forgeDb: ctx.forgeDb, kernelDb: ctx.kernelDb, sessionId: load.sessionId,
+  });
+  if (!start.ok) {
+    return { kind: "error", code: start.code, message: start.message };
+  }
+
+  const handle: AnalysisHandle = {
+    sessionId: load.sessionId,
+    jsonlPath,
+    taskId: start.taskId,
+    truncated: start.truncated,
+  };
+  if (start.emptySessionResult) {
+    handle.emptyResult = {
+      episodes: start.emptySessionResult.episodes,
+      reasonNoEpisodes: start.emptySessionResult.reasonNoEpisodes,
+    };
+  }
+
+  return {
+    kind: "started",
+    analysisId: encodeAnalysisId(handle),
+    sessionId: load.sessionId,
+    taskId: start.taskId,
+    jsonlPath,
+  };
+}
+
+export type AnalyzeHarvestResponse =
+  | { kind: "running"; analysisId: string; taskId: string; sessionId: string; status: string }
+  | AnalyzeResponse;
+
+export async function analyzeHarvest(
+  ctx: AnalyzeContext,
+  analysisId: string,
+): Promise<AnalyzeHarvestResponse> {
+  const handle = decodeAnalysisId(analysisId);
+  if (!handle) {
+    return { kind: "error", code: "INVALID_ANALYSIS_ID", message: "analysisId could not be decoded" };
+  }
+  const embedder = ctx.embedder ?? buildEmbeddingClient();
+
+  // Empty-session shortcut: distill never spawned, return the result directly.
+  if (handle.taskId === "" && handle.emptyResult) {
+    const distill: DistillResult = {
+      ok: true,
+      episodes: handle.emptyResult.episodes,
+      taskId: "",
+      truncated: false,
+      reasonNoEpisodes: handle.emptyResult.reasonNoEpisodes,
+    };
+    return finalizeAnalyze(ctx, embedder, handle.jsonlPath, handle.sessionId, distill);
+  }
+
+  const harvest = harvestDistillResult({
+    forgeDb: ctx.forgeDb,
+    kernelDb: ctx.kernelDb,
+    sessionId: handle.sessionId,
+    taskId: handle.taskId,
+    truncated: handle.truncated,
+  });
+  if (harvest.kind === "running") {
+    return {
+      kind: "running",
+      analysisId,
+      taskId: handle.taskId,
+      sessionId: handle.sessionId,
+      status: harvest.status,
+    };
+  }
+  return finalizeAnalyze(ctx, embedder, handle.jsonlPath, handle.sessionId, harvest.result);
 }
 
 function signatureKeyFromEpisode(ep: SessionEpisode): string {
