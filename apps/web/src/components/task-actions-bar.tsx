@@ -7,6 +7,32 @@ import { useToast } from "./toast";
 import { ConfirmDialog } from "./confirm-dialog";
 import { CopyButton } from "./copy-button";
 
+// Mirror of FixSuggestion from propose-pipeline-fix.ts. Kept inline
+// because the type lives server-side and we don't share types via a
+// monorepo package — duplicating the small shape is cheaper than
+// plumbing a shared module.
+interface FixSuggestion {
+  kind:
+    | "stuck_open"
+    | "error_status"
+    | "error_in_stream"
+    | "interrupted"
+    | "superseded"
+    | "zero_attempts";
+  targetStage: string;
+  severity: "info" | "warn" | "error";
+  description: string;
+  rationale: string;
+}
+
+interface ProposeFixResponse {
+  ok: true;
+  taskId: string;
+  found: boolean;
+  versionHash: string | null;
+  suggestions: FixSuggestion[];
+}
+
 interface TaskActionsBarProps {
   taskId: string;
   // Mirrors the union in [taskId]/page.tsx — see the comment there. Extended
@@ -59,6 +85,8 @@ export const TaskActionsBar = ({
   const [modifyOpen, setModifyOpen] = useState(false);
   const [modifyGoal, setModifyGoal] = useState("");
   const [modifying, setModifying] = useState(false);
+  const [suggestions, setSuggestions] = useState<FixSuggestion[] | null>(null);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
 
   const onCancel = async (): Promise<void> => {
     setConfirmCancel(false);
@@ -162,7 +190,30 @@ export const TaskActionsBar = ({
         {pipelineName && (
           <button
             type="button"
-            onClick={() => setModifyOpen(true)}
+            onClick={async () => {
+              setModifyOpen(true);
+              // Pre-fetch fix suggestions if the task is in a failure
+              // state — gives the user concrete one-click starting
+              // points for the modification goal. Suggestions render
+              // as cards above the textarea; clicking a card pre-fills
+              // the textarea with that suggestion's description.
+              const shouldSuggest = topState === "failed" || hasFailedStage;
+              if (!shouldSuggest || suggestions !== null) return;
+              setLoadingSuggestions(true);
+              const res = await apiFetch<ProposeFixResponse>(
+                `/api/kernel/tasks/${encodeURIComponent(taskId)}/propose-fix`,
+              );
+              setLoadingSuggestions(false);
+              if (res.ok) {
+                // Filter info-only entries (they're noise for goal-input
+                // purposes); keep warn + error.
+                setSuggestions(
+                  res.data.suggestions.filter((s) => s.severity !== "info"),
+                );
+              } else {
+                setSuggestions([]);
+              }
+            }}
             disabled={acting || modifying}
             className="rounded border border-strong bg-surface px-3 py-1 text-xs font-semibold text-primary hover:bg-elevated disabled:opacity-50"
             title="Launch pipeline-modifier to propose an IR change for this pipeline"
@@ -213,6 +264,41 @@ export const TaskActionsBar = ({
                 </>
               ) : null}
             </p>
+            {loadingSuggestions && (
+              <p className="mb-3 text-xs italic text-muted">
+                Analysing this task's failure for actionable suggestions…
+              </p>
+            )}
+            {suggestions && suggestions.length > 0 && (
+              <div className="mb-3">
+                <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-secondary">
+                  Suggested modifications (click to use)
+                </p>
+                <div className="space-y-1">
+                  {suggestions.map((s, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      onClick={() => {
+                        const goal =
+                          `Fix stage '${s.targetStage}': ${s.description}\n\n` +
+                          `Rationale: ${s.rationale}`;
+                        setModifyGoal(goal);
+                      }}
+                      className={`block w-full rounded border px-2 py-1.5 text-left text-xs hover:bg-elevated ${
+                        s.severity === "error"
+                          ? "border-danger-border bg-danger-bg/30"
+                          : "border-warning-border bg-warning-bg/30"
+                      }`}
+                      title={s.rationale}
+                    >
+                      <span className="mr-1 font-mono text-muted">[{s.targetStage}]</span>
+                      <span className="text-primary">{s.description}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             <label htmlFor="modify-goal" className="mb-1 block text-xs font-semibold uppercase tracking-wide text-secondary">
               Modification goal
             </label>

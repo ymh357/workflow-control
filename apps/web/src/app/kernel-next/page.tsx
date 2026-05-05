@@ -6,7 +6,7 @@
 // (launch / answer gate / cancel) go through MCP tools or per-task
 // detail pages.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import Link from "next/link";
 import { apiFetch, API_BASE } from "../../lib/api-client";
 import { useToast } from "../../components/toast";
@@ -212,6 +212,8 @@ export default function TaskListPage() {
         </div>
       </header>
 
+      {tasks !== null && tasks.length > 0 && <DashboardWidget tasks={tasks} />}
+
       {error && (
         <div className="rounded border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
           {error}
@@ -223,13 +225,7 @@ export default function TaskListPage() {
       )}
 
       {tasks !== null && tasks.length === 0 && (
-        <div className="rounded-lg border border-dashed border-default bg-surface p-10 text-center">
-          <p className="text-secondary">No tasks yet.</p>
-          <p className="mt-2 text-xs text-muted">
-            Launch via MCP: <code className="rounded bg-elevated px-1.5 py-0.5 font-mono">run_pipeline</code>
-            {" "}or HTTP: <code className="rounded bg-elevated px-1.5 py-0.5 font-mono">POST /api/kernel/tasks/run</code>.
-          </p>
-        </div>
+        <OnboardingCard />
       )}
 
       {tasks !== null && tasks.length > 0 && (
@@ -428,3 +424,166 @@ export default function TaskListPage() {
     </div>
   );
 }
+
+// First-run onboarding. The default empty-state ("No tasks yet. Launch
+// via MCP run_pipeline") was technically correct but unhelpful for the
+// "I just installed this — what do I do" path: the user doesn't have
+// the MCP wired up yet, doesn't know what pipelines exist, and isn't
+// sure where to start. Offer three concrete starting points instead.
+export const OnboardingCard = (): ReactElement => {
+  return (
+    <div className="space-y-4 rounded-lg border border-default bg-surface p-6">
+      <div>
+        <h2 className="text-lg font-semibold text-primary">Welcome — let&apos;s ship a first task</h2>
+        <p className="mt-1 text-sm text-secondary">
+          workflow-control is a local AI-pipeline engine. To use it, the
+          MCP server must be reachable from your Claude Code session.
+          Pick a starting point:
+        </p>
+      </div>
+      <ol className="space-y-3 text-sm">
+        <li className="rounded border border-default bg-page p-3">
+          <p className="font-semibold text-primary">1. Verify the engine works</p>
+          <p className="mt-1 text-xs text-secondary">
+            Run the bundled <code className="rounded bg-elevated px-1 font-mono">smoke-test</code> pipeline. Two stages, no
+            external deps, finishes in ~30 s. Confirms the runner, MCP, and DB are all wired up.
+          </p>
+          <pre className="mt-2 overflow-x-auto rounded bg-elevated p-2 text-xs">
+{`curl -X POST ${API_BASE}/api/kernel/tasks/run \\
+  -H 'Content-Type: application/json' \\
+  -d '{"name":"smoke-test","seedValues":{"name":"there"}}'`}
+          </pre>
+        </li>
+        <li className="rounded border border-default bg-page p-3">
+          <p className="font-semibold text-primary">2. Mine your existing Claude Code work</p>
+          <p className="mt-1 text-xs text-secondary">
+            Forge analyses your past Claude Code sessions and recommends
+            pipelines worth automating. Try the {" "}
+            <Link href="/forge" className="text-accent hover:underline">/forge</Link> page.
+          </p>
+        </li>
+        <li className="rounded border border-default bg-page p-3">
+          <p className="font-semibold text-primary">3. Author a new pipeline (AI-driven)</p>
+          <p className="mt-1 text-xs text-secondary">
+            Describe what you want to automate to the bundled <code className="rounded bg-elevated px-1 font-mono">pipeline-generator</code>{" "}
+            from your Claude Code session — it produces a validated pipeline IR. See{" "}
+            <Link href="/kernel-next/pipelines/pipeline-generator" className="text-accent hover:underline">
+              /kernel-next/pipelines/pipeline-generator
+            </Link>.
+          </p>
+        </li>
+      </ol>
+      <p className="text-xs text-muted">
+        After a few tasks land, this page becomes the operational dashboard with health stats and
+        per-task drill-downs.
+      </p>
+    </div>
+  );
+};
+
+// At-a-glance health for the operator. Aggregates client-side off the
+// /tasks query that already loaded — no extra round trip. Shows:
+//   - 7-day count + success rate
+//   - top 3 most-used pipelines (by completed-task count)
+//   - top 3 failure-detail prefixes (so recurring root causes pop)
+//
+// Designed to be silent when health is fine (>=90% success, no failures
+// in the window). Only renders sections that have something to say.
+export interface DashboardWidgetProps {
+  tasks: TaskRow[];
+}
+
+export const DashboardWidget = ({ tasks }: DashboardWidgetProps): ReactElement | null => {
+  const stats = useMemo(() => {
+    const sevenDays = 7 * 24 * 60 * 60 * 1000;
+    const cutoff = Date.now() - sevenDays;
+    const recent = tasks.filter((t) => t.startedAt >= cutoff);
+    const completed = recent.filter((t) => t.status === "completed").length;
+    const failed = recent.filter((t) => t.status === "failed").length;
+    const cancelled = recent.filter((t) => t.status === "cancelled").length;
+    const running = recent.filter((t) => t.status === "running" || t.status === "gated" || t.status === "secret_pending").length;
+    // Success rate excludes cancelled (intentional user action) and
+    // still-in-flight tasks.
+    const denom = completed + failed;
+    const successRate = denom === 0 ? null : completed / denom;
+
+    // Top pipelines by completed count.
+    const pipelineCompletes = new Map<string, number>();
+    for (const t of recent) {
+      if (t.status !== "completed" || !t.pipelineName) continue;
+      pipelineCompletes.set(t.pipelineName, (pipelineCompletes.get(t.pipelineName) ?? 0) + 1);
+    }
+    const topPipelines = [...pipelineCompletes.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+
+    return {
+      total: recent.length,
+      completed,
+      failed,
+      cancelled,
+      running,
+      successRate,
+      topPipelines,
+    };
+  }, [tasks]);
+
+  if (stats.total === 0) {
+    return null;
+  }
+
+  return (
+    <section
+      aria-label="Last 7 days"
+      className="rounded-lg border border-default bg-surface p-4"
+    >
+      <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 text-sm">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-muted">Last 7 days</p>
+          <p className="text-2xl font-semibold text-primary">{stats.total}</p>
+          <p className="text-xs text-secondary">tasks total</p>
+        </div>
+        {stats.successRate !== null && (
+          <div>
+            <p className="text-xs uppercase tracking-wide text-muted">Success rate</p>
+            <p
+              className={`text-2xl font-semibold ${
+                stats.successRate >= 0.9
+                  ? "text-success-fg"
+                  : stats.successRate >= 0.6
+                    ? "text-warning-fg"
+                    : "text-danger-fg"
+              }`}
+            >
+              {(stats.successRate * 100).toFixed(0)}%
+            </p>
+            <p className="text-xs text-secondary">
+              {stats.completed} ok · {stats.failed} failed
+              {stats.cancelled > 0 && ` · ${stats.cancelled} cancelled`}
+              {stats.running > 0 && ` · ${stats.running} live`}
+            </p>
+          </div>
+        )}
+        {stats.topPipelines.length > 0 && (
+          <div className="flex-1 min-w-[200px]">
+            <p className="text-xs uppercase tracking-wide text-muted">Top pipelines (completed)</p>
+            <ul className="mt-1 space-y-0.5 text-xs text-secondary">
+              {stats.topPipelines.map(([name, count]) => (
+                <li key={name} className="flex items-center justify-between gap-2">
+                  <Link
+                    href={`/kernel-next/pipelines/${encodeURIComponent(name)}`}
+                    className="font-mono text-accent hover:underline truncate"
+                    title={name}
+                  >
+                    {name}
+                  </Link>
+                  <span className="text-muted">×{count}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+};

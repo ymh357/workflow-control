@@ -21,6 +21,8 @@ import type { Context } from "hono";
 import { z } from "zod";
 import { KernelService } from "../kernel-next/mcp/kernel.js";
 import { getKernelNextDb } from "../lib/kernel-next-db.js";
+import { analyzeTaskFailure } from "../lib/debug-queries.js";
+import { proposePipelineFix } from "../kernel-next/debug/propose-pipeline-fix.js";
 
 export const kernelTasksRoute = new Hono();
 
@@ -308,4 +310,38 @@ kernelTasksRoute.post("/kernel/tasks/:taskId/rollback", async (c) => {
   });
   if (result.ok) return c.json(result);
   return c.json(result, statusForRollbackDiagnostic(result.diagnostics[0]?.code));
+});
+
+// 2026-05-06 — propose-fix: analyse a failed task and surface actionable
+// pipeline-change suggestions. Wraps the propose_pipeline_fix MCP tool's
+// rule-based foundation (no AI patch synthesis — that path costs API
+// tokens and is left to the explicit MCP call). The web "Modify pipeline"
+// dialog calls this on open and renders each suggestion as a clickable
+// card that pre-fills the modification goal.
+//
+// 200 OK with { ok: true, ...result } even when found=false (the task
+// doesn't exist) — callers branch on the `found` field. A separate
+// 500 only fires on unexpected DB errors.
+kernelTasksRoute.get("/kernel/tasks/:taskId/propose-fix", (c) => {
+  const taskId = c.req.param("taskId");
+  try {
+    const report = analyzeTaskFailure(taskId);
+    const result = proposePipelineFix({
+      db: getKernelNextDb(),
+      taskId,
+      report,
+    });
+    return c.json({ ok: true, ...result });
+  } catch (err) {
+    return c.json(
+      {
+        ok: false,
+        diagnostics: [{
+          code: "PROPOSE_FIX_FAILED",
+          message: err instanceof Error ? err.message : String(err),
+        }],
+      },
+      500,
+    );
+  }
 });

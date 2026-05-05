@@ -109,6 +109,25 @@ export interface RealStageExecutorOptions {
    */
   maxRetries?: number;
   /**
+   * Max number of in-attempt continuation rounds when the agent
+   * completes its turn but fails the schema check (e.g. forgot to
+   * call write_port for some declared output port). Each round
+   * resumes the same SDK session via `options.resume = sessionId` and
+   * sends a targeted feedback prompt — the agent does NOT redo prior
+   * thinking. Default 2 rounds (so up to 3 total turns: original + 2
+   * feedbacks). Set to 0 to disable continuation entirely (the legacy
+   * behaviour: single shot, fail-on-noncompliance).
+   *
+   * Why this exists: 9 of the system's failed tasks (50% of
+   * pipeline-generator failures) shared the root cause "agent did not
+   * call write_port for port 'X'". The legacy maxRetries restarted
+   * the whole stage from scratch — wasting all the prior reasoning
+   * and giving the agent no specific feedback. Continuation retry is
+   * cheaper (1-2 turns vs whole-stage replay) and more effective
+   * (the agent sees the exact ports it missed and what was written).
+   */
+  maxNoncomplianceFeedback?: number;
+  /**
    * Resolver turning AgentStage.promptRef into the actual user prompt.
    * Defaults to TrivialPromptResolver (promptRef === prompt string).
    * A registry-backed resolver arrives in A2 per design doc §2.3.
@@ -232,6 +251,12 @@ const DEFAULT_MAX_TURNS = 50;
 const DEFAULT_MAX_BUDGET_USD = 0.2;
 const DEFAULT_CLAUDE_PATH = "claude";
 const DEFAULT_MAX_RETRIES = 0;
+// 2026-05-06: Default continuation rounds when the agent completes a
+// turn but fails the schema check. 2 rounds = up to 3 total turns
+// (original + 2 feedbacks), which empirically catches every "forgot
+// write_port" regression we have on file without unbounded loops on
+// genuinely confused agents.
+const DEFAULT_MAX_NONCOMPLIANCE_FEEDBACK = 2;
 // F22 (2026-04-26): Number of free retries granted when an attempt fails with
 // MCP_STARTUP_FAILED. Independent of maxRetries because this is an
 // infrastructure-level race (cold-start npx) not a stage-logic error.
@@ -247,6 +272,7 @@ export class RealStageExecutor implements StageExecutor {
   private readonly maxBudgetUsd: number;
   private readonly claudePath: string;
   private readonly maxRetries: number;
+  private readonly maxNoncomplianceFeedback: number;
   private readonly promptResolver: PromptResolver;
   private readonly queryFn: typeof query;
   private readonly workspaceDir: string | undefined;
@@ -259,6 +285,8 @@ export class RealStageExecutor implements StageExecutor {
     this.maxBudgetUsd = options.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD;
     this.claudePath = options.claudePath ?? DEFAULT_CLAUDE_PATH;
     this.maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+    this.maxNoncomplianceFeedback =
+      options.maxNoncomplianceFeedback ?? DEFAULT_MAX_NONCOMPLIANCE_FEEDBACK;
     this.promptResolver = options.promptResolver ?? new TrivialPromptResolver();
     this.queryFn = options.queryFn ?? query;
     this.workspaceDir = options.workspaceDir;
@@ -437,10 +465,6 @@ export class RealStageExecutor implements StageExecutor {
     //    `write_port` tool (one call per declared output port). The final
     //    text message is ignored — no outputFormat.json_schema is sent.
     try {
-      // Fresh MCP server per attempt — SDK's MCP transport is single-use.
-      // The factory receives the machine-bound dispatcher so agent-side
-      // write_port calls fire PORT_WRITTEN.
-      const mcpServer = this.mcpServerFactory(portRuntime.getDispatcher(), portRuntime);
       const subAgents = stage.config.subAgents;
       // M-R5 + single-session: pick which session_id (if any) to resume.
       // segmentContinuation (single-session mode) takes precedence over
@@ -567,450 +591,496 @@ export class RealStageExecutor implements StageExecutor {
         externalMcpServers = expandResult.servers;
       }
 
-      // F3: set SDK cwd only when the caller supplied a workspace.
-      // Otherwise leave it undefined so the SDK default (process.cwd())
-      // stays in force, preserving legacy test expectations.
-      const baseOptions: SdkOptions = buildSdkBaseOptions({
-        systemPromptAppend,
-        kernelMcp: mcpServer as NonNullable<SdkOptions["mcpServers"]>[string],
-        model: this.model,
-        maxTurns: effectiveMaxTurns,
-        maxBudgetUsd: this.maxBudgetUsd,
-        claudePath: this.claudePath,
-        childEnv: buildChildEnv(),
-        subAgents,
-        workspaceDir: this.workspaceDir,
-        externalMcpServers,
-        abortController,
-        stderr: (chunk) => filterAndAppendSdkStderr(chunk, writer),
-      });
-      // Plumb the resume session_id (M-R5 per-stage OR single-session
-      // segment continuation; segment wins per §6.2). queryFn failure
-      // (missing / corrupt session file) surfaces as a thrown error
-      // inside the stream iteration below; we catch it and restart with
-      // a fresh session instead of failing the stage.
-      const options: SdkOptions = sessionToResume
-        ? { ...baseOptions, resume: sessionToResume }
-        : baseOptions;
+      // Cross-turn accumulators. The agent may take multiple turns
+      // within a single attempt (initial turn + 0..maxNoncomplianceFeedback
+      // continuation rounds when schema-check finds missing ports). cost
+      // is summed; token counts and sessionId track the latest turn (the
+      // SDK's resume path emits cumulative usage on the latest result).
+      let totalCostUsd: number | null = null;
+      let lastSessionId: string | null = null;
+      let lastTokenInput: number | null = null;
+      let lastTokenOutput: number | null = null;
+      let lastCacheReadInputTokens: number | null = null;
+      let lastCacheCreationInputTokens: number | null = null;
 
-      const stream = this.queryFn({ prompt: userPrompt, options });
+      // The user prompt for the current turn. Round 0 = the original
+      // userPrompt (built from the IR + inputs). Round 1+ = a feedback
+      // prompt enumerating the missing ports the previous turn forgot
+      // to write. The agent resumes the same SDK session, so it sees
+      // the feedback as the next user message in an ongoing dialogue.
+      let turnPrompt = userPrompt;
+      // sessionToResume sources: round 0 from the caller (M-R5 per-stage
+      // resume OR single-session segment continuation). Round 1+ from
+      // the previous round's captured session_id so the agent doesn't
+      // have to re-see the system prompt or redo any reasoning.
+      let turnResumeSessionId: string | undefined = sessionToResume;
+      // Carries across turns if the previous round set agentOutput
+      // status=done but failed schema check; null after a successful
+      // round, otherwise the missing-port error string for diagnostics.
+      let pendingFeedbackErr: string | null = null;
 
-      // A2.2 — drive an AgentMachine via the SDK adapter instead of ad-hoc
-      // result scanning. Every SDK message → 0+ AgentEvents → actor.send().
-      // The machine reaches `done` (ok) or `error` (SDK returned non-success
-      // or an error occurred mid-stream); final state's output carries the
-      // diagnostic we surface as stage_attempt error text.
-      //
-      // A2.3.1 — pass kernel identifiers as XState `input` so the machine's
-      // final output carries stage/task/attempt correlation IDs. When this
-      // executor is later invoked by TaskMachine (A2.3.2), the parent's
-      // `invoke.input` factory will populate the same fields; keeping the
-      // wiring consistent on both call paths simplifies the migration.
-      const agentActor = createActor(createAgentMachine(), {
-        input: { stageName, taskId, attemptId },
-      });
-      agentActor.start();
-      const adapter = createSdkAdapter();
+      // For each round we still need the budget calc that depends on
+      // turnsAlreadyUsed at start of attempt. After round 0, the SDK's
+      // resume already brings in prior turn count, so we pass the same
+      // effectiveMaxTurns each round (clampMaxTurns is a per-resume
+      // calculation, not a per-attempt one).
 
-      // A2.3.3 — bridge the parent's AbortSignal to an INTERRUPT event
-      // on the inner AgentMachine. When the TaskMachine receives
-      // INTERRUPT{stage} and sendTo's the stage's invoked child, the
-      // runner's fromCallback aborts this signal; we translate that
-      // into the §4.2 INTERRUPT event so the AgentMachine's state
-      // matrix (arm on waiting_for_claude, defer on tool loop, etc.)
-      // runs as designed. Listener is removed in the finally so we
-      // don't leak across sequential stage attempts.
-      const onAbort = () => {
-        // F22: kill the SDK subprocess immediately when the runner interrupts.
-        // This prevents the agent from writing port_values after the attempt
-        // is terminal. INTERRUPT to agentActor still runs so the §4.2 state
-        // matrix executes its normal summary-turn logic.
-        abortController.abort();
-        agentActor.send({ type: "INTERRUPT" });
-      };
-      if (args.signal) {
-        // Bug 2 fix (c12+ review): TOCTOU race. Pre-fix the order was:
-        //   1. read .aborted
-        //   2. addEventListener
-        // If .abort() landed between (1) and (2), the executor never
-        // received the interrupt and ran the full SDK query on a
-        // cancelled task. Reverse the order: register the listener
-        // FIRST, then re-check `.aborted`. If aborted, dispatch
-        // immediately (the listener won't fire because we registered
-        // with `once: true` AFTER the abort already happened — and
-        // `once: true` listeners DO fire synchronously if attached
-        // after abort, but we don't want to depend on that subtlety).
-        // Removing the listener after the synchronous re-check
-        // ensures we don't double-dispatch.
-        args.signal.addEventListener("abort", onAbort, { once: true });
-        if (args.signal.aborted) {
-          args.signal.removeEventListener("abort", onAbort);
+      // Loop bound: round = 0 is the initial turn; round 1..N are
+      // continuation rounds. Total turns = 1 + maxNoncomplianceFeedback.
+      const totalTurns = this.maxNoncomplianceFeedback + 1;
+      let lastAgentOutput: AgentMachineOutput | undefined;
+
+      for (let round = 0; round < totalTurns; round++) {
+        // Fresh MCP server per turn — SDK's MCP transport is single-use.
+        // Each new query() call needs its own server instance, otherwise
+        // the SDK throws "Already connected to a transport".
+        const mcpServer = this.mcpServerFactory(portRuntime.getDispatcher(), portRuntime);
+
+        // F3: set SDK cwd only when the caller supplied a workspace.
+        // Otherwise leave it undefined so the SDK default (process.cwd())
+        // stays in force, preserving legacy test expectations.
+        const baseOptions: SdkOptions = buildSdkBaseOptions({
+          systemPromptAppend,
+          kernelMcp: mcpServer as NonNullable<SdkOptions["mcpServers"]>[string],
+          model: this.model,
+          maxTurns: effectiveMaxTurns,
+          maxBudgetUsd: this.maxBudgetUsd,
+          claudePath: this.claudePath,
+          childEnv: buildChildEnv(),
+          subAgents,
+          workspaceDir: this.workspaceDir,
+          externalMcpServers,
+          abortController,
+          stderr: (chunk) => filterAndAppendSdkStderr(chunk, writer),
+        });
+        // queryFn failure (missing / corrupt session file) surfaces as a
+        // thrown error inside the stream iteration below; we catch it and
+        // restart with a fresh session instead of failing the stage.
+        const options: SdkOptions = turnResumeSessionId
+          ? { ...baseOptions, resume: turnResumeSessionId }
+          : baseOptions;
+
+        const stream = this.queryFn({ prompt: turnPrompt, options });
+
+        // Drive an AgentMachine via the SDK adapter. Per-turn fresh
+        // because the prior turn's actor is in the `done` final state
+        // and its subscriptions must not leak across turns.
+        const agentActor = createActor(createAgentMachine(), {
+          input: { stageName, taskId, attemptId },
+        });
+        agentActor.start();
+        const adapter = createSdkAdapter();
+
+        const onAbort = () => {
+          // F22: kill the SDK subprocess immediately when the runner interrupts.
           abortController.abort();
           agentActor.send({ type: "INTERRUPT" });
+        };
+        if (args.signal) {
+          // Bug 2 fix (c12+ review): TOCTOU race. Register listener
+          // FIRST, then re-check `.aborted`.
+          args.signal.addEventListener("abort", onAbort, { once: true });
+          if (args.signal.aborted) {
+            args.signal.removeEventListener("abort", onAbort);
+            abortController.abort();
+            agentActor.send({ type: "INTERRUPT" });
+          }
         }
-      }
 
-      // Sidecar capture: observe raw SDK messages for fields the
-      // adapter intentionally collapses (assistant text/thinking
-      // payloads, session_id, cost/usage). These ride alongside the
-      // state machine — AgentMachine is the source of truth for
-      // lifecycle; the writer records what was said.
-      let capturedSessionId: string | null = null;
-      let capturedCostUsd: number | null = null;
-      let capturedTokenInput: number | null = null;
-      let capturedTokenOutput: number | null = null;
-      let capturedCacheReadInputTokens: number | null = null;
-      let capturedCacheCreationInputTokens: number | null = null;
+        // Per-turn captured values. Reset each round; we accumulate to
+        // the outer `total*` / track latest in `last*` after the round
+        // finishes.
+        let roundSessionId: string | null = null;
+        let roundCostUsd: number | null = null;
+        let roundTokenInput: number | null = null;
+        let roundTokenOutput: number | null = null;
+        let roundCacheReadInputTokens: number | null = null;
+        let roundCacheCreationInputTokens: number | null = null;
 
-      // P7.4 / D29 — throttled live text-delta publisher. Only
-      // instantiated when a broadcaster is wired; the pump path
-      // tolerates its absence.
-      const deltaThrottler = this.broadcaster
-        ? new DeltaThrottler(this.broadcaster, taskId, attemptId, stageName)
-        : null;
+        const deltaThrottler = this.broadcaster
+          ? new DeltaThrottler(this.broadcaster, taskId, attemptId, stageName)
+          : null;
 
-      // Synthetic heartbeat ping (dogfood Finding 8, 2026-04-26).
-      // SDK thinking time emits no stream events; without this ping the
-      // writer's last_heartbeat_at freezes for the duration of the think
-      // (sometimes minutes). Monitors that watch heartbeat for liveness
-      // then false-positive-cancel the agent. Ticking every 30s keeps
-      // last_heartbeat_at moving regardless of stream activity, so the
-      // signal reflects "agent process is alive" rather than "agent is
-      // emitting tokens".
-      const heartbeatTimer = setInterval(() => {
-        try { writer.heartbeat(); } catch { /* writer may be closed mid-tick */ }
-      }, 30_000);
-      // Don't keep the event loop alive on an idle interval if the test
-      // harness has no other handles open.
-      heartbeatTimer.unref?.();
+        const heartbeatTimer = setInterval(() => {
+          try { writer.heartbeat(); } catch { /* writer may be closed mid-tick */ }
+        }, 30_000);
+        heartbeatTimer.unref?.();
 
-      let agentOutput: AgentMachineOutput;
-      try {
-        // Stream pump extracted to stream-pump.ts so A2.3.2 can reuse it
-        // when the AgentMachine is spawned as a TaskMachine invoked child.
-        // Stop the actor in the finally below regardless of pump outcome.
-        agentOutput = await pumpSdkStream({
-          stream: stream as AsyncIterable<SdkMessageLike>,
-          adapter,
-          send: (ev) => {
-            // Mirror SDK-adapter events into the sidecar writer. The
-            // adapter emits ASSISTANT_TEXT without the text payload so
-            // we capture those contents in onSdkMessage below — here
-            // we only fan out tool-use correlation events (which DO
-            // carry full id/name/input/output).
-            if (ev.type === "TOOL_USE_REQUESTED") {
-              writer.appendToolCall({
-                id: ev.id,
-                name: ev.name,
-                input: ev.input,
-                result: null,
-                isError: false,
-                tokenIn: null,
-                tokenOut: null,
-                durationMs: null,
-                startedAt: new Date().toISOString(),
-                finishedAt: null,
-              });
-            } else if (ev.type === "TOOL_RESULT_RECEIVED") {
-              writer.completeToolCall(ev.id, {
-                result: ev.output,
-                finishedAt: new Date().toISOString(),
-                ...(ev.isError === true ? { isError: true } : {}),
-              });
-            } else if (ev.type === "RESULT_SUCCESS") {
-              if (typeof ev.cost_usd === "number") {
-                capturedCostUsd = ev.cost_usd;
+        let agentOutput: AgentMachineOutput;
+        try {
+          agentOutput = await pumpSdkStream({
+            stream: stream as AsyncIterable<SdkMessageLike>,
+            adapter,
+            send: (ev) => {
+              if (ev.type === "TOOL_USE_REQUESTED") {
+                writer.appendToolCall({
+                  id: ev.id,
+                  name: ev.name,
+                  input: ev.input,
+                  result: null,
+                  isError: false,
+                  tokenIn: null,
+                  tokenOut: null,
+                  durationMs: null,
+                  startedAt: new Date().toISOString(),
+                  finishedAt: null,
+                });
+              } else if (ev.type === "TOOL_RESULT_RECEIVED") {
+                writer.completeToolCall(ev.id, {
+                  result: ev.output,
+                  finishedAt: new Date().toISOString(),
+                  ...(ev.isError === true ? { isError: true } : {}),
+                });
+              } else if (ev.type === "RESULT_SUCCESS") {
+                if (typeof ev.cost_usd === "number") {
+                  roundCostUsd = ev.cost_usd;
+                }
+              } else if (ev.type === "COMPACT_STARTED") {
+                writer.appendCompactEvent({
+                  trigger: ev.trigger,
+                  preTokens: ev.pre_tokens,
+                  startedAt: new Date().toISOString(),
+                });
+              } else if (ev.type === "COMPACT_ENDED") {
+                writer.completeCompactEvent(new Date().toISOString());
               }
-            } else if (ev.type === "COMPACT_STARTED") {
-              writer.appendCompactEvent({
-                trigger: ev.trigger,
-                preTokens: ev.pre_tokens,
-                startedAt: new Date().toISOString(),
-              });
-            } else if (ev.type === "COMPACT_ENDED") {
-              writer.completeCompactEvent(new Date().toISOString());
-            }
-            agentActor.send(ev);
-            // P5.3 / D7 — observe the machine's updated rate-limit
-            // counter AFTER send; publish a `rate_limit_backoff` SSE
-            // event when this signal crossed the pause threshold.
-            // The send is synchronous so the counter reflects this
-            // exact event. Observability-only: the SDK itself handles
-            // the real pacing internally; we surface the suggested
-            // backoff so the dashboard can show "throttled by API".
-            if (ev.type === "RATE_LIMIT_SIGNAL") {
-              const util = ev.utilization;
-              if (typeof util === "number" && shouldPause({ utilization: util })) {
-                const signalCount = agentActor
-                  .getSnapshot().context.consecutiveRateLimitSignals;
-                const delayMs = rateLimitBackoffMs(signalCount);
-                if (this.broadcaster) {
-                  try {
-                    this.broadcaster.publish({
-                      type: "rate_limit_backoff",
-                      taskId,
+              agentActor.send(ev);
+              if (ev.type === "RATE_LIMIT_SIGNAL") {
+                const util = ev.utilization;
+                if (typeof util === "number" && shouldPause({ utilization: util })) {
+                  const signalCount = agentActor
+                    .getSnapshot().context.consecutiveRateLimitSignals;
+                  const delayMs = rateLimitBackoffMs(signalCount);
+                  if (this.broadcaster) {
+                    try {
+                      this.broadcaster.publish({
+                        type: "rate_limit_backoff",
+                        taskId,
+                        timestamp: new Date().toISOString(),
+                        data: {
+                          stage: stageName,
+                          attemptId,
+                          delayMs,
+                          signalCount,
+                          utilization: util,
+                        },
+                      });
+                    } catch {
+                      // broadcaster failure must not abort the stream
+                    }
+                  }
+                }
+              }
+            },
+            onSdkMessage: (msg) => {
+              if (msg.type === "system" && msg.subtype === "init") {
+                const sid = (msg as { session_id?: unknown }).session_id;
+                if (typeof sid === "string") {
+                  roundSessionId = sid;
+                  // M-R5: persist session_id immediately so resume works
+                  // even on mid-stage crash.
+                  writer.updateSessionId(sid);
+                }
+                if (externalMcpServers && Object.keys(externalMcpServers).length > 0) {
+                  const mcpServersList = (msg as {
+                    mcp_servers?: Array<{ name?: unknown; status?: unknown }>;
+                  }).mcp_servers ?? [];
+                  const declared = Object.keys(externalMcpServers);
+                  const failed: string[] = [];
+                  const needsAuth: string[] = [];
+                  const missing: string[] = [];
+                  for (const name of declared) {
+                    const entry = mcpServersList.find(
+                      (s) => typeof s.name === "string" && s.name === name,
+                    );
+                    if (!entry) {
+                      missing.push(name);
+                      continue;
+                    }
+                    const status = typeof entry.status === "string" ? entry.status : "unknown";
+                    if (status === "failed") failed.push(name);
+                    else if (status === "needs-auth") needsAuth.push(name);
+                  }
+                  if (needsAuth.length > 0) {
+                    throw new Error(
+                      `MCP_NEEDS_AUTH: declared external MCP server(s) ${needsAuth
+                        .map((n) => `'${n}'`)
+                        .join(", ")} require operator authentication (OAuth or token). ` +
+                        `Complete the auth flow and re-run; this is not a retryable failure.`,
+                    );
+                  }
+                  if (failed.length > 0 || missing.length > 0) {
+                    const allDead = [...failed, ...missing];
+                    throw new Error(
+                      `MCP_STARTUP_FAILED: declared external MCP server(s) ${allDead
+                        .map((n) => `'${n}'`)
+                        .join(", ")} did not connect at session init ` +
+                        `(${failed.length} failed, ${missing.length} not enumerated by SDK). ` +
+                        `Likely causes: wrong URL for mcp-remote, npm package not found, ` +
+                        `server crashed during handshake, or cold-cache spawn exceeding SDK timeout. ` +
+                        `Check the attempt's "SDK Stderr" tab for the upstream "Connection failed after Xms" line.`,
+                    );
+                  }
+                }
+              }
+              if (msg.type === "assistant") {
+                const blocks = msg.message?.content ?? [];
+                for (const b of blocks) {
+                  const rec = b as { type?: string; text?: unknown; thinking?: unknown };
+                  if (rec.type === "text" && typeof rec.text === "string") {
+                    writer.appendAgentStream({
+                      type: "text",
+                      text: rec.text,
                       timestamp: new Date().toISOString(),
-                      data: {
-                        stage: stageName,
-                        attemptId,
-                        delayMs,
-                        signalCount,
-                        utilization: util,
-                      },
                     });
-                  } catch {
-                    // broadcaster failure must not abort the stream
+                    if (deltaThrottler) deltaThrottler.push(rec.text);
+                  } else if (rec.type === "thinking") {
+                    const thinkingText = typeof rec.thinking === "string"
+                      ? rec.thinking
+                      : typeof rec.text === "string"
+                        ? rec.text
+                        : "";
+                    writer.appendAgentStream({
+                      type: "thinking",
+                      text: thinkingText,
+                      timestamp: new Date().toISOString(),
+                    });
                   }
                 }
               }
-            }
-          },
-          onSdkMessage: (msg) => {
-            // Capture content + metadata that the adapter collapses.
-            if (msg.type === "system" && msg.subtype === "init") {
-              const sid = (msg as { session_id?: unknown }).session_id;
-              if (typeof sid === "string") {
-                capturedSessionId = sid;
-                // M-R5: persist session_id to DB immediately, not at
-                // writer.close(). Mid-stage crash (SIGKILL between now
-                // and close) otherwise loses the id — defeating SDK
-                // session resume because orphan reconciler can't look
-                // up what sid to pass to options.resume.
-                writer.updateSessionId(sid);
-              }
-              // Bug-3 (dogfood) + Bug 11 (dogfood-2026-04-28): validate
-              // that every declared external MCP server actually came up.
-              // Earlier versions reverse-engineered status from the
-              // tools[] prefix scan; the SDK's `mcp_servers[].status`
-              // field is the authoritative signal — read it directly.
-              //
-              // status values: "connected" | "failed" | "needs-auth" |
-              // "pending" | "disabled". We treat:
-              //   - failed     → throw MCP_STARTUP_FAILED (handshake broken)
-              //   - needs-auth → throw MCP_NEEDS_AUTH (distinct: operator
-              //                  needs to complete OAuth, not retry)
-              //   - missing    → throw MCP_STARTUP_FAILED (server entry
-              //                  absent from init means SDK couldn't even
-              //                  enumerate it — typically a config error)
-              //   - pending    → tolerate; init message is the wrong
-              //                  place to fail-fast on transient state.
-              //                  Subsequent stream messages will reveal
-              //                  the eventual outcome via tool calls
-              //                  succeeding or other failure paths.
-              //   - connected/disabled → ok.
-              if (externalMcpServers && Object.keys(externalMcpServers).length > 0) {
-                const mcpServersList = (msg as {
-                  mcp_servers?: Array<{ name?: unknown; status?: unknown }>;
-                }).mcp_servers ?? [];
-                const declared = Object.keys(externalMcpServers);
-                const failed: string[] = [];
-                const needsAuth: string[] = [];
-                const missing: string[] = [];
-                for (const name of declared) {
-                  const entry = mcpServersList.find(
-                    (s) => typeof s.name === "string" && s.name === name,
-                  );
-                  if (!entry) {
-                    missing.push(name);
-                    continue;
+              if (msg.type === "result" && msg.subtype === "success") {
+                const usage = (msg as {
+                  usage?: {
+                    input_tokens?: unknown;
+                    output_tokens?: unknown;
+                    cache_read_input_tokens?: unknown;
+                    cache_creation_input_tokens?: unknown;
+                  };
+                }).usage;
+                if (usage) {
+                  if (typeof usage.input_tokens === "number") {
+                    roundTokenInput = usage.input_tokens;
                   }
-                  const status = typeof entry.status === "string" ? entry.status : "unknown";
-                  if (status === "failed") failed.push(name);
-                  else if (status === "needs-auth") needsAuth.push(name);
+                  if (typeof usage.output_tokens === "number") {
+                    roundTokenOutput = usage.output_tokens;
+                  }
+                  if (typeof usage.cache_read_input_tokens === "number") {
+                    roundCacheReadInputTokens = usage.cache_read_input_tokens;
+                  }
+                  if (typeof usage.cache_creation_input_tokens === "number") {
+                    roundCacheCreationInputTokens = usage.cache_creation_input_tokens;
+                  }
                 }
-                if (needsAuth.length > 0) {
-                  throw new Error(
-                    `MCP_NEEDS_AUTH: declared external MCP server(s) ${needsAuth
-                      .map((n) => `'${n}'`)
-                      .join(", ")} require operator authentication (OAuth or token). ` +
-                      `Complete the auth flow and re-run; this is not a retryable failure.`,
-                  );
-                }
-                if (failed.length > 0 || missing.length > 0) {
-                  const allDead = [...failed, ...missing];
-                  throw new Error(
-                    `MCP_STARTUP_FAILED: declared external MCP server(s) ${allDead
-                      .map((n) => `'${n}'`)
-                      .join(", ")} did not connect at session init ` +
-                      `(${failed.length} failed, ${missing.length} not enumerated by SDK). ` +
-                      `Likely causes: wrong URL for mcp-remote, npm package not found, ` +
-                      `server crashed during handshake, or cold-cache spawn exceeding SDK timeout. ` +
-                      `Check the attempt's "SDK Stderr" tab for the upstream "Connection failed after Xms" line.`,
-                  );
+                if (typeof msg.total_cost_usd === "number") {
+                  roundCostUsd = msg.total_cost_usd;
                 }
               }
-            }
-            if (msg.type === "assistant") {
-              const blocks = msg.message?.content ?? [];
-              for (const b of blocks) {
-                const rec = b as { type?: string; text?: unknown; thinking?: unknown };
-                if (rec.type === "text" && typeof rec.text === "string") {
-                  writer.appendAgentStream({
-                    type: "text",
-                    text: rec.text,
-                    timestamp: new Date().toISOString(),
-                  });
-                  // P7.4 / D29 — push text block into the throttled SSE
-                  // publisher. The SDK delivers assistant messages as
-                  // whole blocks (not sub-token deltas), so a single
-                  // push per block is the finest granularity available.
-                  // Thinking payloads are intentionally excluded — the
-                  // dashboard's live panel surfaces user-visible output
-                  // only, and thinking often dominates the byte volume.
-                  if (deltaThrottler) deltaThrottler.push(rec.text);
-                } else if (rec.type === "thinking") {
-                  const thinkingText = typeof rec.thinking === "string"
-                    ? rec.thinking
-                    : typeof rec.text === "string"
-                      ? rec.text
-                      : "";
-                  writer.appendAgentStream({
-                    type: "thinking",
-                    text: thinkingText,
-                    timestamp: new Date().toISOString(),
-                  });
-                }
-              }
-            }
-            if (msg.type === "result" && msg.subtype === "success") {
-              const usage = (msg as {
-                usage?: {
-                  input_tokens?: unknown;
-                  output_tokens?: unknown;
-                  // SDK v0.2.63 surfaces these two fields on the
-                  // result.usage object (snake_case, mirroring the
-                  // raw Anthropic API). The SDK's typed ModelUsage
-                  // exposes the camelCase equivalents, but the raw
-                  // message field is snake_case here.
-                  cache_read_input_tokens?: unknown;
-                  cache_creation_input_tokens?: unknown;
-                };
-              }).usage;
-              if (usage) {
-                if (typeof usage.input_tokens === "number") {
-                  capturedTokenInput = usage.input_tokens;
-                }
-                if (typeof usage.output_tokens === "number") {
-                  capturedTokenOutput = usage.output_tokens;
-                }
-                if (typeof usage.cache_read_input_tokens === "number") {
-                  capturedCacheReadInputTokens = usage.cache_read_input_tokens;
-                }
-                if (typeof usage.cache_creation_input_tokens === "number") {
-                  capturedCacheCreationInputTokens = usage.cache_creation_input_tokens;
-                }
-              }
-              if (typeof msg.total_cost_usd === "number") {
-                capturedCostUsd = msg.total_cost_usd;
-              }
-            }
-          },
-          waitForFinal: async () => {
-            const finalSnap = await waitFor(
-              agentActor,
-              (s) => s.status === "done",
-              { timeout: 5_000 },
-            );
-            return finalSnap.output as AgentMachineOutput;
-          },
-        });
-      } finally {
-        clearInterval(heartbeatTimer);
-        if (args.signal) args.signal.removeEventListener("abort", onAbort);
-        // Always stop the actor — even on adapter/stream errors or waitFor
-        // timeout. Otherwise XState keeps a subscription alive and a later
-        // test iteration's actor may race with this one.
-        agentActor.stop();
-        // F22 — belt-and-suspenders: abort the SDK controller on every exit
-        // path so the subprocess never outlives this doAttempt frame.
-        // abort() is idempotent so double-calling (success path, explicit
-        // abort paths above) is harmless.
-        if (!abortController.signal.aborted) abortController.abort();
-        // P7.4 / D29 — flush any pending text so the dashboard sees the
-        // tail end of the stream even when the stage ends between
-        // flush-interval ticks. dispose() is a no-op when the buffer is
-        // empty.
-        if (deltaThrottler) deltaThrottler.dispose();
-      }
-
-      if (agentOutput.status !== "done") {
-        const diag = agentOutput.diagnostic;
-        const msg = diag
-          ? diag.message || `result subtype: ${diag.subtype}`
-          : agentOutput.status === "interrupted"
-            ? `agent interrupted (from=${agentOutput.interruptedFrom ?? "unknown"})`
-            : "agent did not complete successfully";
-        const termReason: TerminationReason =
-          agentOutput.status === "interrupted" ? "interrupted" : "error";
-        writer.close({
-          terminationReason: termReason,
-          costUsd: capturedCostUsd,
-          tokenInput: capturedTokenInput,
-          tokenOutput: capturedTokenOutput,
-          cacheReadInputTokens: capturedCacheReadInputTokens,
-          cacheCreationInputTokens: capturedCacheCreationInputTokens,
-          sessionId: capturedSessionId,
-        });
-        portRuntime.finishAttempt(attemptId, "error", msg, { silent: failSilently });
-        return { attemptId, attemptIdx, status: "error", error: msg };
-      }
-
-      // 5. Validate: did the agent write every declared output port via
-      //    the write_port tool? Query port_values for this specific
-      //    attempt. Any missing port is a compliance failure.
-      const writtenRows = args.portRuntime
-        ? queryAttemptPortWrites(args, attemptId)
-        : [];
-      const writtenMap = new Map<string, unknown>();
-      for (const row of writtenRows) {
-        writtenMap.set(row.port, row.value);
-      }
-
-      for (const p of stage.outputs) {
-        if (!writtenMap.has(p.name)) {
-          const errMsg = `schema non-compliant: agent did not call write_port for port '${p.name}'`;
-          writer.close({
-            terminationReason: "error",
-            costUsd: capturedCostUsd,
-            tokenInput: capturedTokenInput,
-            tokenOutput: capturedTokenOutput,
-            sessionId: capturedSessionId,
+            },
+            waitForFinal: async () => {
+              const finalSnap = await waitFor(
+                agentActor,
+                (s) => s.status === "done",
+                { timeout: 5_000 },
+              );
+              return finalSnap.output as AgentMachineOutput;
+            },
           });
-          portRuntime.finishAttempt(attemptId, "error", errMsg, { silent: failSilently });
-          return { attemptId, attemptIdx, status: "error", error: errMsg };
+        } finally {
+          clearInterval(heartbeatTimer);
+          if (args.signal) args.signal.removeEventListener("abort", onAbort);
+          agentActor.stop();
+          // F22: don't abort the controller here — subsequent rounds
+          // need the same controller alive. Abort is owned by the outer
+          // try/catch finally and the per-round interrupt handler.
+          if (deltaThrottler) deltaThrottler.dispose();
         }
-        // Semantic check carried over from json_schema mode: a string port
-        // whose value is actually a JSON-encoded object is a common Haiku
-        // failure mode even via tool calls.
-        if (p.type.trim() === "string") {
-          const v = writtenMap.get(p.name);
-          if (typeof v === "string") {
-            const nested = detectNestedJson(v);
-            if (nested) {
-              const errMsg = `schema non-compliant: port '${p.name}' is declared as string but write_port value appears to contain nested JSON (${nested})`;
-              writer.close({
-                terminationReason: "error",
-                costUsd: capturedCostUsd,
-                tokenInput: capturedTokenInput,
-                tokenOutput: capturedTokenOutput,
-                sessionId: capturedSessionId,
-              });
-              portRuntime.finishAttempt(attemptId, "error", errMsg, { silent: failSilently });
-              return { attemptId, attemptIdx, status: "error", error: errMsg };
+
+        // Roll round-local capture into outer trackers BEFORE we decide
+        // whether to retry or commit, so a feedback round still records
+        // its cost / session_id even if it ends up failing too.
+        if (roundCostUsd !== null) {
+          totalCostUsd = (totalCostUsd ?? 0) + roundCostUsd;
+        }
+        if (roundSessionId !== null) lastSessionId = roundSessionId;
+        if (roundTokenInput !== null) lastTokenInput = roundTokenInput;
+        if (roundTokenOutput !== null) lastTokenOutput = roundTokenOutput;
+        if (roundCacheReadInputTokens !== null) {
+          lastCacheReadInputTokens = roundCacheReadInputTokens;
+        }
+        if (roundCacheCreationInputTokens !== null) {
+          lastCacheCreationInputTokens = roundCacheCreationInputTokens;
+        }
+        lastAgentOutput = agentOutput;
+
+        // Non-success agent termination: not retryable. The continuation
+        // path only handles the "agent finished its turn but missed a
+        // port" case. Interrupts, errored SDK results, etc. fail outright.
+        if (agentOutput.status !== "done") {
+          const diag = agentOutput.diagnostic;
+          const msg = diag
+            ? diag.message || `result subtype: ${diag.subtype}`
+            : agentOutput.status === "interrupted"
+              ? `agent interrupted (from=${agentOutput.interruptedFrom ?? "unknown"})`
+              : "agent did not complete successfully";
+          const termReason: TerminationReason =
+            agentOutput.status === "interrupted" ? "interrupted" : "error";
+          writer.close({
+            terminationReason: termReason,
+            costUsd: totalCostUsd,
+            tokenInput: lastTokenInput,
+            tokenOutput: lastTokenOutput,
+            cacheReadInputTokens: lastCacheReadInputTokens,
+            cacheCreationInputTokens: lastCacheCreationInputTokens,
+            sessionId: lastSessionId,
+          });
+          // F22: abort the SDK controller so any straggler subprocess
+          // terminates immediately. abort() is idempotent.
+          abortController.abort();
+          portRuntime.finishAttempt(attemptId, "error", msg, { silent: failSilently });
+          return { attemptId, attemptIdx, status: "error", error: msg };
+        }
+
+        // Schema check: did the agent write every declared output port?
+        const writtenRows = args.portRuntime
+          ? queryAttemptPortWrites(args, attemptId)
+          : [];
+        const writtenMap = new Map<string, unknown>();
+        for (const row of writtenRows) {
+          writtenMap.set(row.port, row.value);
+        }
+
+        const missingPorts: string[] = [];
+        const nestedJsonViolations: Array<{ port: string; nested: string }> = [];
+        for (const p of stage.outputs) {
+          if (!writtenMap.has(p.name)) {
+            missingPorts.push(p.name);
+            continue;
+          }
+          if (p.type.trim() === "string") {
+            const v = writtenMap.get(p.name);
+            if (typeof v === "string") {
+              const nested = detectNestedJson(v);
+              if (nested) {
+                nestedJsonViolations.push({ port: p.name, nested });
+              }
             }
           }
         }
+
+        if (missingPorts.length === 0 && nestedJsonViolations.length === 0) {
+          // Success — exit retry loop, fall through to writer.close +
+          // finishAttempt success below.
+          pendingFeedbackErr = null;
+          break;
+        }
+
+        // Out of retries: commit the failure with an augmented message
+        // so operators see "after N feedback rounds" and know retry was
+        // attempted but didn't help. Single-port-missing fail messages
+        // preserve the exact pre-2026-05-06 wording so the existing
+        // "agent did not call write_port for port 'X'" matchers in tests
+        // and dashboards keep working when maxNoncomplianceFeedback === 0.
+        const isLastRound = round === totalTurns - 1;
+        if (isLastRound) {
+          let errMsg: string;
+          if (totalTurns === 1) {
+            // Legacy form (no feedback retries): preserve exact wording
+            // for downstream consumers.
+            if (missingPorts.length > 0) {
+              errMsg = `schema non-compliant: agent did not call write_port for port '${missingPorts[0]!}'`;
+            } else if (nestedJsonViolations.length > 0) {
+              const v = nestedJsonViolations[0]!;
+              errMsg = `schema non-compliant: port '${v.port}' is declared as string but write_port value appears to contain nested JSON (${v.nested})`;
+            } else {
+              errMsg = "schema non-compliant"; // unreachable
+            }
+          } else {
+            const errParts: string[] = [];
+            if (missingPorts.length > 0) {
+              errParts.push(
+                `agent did not call write_port for port(s) [${missingPorts
+                  .map((n) => `'${n}'`)
+                  .join(", ")}]`,
+              );
+            }
+            for (const v of nestedJsonViolations) {
+              errParts.push(
+                `port '${v.port}' is declared as string but write_port value appears to contain nested JSON (${v.nested})`,
+              );
+            }
+            const suffix = ` (after ${this.maxNoncomplianceFeedback} feedback retr${this.maxNoncomplianceFeedback === 1 ? "y" : "ies"})`;
+            errMsg = `schema non-compliant${suffix}: ${errParts.join("; ")}`;
+          }
+          writer.close({
+            terminationReason: "error",
+            costUsd: totalCostUsd,
+            tokenInput: lastTokenInput,
+            tokenOutput: lastTokenOutput,
+            cacheReadInputTokens: lastCacheReadInputTokens,
+            cacheCreationInputTokens: lastCacheCreationInputTokens,
+            sessionId: lastSessionId,
+          });
+          abortController.abort();
+          portRuntime.finishAttempt(attemptId, "error", errMsg, { silent: failSilently });
+          return { attemptId, attemptIdx, status: "error", error: errMsg };
+        }
+
+        // Build the feedback prompt for the next round. Targeted: lists
+        // only the ports the agent missed; tells it explicitly NOT to
+        // redo prior work; gives the exact tool call shape.
+        pendingFeedbackErr = "missing/nested-json port writes";
+        const feedbackLines: string[] = [];
+        feedbackLines.push(
+          `You completed your turn but the schema check failed. ` +
+            `Do NOT redo any prior work — your reasoning and tool calls so far are preserved. ` +
+            `Just call the write_port tool for each problem below, then stop.`,
+        );
+        if (missingPorts.length > 0) {
+          feedbackLines.push("");
+          feedbackLines.push(`Missing write_port for declared output port(s):`);
+          for (const portName of missingPorts) {
+            const portDef = stage.outputs.find((p) => p.name === portName);
+            const typeHint = portDef ? ` (type: ${portDef.type})` : "";
+            feedbackLines.push(`  - '${portName}'${typeHint}`);
+          }
+        }
+        if (nestedJsonViolations.length > 0) {
+          feedbackLines.push("");
+          feedbackLines.push(`String-typed ports written with embedded JSON (write the unwrapped string value instead):`);
+          for (const v of nestedJsonViolations) {
+            feedbackLines.push(`  - '${v.port}' (${v.nested})`);
+          }
+        }
+        feedbackLines.push("");
+        feedbackLines.push(
+          `Use the write_port tool: write_port({stage: "${stageName}", port: "<name>", value: <value>}). ` +
+            `Do not emit a final text reply about it — just make the tool call(s).`,
+        );
+        turnPrompt = feedbackLines.join("\n");
+        // Resume from the just-finished round's session so the agent
+        // sees the feedback in context, not from scratch.
+        turnResumeSessionId = roundSessionId ?? turnResumeSessionId;
+        // Loop continues with the next round.
       }
 
+      // Out-of-loop success path: reached only when a round broke out via
+      // pendingFeedbackErr === null AND lastAgentOutput.status === "done".
+      // The fail-paths above all `return` directly.
+      void pendingFeedbackErr;
+      void lastAgentOutput;
       writer.close({
         terminationReason: "natural_completion",
-        costUsd: capturedCostUsd,
-        tokenInput: capturedTokenInput,
-        tokenOutput: capturedTokenOutput,
-        cacheReadInputTokens: capturedCacheReadInputTokens,
-        cacheCreationInputTokens: capturedCacheCreationInputTokens,
-        sessionId: capturedSessionId,
+        costUsd: totalCostUsd,
+        tokenInput: lastTokenInput,
+        tokenOutput: lastTokenOutput,
+        cacheReadInputTokens: lastCacheReadInputTokens,
+        cacheCreationInputTokens: lastCacheCreationInputTokens,
+        sessionId: lastSessionId,
       });
+      // F22: abort the SDK controller now that the attempt is complete
+      // so any straggler subprocess (e.g. mid-tool-result that we no
+      // longer care about) terminates immediately. Idempotent.
+      if (!abortController.signal.aborted) abortController.abort();
       portRuntime.finishAttempt(attemptId, "success");
       return { attemptId, attemptIdx, status: "success" };
     } catch (err) {
