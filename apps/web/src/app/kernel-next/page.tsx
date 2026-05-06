@@ -493,7 +493,25 @@ export interface DashboardWidgetProps {
   tasks: TaskRow[];
 }
 
+interface FailureBucket {
+  prefix: string;
+  count: number;
+  sampleTaskIds: string[];
+}
+
+interface FailureSummaryResponse {
+  ok: true;
+  days: number;
+  totalFailed: number;
+  buckets: FailureBucket[];
+}
+
 export const DashboardWidget = ({ tasks }: DashboardWidgetProps): ReactElement | null => {
+  const [auditOpen, setAuditOpen] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [auditData, setAuditData] = useState<FailureSummaryResponse | null>(null);
+  const [auditError, setAuditError] = useState<string | null>(null);
+
   const stats = useMemo(() => {
     const sevenDays = 7 * 24 * 60 * 60 * 1000;
     const cutoff = Date.now() - sevenDays;
@@ -584,6 +602,109 @@ export const DashboardWidget = ({ tasks }: DashboardWidgetProps): ReactElement |
           </div>
         )}
       </div>
+      {/* Active alert: when success rate dips below 80% there's likely
+          a recurring root cause across multiple tasks. Surface a button
+          that fetches the bucketed failure summary so the user sees
+          "5 of your 7 failures share this prefix" rather than scrolling
+          through individual task rows looking for a pattern. */}
+      {stats.successRate !== null && stats.successRate < 0.8 && stats.failed > 0 && (
+        <div className="mt-3 flex items-center justify-between rounded border border-danger-border bg-danger-bg/30 px-3 py-2 text-xs">
+          <span className="text-danger-fg">
+            Success rate is {(stats.successRate * 100).toFixed(0)}% — your failures may share a common root cause.
+          </span>
+          <button
+            type="button"
+            onClick={async () => {
+              setAuditOpen(true);
+              setAuditLoading(true);
+              setAuditError(null);
+              const res = await apiFetch<FailureSummaryResponse>(
+                "/api/kernel/tasks/recent-failure-summary?days=7",
+              );
+              setAuditLoading(false);
+              if (res.ok) {
+                setAuditData(res.data);
+              } else {
+                setAuditError(res.diagnostics[0]?.message ?? "audit failed");
+              }
+            }}
+            className="rounded border border-danger-border bg-page px-2 py-1 text-xs font-semibold text-danger-fg hover:bg-elevated"
+          >
+            Audit failures →
+          </button>
+        </div>
+      )}
+      {auditOpen && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Failure audit"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setAuditOpen(false);
+          }}
+        >
+          <div className="w-full max-w-2xl rounded-lg border border-default bg-page p-5 shadow-xl">
+            <header className="mb-3 flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-primary">Recent failure audit</h2>
+              <button
+                type="button"
+                onClick={() => setAuditOpen(false)}
+                className="rounded border border-strong bg-surface px-2 py-1 text-xs hover:bg-elevated"
+                aria-label="Close audit"
+              >
+                ✕
+              </button>
+            </header>
+            {auditLoading && <p className="text-sm italic text-muted">Loading…</p>}
+            {auditError && (
+              <p className="rounded border border-danger-border bg-danger-bg px-3 py-2 text-sm text-danger-fg">
+                {auditError}
+              </p>
+            )}
+            {auditData && (
+              <>
+                <p className="mb-3 text-xs text-secondary">
+                  {auditData.totalFailed} failed task{auditData.totalFailed === 1 ? "" : "s"} in the last {auditData.days} days, grouped by failure prefix.
+                  Click a sample task to drill in and propose a fix.
+                </p>
+                {auditData.buckets.length === 0 ? (
+                  <p className="text-sm italic text-muted">No failures found in this window.</p>
+                ) : (
+                  <ul className="space-y-2">
+                    {auditData.buckets.map((b) => (
+                      <li
+                        key={b.prefix}
+                        className="rounded border border-default bg-surface p-3"
+                      >
+                        <div className="flex items-baseline justify-between gap-3">
+                          <p className="font-mono text-xs text-primary break-all">{b.prefix}</p>
+                          <span className="shrink-0 rounded bg-danger-bg px-1.5 py-0.5 text-xs font-semibold text-danger-fg">
+                            ×{b.count}
+                          </span>
+                        </div>
+                        <ul className="mt-1 flex flex-wrap gap-2 text-xs">
+                          {b.sampleTaskIds.map((id) => (
+                            <li key={id}>
+                              <Link
+                                href={`/kernel-next/${encodeURIComponent(id)}`}
+                                className="font-mono text-accent hover:underline"
+                                onClick={() => setAuditOpen(false)}
+                              >
+                                {id.slice(0, 32)}…
+                              </Link>
+                            </li>
+                          ))}
+                        </ul>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </section>
   );
 };

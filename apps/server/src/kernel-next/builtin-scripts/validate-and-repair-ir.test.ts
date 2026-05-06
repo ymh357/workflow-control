@@ -198,6 +198,101 @@ describe("validate_and_repair_ir / port name fuzzy match", () => {
     // WIRE_TARGET_PORT_MISSING.
     expect(r.ir.wires[0]!.to.port).toBe("totallyUnrelated");
   });
+
+  // 2026-05-06: symmetric source-side fuzzy match. Historical PG WIRE_*
+  // failure cluster (4-29) was the LLM emitting wires like
+  // 'tutorialAuthoring.tutorials' as the SOURCE; the existing
+  // repairFanoutShape handles this for fanout sources only. The new
+  // path covers non-fanout sources (e.g. 'findingsAuthoring.findings'
+  // → 'findingsAuthoring.findingsJson' typo).
+  it("rewrites wire SOURCE port with substring fuzzy match on a non-fanout stage", () => {
+    const inputIR = ir(
+      [
+        agentStage("findingsAuthoring", [], [{ name: "findingsJson", type: "string" }]),
+        agentStage("downstream", [{ name: "in", type: "string" }], []),
+      ],
+      [
+        { from: { source: "stage", stage: "findingsAuthoring", port: "findings" }, to: { stage: "downstream", port: "in" } },
+      ],
+    );
+    const r = validateAndRepairIR(inputIR);
+    expect(r.ir.wires[0]!.from.source).toBe("stage");
+    if (r.ir.wires[0]!.from.source === "stage") {
+      expect(r.ir.wires[0]!.from.port).toBe("findingsJson");
+    }
+    expect(
+      r.repairs.some((s) => /rewrote wire source.*findings.*findingsJson/.test(s)),
+    ).toBe(true);
+  });
+
+  it("leaves wire alone when source port already exists on the upstream stage", () => {
+    const inputIR = ir(
+      [
+        agentStage("A", [], [{ name: "out", type: "string" }]),
+        agentStage("B", [{ name: "in", type: "string" }], []),
+      ],
+      [{ from: { source: "stage", stage: "A", port: "out" }, to: { stage: "B", port: "in" } }],
+    );
+    const r = validateAndRepairIR(inputIR);
+    if (r.ir.wires[0]!.from.source === "stage") {
+      expect(r.ir.wires[0]!.from.port).toBe("out");
+    }
+  });
+
+  it("throws when source-side fuzzy match has multiple candidates", () => {
+    const inputIR = ir(
+      [
+        agentStage(
+          "ambiguousSource",
+          [],
+          [
+            { name: "fooBar", type: "string" },
+            { name: "fooBaz", type: "string" },
+          ],
+        ),
+        agentStage("downstream", [{ name: "in", type: "string" }], []),
+      ],
+      [
+        { from: { source: "stage", stage: "ambiguousSource", port: "foo" }, to: { stage: "downstream", port: "in" } },
+      ],
+    );
+    expect(() => validateAndRepairIR(inputIR)).toThrow(
+      /ambiguous wire source port/,
+    );
+  });
+
+  it("does NOT touch source port for fanout stages (those go through repairFanoutShape)", () => {
+    // Fanout source with mismatched port is left for the dedicated
+    // shape-inference repair, not the symmetric fuzzy repair.
+    const inputIR = ir(
+      [
+        agentStage("upstream", [], [{ name: "items", type: "string[]" }]),
+        agentStage(
+          "fanoutStage",
+          [{ name: "item", type: "string" }],
+          [{ name: "result", type: "string" }],
+          "item", // declares fanout — fanout source by definition
+        ),
+        agentStage("downstream", [{ name: "rs", type: "string[]" }], []),
+      ],
+      [
+        { from: { source: "stage", stage: "upstream", port: "items" }, to: { stage: "fanoutStage", port: "item" } },
+        { from: { source: "stage", stage: "fanoutStage", port: "results" }, to: { stage: "downstream", port: "rs" } },
+      ],
+    );
+    const r = validateAndRepairIR(inputIR);
+    // The non-fanout-source path didn't touch this; repairFanoutShape may.
+    // Either way, the new symmetric helper should not have repaired
+    // 'fanoutStage.results' via the .from-port fuzzy branch (because we
+    // explicitly skip fanout stages in that branch). Confirm by examining
+    // the repair messages: any 'rewrote wire source' for fanoutStage
+    // must come from repairFanoutShape's pattern label, not the new
+    // symmetric repair label "rewrote wire source 'X.Y' -> 'X.Z'".
+    const symRepairLabels = r.repairs.filter((s) =>
+      s.startsWith("repairPortNameMismatch: rewrote wire source 'fanoutStage."),
+    );
+    expect(symRepairLabels).toEqual([]);
+  });
 });
 
 // ---------- Repair 3: fanout-shape (Pattern A: hallucinated source port) ----------

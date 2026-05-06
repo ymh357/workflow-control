@@ -2,8 +2,8 @@
 // Focus on the data-derivation parts (stats math + render branching);
 // the table itself is exercised end-to-end by other tests.
 
-import { describe, it, expect, vi } from "vitest";
-import { render as rawRender, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render as rawRender, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 import { ReactNode } from "react";
 
@@ -16,6 +16,14 @@ import { OnboardingCard, DashboardWidget } from "./page";
 import { ToastProvider } from "../../components/toast";
 
 const render = (ui: ReactNode) => rawRender(<ToastProvider>{ui}</ToastProvider>);
+
+const originalFetch = globalThis.fetch;
+beforeEach(() => {
+  globalThis.fetch = vi.fn() as unknown as typeof fetch;
+});
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
 
 const baseTask = {
   taskId: "t",
@@ -137,5 +145,73 @@ describe("DashboardWidget", () => {
     expect(screen.queryByText("delta")).not.toBeInTheDocument();
     expect(screen.getByText("×5")).toBeInTheDocument();
     expect(screen.getByText("×3")).toBeInTheDocument();
+  });
+
+  it("shows the audit-failures button when success rate < 80% and there is at least one failure", () => {
+    const tasks = [
+      { ...baseTask, taskId: "a", status: "completed" as const },
+      { ...baseTask, taskId: "b", status: "failed" as const },
+      { ...baseTask, taskId: "c", status: "failed" as const },
+    ];
+    render(<DashboardWidget tasks={tasks} />);
+    expect(screen.getByRole("button", { name: /audit failures/i })).toBeInTheDocument();
+    expect(screen.getByText(/may share a common root cause/i)).toBeInTheDocument();
+  });
+
+  it("does NOT show the audit button when success rate >= 80%", () => {
+    const tasks = [
+      ...Array.from({ length: 8 }, (_, i) => ({ ...baseTask, taskId: `ok${i}`, status: "completed" as const })),
+      { ...baseTask, taskId: "f1", status: "failed" as const },
+      { ...baseTask, taskId: "f2", status: "failed" as const },
+    ];
+    render(<DashboardWidget tasks={tasks} />);
+    // 8/10 = 80% — equal to threshold, so should NOT show.
+    expect(screen.queryByRole("button", { name: /audit failures/i })).not.toBeInTheDocument();
+  });
+
+  it("opens the audit dialog and renders bucketed failures from /recent-failure-summary", async () => {
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true, status: 200,
+      text: async () => JSON.stringify({
+        ok: true,
+        days: 7,
+        totalFailed: 8,
+        buckets: [
+          {
+            prefix: "stage 'persisting': submit_pipeline failed",
+            count: 5,
+            sampleTaskIds: ["pipeline-generator-1", "pipeline-generator-2", "pipeline-generator-3"],
+          },
+          {
+            prefix: "runPipeline timeout after",
+            count: 3,
+            sampleTaskIds: ["abc-1", "abc-2", "abc-3"],
+          },
+        ],
+      }),
+    } as unknown as Response);
+
+    const tasks = [
+      { ...baseTask, taskId: "a", status: "completed" as const },
+      { ...baseTask, taskId: "b", status: "failed" as const },
+      { ...baseTask, taskId: "c", status: "failed" as const },
+    ];
+    render(<DashboardWidget tasks={tasks} />);
+    fireEvent.click(screen.getByRole("button", { name: /audit failures/i }));
+
+    await waitFor(() => {
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/kernel/tasks/recent-failure-summary"),
+        expect.anything(),
+      );
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Recent failure audit/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/persisting.*submit_pipeline failed/)).toBeInTheDocument();
+    expect(screen.getByText(/runPipeline timeout after/)).toBeInTheDocument();
+    expect(screen.getByText("×5")).toBeInTheDocument();
+    // sample task id link surfaces with truncation.
+    expect(screen.getByText(/pipeline-generator-1/)).toBeInTheDocument();
   });
 });

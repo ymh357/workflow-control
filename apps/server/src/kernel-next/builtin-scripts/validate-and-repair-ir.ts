@@ -131,56 +131,98 @@ function repairPortNameMismatch(ir: PipelineIR): RepairOutcome {
   const newWires: WireIR[] = [];
 
   for (const w of ir.wires) {
-    const targetStage = stageByName.get(w.to.stage);
-    if (!targetStage) {
-      // Unknown target stage — let downstream validator emit the real
-      // diagnostic. We don't try to fuzzy-match across stages.
-      newWires.push(w);
-      continue;
-    }
-    const declaredInputNames = targetStage.inputs.map((p) => p.name);
-    if (declaredInputNames.includes(w.to.port)) {
-      newWires.push(w);
-      continue;
-    }
-    // Find candidates: input ports whose names are similar enough.
-    // We use a relaxed match (case-insensitive substring or suffix) — the
-    // common LLM mistake forms are "rejectionFeedback" vs
-    // "framingRejectionFeedback" (suffix) and "tutorials" vs
-    // "tutorialMarkdowns" (substring).
-    const lower = w.to.port.toLowerCase();
-    const candidates = declaredInputNames.filter((n) => {
-      const nl = n.toLowerCase();
-      return nl === lower
-        || nl.endsWith(lower)
-        || lower.endsWith(nl)
-        || nl.includes(lower)
-        || lower.includes(nl);
-    });
+    let working = w;
 
-    if (candidates.length === 0) {
-      // No fuzzy match — this isn't a port-name typo, it's a missing
-      // input port. Either fanout-shape repair or external-input
-      // backfill will handle it later, OR it's a genuine bug.
-      newWires.push(w);
-      continue;
+    // ----- Side 1: target port mismatch (legacy behaviour) -----
+    const targetStage = stageByName.get(working.to.stage);
+    if (targetStage) {
+      const declaredInputNames = targetStage.inputs.map((p) => p.name);
+      if (!declaredInputNames.includes(working.to.port)) {
+        // Find candidates: input ports whose names are similar enough.
+        // We use a relaxed match (case-insensitive substring or suffix) —
+        // the common LLM mistake forms are "rejectionFeedback" vs
+        // "framingRejectionFeedback" (suffix) and "tutorials" vs
+        // "tutorialMarkdowns" (substring).
+        const lower = working.to.port.toLowerCase();
+        const candidates = declaredInputNames.filter((n) => {
+          const nl = n.toLowerCase();
+          return nl === lower
+            || nl.endsWith(lower)
+            || lower.endsWith(nl)
+            || nl.includes(lower)
+            || lower.includes(nl);
+        });
+
+        if (candidates.length > 1) {
+          throw new Error(
+            `validate_and_repair_ir: ambiguous wire target port. ` +
+              `Wire '${formatWireSource(working)}' -> '${working.to.stage}.${working.to.port}' has ` +
+              `multiple fuzzy-match candidates on stage '${working.to.stage}': ` +
+              `[${candidates.join(", ")}]. The LLM-emitted IR is structurally ` +
+              `ambiguous; cannot auto-repair without changing semantics. ` +
+              `Re-run genSkeleton with the dispatch ambiguity in mind.`,
+          );
+        }
+        if (candidates.length === 1) {
+          const chosen = candidates[0]!;
+          repairs.push(
+            `repairPortNameMismatch: rewrote wire target ` +
+              `'${working.to.stage}.${working.to.port}' -> '${working.to.stage}.${chosen}'`,
+          );
+          working = { ...working, to: { ...working.to, port: chosen } };
+        }
+      }
     }
-    if (candidates.length > 1) {
-      throw new Error(
-        `validate_and_repair_ir: ambiguous wire target port. ` +
-          `Wire '${formatWireSource(w)}' -> '${w.to.stage}.${w.to.port}' has ` +
-          `multiple fuzzy-match candidates on stage '${w.to.stage}': ` +
-          `[${candidates.join(", ")}]. The LLM-emitted IR is structurally ` +
-          `ambiguous; cannot auto-repair without changing semantics. ` +
-          `Re-run genSkeleton with the dispatch ambiguity in mind.`,
-      );
+
+    // ----- Side 2: source port mismatch (added 2026-05-06) -----
+    //
+    // The historical PG WIRE_SOURCE_PORT_MISSING failure cluster
+    // (~12 occurrences across pipeline-generator-1777447379521 et al,
+    // 2026-04-29) was the LLM emitting wire sources like
+    // 'tutorialAuthoring.tutorials' even though the upstream's actual
+    // output is 'tutorialAuthoring.markdown'. Symmetric fuzzy match
+    // on the source side catches this. Skipped for fanout sources —
+    // those go through repairFanoutShape's pattern (B) shape inference.
+    if (working.from.source === "stage") {
+      const srcStageName = working.from.stage;
+      const srcStage = stageByName.get(srcStageName);
+      if (srcStage && !isFanoutStage(srcStage)) {
+        const declaredOutputNames = srcStage.outputs.map((p) => p.name);
+        if (!declaredOutputNames.includes(working.from.port)) {
+          const lower = working.from.port.toLowerCase();
+          const candidates = declaredOutputNames.filter((n) => {
+            const nl = n.toLowerCase();
+            return nl === lower
+              || nl.endsWith(lower)
+              || lower.endsWith(nl)
+              || nl.includes(lower)
+              || lower.includes(nl);
+          });
+          if (candidates.length > 1) {
+            throw new Error(
+              `validate_and_repair_ir: ambiguous wire source port. ` +
+                `Wire '${formatWireSource(working)}' -> '${working.to.stage}.${working.to.port}' has ` +
+                `multiple fuzzy-match candidates on stage '${srcStageName}': ` +
+                `[${candidates.join(", ")}]. Re-run genSkeleton with the ` +
+                `dispatch ambiguity in mind.`,
+            );
+          }
+          if (candidates.length === 1) {
+            const chosen = candidates[0]!;
+            repairs.push(
+              `repairPortNameMismatch: rewrote wire source ` +
+                `'${srcStageName}.${working.from.port}' -> '${srcStageName}.${chosen}'`,
+            );
+            working = {
+              ...working,
+              from: { source: "stage", stage: srcStageName, port: chosen },
+            };
+          }
+        }
+      }
     }
-    const chosen = candidates[0]!;
-    repairs.push(
-      `repairPortNameMismatch: rewrote wire target ` +
-        `'${w.to.stage}.${w.to.port}' -> '${w.to.stage}.${chosen}'`,
-    );
-    newWires.push({ ...w, to: { ...w.to, port: chosen } });
+
+    newWires.push(working);
   }
   return { ir: { ...ir, wires: newWires }, repairs };
 }

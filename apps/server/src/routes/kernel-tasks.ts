@@ -312,6 +312,71 @@ kernelTasksRoute.post("/kernel/tasks/:taskId/rollback", async (c) => {
   return c.json(result, statusForRollbackDiagnostic(result.diagnostics[0]?.code));
 });
 
+// 2026-05-06 — recent-failure-summary: cluster the last N days of failed
+// tasks by their `detail` prefix so the operator can see "you have 5
+// failures all sharing this root cause" instead of scrolling individual
+// rows. Pure read; no auth.
+//
+// Detail strings are bucketed by the first ~80 chars before the second
+// `:`. Empirically, kernel-next's failure detail format is
+// `stage 'X': <error code>: <message>` so the prefix reliably groups
+// "same root cause across many tasks".
+kernelTasksRoute.get("/kernel/tasks/recent-failure-summary", (c) => {
+  const daysRaw = c.req.query("days");
+  const days = daysRaw ? Math.max(1, Math.min(90, parseInt(daysRaw, 10) || 7)) : 7;
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  try {
+    const db = getKernelNextDb();
+    const rows = db
+      .prepare(
+        `SELECT task_id, detail, ended_at FROM task_finals
+          WHERE final_state = 'failed' AND ended_at >= ?
+          ORDER BY ended_at DESC`,
+      )
+      .all(cutoff) as Array<{ task_id: string; detail: string | null; ended_at: number }>;
+    // Bucket by detail prefix.
+    function prefixOf(detail: string | null): string {
+      if (!detail) return "(no detail)";
+      // Split at the second ":" to keep "stage 'X': <code>" together
+      // but drop the noisy variable suffix.
+      const trimmed = detail.trim();
+      const firstColon = trimmed.indexOf(":");
+      if (firstColon === -1) return trimmed.slice(0, 80);
+      const secondColon = trimmed.indexOf(":", firstColon + 1);
+      const cutAt = secondColon === -1 ? Math.min(trimmed.length, 80) : Math.min(secondColon, 80);
+      return trimmed.slice(0, cutAt);
+    }
+    const buckets = new Map<string, { count: number; sampleTaskIds: string[] }>();
+    for (const r of rows) {
+      const k = prefixOf(r.detail);
+      const b = buckets.get(k) ?? { count: 0, sampleTaskIds: [] };
+      b.count += 1;
+      if (b.sampleTaskIds.length < 3) b.sampleTaskIds.push(r.task_id);
+      buckets.set(k, b);
+    }
+    const summary = [...buckets.entries()]
+      .map(([prefix, v]) => ({ prefix, count: v.count, sampleTaskIds: v.sampleTaskIds }))
+      .sort((a, b) => b.count - a.count);
+    return c.json({
+      ok: true,
+      days,
+      totalFailed: rows.length,
+      buckets: summary,
+    });
+  } catch (err) {
+    return c.json(
+      {
+        ok: false,
+        diagnostics: [{
+          code: "RECENT_FAILURE_SUMMARY_FAILED",
+          message: err instanceof Error ? err.message : String(err),
+        }],
+      },
+      500,
+    );
+  }
+});
+
 // 2026-05-06 — propose-fix: analyse a failed task and surface actionable
 // pipeline-change suggestions. Wraps the propose_pipeline_fix MCP tool's
 // rule-based foundation (no AI patch synthesis — that path costs API

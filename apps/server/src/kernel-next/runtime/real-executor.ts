@@ -811,14 +811,37 @@ export class RealStageExecutor implements StageExecutor {
                   }
                   if (failed.length > 0 || missing.length > 0) {
                     const allDead = [...failed, ...missing];
+                    // For each dead server, list its expanded command +
+                    // first few args so the operator can paste it into
+                    // a terminal and verify it spawns at all. Without
+                    // this, "wrong URL for mcp-remote, npm package not
+                    // found" is non-actionable — the user has to dig
+                    // through the IR to find the actual command.
+                    const repro = allDead
+                      .map((n) => {
+                        const srv = externalMcpServers![n];
+                        if (!srv) return `  - '${n}': (no expanded server record found)`;
+                        const argsPreview = (srv.args ?? []).slice(0, 6).join(" ");
+                        const more = (srv.args ?? []).length > 6 ? " …" : "";
+                        return `  - '${n}': try \`${srv.command} ${argsPreview}${more}\` in a terminal to confirm it spawns`;
+                      })
+                      .join("\n");
                     throw new Error(
                       `MCP_STARTUP_FAILED: declared external MCP server(s) ${allDead
                         .map((n) => `'${n}'`)
                         .join(", ")} did not connect at session init ` +
-                        `(${failed.length} failed, ${missing.length} not enumerated by SDK). ` +
+                        `(${failed.length} failed, ${missing.length} not enumerated by SDK).\n` +
                         `Likely causes: wrong URL for mcp-remote, npm package not found, ` +
-                        `server crashed during handshake, or cold-cache spawn exceeding SDK timeout. ` +
-                        `Check the attempt's "SDK Stderr" tab for the upstream "Connection failed after Xms" line.`,
+                        `server crashed during handshake, or cold-cache spawn exceeding SDK timeout.\n` +
+                        `Reproduce locally:\n${repro}\n` +
+                        `Verify required env vars are set: ${allDead
+                          .map((n) => {
+                            const decl = stage.config.mcpServers?.find((s) => s.name === n);
+                            const keys = (decl?.envKeys ?? []).join(", ") || "(none declared)";
+                            return `${n}=[${keys}]`;
+                          })
+                          .join("; ")}.\n` +
+                        `If the entry is in mcp_catalog: check via get_mcp_catalog_entry; refresh secrets via the /kernel-next/mcp-catalog page or provide_task_secrets.`,
                     );
                   }
                 }

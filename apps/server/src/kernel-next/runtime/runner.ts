@@ -1180,8 +1180,21 @@ export async function runPipeline(opts: RunnerOptions, timeoutMs = DEFAULT_RUN_T
     // the DB CHECK constraint accepts and that callers can distinguish.
     let finalsRow: { state: "completed" | "failed"; reason: "natural" | "timeout" | "interrupted" | "error" | "thrown"; detail: string | null };
     if (timedOut) {
-      terminationReason = { kind: "error", detail: `runPipeline timeout after ${timeoutMs}ms` };
-      finalsRow = { state: "failed", reason: "timeout", detail: `runPipeline timeout after ${timeoutMs}ms` };
+      // Add actionable context: which stage was active when the budget
+      // expired, when its writer last heartbeat, how many tool calls
+      // it had observed. The 90-minute default is opaque without these
+      // hints — operators see "timeout" and can't tell if the stage
+      // was making progress (raise the budget) or stuck silent (fix
+      // the prompt / external dependency).
+      const ctx = describeLastActiveAttempt(opts.db, opts.taskId);
+      const detail = ctx
+        ? `runPipeline timeout after ${timeoutMs}ms. Last active stage: '${ctx.stageName}'`
+          + ` (attempt #${ctx.attemptIdx}); ${ctx.silentForMs ? `silent for ${Math.round(ctx.silentForMs / 1000)}s before timeout` : "no heartbeat recorded"}.`
+          + ` Tip: if this stage normally takes longer, raise its budget via stage.config.maxBudgetUsd or pass timeoutMs explicitly to runPipeline.`
+          + ` If it hangs silently, run propose_pipeline_fix taskId=${opts.taskId}.`
+        : `runPipeline timeout after ${timeoutMs}ms (no active attempt recorded — the runner timed out before any stage started, or the DB query failed).`;
+      terminationReason = { kind: "error", detail };
+      finalsRow = { state: "failed", reason: "timeout", detail };
     } else if (interruptObserved) {
       terminationReason = { kind: "interrupted" };
       finalsRow = { state: "failed", reason: "interrupted", detail: null };
@@ -2343,3 +2356,44 @@ function findStageSession(
 // optional externalInputs. The previous local copy diverged from the
 // compiler version (no gate-feedback seeds, no optional fallback)
 // and caused gate-rejection-then-approve flows to wedge.
+
+// 2026-05-06: timeout diagnostics. When the wall-clock budget expires
+// we want to tell the operator more than just "runPipeline timeout
+// after Xms". Find the most recently started attempt for the task,
+// report which stage it belonged to and how long the attempt had been
+// silent (no heartbeat) before we killed it. Pure DB read; never
+// throws — on any error returns null and the caller falls back to the
+// raw timeout message.
+export function describeLastActiveAttempt(
+  db: import("node:sqlite").DatabaseSync,
+  taskId: string,
+): { stageName: string; attemptIdx: number; silentForMs: number | null } | null {
+  try {
+    const row = db
+      .prepare(
+        `SELECT sa.stage_name, sa.attempt_idx, aed.last_heartbeat_at, sa.started_at
+           FROM stage_attempts sa
+           LEFT JOIN agent_execution_details aed ON aed.attempt_id = sa.attempt_id
+          WHERE sa.task_id = ?
+          ORDER BY sa.started_at DESC
+          LIMIT 1`,
+      )
+      .get(taskId) as
+      | {
+          stage_name: string;
+          attempt_idx: number;
+          last_heartbeat_at: number | null;
+          started_at: number;
+        }
+      | undefined;
+    if (!row) return null;
+    const lastSignal = row.last_heartbeat_at ?? row.started_at;
+    return {
+      stageName: row.stage_name,
+      attemptIdx: row.attempt_idx,
+      silentForMs: row.last_heartbeat_at === null ? null : Date.now() - lastSignal,
+    };
+  } catch {
+    return null;
+  }
+}
