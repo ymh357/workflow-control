@@ -94,15 +94,19 @@ pnpm dev    # Server (:3001) + Dashboard (:3000)
 
 | 想做什么 | 点哪 |
 |---|---|
-| 看现有 pipeline | `/kernel-next/pipelines` |
+| 看现有 pipeline | `/kernel-next/pipelines`（含每条的 **Export** 按钮，文件级跨用户分享） |
 | 启动一个任务 | `/`（Launch hub）→ 选 pipeline → 填外部输入 → Launch |
 | 看任务跑得怎么样 | `/kernel-next/[taskId]`（实时 SSE） |
+| 看整体健康 | `/kernel-next` 列表页头部 7 天 dashboard widget（成功率 / 任务数 / 最常用 pipeline；< 80% 时 "Audit failures" 按钮聚合失败原因） |
 | 回答 gate（审批） | 任务详情页里的 GateCard |
 | 取消任务 | 任务详情页 "Cancel" 按钮 |
+| 修复失败任务 | 详情页 "Modify pipeline" 自动调用 propose-fix，把建议渲染成可点卡片预填修改目标 |
 | 改 pipeline | 任务详情页 "Modify pipeline" → 启动 pipeline-modifier |
 | 审/批 hot-update | `/kernel-next/proposals` |
+| **从过去 session 找自动化机会** | `/forge` → "Forge Now"，或在 Claude Code 里调 `forge_analyze_start` / `forge_analyze_recent` MCP 工具 |
+| 第一次进系统 | `/kernel-next` 在没 task 时显示 Onboarding card：smoke-test curl 一行起 / `/forge` / pipeline-generator 三个具体起点 |
 
-每个 user journey 也有对应 MCP tool（详见 whitepaper §4.2 共 35 个工具），
+每个 user journey 也有对应 MCP tool（详见 whitepaper §4.2 共 37 个工具），
 让其他 Claude 实例能驱动这个内核。
 
 ### 3. 自己写一条 pipeline

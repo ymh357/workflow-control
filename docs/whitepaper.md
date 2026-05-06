@@ -114,9 +114,28 @@ work they keep doing manually deserves to be automated?
 
 **Forge** is the user-triggered loop that closes that gap. The
 trigger lives in two places: the web `/forge` page (one button:
-**Forge Now**), or the **`forge_analyze` MCP tool** that the user can
+**Forge Now**), or the Forge MCP tool family that the user can
 invoke from inside the Claude Code session itself — same backend,
-no context switch. Forge:
+no context switch.
+
+Three MCP tools cover the full loop (the original single
+`forge_analyze` was retired 2026-05-05 because MCP clients enforce
+a ~60s tool-call timeout while distillation typically takes
+60–180s):
+
+- **`forge_analyze_start`** — kicks off analysis on a session, returns
+  the kernel-next taskId as the short, copy-pasteable `analysisId`
+  in <1 s. Auto-detects the most-recent session if no ID supplied.
+- **`forge_analyze_result`** — polls completion. Default `waitMs`
+  is 50 000 ms (50 s, leaves headroom under the MCP timeout), so a
+  typical analysis completes in a single call. Pass `waitMs: 0` for
+  a non-blocking single-poll.
+- **`forge_analyze_recent`** — kicks off N (default 3, max 10)
+  analyses in parallel for the most recently active sessions. The
+  agent then polls each with `forge_analyze_result`. Designed for
+  "tell me what to automate from my recent work" prompts.
+
+Forge:
 
 1. Reads the session JSONL into its own `forge.db` (idempotent —
    re-runs are cheap; redaction at the boundary).
@@ -149,10 +168,32 @@ clusters as informational signal ("you've done this 3 times across 2
 days") but does NOT gate the recommendation — the user's click is the
 trigger.
 
-Surfaces: web `/forge` page + HTTP `POST /api/forge/analyze` /
-`GET /api/forge/sessions` etc. + MCP tool `forge_analyze` exposed via
-`/api/mcp`. forge.db is local-only and is *not* serialized into the
-1.28 export envelope; sharing remains pipeline-level.
+Surfaces: web `/forge` page + HTTP `POST /api/forge/analyze` (sync,
+for the web UI) / `POST /api/forge/analyze/start` / `GET
+/api/forge/analyze/result?id=&waitMs=` / `POST
+/api/forge/analyze/recent` / `GET /api/forge/sessions` etc., plus the
+three MCP tools listed above exposed via `/api/mcp`. forge.db is
+local-only and is *not* serialized into the 1.28 export envelope;
+sharing remains pipeline-level.
+
+`cwd` on every analyze response is the **raw Claude Code project-dir
+encoding** (e.g. `-Users-minghao-foo`, with `projectDirEncoded: true`)
+— the encoding is lossy for directory names containing literal
+hyphens (real regression: `workflow-control` was previously displayed
+as `/workflow/control`), so callers display it as-is rather than
+silently mangle the real path. `forge_analyze_recent` returns
+`{ analyses: [...], failures: [...] }` so callers see when one of N
+parallel starts failed instead of silently receiving fewer
+analysisIds.
+
+When the agent stage in any pipeline (Forge or otherwise) finishes
+its turn but misses a declared output port, the runner now does
+**in-attempt continuation retry**: the same SDK session is resumed
+with a targeted feedback prompt that lists the missing ports and
+asks only for the missing `write_port` calls. Default budget: 2
+feedback rounds. This was the root cause of 9 historical failures
+(50% of pipeline-generator's failure rate) and is now closed
+without burning a fresh attempt's reasoning.
 
 ---
 
@@ -510,19 +551,43 @@ Three crucial invariants this preserves:
 
 ```
 /                               ← Launch hub: all pipelines + run dialog
-/kernel-next                    ← Task list
+/kernel-next                    ← Task list + 7-day dashboard widget
 /kernel-next/[taskId]           ← Live task detail (SSE, gates, attempts, audit, DAG)
 /kernel-next/pipelines          ← Pipeline browser
-/kernel-next/pipelines/[name]   ← Pipeline IR viewer + version history
+/kernel-next/pipelines/[name]   ← Pipeline IR viewer + version history + Export
 /kernel-next/proposals          ← Hot-update proposals (approve / reject / migrate)
 /kernel-next/attempts/[id]      ← Per-attempt deep-dive (lineage, diff, sidecar)
 /kernel-next/mcp-catalog        ← MCP server inventory (encrypted secrets)
+/forge                          ← One-button session-to-pipeline analysis
 ```
+
+**Operational dashboard** at `/kernel-next` (added 2026-05-06): when
+the page has any tasks, a header card surfaces last-7-days health —
+total task count, success-rate (color-graded ≥90% green, ≥60% yellow,
+otherwise red, excluding cancelled and still-running from the
+denominator), and the top 3 most-completed pipelines. When the
+success rate drops below 80%, an "Audit failures →" button appears
+that opens a dialog calling `GET /api/kernel/tasks/recent-failure-summary`
+to bucket the recent failures by their `stage X: error_code` prefix —
+operators see "5 of 8 failures share this prefix" and can drill into
+a sample.
+
+**First-run onboarding**: when `/kernel-next` has zero tasks, an
+Onboarding card replaces the empty-state with three concrete starting
+points — copy-paste curl for the bundled `smoke-test`, a link to
+`/forge`, and a link to the bundled `pipeline-generator`.
+
+**Failure → fix in one click**: from any failed task detail page,
+clicking "Modify pipeline" pre-fetches `GET /api/kernel/tasks/:id/propose-fix`
+and renders each warn/error suggestion as a clickable card; selecting
+one pre-fills the modification goal textarea so the launched
+`pipeline-modifier` task starts with concrete intent rather than a
+blank prompt.
 
 ### 4.2 The MCP surface
 
 External Claude sessions reach the kernel through MCP tools. The
-external surface exposes **34 tools** (extracted via `tools/list` on
+external surface exposes **37 tools** (extracted via `tools/list` on
 `/api/mcp`), grouped by domain. One additional tool (`write_port`)
 is runner-internal only and never reaches external surfaces:
 
@@ -577,6 +642,15 @@ is runner-internal only and never reaches external surfaces:
   recommend_mcp_servers(query)            — Phase-1 supply-chain helper
   get_mcp_catalog_entry(serverName)       — manifest by name
   add_mcp_catalog_entry(entry)            — local catalog mutation
+```
+
+**Forge — session-mining**
+```
+  forge_analyze_start({ sessionId? | jsonlPath? })
+                                          — kick off analysis, returns analysisId in <1s
+  forge_analyze_result(analysisId, waitMs?)
+                                          — poll; default waitMs=50000 (single-call success path)
+  forge_analyze_recent({ count? })        — N parallel starts, default 3 max 10
 ```
 
 **Admin**

@@ -1,6 +1,6 @@
 # Forge Quickstart
 
-How to make `forge_analyze` callable from any Claude Code session.
+How to make Forge's MCP tools callable from any Claude Code session.
 
 ---
 
@@ -8,13 +8,22 @@ How to make `forge_analyze` callable from any Claude Code session.
 
 After this 3-step setup, finishing a Claude Code session and saying
 
-> Use `forge_analyze` to find pipelines I should make from this session.
+> Use `forge_analyze_start` + `forge_analyze_result` to find pipelines I should make from this session.
 
-…lets the agent invoke Forge's MCP tool, which reads the session
-JSONL, distills it into episodes, matches each against existing
-workflow-control pipelines, and replies with one recommendation per
+…lets the agent invoke Forge's MCP tools, which read the session
+JSONL, distill it into episodes, match each against existing
+workflow-control pipelines, and reply with one recommendation per
 pipeline-able episode — either "run existing pipeline X" or "create a
 new one (here's the paste-ready prompt)".
+
+The 2026-05-05 update split the original single `forge_analyze`
+tool into a sub-second async pair (`forge_analyze_start` returns
+an `analysisId` immediately; `forge_analyze_result` polls for
+completion with a `waitMs` block) — distillation typically takes
+60–180 s, exceeding the ~60 s MCP tool-call timeout. A third tool
+`forge_analyze_recent` kicks off N (default 3, max 10) analyses on
+the most recent sessions in parallel for "summarise my recent work"
+queries.
 
 ---
 
@@ -51,12 +60,13 @@ canonical location is `~/.claude.json` (project-local override at
 }
 ```
 
-After this, Claude Code's next-launched session will discover **35
-tools** under the `workflow-control` server, including `forge_analyze`,
+After this, Claude Code's next-launched session will discover **37
+tools** under the `workflow-control` server, including
+`forge_analyze_start` / `forge_analyze_result` / `forge_analyze_recent`,
 `run_pipeline`, `submit_pipeline`, etc.
 
 To verify from inside a Claude Code session, ask the agent to list
-its tools — it should report `forge_analyze` among them.
+its tools — it should report `forge_analyze_start` among them.
 
 ## Step 3 — Use it
 
@@ -66,14 +76,24 @@ Two equivalent invocation paths:
 
 After finishing real work in a session, ask the agent:
 
-> Run `forge_analyze` on this session. Tell me which existing
-> pipelines I could re-run for this kind of work, and which parts I
-> should turn into a new pipeline.
+> Run Forge on this session. Tell me which existing pipelines I could
+> re-run for this kind of work, and which parts I should turn into a
+> new pipeline.
 
-The agent calls `forge_analyze` with no args (auto-detects the most
-recent session JSONL under `~/.claude-personal/projects/`). After
-~10–60 seconds it gets back a structured response with
-`recommendations: [...]` and a `humanSummary` line it reads to you.
+The agent calls `forge_analyze_start` with no args (auto-detects the
+most recent session JSONL under `~/.claude-personal/projects/`),
+then `forge_analyze_result` with `waitMs: 50000` — that single poll
+typically returns the final result. The response carries
+`recommendations: [...]` and a `humanSummary` line the agent reads to
+you.
+
+For "summarise my recent work" instead of one specific session, ask:
+
+> Use `forge_analyze_recent` with default count to scan my last 3
+> sessions in parallel.
+
+That returns 3 analysisIds immediately; the agent polls each via
+`forge_analyze_result`.
 
 ### From the web UI
 
@@ -109,7 +129,7 @@ generate the IR.
 
 ## Troubleshooting
 
-### "Tool not found: forge_analyze" inside Claude Code
+### "Tool not found: forge_analyze_start" inside Claude Code
 
 The MCP config didn't take effect, or the server isn't running.
 Check:

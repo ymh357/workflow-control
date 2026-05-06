@@ -97,8 +97,22 @@ roadmap 明确写了非目标（CLAUDE.md "What this project is not"）：
 
 **Forge** 是闭合这个 gap 的用户触发回路。触发器有两个入口：web
 `/forge` 页面（一个按钮：**Forge Now**），或者直接在 Claude Code
-session 内调 **`forge_analyze` MCP 工具**——同一个后端，无需切到
-浏览器。Forge 流程：
+session 内调 Forge 的 MCP 工具家族——同一个后端，无需切到浏览器。
+
+三个 MCP 工具覆盖完整流程（原单一 `forge_analyze` 已于 2026-05-05
+退役，因为 MCP 客户端的工具调用超时约 60s 而 distill 通常需要
+60-180s）：
+
+- **`forge_analyze_start`** —— 启动一次 session 分析，<1s 返回短的
+  kernel-next taskId 作为 `analysisId`。无参时自动取最近一次 session。
+- **`forge_analyze_result`** —— 轮询完成。`waitMs` 默认 50000ms（50s,
+  在 MCP 超时下留有余量），所以一次典型分析单次调用即可拿到 final
+  结果。`waitMs: 0` 退化为单次非阻塞 poll。
+- **`forge_analyze_recent`** —— 并行启动最近 N（默认 3，最大 10）个
+  session 的分析。代理用 `forge_analyze_result` 各自轮询。适合
+  "总结我最近的工作"类提问。
+
+Forge 流程：
 
 1. 把 session JSONL 读进自己的 `forge.db`（幂等——重跑成本极低；
    边界处脱敏）。
@@ -126,10 +140,27 @@ Forge 是 **请求级**的，不是常驻 daemon。每次分析用户都在 loop
 去 2 天你做了 3 次"），但**不**用作 gating 条件——用户的点击就是
 触发器。
 
-Surface：web `/forge` 页面 + HTTP `POST /api/forge/analyze` /
-`GET /api/forge/sessions` 等 + MCP 工具 `forge_analyze`（通过
-`/api/mcp` 暴露）。forge.db 是本地独占的，**不**会进 1.28 导出信封；
-共享仍然在 pipeline 粒度。
+Surface：web `/forge` 页面 + HTTP `POST /api/forge/analyze`（同步，
+web UI 用）/ `POST /api/forge/analyze/start` / `GET
+/api/forge/analyze/result?id=&waitMs=` / `POST /api/forge/analyze/recent` /
+`GET /api/forge/sessions` 等，加上前述三个 MCP 工具（通过 `/api/mcp`
+暴露）。forge.db 是本地独占的，**不**会进 1.28 导出信封；共享仍然在
+pipeline 粒度。
+
+每次 analyze 响应里的 `cwd` 是 **Claude Code project-dir 的原始编码
+形式**（如 `-Users-minghao-foo`，并带 `projectDirEncoded: true`）——
+此编码对**含字面 hyphen 的目录名**是有损的（实测回归：`workflow-control`
+之前被错显示为 `/workflow/control`），所以调用方原样展示而非自作主
+张地解码。`forge_analyze_recent` 返回 `{ analyses: [...], failures:
+[...] }`，让调用方在 N 个并行 start 中有失败时不至于静默拿到少于
+请求数的 analysisId。
+
+任何 pipeline 的 agent stage 完成回合但漏写某个 declared output port
+时，runner 现在做 **同 attempt 内续接重试**：用相同的 SDK session
+resume，发一个针对性的反馈 prompt，列出漏写的 port 并只要求补上对应
+的 `write_port` 调用。默认预算 2 轮反馈。这是历史 9 次失败（pipeline-
+generator 50% 失败率）的根因，现在已在不浪费旧 attempt 思考的前提下
+闭合。
 
 ---
 
