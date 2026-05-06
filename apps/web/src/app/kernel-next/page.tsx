@@ -451,7 +451,7 @@ export const OnboardingCard = (): ReactElement => {
           <pre className="mt-2 overflow-x-auto rounded bg-elevated p-2 text-xs">
 {`curl -X POST ${API_BASE}/api/kernel/tasks/run \\
   -H 'Content-Type: application/json' \\
-  -d '{"name":"smoke-test","seedValues":{"name":"there"}}'`}
+  -d '{"name":"smoke-test","seedValues":{"task_text":"hello forge"}}'`}
           </pre>
         </li>
         <li className="rounded border border-default bg-page p-3">
